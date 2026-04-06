@@ -48,7 +48,9 @@ pub fn run_app(
     let commands = supported_commands();
 
     loop {
-        terminal.draw(|frame| render::render(frame, state, &input, &commands))?;
+        terminal.draw(|frame| {
+            render::render(frame, state, resources, providers, auth_store, &input, &commands)
+        })?;
         if state.should_exit {
             break;
         }
@@ -198,7 +200,17 @@ mod tests {
             },
         );
         terminal
-            .draw(|frame| render::render(frame, &state, "/rev", &supported_commands()))
+            .draw(|frame| {
+                render::render(
+                    frame,
+                    &state,
+                    &LoadedResources::default(),
+                    &ProviderRegistry::default(),
+                    &AuthStore::default(),
+                    "/rev",
+                    &supported_commands(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let rendered = buffer
@@ -208,6 +220,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
         assert!(rendered.contains("Commands"));
+        assert!(rendered.contains("Inspector"));
         assert!(rendered.contains("/review"));
     }
 }

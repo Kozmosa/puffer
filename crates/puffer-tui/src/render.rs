@@ -1,6 +1,8 @@
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use puffer_core::{AppState, CommandSpec, MessageRole};
+use puffer_provider_registry::{AuthStore, ProviderRegistry};
+use puffer_resources::LoadedResources;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
@@ -11,6 +13,9 @@ use ratatui::Frame;
 pub(crate) fn render(
     frame: &mut Frame<'_>,
     state: &AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
     input: &str,
     commands: &[CommandSpec],
 ) {
@@ -18,14 +23,20 @@ pub(crate) fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(8),
+            Constraint::Min(10),
             Constraint::Length(3),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(frame.area());
 
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
+        .split(layout[1]);
+
     let header = Paragraph::new(format!(
-        "Puffer Code  model={}  theme={}  session={}",
+        "Puffer Code  provider={}  model={}  theme={}  session={}",
+        state.current_provider.as_deref().unwrap_or("unset"),
         state.current_model.as_deref().unwrap_or("unset"),
         state.config.theme,
         state.session.id
@@ -70,18 +81,50 @@ pub(crate) fn render(
     let transcript_widget = Paragraph::new(transcript)
         .wrap(Wrap { trim: false })
         .block(Block::default().title("Transcript").borders(Borders::ALL));
-    frame.render_widget(transcript_widget, layout[1]);
+    frame.render_widget(transcript_widget, body[0]);
+
+    let current_provider = state.current_provider.as_deref().unwrap_or("<unset>");
+    let inspector_lines = vec![
+        format!("Provider: {current_provider}"),
+        format!(
+            "Auth stored: {}",
+            if auth_store.has_auth(current_provider) {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+        format!("Model: {}", state.current_model.as_deref().unwrap_or("<unset>")),
+        format!("Theme: {}", state.config.theme),
+        format!("Prompt color: {}", state.prompt_color),
+        format!("Effort: {}", state.effort_level),
+        format!("Fast mode: {}", if state.fast_mode { "on" } else { "off" }),
+        format!("Sandbox: {}", state.sandbox_mode),
+        format!("Transcript: {} msgs", state.transcript.len()),
+        format!("Providers: {}", providers.providers().count()),
+        format!("Tools: {}", resources.tools.len()),
+        format!("Skills: {}", resources.skills.len()),
+        format!("Plugins: {}", resources.plugins.len()),
+        format!("MCP: {}", resources.mcp_servers.len()),
+        format!("IDEs: {}", resources.ides.len()),
+    ];
+    let inspector = Paragraph::new(inspector_lines.join("\n"))
+        .wrap(Wrap { trim: false })
+        .block(Block::default().title("Inspector").borders(Borders::ALL));
+    frame.render_widget(inspector, body[1]);
 
     let input_widget = Paragraph::new(input.to_string())
         .block(Block::default().title("Input").borders(Borders::ALL));
     frame.render_widget(input_widget, layout[2]);
 
-    let footer = Paragraph::new("Enter submits. Esc clears. Ctrl+C exits. Prefix / for commands.")
+    let footer = Paragraph::new(
+        "Enter submits  Esc clears  Ctrl+C exits  / commands  tools via /permissions  auth via /login",
+    )
         .block(Block::default().title("Footer").borders(Borders::ALL));
     frame.render_widget(footer, layout[3]);
 
     if input.starts_with('/') {
-        render_command_popup(frame, layout[1], input, commands);
+        render_command_popup(frame, body[0], input, commands);
     }
 }
 

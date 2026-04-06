@@ -142,6 +142,8 @@ enum AuthCommand {
 
 #[derive(Debug, Subcommand)]
 enum ToolCommand {
+    /// List the registered built-in tools and their policies.
+    List,
     /// Run a registered tool using a JSON argument payload.
     Run {
         /// Tool id, for example `bash`, `read_file`, or `write_file`.
@@ -316,6 +318,27 @@ fn run_tool_command(
     cwd: &std::path::Path,
 ) -> Result<()> {
     match command {
+        ToolCommand::List => {
+            let registry = ToolRegistry::from_resources(resources);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &registry
+                        .tools()
+                        .map(|tool| {
+                            serde_json::json!({
+                                "id": tool.spec.id,
+                                "name": tool.spec.name,
+                                "description": tool.spec.description,
+                                "handler": tool.spec.handler,
+                                "approval_policy": tool.spec.approval_policy,
+                                "sandbox_policy": tool.spec.sandbox_policy,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            );
+        }
         ToolCommand::Run { tool_id, args } => {
             let registry = ToolRegistry::from_resources(resources);
             let payload: puffer_tools::ToolInput = serde_json::from_str(&args)?;
