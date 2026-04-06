@@ -1119,30 +1119,6 @@ fn describe_permissions(
     emit_system(state, session_store, text)
 }
 
-fn render_git_diff_summary(cwd: &PathBuf) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .arg("diff")
-        .arg("--stat")
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if text.is_empty() {
-                "Git diff summary:\n<no changes>".to_string()
-            } else {
-                format!("Git diff summary:\n{text}")
-            }
-        }
-        Ok(output) => format!(
-            "Git diff summary unavailable:\n{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
-        Err(error) => format!("Git diff summary unavailable:\n{error}"),
-    }
-}
-
 fn rewind_transcript(state: &mut AppState, session_store: &SessionStore) -> Result<()> {
     let index = state
         .transcript

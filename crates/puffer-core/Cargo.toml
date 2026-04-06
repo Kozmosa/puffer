@@ -23,4 +23,5 @@ puffer-tools = { path = "../puffer-tools" }
 puffer-transport-anthropic = { path = "../puffer-transport-anthropic" }
 
 [dev-dependencies]
+tempfile.workspace = true
 uuid.workspace = true
