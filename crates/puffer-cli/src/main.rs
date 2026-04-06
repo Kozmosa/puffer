@@ -1,9 +1,18 @@
 mod auth_credentials;
 mod auth_provider;
 mod authflow;
+mod cli_args;
+mod command_surface;
+mod resource_fs;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use cli_args::{AuthCommand, Cli, Command, SessionCommand, ToolCommand};
+use command_surface::{
+    provider_supports_auth_mode, run_agents_command, run_auto_mode_command, run_doctor_command,
+    run_install_command, run_mcp_command, run_plugin_command, run_setup_token_command,
+    run_update_command,
+};
 use puffer_config::{ensure_workspace_dirs, load_config, ConfigPaths};
 use puffer_core::{supported_commands, AppState};
 use puffer_provider_openai::{
@@ -11,7 +20,10 @@ use puffer_provider_openai::{
     parse_authorization_input as parse_openai_authorization_input,
     refresh_oauth_token as refresh_openai_oauth_token,
 };
-use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
+<<<<<<< HEAD
+use puffer_provider_registry::{
+    AuthMode, AuthStore, OAuthCredential, ProviderRegistry, StoredCredential,
+};
 use puffer_resources::load_resources;
 use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
@@ -36,227 +48,6 @@ use crate::auth_provider::{
     oauth_family_for_provider, oauth_login_bundle_for_provider, oauth_start_bundle_for_provider,
     OauthFamily,
 };
-
-#[derive(Debug, Parser)]
-#[command(
-    bin_name = "puffer",
-    subcommand_negates_reqs = true,
-    args_conflicts_with_subcommands = true
-)]
-struct Cli {
-    #[command(subcommand)]
-    subcommand: Option<Command>,
-
-    /// Optional prompt to submit immediately when launching the TUI.
-    prompt: Option<String>,
-
-    /// Disable alternate-screen mode for the TUI.
-    #[arg(long = "no-alt-screen", default_value_t = false)]
-    no_alt_screen: bool,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Manage stored provider credentials.
-    Auth {
-        #[command(subcommand)]
-        command: AuthCommand,
-    },
-    /// List the supported slash commands.
-    Commands,
-    /// List known providers and models.
-    Providers,
-    /// Inspect or modify stored sessions.
-    Sessions {
-        #[command(subcommand)]
-        command: Option<SessionCommand>,
-    },
-    /// List loaded declarative resources.
-    Resources,
-    /// Print a sample Anthropic request fixture from the current config.
-    AnthropicRequestFixture,
-    /// Execute a built-in tool directly for local testing.
-    Tool {
-        #[command(subcommand)]
-        command: ToolCommand,
-    },
-    /// Print a stored session as JSON.
-    Resume {
-        /// The session UUID to resume.
-        session_id: String,
-    },
-    /// Fork a stored session into the current working directory.
-    Fork {
-        /// The session UUID to fork and open.
-        session_id: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum AuthCommand {
-    /// Show stored credential status.
-    Status,
-    /// Store an API key for a provider.
-    SetApiKey {
-        /// Provider id, for example `anthropic` or `openai`.
-        provider: String,
-        /// API key value. Omit and use `--stdin` to read from stdin.
-        api_key: Option<String>,
-        /// Read the API key from stdin.
-        #[arg(long = "stdin", default_value_t = false)]
-        stdin: bool,
-    },
-    /// Remove any stored credentials for a provider.
-    Clear {
-        /// Provider id to clear.
-        provider: String,
-    },
-    /// Print an OAuth authorization URL for a provider when supported.
-    OauthUrl {
-        /// Provider id to authorize.
-        provider: String,
-    },
-    /// Run a terminal-guided OAuth login flow for a provider.
-    Login {
-        /// Provider id to authorize.
-        provider: String,
-        /// Optional pasted callback URL or authorization code.
-        value: Option<String>,
-        /// Read the callback URL or authorization code from stdin.
-        #[arg(long = "stdin", default_value_t = false)]
-        stdin: bool,
-    },
-    /// Generate a full PKCE OAuth start bundle for a provider.
-    OauthStart {
-        /// Provider id to authorize.
-        provider: String,
-    },
-    /// Exchange a pasted OAuth authorization code for stored credentials.
-    OauthExchange {
-        /// Provider id to authorize.
-        provider: String,
-        /// Authorization code or callback URL.
-        value: Option<String>,
-        /// PKCE code verifier from the `oauth-start` output.
-        #[arg(long = "verifier")]
-        verifier: String,
-        /// Explicit OAuth state for providers that require it.
-        #[arg(long = "state")]
-        state: Option<String>,
-        /// Read the callback URL or code from stdin.
-        #[arg(long = "stdin", default_value_t = false)]
-        stdin: bool,
-    },
-    /// Refresh stored OAuth credentials for a provider.
-    OauthRefresh {
-        /// Provider id to refresh.
-        provider: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ToolCommand {
-    /// List the registered built-in tools and their policies.
-    List,
-    /// Show one registered tool and its policies.
-    Describe {
-        /// Tool id, for example `bash`, `read_file`, or `write_file`.
-        tool_id: String,
-    },
-    /// Run a registered tool using a JSON argument payload.
-    Run {
-        /// Tool id, for example `bash`, `read_file`, or `write_file`.
-        tool_id: String,
-        /// JSON argument payload.
-        args: String,
-    },
-    /// Run the built-in bash tool with a shell command.
-    Bash {
-        /// Shell command to execute.
-        command: String,
-    },
-    /// Run the built-in read tool against a file path.
-    Read {
-        /// File path to read.
-        path: String,
-    },
-    /// Run the built-in write tool against a file path.
-    Write {
-        /// File path to write.
-        path: String,
-        /// File contents to write.
-        contents: String,
-    },
-    /// Run the built-in replace-in-file tool against a file path.
-    Replace {
-        /// File path to modify.
-        path: String,
-        /// Text to replace.
-        old: String,
-        /// Replacement text.
-        new: String,
-        /// Replace all occurrences instead of the first match only.
-        #[arg(long = "all", default_value_t = false)]
-        replace_all: bool,
-    },
-    /// Run the built-in move-path tool.
-    Move {
-        /// Source path to move.
-        from: String,
-        /// Destination path.
-        to: String,
-    },
-    /// Run the built-in remove-path tool.
-    Remove {
-        /// Path to remove.
-        path: String,
-        /// Remove directories recursively.
-        #[arg(long = "recursive", default_value_t = false)]
-        recursive: bool,
-    },
-    /// Run the built-in directory listing tool.
-    ListDir {
-        /// Optional directory path to list. Defaults to the current working directory.
-        path: Option<String>,
-    },
-    /// Run the built-in text search tool.
-    SearchText {
-        /// Query text to search for.
-        query: String,
-        /// Optional file or directory path to search. Defaults to the current working directory.
-        path: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum SessionCommand {
-    /// List stored sessions.
-    List,
-    /// Set or clear the free-form note on a session.
-    Note {
-        /// Session UUID to update.
-        session_id: String,
-        /// Note text to store.
-        note: Option<String>,
-        /// Clear the note instead of setting it.
-        #[arg(long = "clear", default_value_t = false)]
-        clear: bool,
-    },
-    /// Add a tag to a session.
-    TagAdd {
-        /// Session UUID to update.
-        session_id: String,
-        /// Tag value to add.
-        tag: String,
-    },
-    /// Remove a tag from a session.
-    TagRemove {
-        /// Session UUID to update.
-        session_id: String,
-        /// Tag value to remove.
-        tag: String,
-    },
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -297,9 +88,41 @@ fn main() -> Result<()> {
     let _ = providers.discover_and_merge_all(&auth_store);
 
     match cli.subcommand {
-        Some(Command::Auth { command }) => {
-            run_auth_command(command, &mut auth_store, &auth_path, &providers)
+        Some(Command::Agents { setting_sources }) => {
+            run_agents_command(&paths, &config, setting_sources.as_deref())
         }
+        Some(Command::Auth { command }) => run_auth_command(
+            command,
+            config.default_provider.as_deref(),
+            &mut auth_store,
+            &auth_path,
+            &providers,
+        ),
+        Some(Command::AutoMode { command }) => run_auto_mode_command(command, &paths),
+        Some(Command::Doctor) => {
+            run_doctor_command(&config, &resources, &providers, &auth_store, &cwd)
+        }
+        Some(Command::Install { target, force }) => {
+            run_install_command(target.as_deref(), force, &cwd)
+        }
+        Some(Command::Mcp { command }) => run_mcp_command(command, &paths, &resources),
+        Some(Command::Plugin { command }) => run_plugin_command(command, &paths, &resources),
+        Some(Command::SetupToken {
+            provider,
+            token,
+            stdin,
+        }) => {
+            let provider = resolve_provider_arg(provider, config.default_provider.as_deref());
+            let token = if stdin {
+                read_secret_from_stdin()?
+            } else if let Some(token) = token {
+                token
+            } else {
+                read_line_with_prompt("Paste the API token: ")?
+            };
+            run_setup_token_command(&provider, token, &mut auth_store, &auth_path, &providers)
+        }
+        Some(Command::Update) => run_update_command(&cwd),
         Some(Command::Commands) => {
             println!(
                 "{}",
@@ -658,31 +481,69 @@ fn run_session_command(command: Option<SessionCommand>, paths: &ConfigPaths) -> 
 
 fn run_auth_command(
     command: AuthCommand,
+    default_provider: Option<&str>,
     auth_store: &mut AuthStore,
     auth_path: &std::path::Path,
     providers: &ProviderRegistry,
 ) -> Result<()> {
     match command {
-        AuthCommand::Status => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &auth_store
-                        .provider_ids()
-                        .map(|provider_id| {
-                            let kind = match auth_store.get(provider_id) {
-                                Some(StoredCredential::ApiKey { .. }) => "api_key",
-                                Some(StoredCredential::OAuth(_)) => "oauth",
-                                None => "unknown",
-                            };
-                            serde_json::json!({
-                                "provider": provider_id,
-                                "kind": kind,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )?
-            );
+        AuthCommand::Status { json, text } => {
+            if json && text {
+                anyhow::bail!("choose either --json or --text");
+            }
+            let credentials = auth_store
+                .provider_ids()
+                .map(|provider_id| {
+                    let kind = match auth_store.get(provider_id) {
+                        Some(StoredCredential::ApiKey { .. }) => "api_key",
+                        Some(StoredCredential::OAuth(_)) => "oauth",
+                        None => "unknown",
+                    };
+                    serde_json::json!({
+                        "provider": provider_id,
+                        "kind": kind,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if text {
+                if credentials.is_empty() {
+                    println!("No providers are authenticated.");
+                } else {
+                    println!("Authenticated providers:");
+                    for credential in credentials {
+                        println!(
+                            "- {} ({})",
+                            credential["provider"].as_str().unwrap_or("<unknown>"),
+                            credential["kind"].as_str().unwrap_or("<unknown>")
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            println!("{}", serde_json::to_string_pretty(&credentials)?);
+        }
+        AuthCommand::Login {
+            provider,
+            value,
+            stdin,
+        } => {
+            let provider = resolve_provider_arg(provider, default_provider);
+            if !provider_supports_auth_mode(&provider, providers, &AuthMode::OAuth) {
+                anyhow::bail!(
+                    "provider `{provider}` does not support OAuth; use `puffer setup-token {provider}` or `puffer auth set-api-key {provider}`"
+                );
+            }
+            run_login_flow(&provider, value, stdin, auth_store, auth_path, providers)?;
+        }
+        AuthCommand::Logout { provider } => {
+            let provider = resolve_provider_arg(provider, default_provider);
+            let removed = auth_store.remove(&provider);
+            auth_store.save(auth_path)?;
+            if removed.is_some() {
+                println!("cleared credentials for {provider}");
+            } else {
+                println!("no credentials were stored for {provider}");
+            }
         }
         AuthCommand::SetApiKey {
             provider,
@@ -712,13 +573,6 @@ fn run_auth_command(
         AuthCommand::OauthUrl { provider } => {
             let bundle = oauth_start_bundle_for_provider(providers, &provider)?;
             println!("{}", bundle.authorization_url);
-        }
-        AuthCommand::Login {
-            provider,
-            value,
-            stdin,
-        } => {
-            run_login_flow(&provider, value, stdin, auth_store, auth_path, providers)?;
         }
         AuthCommand::OauthStart { provider } => {
             let bundle = oauth_start_bundle_for_provider(providers, &provider)?;
@@ -824,6 +678,12 @@ fn run_auth_command(
         }
     }
     Ok(())
+}
+
+fn resolve_provider_arg(provider: Option<String>, default_provider: Option<&str>) -> String {
+    provider
+        .or_else(|| default_provider.map(ToOwned::to_owned))
+        .unwrap_or_else(|| "anthropic".to_string())
 }
 
 fn run_login_flow(
