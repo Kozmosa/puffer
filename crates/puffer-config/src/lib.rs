@@ -60,7 +60,10 @@ impl ConfigPaths {
     pub fn discover(workspace_root: impl Into<PathBuf>) -> Self {
         let workspace_root = workspace_root.into();
         let workspace_config_dir = workspace_root.join(".puffer");
-        let user_config_dir = dirs::home_dir()
+        let user_config_dir = std::env::var_os("PUFFER_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".puffer");
         let builtin_resources_dir = workspace_root.join("resources");

@@ -11,7 +11,7 @@ pub(crate) use common::{
 };
 pub(crate) use config::{
     handle_config_command, handle_hooks_command, handle_keybindings_command,
-    handle_permissions_command, handle_sandbox_command,
+    handle_permissions_command, handle_sandbox_command, persist_user_model_selection,
 };
 pub(crate) use ecosystem::{
     handle_agents_command, handle_ide_command, handle_mcp_command, handle_plugin_command,

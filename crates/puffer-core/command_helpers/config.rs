@@ -1,7 +1,7 @@
 use super::emit_system;
 use crate::AppState;
 use anyhow::Result;
-use puffer_config::{ensure_workspace_dirs, ConfigPaths};
+use puffer_config::{ensure_workspace_dirs, save_user_config, ConfigPaths};
 use puffer_resources::LoadedResources;
 use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
@@ -150,6 +150,12 @@ pub(crate) fn handle_config_command(
         session_store,
         format!("Updated {key} in {}.", config_path.display()),
     )
+}
+
+/// Persists the currently selected provider and model to the user config file.
+pub(crate) fn persist_user_model_selection(state: &AppState) -> Result<()> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    save_user_config(&paths, &state.config)
 }
 
 /// Shows or materializes the workspace keybindings file.

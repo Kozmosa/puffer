@@ -3,8 +3,8 @@ use crate::command_helpers::{
     execute_skill_command, handle_agents_command, handle_config_command, handle_hooks_command,
     handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
     handle_permissions_command, handle_plugin_command, handle_sandbox_command,
-    handle_session_command, list_skills, reload_plugins_summary, render_login_guidance,
-    rewind_transcript, run_doctor,
+    handle_session_command, list_skills, persist_user_model_selection, reload_plugins_summary,
+    render_login_guidance, rewind_transcript, run_doctor,
     terminal_setup_advice,
 };
 use crate::{
@@ -625,21 +625,50 @@ fn execute_local_command(
         }
         "model" => {
             if args.is_empty() {
-                let models = providers
-                    .models()
-                    .map(|model| format!("{}/{}", model.provider, model.id))
+                let Some(provider_id) = state.current_provider.as_deref() else {
+                    return emit_system(
+                        state,
+                        session_store,
+                        "No provider is selected. Use onboarding or /login first.".to_string(),
+                    );
+                };
+                let Some(provider) = providers.provider(provider_id) else {
+                    return emit_system(
+                        state,
+                        session_store,
+                        format!("Selected provider {provider_id} is no longer available."),
+                    );
+                };
+                let models = provider
+                    .models
+                    .iter()
+                    .map(|model| model.id.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                emit_system(state, session_store, format!("Available models: {models}"))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Available models for {provider_id}: {models}"),
+                )
             } else if args == "refresh" {
-                providers.discover_and_merge_all(auth_store)?;
+                let Some(provider_id) = state.current_provider.as_deref() else {
+                    return emit_system(
+                        state,
+                        session_store,
+                        "No provider is selected. Use onboarding or /login first.".to_string(),
+                    );
+                };
+                providers.discover_and_merge_provider(provider_id, auth_store)?;
+                let provider = providers
+                    .provider(provider_id)
+                    .ok_or_else(|| anyhow::anyhow!("provider {} not found", provider_id))?;
                 emit_system(
                     state,
                     session_store,
                     format!(
-                        "Refreshed provider models.\nproviders={}\nmodels={}",
-                        providers.providers().count(),
-                        providers.models().count()
+                        "Refreshed models for {}.\nmodels={}",
+                        provider.id,
+                        provider.models.len()
                     ),
                 )
             } else if let Some(provider_id) = args.strip_prefix("refresh ") {
@@ -656,12 +685,61 @@ fn execute_local_command(
                         provider.models.len()
                     ),
                 )
-            } else if let Some(model) = providers.resolve_model(args) {
-                state.current_provider = Some(model.provider.clone());
-                state.current_model = Some(format!("{}/{}", model.provider, model.id));
-                emit_system(state, session_store, format!("Active model set to {}/{}.", model.provider, model.id))
             } else {
-                emit_system(state, session_store, format!("Unknown model {args}."))
+                let Some(provider_id) = state.current_provider.as_deref() else {
+                    return emit_system(
+                        state,
+                        session_store,
+                        "No provider is selected. Use onboarding or /login first.".to_string(),
+                    );
+                };
+                let requested_model_id = if let Some((requested_provider, model_id)) = args.split_once('/') {
+                    if requested_provider != provider_id {
+                        return emit_system(
+                            state,
+                            session_store,
+                            format!(
+                                "/model only selects models for the active provider ({}).",
+                                provider_id
+                            ),
+                        );
+                    }
+                    model_id
+                } else {
+                    args
+                };
+                let Some(provider) = providers.provider(provider_id) else {
+                    return emit_system(
+                        state,
+                        session_store,
+                        format!("Selected provider {provider_id} is no longer available."),
+                    );
+                };
+                if let Some(model) = provider
+                    .models
+                    .iter()
+                    .find(|model| model.id == requested_model_id)
+                {
+                    state.current_provider = Some(provider.id.clone());
+                    state.current_model = Some(format!("{}/{}", provider.id, model.id));
+                    state.config.default_provider = Some(provider.id.clone());
+                    state.config.default_model = Some(format!("{}/{}", provider.id, model.id));
+                    persist_user_model_selection(state)?;
+                    emit_system(
+                        state,
+                        session_store,
+                        format!("Active model set to {}/{}.", provider.id, model.id),
+                    )
+                } else {
+                    emit_system(
+                        state,
+                        session_store,
+                        format!(
+                            "Unknown model {} for provider {}.",
+                            requested_model_id, provider_id
+                        ),
+                    )
+                }
             }
         }
         "permissions" => handle_permissions_command(state, resources, session_store, args),
