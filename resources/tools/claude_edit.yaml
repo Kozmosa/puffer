@@ -1,6 +1,25 @@
 id: Edit
 name: Edit
-description: Claude-compatible alias for replacing text inside one workspace file.
-handler: builtin:replace_in_file
+description: A tool for editing files
+handler: runtime:claude_edit
 approval_policy: on-request
 sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    file_path:
+      type: string
+      description: The absolute path to the file to modify
+    old_string:
+      type: string
+      description: The text to replace
+    new_string:
+      type: string
+      description: The text to replace it with (must be different from old_string)
+    replace_all:
+      type: boolean
+      description: Replace all occurrences of old_string (default false)
+  required:
+    - file_path
+    - old_string
+    - new_string

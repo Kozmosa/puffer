@@ -328,6 +328,7 @@ pub(crate) fn handle_submit(
     if *auth_store != previous_auth_store {
         auth_store.save(auth_path)?;
     }
+    session_store.append_event(state.session.id, state.snapshot_event())?;
 
     Ok(())
 }

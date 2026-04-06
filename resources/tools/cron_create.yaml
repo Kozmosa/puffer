@@ -1,0 +1,24 @@
+id: CronCreate
+name: CronCreate
+description: Schedule a recurring or one-shot prompt using a cron expression.
+handler: runtime:workflow:cron_create
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    cron:
+      type: string
+      description: Standard 5-field cron expression in local time.
+    prompt:
+      type: string
+      description: The prompt to enqueue at each fire time.
+    recurring:
+      type: boolean
+      description: True to recur, false for one-shot at the next match.
+    durable:
+      type: boolean
+      description: True to persist across restarts, false for in-memory only.
+  required:
+    - cron
+    - prompt

@@ -1,6 +1,6 @@
 id: ToolSearch
 name: ToolSearch
-description: Search available tools by name or keyword and return matching schemas.
+description: Fetches full schema definitions for deferred tools so they can be called.
 handler: runtime:tool_search
 approval_policy: auto
 sandbox_policy: read-only
@@ -9,9 +9,9 @@ input_schema:
   properties:
     query:
       type: string
-      description: Search query or select:<tool names> expression.
+      description: Query to find deferred tools. Use "select:<tool_name>" for direct selection, or keywords to search.
     max_results:
       type: integer
-      description: Maximum number of matches to return.
+      description: Maximum number of results to return (default 5).
   required:
     - query

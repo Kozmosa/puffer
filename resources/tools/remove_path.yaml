@@ -4,3 +4,4 @@ description: Remove a workspace file or directory.
 handler: remove_path
 approval_policy: on-request
 sandbox_policy: workspace-write
+enabled_if: never

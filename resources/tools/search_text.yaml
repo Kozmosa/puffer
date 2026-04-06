@@ -4,3 +4,4 @@ description: Search for text in workspace files.
 handler: search_text
 approval_policy: auto
 sandbox_policy: read-only
+enabled_if: never

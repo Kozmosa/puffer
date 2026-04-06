@@ -1,0 +1,563 @@
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
+use serde_json::{json, Map, Value};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const DEFAULT_HEAD_LIMIT: usize = 250;
+const VCS_DIRECTORIES_TO_EXCLUDE: [&str; 6] = [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"];
+
+#[derive(Debug, Deserialize)]
+struct ClaudeGrepInput {
+    pattern: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    glob: Option<String>,
+    #[serde(default)]
+    output_mode: Option<String>,
+    #[serde(default, rename = "-B")]
+    before_context: Option<usize>,
+    #[serde(default, rename = "-A")]
+    after_context: Option<usize>,
+    #[serde(default, rename = "-C")]
+    context_short: Option<usize>,
+    #[serde(default)]
+    context: Option<usize>,
+    #[serde(default, rename = "-n")]
+    show_line_numbers: Option<bool>,
+    #[serde(default, rename = "-i")]
+    case_insensitive: Option<bool>,
+    #[serde(default, rename = "type")]
+    file_type: Option<String>,
+    #[serde(default)]
+    head_limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    multiline: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrepMode {
+    Content,
+    FilesWithMatches,
+    Count,
+}
+
+/// Executes the Claude-compatible `Grep` tool over the current workspace.
+///
+/// Input fields mirror Claude Code's schema, including richer fields like
+/// `output_mode`, `glob`, `type`, context flags (`-A`, `-B`, `-C`, `context`),
+/// pagination (`head_limit`, `offset`), and multiline search.
+///
+/// The output is returned as JSON with Claude-like fields:
+/// `mode`, `numFiles`, `filenames`, and optional `content`, `numLines`,
+/// `numMatches`, `appliedLimit`, and `appliedOffset`.
+pub fn execute_claude_grep(cwd: &Path, input: Value) -> Result<String> {
+    let input: ClaudeGrepInput = serde_json::from_value(input).context("invalid Grep input")?;
+    if input.pattern.trim().is_empty() {
+        bail!("Grep pattern cannot be empty");
+    }
+
+    let mode = parse_mode(input.output_mode.as_deref())?;
+    let absolute_target = input
+        .path
+        .as_deref()
+        .map(|path| resolve_workspace_path(cwd, Path::new(path)))
+        .transpose()?
+        .unwrap_or_else(|| cwd.to_path_buf());
+    if !absolute_target.exists() {
+        bail!("Path does not exist: {}", absolute_target.display());
+    }
+
+    let mut args = vec![
+        "--hidden".to_string(),
+        "--max-columns".to_string(),
+        "500".to_string(),
+    ];
+    append_vcs_exclusions(&mut args);
+    if input.multiline.unwrap_or(false) {
+        args.push("-U".to_string());
+        args.push("--multiline-dotall".to_string());
+    }
+    if input.case_insensitive.unwrap_or(false) {
+        args.push("-i".to_string());
+    }
+    append_mode_flags(&mut args, mode);
+    append_context_flags(&mut args, mode, &input);
+    append_pattern_arg(&mut args, &input.pattern);
+    append_optional_type(&mut args, input.file_type.as_deref());
+    append_glob_args(&mut args, input.glob.as_deref());
+    args.push("--".to_string());
+    args.push(absolute_target.to_string_lossy().to_string());
+
+    let raw_lines = run_ripgrep(cwd, &args)?;
+    let offset = input.offset.unwrap_or(0);
+    let (limit_applied, entries) = match mode {
+        GrepMode::FilesWithMatches => {
+            let sorted = sort_paths_by_mtime_desc(cwd, raw_lines);
+            apply_head_limit(&sorted, input.head_limit, offset)
+        }
+        GrepMode::Content | GrepMode::Count => {
+            apply_head_limit(&raw_lines, input.head_limit, offset)
+        }
+    };
+
+    let output = match mode {
+        GrepMode::Content => content_mode_output(cwd, entries, limit_applied, offset),
+        GrepMode::FilesWithMatches => files_mode_output(cwd, entries, limit_applied, offset),
+        GrepMode::Count => count_mode_output(cwd, entries, limit_applied, offset),
+    };
+
+    Ok(serde_json::to_string_pretty(&output)?)
+}
+
+fn parse_mode(mode: Option<&str>) -> Result<GrepMode> {
+    match mode.unwrap_or("files_with_matches") {
+        "content" => Ok(GrepMode::Content),
+        "files_with_matches" => Ok(GrepMode::FilesWithMatches),
+        "count" => Ok(GrepMode::Count),
+        other => bail!("unsupported Grep output_mode `{other}`"),
+    }
+}
+
+fn append_vcs_exclusions(args: &mut Vec<String>) {
+    for dir in VCS_DIRECTORIES_TO_EXCLUDE {
+        args.push("--glob".to_string());
+        args.push(format!("!{dir}"));
+    }
+}
+
+fn append_mode_flags(args: &mut Vec<String>, mode: GrepMode) {
+    match mode {
+        GrepMode::FilesWithMatches => args.push("-l".to_string()),
+        GrepMode::Count => args.push("-c".to_string()),
+        GrepMode::Content => {}
+    }
+}
+
+fn append_context_flags(args: &mut Vec<String>, mode: GrepMode, input: &ClaudeGrepInput) {
+    if mode != GrepMode::Content {
+        return;
+    }
+
+    if input.show_line_numbers.unwrap_or(true) {
+        args.push("-n".to_string());
+    }
+
+    if let Some(value) = input.context.or(input.context_short) {
+        args.push("-C".to_string());
+        args.push(value.to_string());
+        return;
+    }
+    if let Some(value) = input.before_context {
+        args.push("-B".to_string());
+        args.push(value.to_string());
+    }
+    if let Some(value) = input.after_context {
+        args.push("-A".to_string());
+        args.push(value.to_string());
+    }
+}
+
+fn append_pattern_arg(args: &mut Vec<String>, pattern: &str) {
+    if pattern.starts_with('-') {
+        args.push("-e".to_string());
+        args.push(pattern.to_string());
+    } else {
+        args.push(pattern.to_string());
+    }
+}
+
+fn append_optional_type(args: &mut Vec<String>, file_type: Option<&str>) {
+    if let Some(file_type) = file_type.filter(|value| !value.trim().is_empty()) {
+        args.push("--type".to_string());
+        args.push(file_type.to_string());
+    }
+}
+
+fn append_glob_args(args: &mut Vec<String>, glob_value: Option<&str>) {
+    let Some(glob_value) = glob_value.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+
+    for token in glob_value.split_whitespace() {
+        if token.contains('{') && token.contains('}') {
+            args.push("--glob".to_string());
+            args.push(token.to_string());
+            continue;
+        }
+        for part in token
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            args.push("--glob".to_string());
+            args.push(part.to_string());
+        }
+    }
+}
+
+fn run_ripgrep(cwd: &Path, args: &[String]) -> Result<Vec<String>> {
+    let output = Command::new("rg")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .context("failed to execute `rg` for Grep tool")?;
+    let status = output.status.code().unwrap_or_default();
+    if !output.status.success() && status != 1 {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("rg exited with status code {status}");
+        }
+        bail!("rg exited with status code {status}: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>())
+}
+
+fn sort_paths_by_mtime_desc(cwd: &Path, paths: Vec<String>) -> Vec<String> {
+    let mut scored = paths
+        .into_iter()
+        .map(|path| {
+            let mtime = file_mtime_ms(cwd, &path);
+            (path, mtime)
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    scored.into_iter().map(|(path, _)| path).collect()
+}
+
+fn file_mtime_ms(cwd: &Path, path_text: &str) -> u128 {
+    let path = Path::new(path_text);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    fs::metadata(joined)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(system_time_to_epoch_ms)
+        .unwrap_or(0)
+}
+
+fn system_time_to_epoch_ms(time: SystemTime) -> Option<u128> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|value| value.as_millis())
+}
+
+fn apply_head_limit(
+    items: &[String],
+    limit: Option<usize>,
+    offset: usize,
+) -> (Option<usize>, Vec<String>) {
+    if limit == Some(0) {
+        return (None, items.iter().skip(offset).cloned().collect::<Vec<_>>());
+    }
+
+    let effective_limit = limit.unwrap_or(DEFAULT_HEAD_LIMIT);
+    let sliced = items
+        .iter()
+        .skip(offset)
+        .take(effective_limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let truncated = items.len().saturating_sub(offset) > effective_limit;
+    (truncated.then_some(effective_limit), sliced)
+}
+
+fn files_mode_output(
+    cwd: &Path,
+    entries: Vec<String>,
+    applied_limit: Option<usize>,
+    offset: usize,
+) -> Value {
+    let filenames = entries
+        .iter()
+        .map(|entry| to_relative_path(cwd, entry))
+        .collect::<Vec<_>>();
+
+    let mut object = Map::new();
+    object.insert(
+        "mode".to_string(),
+        Value::String("files_with_matches".to_string()),
+    );
+    object.insert("filenames".to_string(), json!(filenames));
+    object.insert("numFiles".to_string(), json!(entries.len()));
+    if let Some(applied_limit) = applied_limit {
+        object.insert("appliedLimit".to_string(), json!(applied_limit));
+    }
+    if offset > 0 {
+        object.insert("appliedOffset".to_string(), json!(offset));
+    }
+    Value::Object(object)
+}
+
+fn content_mode_output(
+    cwd: &Path,
+    entries: Vec<String>,
+    applied_limit: Option<usize>,
+    offset: usize,
+) -> Value {
+    let lines = entries
+        .iter()
+        .map(|entry| relativize_content_line(cwd, entry))
+        .collect::<Vec<_>>();
+
+    let mut object = Map::new();
+    object.insert("mode".to_string(), Value::String("content".to_string()));
+    object.insert("numFiles".to_string(), json!(0));
+    object.insert("filenames".to_string(), json!(Vec::<String>::new()));
+    object.insert("content".to_string(), Value::String(lines.join("\n")));
+    object.insert("numLines".to_string(), json!(lines.len()));
+    if let Some(applied_limit) = applied_limit {
+        object.insert("appliedLimit".to_string(), json!(applied_limit));
+    }
+    if offset > 0 {
+        object.insert("appliedOffset".to_string(), json!(offset));
+    }
+    Value::Object(object)
+}
+
+fn count_mode_output(
+    cwd: &Path,
+    entries: Vec<String>,
+    applied_limit: Option<usize>,
+    offset: usize,
+) -> Value {
+    let lines = entries
+        .iter()
+        .map(|entry| relativize_count_line(cwd, entry))
+        .collect::<Vec<_>>();
+
+    let mut total_matches = 0usize;
+    let mut file_count = 0usize;
+    for line in &lines {
+        if let Some((_, count)) = line.rsplit_once(':') {
+            if let Ok(parsed) = count.trim().parse::<usize>() {
+                total_matches = total_matches.saturating_add(parsed);
+                file_count = file_count.saturating_add(1);
+            }
+        }
+    }
+
+    let mut object = Map::new();
+    object.insert("mode".to_string(), Value::String("count".to_string()));
+    object.insert("numFiles".to_string(), json!(file_count));
+    object.insert("filenames".to_string(), json!(Vec::<String>::new()));
+    object.insert("content".to_string(), Value::String(lines.join("\n")));
+    object.insert("numMatches".to_string(), json!(total_matches));
+    if let Some(applied_limit) = applied_limit {
+        object.insert("appliedLimit".to_string(), json!(applied_limit));
+    }
+    if offset > 0 {
+        object.insert("appliedOffset".to_string(), json!(offset));
+    }
+    Value::Object(object)
+}
+
+fn relativize_content_line(cwd: &Path, line: &str) -> String {
+    let Some((path, remainder)) = line.split_once(':') else {
+        return line.to_string();
+    };
+    format!("{}:{remainder}", to_relative_path(cwd, path))
+}
+
+fn relativize_count_line(cwd: &Path, line: &str) -> String {
+    let Some((path, count)) = line.rsplit_once(':') else {
+        return line.to_string();
+    };
+    format!("{}:{count}", to_relative_path(cwd, path))
+}
+
+fn to_relative_path(cwd: &Path, path_text: &str) -> String {
+    let path = Path::new(path_text);
+    if path.is_absolute() {
+        if let Ok(relative) = path.strip_prefix(cwd) {
+            return relative.to_string_lossy().replace('\\', "/");
+        }
+    }
+    path_text.replace('\\', "/")
+}
+
+fn resolve_workspace_path(cwd: &Path, path: &Path) -> Result<PathBuf> {
+    let workspace_root = fs::canonicalize(cwd)
+        .with_context(|| format!("failed to resolve workspace root {}", cwd.display()))?;
+    let workspace_path = normalize_path(cwd);
+    let candidate = if path.is_absolute() {
+        normalize_path(path)
+    } else {
+        normalize_path(&cwd.join(path))
+    };
+    if !candidate.starts_with(&workspace_path) {
+        bail!(
+            "path {} escapes workspace {}",
+            path.display(),
+            cwd.display()
+        );
+    }
+
+    let ancestor = nearest_existing_ancestor(&candidate).ok_or_else(|| {
+        anyhow!(
+            "failed to resolve path {} inside workspace {}",
+            path.display(),
+            cwd.display()
+        )
+    })?;
+    let canonical_ancestor = fs::canonicalize(&ancestor)
+        .with_context(|| format!("failed to canonicalize {}", ancestor.display()))?;
+    if !canonical_ancestor.starts_with(&workspace_root) {
+        bail!(
+            "path {} resolves through symlink outside workspace {}",
+            path.display(),
+            cwd.display()
+        );
+    }
+
+    if candidate.exists() {
+        let canonical_candidate = fs::canonicalize(&candidate)
+            .with_context(|| format!("failed to canonicalize {}", candidate.display()))?;
+        if !canonical_candidate.starts_with(&workspace_root) {
+            bail!(
+                "path {} resolves outside workspace {}",
+                path.display(),
+                cwd.display()
+            );
+        }
+    }
+
+    Ok(candidate)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn grep_files_with_matches_mode_returns_expected_shape() {
+        if !rg_available() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/a.rs"), "fn hello() {}\n").unwrap();
+        fs::write(temp.path().join("src/b.rs"), "fn world() {}\n").unwrap();
+
+        let output = execute_claude_grep(
+            temp.path(),
+            json!({
+                "pattern": "fn",
+                "path": "src",
+                "output_mode": "files_with_matches"
+            }),
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["mode"], "files_with_matches");
+        assert_eq!(parsed["numFiles"], 2);
+        assert!(parsed["filenames"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn grep_count_mode_reports_matches() {
+        if !rg_available() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("note.txt"), "abc\nabc\n").unwrap();
+
+        let output = execute_claude_grep(
+            temp.path(),
+            json!({
+                "pattern": "abc",
+                "output_mode": "count"
+            }),
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["mode"], "count");
+        assert!(parsed["numMatches"].as_u64().unwrap() >= 2);
+    }
+
+    #[test]
+    fn grep_rejects_workspace_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = execute_claude_grep(
+            temp.path(),
+            json!({
+                "pattern": "abc",
+                "path": "../"
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("escapes workspace"));
+    }
+
+    #[test]
+    fn head_limit_defaults_to_claude_value() {
+        let data = vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string(),
+        ];
+        let (limit, sliced) = apply_head_limit(&data, Some(2), 1);
+        assert_eq!(limit, Some(2));
+        assert_eq!(sliced, vec!["2".to_string(), "3".to_string()]);
+    }
+
+    fn rg_available() -> bool {
+        Command::new("rg").arg("--version").output().is_ok()
+    }
+}

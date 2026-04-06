@@ -1,0 +1,14 @@
+id: TaskGet
+name: TaskGet
+description: Retrieve a task by ID.
+handler: runtime:workflow:task_get
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties:
+    taskId:
+      type: string
+      description: The ID of the task to retrieve.
+  required:
+    - taskId

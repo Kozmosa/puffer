@@ -1,0 +1,14 @@
+id: CronDelete
+name: CronDelete
+description: Cancel a scheduled cron job.
+handler: runtime:workflow:cron_delete
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Job ID returned by CronCreate.
+  required:
+    - id

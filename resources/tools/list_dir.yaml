@@ -4,3 +4,4 @@ description: List files and directories from the workspace.
 handler: list_dir
 approval_policy: auto
 sandbox_policy: read-only
+enabled_if: never

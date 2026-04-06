@@ -131,24 +131,16 @@ fn parse_discovered_models(
     discovery: &ModelDiscoveryConfig,
     payload: &Value,
 ) -> Result<Vec<ModelDescriptor>> {
-    let items = match discovery.response {
-        ModelDiscoveryFormat::MistralModels => payload.as_array().ok_or_else(|| {
+    let items = payload
+        .get(&discovery.items_field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
             anyhow!(
-                "discovery response for {} was not a top-level array",
-                provider.id
+                "discovery response for {} missing {} array",
+                provider.id,
+                discovery.items_field
             )
-        })?,
-        _ => payload
-            .get(&discovery.items_field)
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                anyhow!(
-                    "discovery response for {} missing {} array",
-                    provider.id,
-                    discovery.items_field
-                )
-            })?,
-    };
+        })?;
     let mut models = Vec::new();
     for item in items {
         let id = item
@@ -186,10 +178,6 @@ fn default_display_name<'a>(item: &'a Value, format: &ModelDiscoveryFormat) -> O
         ModelDiscoveryFormat::AnthropicModels => item
             .get("display_name")
             .or_else(|| item.get("name"))
-            .and_then(Value::as_str),
-        ModelDiscoveryFormat::MistralModels => item
-            .get("name")
-            .or_else(|| item.get("display_name"))
             .and_then(Value::as_str),
         ModelDiscoveryFormat::OpenAiModels => item.get("name").and_then(Value::as_str),
         ModelDiscoveryFormat::OllamaModels => item
@@ -312,35 +300,6 @@ mod tests {
         assert_eq!(models[0].id, "qwen3:14b");
         assert_eq!(models[0].display_name, "qwen3:14b");
         assert_eq!(models[0].api, "openai-completions");
-    }
-
-    #[test]
-    fn discovery_parses_mistral_model_lists() {
-        let discovery = ModelDiscoveryConfig {
-            path: "/v1/models".to_string(),
-            response: ModelDiscoveryFormat::MistralModels,
-            api: "mistral-conversations".to_string(),
-            context_window: 131_072,
-            max_output_tokens: 32_768,
-            supports_reasoning: false,
-            items_field: "data".to_string(),
-            id_field: "id".to_string(),
-            display_name_field: Some("name".to_string()),
-            headers: IndexMap::new(),
-        };
-        let payload = serde_json::json!([
-            {
-                "id": "devstral-medium-latest",
-                "name": "Devstral Medium Latest"
-            }
-        ]);
-        let provider = provider(discovery);
-        let models =
-            parse_discovered_models(&provider, provider.discovery.as_ref().unwrap(), &payload)
-                .expect("models");
-        assert_eq!(models[0].id, "devstral-medium-latest");
-        assert_eq!(models[0].display_name, "Devstral Medium Latest");
-        assert_eq!(models[0].api, "mistral-conversations");
     }
 
     #[test]

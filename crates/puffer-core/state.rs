@@ -1,6 +1,9 @@
 use puffer_config::PufferConfig;
-use puffer_session_store::{SessionMetadata, SessionRecord, TranscriptEvent, TranscriptRewrite};
+use puffer_session_store::{
+    ClaudeReadSnapshotEvent, SessionMetadata, SessionRecord, TranscriptEvent, TranscriptRewrite,
+};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Describes the role of a rendered transcript message.
@@ -34,6 +37,13 @@ pub struct TaskRecord {
     pub status: TaskStatus,
 }
 
+/// Stores the last successful Claude-style read metadata for one absolute path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudeReadState {
+    pub(crate) timestamp_ms: u128,
+    pub(crate) is_partial_view: bool,
+}
+
 /// Stores the mutable session and UI state for one interactive Puffer run.
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -58,6 +68,7 @@ pub struct AppState {
     pub vim_mode: bool,
     pub should_exit: bool,
     pub reload_resources_requested: bool,
+    pub(crate) claude_read_state: HashMap<PathBuf, ClaudeReadState>,
     tasks: Vec<TaskRecord>,
     next_task_id: u64,
 }
@@ -87,6 +98,7 @@ impl AppState {
             vim_mode: false,
             should_exit: false,
             reload_resources_requested: false,
+            claude_read_state: HashMap::new(),
             tasks: Vec::new(),
             next_task_id: 1,
         }
@@ -131,6 +143,7 @@ impl AppState {
                     remote_session_status,
                     statusline_enabled,
                     working_dirs,
+                    claude_read_state,
                 } => {
                     state.current_model = current_model;
                     state.current_provider = current_provider;
@@ -147,6 +160,18 @@ impl AppState {
                     state.remote_session_status = remote_session_status;
                     state.statusline_enabled = statusline_enabled;
                     state.working_dirs = working_dirs.into_iter().map(Into::into).collect();
+                    state.claude_read_state = claude_read_state
+                        .into_iter()
+                        .map(|entry| {
+                            (
+                                PathBuf::from(entry.path),
+                                ClaudeReadState {
+                                    timestamp_ms: entry.timestamp_ms,
+                                    is_partial_view: entry.is_partial_view,
+                                },
+                            )
+                        })
+                        .collect();
                 }
             }
         }
@@ -217,6 +242,15 @@ impl AppState {
                 .working_dirs
                 .iter()
                 .map(|path| path.display().to_string())
+                .collect(),
+            claude_read_state: self
+                .claude_read_state
+                .iter()
+                .map(|(path, snapshot)| ClaudeReadSnapshotEvent {
+                    path: path.display().to_string(),
+                    timestamp_ms: snapshot.timestamp_ms,
+                    is_partial_view: snapshot.is_partial_view,
+                })
                 .collect(),
         }
     }

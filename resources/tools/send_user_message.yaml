@@ -1,0 +1,26 @@
+id: SendUserMessage
+name: SendUserMessage
+description: Send a message to the user.
+handler: runtime:workflow:send_user_message
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties:
+    message:
+      type: string
+      description: The message for the user. Supports markdown formatting.
+    attachments:
+      type: array
+      description: Optional file paths to attach.
+      items:
+        type: string
+    status:
+      type: string
+      enum:
+        - normal
+        - proactive
+      description: Use normal for direct replies and proactive for unsolicited updates.
+  required:
+    - message
+    - status

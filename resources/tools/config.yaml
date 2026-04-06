@@ -1,0 +1,20 @@
+id: Config
+name: Config
+description: Get or set Claude Code settings.
+handler: runtime:workflow:config
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    setting:
+      type: string
+      description: The setting key, such as theme, model, or permissions.defaultMode.
+    value:
+      description: The new value; omit to get current value.
+      oneOf:
+        - type: string
+        - type: boolean
+        - type: number
+  required:
+    - setting

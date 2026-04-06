@@ -1,0 +1,64 @@
+id: SendMessage
+name: SendMessage
+description: Send a message to a teammate, team, or compatible peer endpoint.
+handler: runtime:workflow:send_message
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties:
+    to:
+      type: string
+      description: Recipient name, wildcard, or supported endpoint address.
+    summary:
+      type: string
+      description: Optional 5-10 word summary preview.
+    message:
+      description: Message payload as plain text or structured control message.
+      anyOf:
+        - type: string
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - shutdown_request
+            reason:
+              type: string
+          required:
+            - type
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - shutdown_response
+            request_id:
+              type: string
+            approve:
+              type: boolean
+            reason:
+              type: string
+          required:
+            - type
+            - request_id
+            - approve
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - plan_approval_response
+            request_id:
+              type: string
+            approve:
+              type: boolean
+            feedback:
+              type: string
+          required:
+            - type
+            - request_id
+            - approve
+  required:
+    - to
+    - message

@@ -119,6 +119,18 @@ impl ToolRegistry {
 }
 
 fn definition_from_spec(spec: &ToolSpec) -> Option<ToolDefinition> {
+    if spec
+        .approval_policy
+        .as_deref()
+        .is_some_and(policy_value_disables_tool)
+        || spec
+            .enabled_if
+            .as_deref()
+            .is_some_and(enabled_if_value_disables_tool)
+    {
+        return None;
+    }
+
     let mut definition = builtin_tool_definition_by_handler(&builtin_handler_name(&spec.handler))
         .unwrap_or_else(|| ToolDefinition {
             id: spec.id.clone(),
@@ -202,6 +214,20 @@ fn parse_input_schema(input_schema: &serde_json::Value) -> Result<ToolInputSchem
         );
     }
     Ok(ToolInputSchema { properties: parsed })
+}
+
+fn policy_value_disables_tool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "disabled" | "deny"
+    )
+}
+
+fn enabled_if_value_disables_tool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "disabled" | "deny" | "false" | "never" | "off"
+    )
 }
 
 #[cfg(test)]

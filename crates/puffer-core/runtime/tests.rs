@@ -2,7 +2,7 @@ use super::*;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
-use puffer_provider_openai::OpenAIResponseToolCall;
+use puffer_provider_openai::{OpenAIAuth, OpenAIRequestConfig, OpenAIResponseToolCall};
 use puffer_provider_registry::{AuthMode, OAuthCredential, ProviderDescriptor, StoredCredential};
 use puffer_resources::{LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
 use puffer_session_store::SessionMetadata;
@@ -125,6 +125,39 @@ fn openai_provider(base_url: String) -> ProviderDescriptor {
     }
 }
 
+fn test_anthropic_request_config() -> AnthropicRequestConfig {
+    AnthropicRequestConfig {
+        base_url: "https://api.anthropic.com".to_string(),
+        session_id: "session-test".to_string(),
+        custom_headers: Default::default(),
+        remote_container_id: None,
+        remote_session_id: None,
+        client_app: None,
+        entrypoint: "cli".to_string(),
+        user_type: "external".to_string(),
+        version: APP_VERSION.to_string(),
+        workload: None,
+        additional_protection: false,
+        cch_enabled: true,
+        auth: AnthropicAuth::ApiKey("sk-ant".to_string()),
+        beta_header: None,
+        client_request_id: None,
+    }
+}
+
+fn test_openai_request_config() -> OpenAIRequestConfig {
+    OpenAIRequestConfig {
+        base_url: "https://api.openai.com".to_string(),
+        version: APP_VERSION.to_string(),
+        auth: OpenAIAuth::ApiKey("sk-openai".to_string()),
+        originator: "codex_cli_rs".to_string(),
+        session_id: Some("session-test".to_string()),
+        account_id: None,
+        custom_headers: Vec::new(),
+        query_params: Vec::new(),
+    }
+}
+
 fn fake_jwt(payload: Value) -> String {
     format!("header.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()))
 }
@@ -189,7 +222,7 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
     let mut auth = AuthStore::default();
     auth.set_api_key("azure-openai", "sk-test");
     let error = execute_user_prompt(
-        &azure_state,
+        &mut azure_state,
         &LoadedResources::default(),
         &registry,
         &mut auth,
@@ -215,7 +248,7 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
     let mut auth = AuthStore::default();
     auth.set_api_key("openrouter", "sk-test");
     let error = execute_user_prompt(
-        &openrouter_state,
+        &mut openrouter_state,
         &LoadedResources::default(),
         &registry,
         &mut auth,
@@ -226,31 +259,6 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
         .to_string()
         .contains("provider openrouter with api openai-completions is not executable yet"));
 
-    let mut descriptor = provider();
-    descriptor.id = "mistral".to_string();
-    descriptor.display_name = "Mistral".to_string();
-    descriptor.base_url = "https://example.invalid".to_string();
-    descriptor.default_api = "mistral-conversations".to_string();
-    descriptor.models[0].provider = "mistral".to_string();
-    descriptor.models[0].api = "mistral-conversations".to_string();
-    let mut registry = ProviderRegistry::new();
-    registry.register(descriptor);
-    let mut mistral_state = state();
-    mistral_state.current_provider = Some("mistral".to_string());
-    mistral_state.current_model = Some("mistral/claude-sonnet-4-5".to_string());
-    let mut auth = AuthStore::default();
-    auth.set_api_key("mistral", "sk-test");
-    let error = execute_user_prompt(
-        &mistral_state,
-        &LoadedResources::default(),
-        &registry,
-        &mut auth,
-        "hello",
-    )
-    .unwrap_err();
-    assert!(!error
-        .to_string()
-        .contains("provider mistral with api mistral-conversations is not executable yet"));
 }
 
 #[test]
@@ -269,7 +277,7 @@ fn execute_user_prompt_allows_no_auth_providers() {
     state.current_provider = Some("ollama".to_string());
     state.current_model = Some("ollama/claude-sonnet-4-5".to_string());
     let error = execute_user_prompt(
-        &state,
+        &mut state,
         &LoadedResources::default(),
         &registry,
         &mut AuthStore::default(),
@@ -300,11 +308,16 @@ fn execute_anthropic_tool_calls_runs_registered_tools() {
             }
         ]
     });
+    let mut state = state();
+    let request_config = test_anthropic_request_config();
     let result = execute_anthropic_tool_calls(
+        &mut state,
         &resources,
         &response,
         &registry,
         std::env::current_dir().unwrap().as_path(),
+        &request_config,
+        "claude-sonnet-4-5",
     )
     .unwrap();
     assert!(result.is_some());
@@ -580,7 +593,7 @@ fn execute_user_prompt_refreshes_openai_oauth_after_401() {
     state.current_model = Some("openai/gpt-5".to_string());
 
     let turn = execute_user_prompt(
-        &state,
+        &mut state,
         &LoadedResources::default(),
         &registry,
         &mut auth_store,
@@ -631,11 +644,16 @@ fn execute_openai_tool_calls_serializes_outputs() {
         name: "bash".to_string(),
         arguments: json!({ "command": "printf hi" }),
     }];
+    let mut state = state();
+    let request_config = test_openai_request_config();
     let result = execute_openai_tool_calls(
+        &mut state,
         &resources,
         &tool_calls,
         &registry,
         std::env::current_dir().unwrap().as_path(),
+        &request_config,
+        "gpt-5",
     )
     .unwrap();
     assert_eq!(result.outputs[0].kind, "function_call_output");
@@ -676,7 +694,18 @@ fn tool_hooks_run_for_completed_tool_calls() {
             }
         ]
     });
-    let _ = execute_anthropic_tool_calls(&resources, &response, &registry, temp.path()).unwrap();
+    let mut state = state();
+    let request_config = test_anthropic_request_config();
+    let _ = execute_anthropic_tool_calls(
+        &mut state,
+        &resources,
+        &response,
+        &registry,
+        temp.path(),
+        &request_config,
+        "claude-sonnet-4-5",
+    )
+    .unwrap();
     assert_eq!(std::fs::read_to_string(hook_output).unwrap(), "bash");
 }
 

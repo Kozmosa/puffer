@@ -1,0 +1,451 @@
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const MAX_LINES_TO_READ: usize = 2000;
+const MAX_PDF_PAGES_PER_READ: u32 = 20;
+
+const CLAUDE_READ_DESCRIPTION: &str = "Reads a file from the local filesystem. You can access any file directly by using this tool.\nAssume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- The file_path parameter must be an absolute path, not a relative path\n- By default, it reads up to 2000 lines starting from the beginning of the file\n- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters\n- Results are returned using cat -n format, with line numbers starting at 1\n- This tool allows Claude Code to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Claude Code is a multimodal LLM.\n- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: \"1-5\"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.\n- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.\n- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.\n- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.";
+
+#[derive(Debug, Deserialize)]
+struct ClaudeReadInput {
+    file_path: String,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    pages: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClaudeReadOutput {
+    Text { file: TextFilePayload },
+    Image { file: ImageFilePayload },
+    Notebook { file: NotebookFilePayload },
+    Pdf { file: PdfFilePayload },
+}
+
+#[derive(Debug, Serialize)]
+struct TextFilePayload {
+    #[serde(rename = "filePath")]
+    file_path: String,
+    content: String,
+    #[serde(rename = "numLines")]
+    num_lines: usize,
+    #[serde(rename = "startLine")]
+    start_line: usize,
+    #[serde(rename = "totalLines")]
+    total_lines: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ImageFilePayload {
+    base64: String,
+    #[serde(rename = "type")]
+    mime_type: String,
+    #[serde(rename = "originalSize")]
+    original_size: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct NotebookFilePayload {
+    #[serde(rename = "filePath")]
+    file_path: String,
+    cells: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct PdfFilePayload {
+    #[serde(rename = "filePath")]
+    file_path: String,
+    base64: String,
+    #[serde(rename = "originalSize")]
+    original_size: usize,
+}
+
+/// Returns the Claude-style model-facing description for the `Read` tool.
+pub fn claude_read_description() -> &'static str {
+    CLAUDE_READ_DESCRIPTION
+}
+
+/// Returns the Claude-style JSON schema for the `Read` tool input payload.
+pub fn claude_read_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "The absolute path to the file to read",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "The line number to start reading from. Only provide if the file is too large to read at once",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "The number of lines to read. Only provide if the file is too large to read at once.",
+            },
+            "pages": {
+                "type": "string",
+                "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request.",
+            },
+        },
+        "required": ["file_path"],
+        "additionalProperties": false,
+    })
+}
+
+/// Executes the Claude-style `Read` tool and returns a JSON-serialized result payload.
+pub fn execute_claude_read_tool(cwd: &Path, input: Value) -> Result<String> {
+    let input: ClaudeReadInput =
+        serde_json::from_value(input).context("invalid Read tool input")?;
+    let output = execute_claude_read(cwd, input)?;
+    Ok(serde_json::to_string_pretty(&output)?)
+}
+
+fn execute_claude_read(cwd: &Path, input: ClaudeReadInput) -> Result<ClaudeReadOutput> {
+    if let Some(limit) = input.limit {
+        if limit == 0 {
+            bail!("Read limit must be greater than 0");
+        }
+    }
+
+    if let Some(pages) = input.pages.as_deref() {
+        validate_pdf_pages(pages)?;
+    }
+
+    let path = resolve_absolute_read_path(cwd, &input.file_path)?;
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if ext == "ipynb" {
+        return read_notebook(&path, &input.file_path);
+    }
+    if ext == "pdf" {
+        return read_pdf(&path, &input.file_path, input.pages.as_deref());
+    }
+    if let Some(mime_type) = image_mime_type(&ext) {
+        return read_image(&path, mime_type);
+    }
+    read_text(&path, &input.file_path, input.offset, input.limit)
+}
+
+fn read_text(
+    path: &Path,
+    original_file_path: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<ClaudeReadOutput> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read text file {}", path.display()))?;
+    let total_lines = contents.lines().count();
+    let start_line = offset.unwrap_or(1);
+    let effective_limit = limit.unwrap_or(MAX_LINES_TO_READ);
+
+    let start_index = if start_line == 0 {
+        0
+    } else {
+        start_line.saturating_sub(1)
+    };
+    let all_lines = contents.lines().collect::<Vec<_>>();
+    let end_index = start_index
+        .saturating_add(effective_limit)
+        .min(all_lines.len());
+    let selected = if start_index >= all_lines.len() {
+        String::new()
+    } else {
+        let mut text = all_lines[start_index..end_index].join("\n");
+        if contents.ends_with('\n') && !text.is_empty() {
+            text.push('\n');
+        }
+        text
+    };
+
+    Ok(ClaudeReadOutput::Text {
+        file: TextFilePayload {
+            file_path: original_file_path.to_string(),
+            num_lines: selected.lines().count(),
+            content: selected,
+            start_line,
+            total_lines,
+        },
+    })
+}
+
+fn read_notebook(path: &Path, original_file_path: &str) -> Result<ClaudeReadOutput> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read notebook {}", path.display()))?;
+    let notebook: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse notebook {}", path.display()))?;
+    let cells = notebook
+        .get("cells")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| anyhow!("notebook is missing a cells array"))?;
+    Ok(ClaudeReadOutput::Notebook {
+        file: NotebookFilePayload {
+            file_path: original_file_path.to_string(),
+            cells,
+        },
+    })
+}
+
+fn read_pdf(
+    path: &Path,
+    original_file_path: &str,
+    pages: Option<&str>,
+) -> Result<ClaudeReadOutput> {
+    if pages.is_some() {
+        bail!(
+            "Read pages extraction for PDF is not implemented in this runtime yet; full-PDF reads are supported"
+        );
+    }
+    let bytes = fs::read(path).with_context(|| format!("failed to read PDF {}", path.display()))?;
+    Ok(ClaudeReadOutput::Pdf {
+        file: PdfFilePayload {
+            file_path: original_file_path.to_string(),
+            base64: encode_base64(&bytes),
+            original_size: bytes.len(),
+        },
+    })
+}
+
+fn read_image(path: &Path, mime_type: &str) -> Result<ClaudeReadOutput> {
+    let bytes =
+        fs::read(path).with_context(|| format!("failed to read image {}", path.display()))?;
+    Ok(ClaudeReadOutput::Image {
+        file: ImageFilePayload {
+            base64: encode_base64(&bytes),
+            mime_type: mime_type.to_string(),
+            original_size: bytes.len(),
+        },
+    })
+}
+
+fn validate_pdf_pages(value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("invalid pages parameter: value is empty");
+    }
+    let (first_page, last_page) = if let Some((left, right)) = value.split_once('-') {
+        let first = parse_page_number(left)?;
+        let last = parse_page_number(right)?;
+        if last < first {
+            bail!("invalid pages parameter `{value}`: range end must be >= start");
+        }
+        (first, last)
+    } else {
+        let page = parse_page_number(value)?;
+        (page, page)
+    };
+    let span = last_page - first_page + 1;
+    if span > MAX_PDF_PAGES_PER_READ {
+        bail!("page range `{value}` exceeds maximum of {MAX_PDF_PAGES_PER_READ} pages per request");
+    }
+    Ok(())
+}
+
+fn parse_page_number(value: &str) -> Result<u32> {
+    let page = value
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("invalid page number `{value}`"))?;
+    if page == 0 {
+        bail!("page numbers are 1-indexed and must be >= 1");
+    }
+    Ok(page)
+}
+
+fn resolve_absolute_read_path(cwd: &Path, raw_path: &str) -> Result<PathBuf> {
+    let provided = PathBuf::from(raw_path);
+    if !provided.is_absolute() {
+        bail!(
+            "Read requires an absolute file_path; received `{}`",
+            provided.display()
+        );
+    }
+    if provided.is_dir() {
+        bail!(
+            "Read can only read files, not directories (`{}`)",
+            provided.display()
+        );
+    }
+    if !provided.exists() {
+        let cwd_text = cwd.display().to_string();
+        bail!(
+            "file does not exist: {} (current working directory: {cwd_text})",
+            provided.display()
+        );
+    }
+    Ok(provided)
+}
+
+fn image_mime_type(ext: &str) -> Option<&'static str> {
+    match ext {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut index = 0usize;
+    while index + 3 <= bytes.len() {
+        let chunk = ((bytes[index] as u32) << 16)
+            | ((bytes[index + 1] as u32) << 8)
+            | (bytes[index + 2] as u32);
+        encoded.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
+        encoded.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
+        encoded.push(TABLE[((chunk >> 6) & 0x3f) as usize] as char);
+        encoded.push(TABLE[(chunk & 0x3f) as usize] as char);
+        index += 3;
+    }
+    match bytes.len() - index {
+        1 => {
+            let chunk = (bytes[index] as u32) << 16;
+            encoded.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
+            encoded.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
+            encoded.push('=');
+            encoded.push('=');
+        }
+        2 => {
+            let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
+            encoded.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
+            encoded.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
+            encoded.push(TABLE[((chunk >> 6) & 0x3f) as usize] as char);
+            encoded.push('=');
+        }
+        _ => {}
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_exposes_claude_fields() {
+        let schema = claude_read_input_schema();
+        assert_eq!(schema["required"], json!(["file_path"]));
+        assert!(schema["properties"].get("file_path").is_some());
+        assert!(schema["properties"].get("offset").is_some());
+        assert!(schema["properties"].get("limit").is_some());
+        assert!(schema["properties"].get("pages").is_some());
+    }
+
+    #[test]
+    fn text_read_uses_one_indexed_offset() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file.txt");
+        fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+        let payload = json!({
+            "file_path": path.display().to_string(),
+            "offset": 2,
+            "limit": 2,
+        });
+        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "text");
+        assert_eq!(parsed["file"]["content"], "two\nthree\n");
+        assert_eq!(parsed["file"]["startLine"], 2);
+        assert_eq!(parsed["file"]["numLines"], 2);
+        assert_eq!(parsed["file"]["totalLines"], 4);
+    }
+
+    #[test]
+    fn text_read_defaults_to_2000_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("long.txt");
+        let content = (0..2500)
+            .map(|value| format!("line-{value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, content).unwrap();
+        let payload = json!({
+            "file_path": path.display().to_string(),
+        });
+        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "text");
+        assert_eq!(parsed["file"]["startLine"], 1);
+        assert_eq!(parsed["file"]["numLines"], 2000);
+        assert_eq!(parsed["file"]["totalLines"], 2500);
+    }
+
+    #[test]
+    fn relative_paths_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let payload = json!({
+            "file_path": "relative.txt",
+        });
+        let error = execute_claude_read_tool(temp.path(), payload).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Read requires an absolute file_path"));
+    }
+
+    #[test]
+    fn notebook_read_returns_cells_array() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("notebook.ipynb");
+        fs::write(
+            &path,
+            json!({
+                "cells": [
+                    {"cell_type": "markdown", "source": ["hello"]},
+                    {"cell_type": "code", "source": ["print(1)"]},
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let payload = json!({
+            "file_path": path.display().to_string(),
+        });
+        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "notebook");
+        assert_eq!(parsed["file"]["cells"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn image_read_returns_mime_and_base64() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("image.png");
+        fs::write(&path, [0u8, 1u8, 2u8, 3u8]).unwrap();
+        let payload = json!({
+            "file_path": path.display().to_string(),
+        });
+        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "image");
+        assert_eq!(parsed["file"]["type"], "image/png");
+        assert_eq!(parsed["file"]["base64"], "AAECAw==");
+    }
+
+    #[test]
+    fn pages_validation_enforces_reference_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("doc.pdf");
+        fs::write(&path, "pdf").unwrap();
+        let payload = json!({
+            "file_path": path.display().to_string(),
+            "pages": "1-30",
+        });
+        let error = execute_claude_read_tool(temp.path(), payload).unwrap_err();
+        assert!(error.to_string().contains("exceeds maximum of 20 pages"));
+    }
+}

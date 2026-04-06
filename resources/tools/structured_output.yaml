@@ -1,0 +1,10 @@
+id: StructuredOutput
+name: StructuredOutput
+description: Return the final response in a structured JSON format.
+handler: runtime:workflow:structured_output
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  description: Structured output payload; shape may be injected dynamically by caller schema.
+  additionalProperties: true

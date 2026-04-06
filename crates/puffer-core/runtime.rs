@@ -12,8 +12,9 @@ use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
-mod mistral;
 mod openai;
+mod claude_tools;
+mod local_tools;
 
 use self::openai::{execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response};
 #[cfg(test)]
@@ -57,7 +58,7 @@ pub enum TurnStreamEvent {
 
 /// Executes one user prompt against the currently selected provider and model.
 pub fn execute_user_prompt(
-    state: &AppState,
+    state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
     auth_store: &mut AuthStore,
@@ -73,9 +74,6 @@ pub fn execute_user_prompt(
         }
         "openai-completions" => {
             execute_openai_completions(state, resources, provider, model_id, auth_store, input)
-        }
-        "mistral-conversations" => {
-            mistral::execute_turn(state, resources, provider, model_id, auth_store, input)
         }
         other => bail!(
             "provider {} with api {other} is not executable yet",
@@ -173,7 +171,7 @@ fn resolve_model_api(
         .unwrap_or_else(|| provider.default_api.clone())
 }
 fn execute_anthropic(
-    state: &AppState,
+    state: &mut AppState,
     resources: &LoadedResources,
     provider: &ProviderDescriptor,
     model_id: String,
@@ -185,24 +183,25 @@ fn execute_anthropic(
     let mut messages = transcript_to_anthropic_messages(state, input);
     let mut invocations = Vec::new();
     let plan_mode_context = crate::command_helpers::prompt::plan_mode_context_message(state)?;
+    let request_config = AnthropicRequestConfig {
+        base_url: provider.base_url.clone(),
+        session_id: state.session.id.to_string(),
+        custom_headers: provider.headers.clone(),
+        remote_container_id: None,
+        remote_session_id: None,
+        client_app: None,
+        entrypoint: "cli".to_string(),
+        user_type: "external".to_string(),
+        version: APP_VERSION.to_string(),
+        workload: None,
+        additional_protection: false,
+        cch_enabled: true,
+        auth: auth.clone(),
+        beta_header: None,
+        client_request_id: None,
+    };
     let request = build_messages_request(
-        &AnthropicRequestConfig {
-            base_url: provider.base_url.clone(),
-            session_id: state.session.id.to_string(),
-            custom_headers: provider.headers.clone(),
-            remote_container_id: None,
-            remote_session_id: None,
-            client_app: None,
-            entrypoint: "cli".to_string(),
-            user_type: "external".to_string(),
-            version: APP_VERSION.to_string(),
-            workload: None,
-            additional_protection: false,
-            cch_enabled: true,
-            auth: auth.clone(),
-            beta_header: None,
-            client_request_id: None,
-        },
+        &request_config,
         &AnthropicModelRequest {
             model: model_id.clone(),
             max_tokens: 1024,
@@ -227,8 +226,17 @@ fn execute_anthropic(
         }
 
         let response = send_http_request(&request.url, &request.headers, &body.to_string(), true)?;
+        let cwd = state.cwd.clone();
         if let Some(tool_results) =
-            execute_anthropic_tool_calls(resources, &response, &registry, &state.cwd)?
+            execute_anthropic_tool_calls(
+                state,
+                resources,
+                &response,
+                &registry,
+                &cwd,
+                &request_config,
+                &model_id,
+            )?
         {
             invocations.extend(tool_results.invocations);
             messages.push(json!({
@@ -431,10 +439,13 @@ fn anthropic_tool_schema(handler: &str) -> Value {
     }
 }
 fn execute_anthropic_tool_calls(
+    state: &mut AppState,
     resources: &LoadedResources,
     response: &Value,
     registry: &ToolRegistry,
     cwd: &std::path::Path,
+    request_config: &AnthropicRequestConfig,
+    model_id: &str,
 ) -> Result<Option<AnthropicToolResults>> {
     let Some(content) = response.get("content").and_then(Value::as_array) else {
         return Ok(None);
@@ -457,7 +468,21 @@ fn execute_anthropic_tool_calls(
         let input = item
             .get("input")
             .ok_or_else(|| anyhow!("anthropic tool_use block missing input"))?;
-        let execution = registry.execute_json(tool_id, cwd, input.clone())?;
+        let definition = registry
+            .definition(tool_id)
+            .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?;
+        let execution = claude_tools::execute_tool(
+            state,
+            resources,
+            registry,
+            definition,
+            cwd,
+            input.clone(),
+            claude_tools::ProviderToolContext::Anthropic {
+                request_config,
+                model_id,
+            },
+        )?;
         run_tool_hooks(
             resources,
             cwd,

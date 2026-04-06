@@ -1,6 +1,12 @@
 id: ReadMcpResourceTool
 name: ReadMcpResourceTool
-description: Read one configured MCP server manifest by server id and URI.
+description: |
+  Reads a specific resource from an MCP server.
+  - server: The name of the MCP server to read from
+  - uri: The URI of the resource to read
+
+  Usage examples:
+  - Read a resource from a server: `readMcpResource({ server: "myserver", uri: "my-resource-uri" })`
 handler: runtime:read_mcp_resource
 approval_policy: auto
 sandbox_policy: read-only
@@ -9,10 +15,10 @@ input_schema:
   properties:
     server:
       type: string
-      description: MCP server id.
+      description: The MCP server name
     uri:
       type: string
-      description: Resource URI returned by ListMcpResourcesTool.
+      description: The resource URI to read
   required:
     - server
     - uri

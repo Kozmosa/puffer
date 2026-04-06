@@ -1,7 +1,12 @@
 id: Glob
 name: Glob
-description: Claude-compatible tool for finding files by glob pattern in the workspace.
-handler: runtime:glob
+description: |-
+  - Fast file pattern matching tool that works with any codebase size
+  - Supports glob patterns like "**/*.js" or "src/**/*.ts"
+  - Returns matching file paths sorted by modification time
+  - Use this tool when you need to find files by name patterns
+  - When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead
+handler: runtime:claude_glob
 approval_policy: auto
 sandbox_policy: read-only
 input_schema:
@@ -9,9 +14,13 @@ input_schema:
   properties:
     pattern:
       type: string
-      description: Glob pattern to match against workspace-relative paths.
+      description: The glob pattern to match files against
     path:
       type: string
-      description: Optional workspace-relative directory to scope the search.
+      description: |-
+        The directory to search in. If not specified, the current working
+        directory will be used. IMPORTANT: Omit this field to use the default
+        directory. DO NOT enter "undefined" or "null" - simply omit it for the
+        default behavior. Must be a valid directory path if provided.
   required:
     - pattern

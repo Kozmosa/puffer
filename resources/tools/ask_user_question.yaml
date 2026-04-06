@@ -1,0 +1,71 @@
+id: AskUserQuestion
+name: AskUserQuestion
+description: Ask the user multiple-choice questions to clarify requirements and preferences.
+handler: runtime:workflow:ask_user_question
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties:
+    questions:
+      type: array
+      minItems: 1
+      maxItems: 4
+      items:
+        type: object
+        properties:
+          question:
+            type: string
+            description: The complete question to ask the user.
+          header:
+            type: string
+            description: Very short label shown as a chip/tag.
+          options:
+            type: array
+            minItems: 2
+            maxItems: 4
+            items:
+              type: object
+              properties:
+                label:
+                  type: string
+                  description: Display text for this option.
+                description:
+                  type: string
+                  description: Explanation for this option.
+                preview:
+                  type: string
+                  description: Optional preview content for this option.
+              required:
+                - label
+                - description
+          multiSelect:
+            type: boolean
+            description: Allow selecting multiple options.
+        required:
+          - question
+          - header
+          - options
+    answers:
+      type: object
+      description: Optional user answers collected by the permission component.
+      additionalProperties:
+        type: string
+    annotations:
+      type: object
+      description: Optional per-question annotations from the user.
+      additionalProperties:
+        type: object
+        properties:
+          preview:
+            type: string
+          notes:
+            type: string
+    metadata:
+      type: object
+      properties:
+        source:
+          type: string
+      description: Optional metadata for tracking and analytics purposes.
+  required:
+    - questions

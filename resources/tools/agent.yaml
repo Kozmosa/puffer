@@ -1,0 +1,49 @@
+id: Agent
+name: Agent
+description: Launch a new agent.
+handler: runtime:workflow:agent
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    description:
+      type: string
+      description: A short (3-5 word) description of the task.
+    prompt:
+      type: string
+      description: The task for the agent to perform.
+    subagent_type:
+      type: string
+      description: The type of specialized agent to use for this task.
+    model:
+      type: string
+      enum:
+        - sonnet
+        - opus
+        - haiku
+      description: Optional model override for this agent.
+    run_in_background:
+      type: boolean
+      description: Set to true to run this agent in the background.
+    name:
+      type: string
+      description: Optional name for the spawned agent.
+    team_name:
+      type: string
+      description: Optional team name for spawning.
+    mode:
+      type: string
+      description: Optional permission mode for the spawned teammate.
+    isolation:
+      type: string
+      enum:
+        - worktree
+        - remote
+      description: Optional isolation mode for the agent.
+    cwd:
+      type: string
+      description: Optional absolute working directory override for the agent.
+  required:
+    - description
+    - prompt

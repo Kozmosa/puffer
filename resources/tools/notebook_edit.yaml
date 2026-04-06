@@ -1,6 +1,6 @@
 id: NotebookEdit
 name: NotebookEdit
-description: Edit cells in a Jupyter notebook with insert, replace, and delete operations.
+description: Replace the contents of a specific cell in a Jupyter notebook.
 handler: runtime:notebook_edit
 approval_policy: on-request
 sandbox_policy: workspace-write
@@ -9,19 +9,26 @@ input_schema:
   properties:
     notebook_path:
       type: string
-      description: Path to the Jupyter notebook file.
-    cell_number:
-      type: integer
-      description: 0-indexed cell number to edit.
+      description: The absolute path to the Jupyter notebook file to edit (must be absolute, not relative).
+    cell_id:
+      type: string
+      description: The ID of the cell to edit. When inserting a new cell, the new cell will be inserted after the cell with this ID, or at the beginning if not specified.
     new_source:
       type: string
-      description: New cell content for replace or insert operations.
+      description: The new source for the cell.
     cell_type:
       type: string
-      description: Cell type for insert operations, usually code or markdown.
+      enum:
+        - code
+        - markdown
+      description: The type of the cell (code or markdown). If not specified, it defaults to the current cell type. If using edit_mode=insert, this is required.
     edit_mode:
       type: string
-      description: One of replace, insert, or delete.
+      enum:
+        - replace
+        - insert
+        - delete
+      description: The type of edit to make (replace, insert, delete). Defaults to replace.
   required:
     - notebook_path
-    - cell_number
+    - new_source

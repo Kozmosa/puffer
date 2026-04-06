@@ -1752,7 +1752,6 @@ dependencies = [
  "glob",
  "indexmap",
  "puffer-config",
- "puffer-provider-mistral",
  "puffer-provider-openai",
  "puffer-provider-registry",
  "puffer-resources",
@@ -1766,16 +1765,6 @@ dependencies = [
  "tempfile",
  "toml",
  "uuid",
-]
-
-[[package]]
-name = "puffer-provider-mistral"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "indexmap",
- "serde",
- "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+id: EnterPlanMode
+name: EnterPlanMode
+description: Enter plan mode to design an approach before coding.
+handler: runtime:workflow:enter_plan_mode
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties: {}

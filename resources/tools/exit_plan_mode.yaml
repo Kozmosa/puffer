@@ -1,0 +1,26 @@
+id: ExitPlanMode
+name: ExitPlanMode
+description: Present plan for approval and exit plan mode.
+handler: runtime:workflow:exit_plan_mode
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    allowedPrompts:
+      type: array
+      description: Prompt-based permissions requested by the plan.
+      items:
+        type: object
+        properties:
+          tool:
+            type: string
+            enum:
+              - Bash
+            description: Tool this prompt applies to.
+          prompt:
+            type: string
+            description: Semantic description of requested action.
+        required:
+          - tool
+          - prompt

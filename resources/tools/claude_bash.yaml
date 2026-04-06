@@ -1,9 +1,32 @@
 id: Bash
 name: Bash
-description: Claude-compatible alias for running a shell command in the workspace.
-handler: builtin:bash
+description: Run shell command
+handler: runtime:claude_bash
 approval_policy: on-request
 sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    command:
+      type: string
+      description: The command to execute
+    timeout:
+      type: integer
+      description: Optional timeout in milliseconds
+    description:
+      type: string
+      description: |-
+        Clear, concise description of what this command does in active voice.
+        Never use words like "complex" or "risk" in the description - just
+        describe what it does.
+    run_in_background:
+      type: boolean
+      description: Set to true to run this command in the background. Use Read to read the output later.
+    dangerouslyDisableSandbox:
+      type: boolean
+      description: Set this to true to dangerously override sandbox mode and run commands without sandboxing.
+  required:
+    - command
 display:
   group: shell
   title: Bash

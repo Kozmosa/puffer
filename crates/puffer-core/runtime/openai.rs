@@ -39,7 +39,7 @@ pub(super) struct OpenAIToolResults {
 }
 
 pub(super) fn execute_openai(
-    state: &AppState,
+    state: &mut AppState,
     resources: &LoadedResources,
     provider: &ProviderDescriptor,
     model_id: String,
@@ -121,7 +121,16 @@ pub(super) fn execute_openai(
             .id
             .clone()
             .ok_or_else(|| anyhow!("OpenAI response missing id for tool continuation"))?;
-        let tool_results = execute_openai_tool_calls(resources, &tool_calls, &registry, &state.cwd)?;
+        let cwd = state.cwd.clone();
+        let tool_results = execute_openai_tool_calls(
+            state,
+            resources,
+            &tool_calls,
+            &registry,
+            &cwd,
+            &execution.request_config,
+            &model_id,
+        )?;
         invocations.extend(tool_results.invocations);
         previous_response_id = Some(response_id);
         next_input = json!(tool_results.outputs);
@@ -206,7 +215,7 @@ where
 }
 
 pub(super) fn execute_openai_completions(
-    state: &AppState,
+    state: &mut AppState,
     resources: &LoadedResources,
     provider: &ProviderDescriptor,
     model_id: String,
@@ -257,7 +266,16 @@ pub(super) fn execute_openai_completions(
             });
         }
 
-        let tool_results = execute_openai_tool_calls(resources, &tool_calls, &registry, &state.cwd)?;
+        let cwd = state.cwd.clone();
+        let tool_results = execute_openai_tool_calls(
+            state,
+            resources,
+            &tool_calls,
+            &registry,
+            &cwd,
+            &execution.request_config,
+            &model_id,
+        )?;
         invocations.extend(tool_results.invocations);
         messages.push(OpenAIChatMessage {
             role: choice
@@ -352,15 +370,32 @@ fn openai_compatible_schema(schema: Value) -> Value {
 }
 
 pub(super) fn execute_openai_tool_calls(
+    state: &mut AppState,
     resources: &LoadedResources,
     tool_calls: &[OpenAIResponseToolCall],
     registry: &ToolRegistry,
     cwd: &std::path::Path,
+    request_config: &OpenAIRequestConfig,
+    model_id: &str,
 ) -> Result<OpenAIToolResults> {
     let mut outputs = Vec::new();
     let mut invocations = Vec::new();
     for tool_call in tool_calls {
-        let execution = registry.execute_json(&tool_call.name, cwd, tool_call.arguments.clone())?;
+        let definition = registry
+            .definition(&tool_call.name)
+            .ok_or_else(|| anyhow!("unknown tool {}", tool_call.name))?;
+        let execution = super::claude_tools::execute_tool(
+            state,
+            resources,
+            registry,
+            definition,
+            cwd,
+            tool_call.arguments.clone(),
+            super::claude_tools::ProviderToolContext::OpenAI {
+                request_config,
+                model_id,
+            },
+        )?;
         run_tool_hooks(
             resources,
             cwd,

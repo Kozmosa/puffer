@@ -1,0 +1,33 @@
+id: TodoWrite
+name: TodoWrite
+description: Replace the current todo list with an updated list.
+handler: runtime:workflow:todo_write
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    todos:
+      type: array
+      description: The updated todo list.
+      items:
+        type: object
+        properties:
+          content:
+            type: string
+            description: Todo content.
+          status:
+            type: string
+            enum:
+              - pending
+              - in_progress
+              - completed
+          activeForm:
+            type: string
+            description: Present continuous form for progress display.
+        required:
+          - content
+          - status
+          - activeForm
+  required:
+    - todos

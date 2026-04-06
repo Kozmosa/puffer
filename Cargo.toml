@@ -3,7 +3,6 @@ members = [
     "crates/puffer-cli",
     "crates/puffer-config",
     "crates/puffer-core",
-    "crates/puffer-provider-mistral",
     "crates/puffer-provider-openai",
     "crates/puffer-provider-registry",
     "crates/puffer-resources",

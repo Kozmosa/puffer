@@ -1,0 +1,25 @@
+id: TaskCreate
+name: TaskCreate
+description: Create a task in the task list.
+handler: runtime:workflow:task_create
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    subject:
+      type: string
+      description: A brief title for the task.
+    description:
+      type: string
+      description: What needs to be done.
+    activeForm:
+      type: string
+      description: Present continuous form shown while in progress.
+    metadata:
+      type: object
+      description: Arbitrary metadata to attach to the task.
+      additionalProperties: true
+  required:
+    - subject
+    - description

@@ -206,7 +206,8 @@ fn is_runtime_local_handler(handler: &str) -> bool {
             | "runtime:notebook_edit"
             | "runtime:list_mcp_resources"
             | "runtime:read_mcp_resource"
-    )
+    ) || handler.starts_with("runtime:claude_")
+        || handler.starts_with("runtime:workflow:")
 }
 
 fn resolve_library_path(cwd: &Path, path: &str) -> PathBuf {

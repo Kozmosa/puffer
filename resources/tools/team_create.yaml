@@ -1,0 +1,20 @@
+id: TeamCreate
+name: TeamCreate
+description: Create a new team for coordinating multiple agents.
+handler: runtime:workflow:team_create
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    team_name:
+      type: string
+      description: Name for the new team to create.
+    description:
+      type: string
+      description: Optional team description or purpose.
+    agent_type:
+      type: string
+      description: Optional type/role of the team lead.
+  required:
+    - team_name

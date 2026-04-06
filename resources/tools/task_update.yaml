@@ -1,0 +1,48 @@
+id: TaskUpdate
+name: TaskUpdate
+description: Update task fields, status, ownership, and dependencies.
+handler: runtime:workflow:task_update
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    taskId:
+      type: string
+      description: The ID of the task to update.
+    subject:
+      type: string
+      description: New subject for the task.
+    description:
+      type: string
+      description: New description for the task.
+    activeForm:
+      type: string
+      description: Present continuous form shown while in progress.
+    status:
+      type: string
+      enum:
+        - pending
+        - in_progress
+        - completed
+        - deleted
+      description: New status for the task.
+    addBlocks:
+      type: array
+      items:
+        type: string
+      description: Task IDs that this task blocks.
+    addBlockedBy:
+      type: array
+      items:
+        type: string
+      description: Task IDs that block this task.
+    owner:
+      type: string
+      description: New owner for the task.
+    metadata:
+      type: object
+      description: Metadata keys to merge into the task; null deletes a key.
+      additionalProperties: true
+  required:
+    - taskId

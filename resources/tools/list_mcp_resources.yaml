@@ -1,6 +1,12 @@
 id: ListMcpResourcesTool
 name: ListMcpResourcesTool
-description: List configured MCP server manifests available to this session.
+description: |
+  Lists available resources from configured MCP servers.
+  Each resource object includes a 'server' field indicating which server it's from.
+
+  Usage examples:
+  - List all resources from all servers: `listMcpResources`
+  - List resources from a specific server: `listMcpResources({ server: "myserver" })`
 handler: runtime:list_mcp_resources
 approval_policy: auto
 sandbox_policy: read-only
@@ -9,4 +15,4 @@ input_schema:
   properties:
     server:
       type: string
-      description: Optional server id to filter by.
+      description: Optional server name to filter resources by

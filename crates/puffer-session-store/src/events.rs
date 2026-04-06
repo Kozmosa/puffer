@@ -25,6 +25,14 @@ pub struct GitDiffSnapshot {
     pub patch_excerpt: String,
 }
 
+/// Stores Claude-style read metadata that must survive session restore.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ClaudeReadSnapshotEvent {
+    pub path: String,
+    pub timestamp_ms: u128,
+    pub is_partial_view: bool,
+}
+
 /// Stores a transcript event in append-only session history.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -72,5 +80,7 @@ pub enum TranscriptEvent {
         remote_session_status: Option<String>,
         statusline_enabled: bool,
         working_dirs: Vec<String>,
+        #[serde(default)]
+        claude_read_state: Vec<ClaudeReadSnapshotEvent>,
     },
 }

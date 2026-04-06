@@ -1,0 +1,9 @@
+id: CronList
+name: CronList
+description: List active cron jobs.
+handler: runtime:workflow:cron_list
+approval_policy: auto
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties: {}

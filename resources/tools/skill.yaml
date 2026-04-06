@@ -1,6 +1,6 @@
 id: Skill
 name: Skill
-description: Load a named skill into the current conversation when specialized instructions are needed.
+description: Execute a skill within the main conversation.
 handler: runtime:skill
 approval_policy: auto
 sandbox_policy: read-only
@@ -9,9 +9,9 @@ input_schema:
   properties:
     skill:
       type: string
-      description: The skill name to load.
+      description: The skill name. E.g., "commit", "review-pr", or "pdf".
     args:
       type: string
-      description: Optional arguments to pass through for skill context.
+      description: Optional arguments for the skill.
   required:
     - skill

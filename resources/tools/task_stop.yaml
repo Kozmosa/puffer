@@ -1,0 +1,15 @@
+id: TaskStop
+name: TaskStop
+description: Stop a running background task by ID.
+handler: runtime:workflow:task_stop
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: The ID of the background task to stop.
+    shell_id:
+      type: string
+      description: Deprecated alias for task_id.

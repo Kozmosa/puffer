@@ -20,7 +20,6 @@ serde_yaml.workspace = true
 toml.workspace = true
 uuid.workspace = true
 puffer-config = { path = "../puffer-config" }
-puffer-provider-mistral = { path = "../puffer-provider-mistral" }
 puffer-provider-openai = { path = "../puffer-provider-openai" }
 puffer-provider-registry = { path = "../puffer-provider-registry" }
 puffer-resources = { path = "../puffer-resources" }
