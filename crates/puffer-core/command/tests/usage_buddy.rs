@@ -25,6 +25,7 @@ fn usage_command_reports_runtime_and_resource_counts() {
         default_api: "anthropic-messages".to_string(),
         auth_modes: Vec::new(),
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: Some(puffer_provider_registry::ModelDiscoveryConfig {
             path: "/v1/models".to_string(),
             response: puffer_provider_registry::ModelDiscoveryFormat::AnthropicModels,
@@ -131,7 +132,7 @@ fn usage_command_reports_runtime_and_resource_counts() {
         &supported_commands(),
         &resources,
         &mut providers,
-        &auth_store,
+        &mut auth_store,
         &session_store,
         "/usage",
     )
@@ -195,7 +196,7 @@ fn usage_command_prefers_claude_style_anthropic_oauth_sections() {
         &supported_commands(),
         &sample_resources(),
         &mut providers,
-        &auth_store,
+        &mut auth_store,
         &session_store,
         "/usage",
     )
@@ -259,7 +260,7 @@ fn usage_command_shows_best_effort_openai_identity() {
         &supported_commands(),
         &sample_resources(),
         &mut providers,
-        &auth_store,
+        &mut auth_store,
         &session_store,
         "/usage",
     )
@@ -313,7 +314,7 @@ fn buddy_command_uses_loaded_mascot_intro() {
         &supported_commands(),
         &resources,
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/buddy",
     )
@@ -338,6 +339,7 @@ fn anthropic_provider() -> ProviderDescriptor {
         default_api: "anthropic-messages".to_string(),
         auth_modes: Vec::new(),
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: Some(puffer_provider_registry::ModelDiscoveryConfig {
             path: "/v1/models".to_string(),
             response: puffer_provider_registry::ModelDiscoveryFormat::AnthropicModels,
@@ -370,6 +372,7 @@ fn openai_provider() -> ProviderDescriptor {
         default_api: "openai-responses".to_string(),
         auth_modes: Vec::new(),
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![puffer_provider_registry::ModelDescriptor {
             id: "gpt-5".to_string(),

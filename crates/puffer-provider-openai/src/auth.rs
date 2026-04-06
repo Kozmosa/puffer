@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use rand::RngCore;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
+
+use crate::codex::{default_headers, default_originator};
 
 /// The registered OpenAI OAuth client id used for Codex-style CLI flows.
 pub const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -15,11 +17,14 @@ pub const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize"
 /// The OpenAI OAuth token endpoint.
 pub const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
+const OPENAI_REFRESH_TOKEN_URL_OVERRIDE_ENV: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+
 /// The default localhost redirect URI for the OpenAI/Codex OAuth flow.
 pub const OPENAI_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 
 /// The default OpenAI OAuth scope set used by the Codex-like flow.
-pub const OPENAI_SCOPE: &str = "openid profile email offline_access";
+pub const OPENAI_SCOPE: &str =
+    "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
 /// Authentication modes supported by the OpenAI provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,20 +68,24 @@ impl Default for OpenAIOAuthConfig {
             state: "puffer-state".to_string(),
             code_challenge: "puffer-code-challenge".to_string(),
             redirect_uri: OPENAI_REDIRECT_URI.to_string(),
-            originator: "puffer".to_string(),
+            originator: default_originator(),
         }
     }
 }
 
 /// Generates a PKCE verifier/challenge pair and state for OpenAI OAuth.
 pub(crate) fn generate_pkce() -> OpenAIPkce {
-    let verifier = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let mut verifier_bytes = [0_u8; 64];
+    rand::rng().fill_bytes(&mut verifier_bytes);
+    let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
     let digest = Sha256::digest(verifier.as_bytes());
     let challenge = URL_SAFE_NO_PAD.encode(digest);
+    let mut state_bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut state_bytes);
     OpenAIPkce {
         verifier: verifier.clone(),
         challenge,
-        state: Uuid::new_v4().simple().to_string(),
+        state: URL_SAFE_NO_PAD.encode(state_bytes),
     }
 }
 
@@ -141,7 +150,7 @@ pub(crate) fn exchange_authorization_code(
     verifier: &str,
     redirect_uri: Option<&str>,
 ) -> Result<OpenAIOAuthCredentials> {
-    let client = Client::new();
+    let client = codex_oauth_client()?;
     let response = client
         .post(OPENAI_TOKEN_URL)
         .form(&[
@@ -168,9 +177,9 @@ pub(crate) fn exchange_authorization_code(
 
 /// Refreshes OpenAI OAuth credentials using a stored refresh token.
 pub(crate) fn refresh_oauth_token(refresh_token: &str) -> Result<OpenAIOAuthCredentials> {
-    let client = Client::new();
+    let client = codex_oauth_client()?;
     let response = client
-        .post(OPENAI_TOKEN_URL)
+        .post(openai_refresh_token_url())
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
@@ -189,6 +198,20 @@ pub(crate) fn refresh_oauth_token(refresh_token: &str) -> Result<OpenAIOAuthCred
         ));
     }
     token_response_to_credentials(payload)
+}
+
+fn codex_oauth_client() -> Result<Client> {
+    Client::builder()
+        .default_headers(default_headers(env!("CARGO_PKG_VERSION"), &default_originator()))
+        .build()
+        .context("failed to build OpenAI OAuth client")
+}
+
+fn openai_refresh_token_url() -> String {
+    std::env::var(OPENAI_REFRESH_TOKEN_URL_OVERRIDE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| OPENAI_TOKEN_URL.to_string())
 }
 
 fn token_response_to_credentials(payload: OpenAITokenResponse) -> Result<OpenAIOAuthCredentials> {

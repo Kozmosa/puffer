@@ -1,3 +1,4 @@
+use crate::codex::codex_user_agent;
 use crate::auth::OpenAIAuth;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -127,6 +128,11 @@ pub struct OpenAIRequestConfig {
     pub base_url: String,
     pub version: String,
     pub auth: OpenAIAuth,
+    pub originator: String,
+    pub session_id: Option<String>,
+    pub account_id: Option<String>,
+    pub custom_headers: Vec<(String, String)>,
+    pub query_params: Vec<(String, String)>,
 }
 
 /// An ordered HTTP request representation for tests and execution adapters.
@@ -162,6 +168,15 @@ pub(crate) fn build_chat_completions_request(
     build_request_to_path(config, request, "/v1/chat/completions")
 }
 
+/// Builds an ordered JSON POST request for OpenAI-compatible endpoints.
+pub(crate) fn build_json_post_request(
+    config: &OpenAIRequestConfig,
+    path: &str,
+    body: &Value,
+) -> anyhow::Result<BuiltOpenAIRequest> {
+    build_request_to_path(config, body, path)
+}
+
 fn build_request<T: Serialize>(
     config: &OpenAIRequestConfig,
     request: &T,
@@ -178,9 +193,17 @@ fn build_request_to_path<T: Serialize>(
         ("Content-Type".to_string(), "application/json".to_string()),
         (
             "User-Agent".to_string(),
-            format!("puffer-code/{}", config.version),
+            codex_user_agent(&config.version, &config.originator),
         ),
+        ("originator".to_string(), config.originator.clone()),
     ];
+    if let Some(session_id) = config.session_id.as_deref() {
+        headers.push(("session_id".to_string(), session_id.to_string()));
+    }
+    if let Some(account_id) = config.account_id.as_deref() {
+        headers.push(("ChatGPT-Account-ID".to_string(), account_id.to_string()));
+    }
+    headers.extend(config.custom_headers.iter().cloned());
     match &config.auth {
         OpenAIAuth::None => {}
         OpenAIAuth::ApiKey(key) | OpenAIAuth::OAuthBearer(key) => {
@@ -188,13 +211,24 @@ fn build_request_to_path<T: Serialize>(
         }
     }
     let normalized_path = normalized_path(&config.base_url, path);
+    let mut url = format!(
+        "{}{}",
+        config.base_url.trim_end_matches('/'),
+        normalized_path
+    );
+    if !config.query_params.is_empty() {
+        let mut parsed = url::Url::parse(&url)?;
+        {
+            let mut pairs = parsed.query_pairs_mut();
+            for (key, value) in &config.query_params {
+                pairs.append_pair(key, value);
+            }
+        }
+        url = parsed.to_string();
+    }
     Ok(BuiltOpenAIRequest {
         method: "POST",
-        url: format!(
-            "{}{}",
-            config.base_url.trim_end_matches('/'),
-            normalized_path
-        ),
+        url,
         headers,
         body: serde_json::to_string(request)?,
     })
@@ -220,6 +254,11 @@ mod tests {
                 base_url: "https://api.openai.com".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &OpenAIResponsesRequest {
                 model: "gpt-5".to_string(),
@@ -227,10 +266,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            request.headers[2],
-            ("Authorization".to_string(), "Bearer sk-test".to_string())
-        );
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "Authorization" && value == "Bearer sk-test"));
     }
 
     #[test]
@@ -240,6 +279,11 @@ mod tests {
                 base_url: "http://127.0.0.1:11434/v1".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::None,
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &OpenAIResponsesRequest {
                 model: "llama3.1:8b".to_string(),
@@ -260,6 +304,11 @@ mod tests {
                 base_url: "https://api.openai.com".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::OAuthBearer("oauth-token".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: Some("session-123".to_string()),
+                account_id: Some("account-123".to_string()),
+                custom_headers: vec![("version".to_string(), "0.1.0".to_string())],
+                query_params: Vec::new(),
             },
             &OpenAIResponsesToolRequest {
                 model: "gpt-5".to_string(),
@@ -292,13 +341,20 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], json!("read_file"));
         assert_eq!(body["tool_choice"], json!("auto"));
         assert_eq!(body["previous_response_id"], json!("resp_123"));
-        assert_eq!(
-            request.headers[2],
-            (
-                "Authorization".to_string(),
-                "Bearer oauth-token".to_string()
-            )
-        );
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "session_id" && value == "session-123"));
+        assert!(request.headers.iter().any(
+            |(key, value)| key == "ChatGPT-Account-ID" && value == "account-123"
+        ));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "version" && value == "0.1.0"));
+        assert!(request.headers.iter().any(|(key, value)| {
+            key == "Authorization" && value == "Bearer oauth-token"
+        }));
     }
 
     #[test]
@@ -308,6 +364,11 @@ mod tests {
                 base_url: "https://openrouter.ai/api/v1".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &OpenAIChatCompletionsRequest {
                 model: "demo-model".to_string(),
@@ -335,5 +396,39 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], json!("user"));
         assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
         assert_eq!(body["tool_choice"], json!("auto"));
+    }
+
+    #[test]
+    fn json_post_request_supports_codex_backend_paths() {
+        let request = build_json_post_request(
+            &OpenAIRequestConfig {
+                base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::OAuthBearer("oauth-token".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: Some("session-123".to_string()),
+                account_id: Some("account-123".to_string()),
+                custom_headers: Vec::new(),
+                query_params: vec![("api-version".to_string(), "2025-01-01".to_string())],
+            },
+            "/responses",
+            &json!({
+                "model": "gpt-5",
+                "stream": true,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.url,
+            "https://chatgpt.com/backend-api/codex/responses?api-version=2025-01-01"
+        );
+        assert!(request.headers.iter().any(
+            |(key, value)| key == "ChatGPT-Account-ID" && value == "account-123"
+        ));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "originator" && value == "codex_cli_rs"));
     }
 }

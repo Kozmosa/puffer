@@ -267,6 +267,25 @@ fn main() -> Result<()> {
             provider.source_info.as_provider_source(),
         );
     }
+    providers.apply_openai_base_url_override(config.openai_base_url.as_deref());
+    if !config.openai_headers.is_empty() {
+        providers.set_openai_headers(
+            config
+                .openai_headers
+                .clone()
+                .into_iter()
+                .collect::<indexmap::IndexMap<_, _>>(),
+        );
+    }
+    if !config.openai_query_params.is_empty() {
+        providers.set_openai_query_params(
+            config
+                .openai_query_params
+                .clone()
+                .into_iter()
+                .collect::<indexmap::IndexMap<_, _>>(),
+        );
+    }
     let _ = providers.discover_and_merge_all(&auth_store);
 
     match cli.subcommand {

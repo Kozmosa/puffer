@@ -13,6 +13,7 @@ fn provider(
         default_api: api.to_string(),
         auth_modes,
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![puffer_provider_registry::ModelDescriptor {
             id: "model".to_string(),
@@ -52,7 +53,7 @@ fn login_command_reports_provider_auth_modes_and_family_hint() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut providers,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/login custom-openai",
     )
@@ -97,7 +98,7 @@ fn login_command_reports_session_ingress_support() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut providers,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/login custom-anthropic",
     )
@@ -135,7 +136,7 @@ fn login_command_reports_when_provider_has_no_auth_modes() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut providers,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/login ollama",
     )

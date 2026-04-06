@@ -4,6 +4,7 @@ use puffer_config::{ensure_workspace_dirs, ConfigPaths, MascotConfig, PufferConf
 use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry};
 use puffer_resources::{LoadedItem, LoadedResources};
 use puffer_session_store::{SessionMetadata, SessionStore};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
@@ -27,6 +28,9 @@ fn app_state_defaults_expose_command_state() {
             app_name: "Puffer".to_string(),
             default_model: None,
             default_provider: Some("anthropic".to_string()),
+            openai_base_url: None,
+            openai_headers: BTreeMap::new(),
+            openai_query_params: BTreeMap::new(),
             theme: "puffer".to_string(),
             mascot: MascotConfig {
                 id: "clawd".to_string(),
@@ -77,7 +81,7 @@ fn local_commands_append_state_snapshots() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/theme harbor",
     )
@@ -134,7 +138,7 @@ fn resume_switches_to_matching_session_record() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/resume dockyard",
     )
@@ -169,7 +173,7 @@ fn branch_forks_and_switches_current_session() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/branch drydock",
     )
@@ -200,7 +204,7 @@ fn memory_command_updates_session_metadata() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/memory note keep shipping",
     )
@@ -210,7 +214,7 @@ fn memory_command_updates_session_metadata() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/memory tag add parity",
     )
@@ -220,7 +224,7 @@ fn memory_command_updates_session_metadata() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/memory slug shipyard",
     )
@@ -255,7 +259,7 @@ fn config_command_writes_workspace_config() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/config set theme harbor",
     )
@@ -285,7 +289,7 @@ fn keybindings_command_creates_workspace_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/keybindings",
     )
@@ -337,7 +341,7 @@ fn permissions_command_creates_workspace_permissions_file() {
         &supported_commands(),
         &resources,
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/permissions",
     )
@@ -381,7 +385,7 @@ fn hooks_command_creates_workspace_file() {
         &supported_commands(),
         &resources,
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/hooks",
     )
@@ -422,7 +426,7 @@ fn plugin_command_creates_workspace_plugin_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/plugin",
     )
@@ -461,6 +465,7 @@ fn doctor_reports_discovery_and_diagnostics() {
         default_api: "anthropic-messages".to_string(),
         auth_modes: vec![puffer_provider_registry::AuthMode::ApiKey],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: Some(puffer_provider_registry::ModelDiscoveryConfig {
             path: "/v1/models".to_string(),
             response: puffer_provider_registry::ModelDiscoveryFormat::AnthropicModels,
@@ -483,7 +488,7 @@ fn doctor_reports_discovery_and_diagnostics() {
         &supported_commands(),
         &resources,
         &mut providers,
-        &auth_store,
+        &mut auth_store,
         &session_store,
         "/doctor",
     )
@@ -521,7 +526,7 @@ fn mcp_command_creates_workspace_mcp_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/mcp",
     )
@@ -553,7 +558,7 @@ fn ide_command_creates_workspace_ide_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/ide",
     )
@@ -585,7 +590,7 @@ fn agents_command_creates_workspace_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/agents",
     )
@@ -622,7 +627,7 @@ fn agents_command_can_list_and_use_agent_presets() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/agents use reviewer",
     )
@@ -652,7 +657,7 @@ fn prompt_commands_append_user_message_and_surface_runtime_failures() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/review",
     )
@@ -695,7 +700,7 @@ fn tasks_command_reports_recorded_runtime_tasks() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/tasks",
     )
@@ -736,7 +741,7 @@ fn session_command_can_list_and_update_note() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/session note keep-shipping",
     )
@@ -748,7 +753,7 @@ fn session_command_can_list_and_update_note() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/session list",
     )
@@ -782,7 +787,7 @@ fn session_command_can_update_note_and_slug() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/session note keep shipping",
     )
@@ -792,7 +797,7 @@ fn session_command_can_update_note_and_slug() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/session slug dockyard",
     )
@@ -831,7 +836,7 @@ fn session_command_lists_saved_sessions() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/session list",
     )
@@ -870,7 +875,7 @@ fn cost_command_reports_runtime_summary() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/cost",
     )
@@ -950,7 +955,7 @@ fn reload_plugins_reports_resource_counts() {
         &supported_commands(),
         &resources,
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/reload-plugins",
     )

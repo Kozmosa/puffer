@@ -426,6 +426,10 @@ fn handle_overlay_key(
                                 });
                             }
                             AuthPickerAction::Import(candidate) => {
+                                let imported_openai_base_url = candidate.openai_base_url.clone();
+                                let imported_openai_headers = candidate.openai_headers.clone();
+                                let imported_openai_query_params =
+                                    candidate.openai_query_params.clone();
                                 match candidate.credential {
                                     StoredCredential::ApiKey { key } => {
                                         auth_store.set_api_key(provider_id.clone(), key);
@@ -433,6 +437,43 @@ fn handle_overlay_key(
                                     StoredCredential::OAuth(credential) => {
                                         auth_store.set_oauth(provider_id.clone(), credential);
                                     }
+                                }
+                                if provider_id == "openai" {
+                                    state.config.openai_base_url = imported_openai_base_url;
+                                    state.config.openai_headers = imported_openai_headers;
+                                    state.config.openai_query_params = imported_openai_query_params;
+                                    persist_user_config(state)?;
+                                    let base_url = state
+                                        .config
+                                        .openai_base_url
+                                        .clone()
+                                        .or_else(|| builtin_openai_base_url(resources));
+                                    if let Some(base_url) = base_url {
+                                        providers.set_openai_base_url(base_url);
+                                    }
+                                    let headers = if state.config.openai_headers.is_empty() {
+                                        builtin_openai_headers(resources)
+                                    } else {
+                                        state
+                                            .config
+                                            .openai_headers
+                                            .clone()
+                                            .into_iter()
+                                            .collect::<indexmap::IndexMap<_, _>>()
+                                    };
+                                    providers.set_openai_headers(headers);
+                                    let query_params = if state.config.openai_query_params.is_empty()
+                                    {
+                                        builtin_openai_query_params(resources)
+                                    } else {
+                                        state
+                                            .config
+                                            .openai_query_params
+                                            .clone()
+                                            .into_iter()
+                                            .collect::<indexmap::IndexMap<_, _>>()
+                                    };
+                                    providers.set_openai_query_params(query_params);
                                 }
                                 auth_store.save(auth_path)?;
                                 tui.overlay = onboarding::provider_setup_overlay(
@@ -569,6 +610,7 @@ fn handle_submit(
     }
 
     if submitted.starts_with('/') {
+        let previous_auth_store = auth_store.clone();
         dispatch_command(
             state,
             &supported_commands(),
@@ -578,6 +620,9 @@ fn handle_submit(
             session_store,
             &submitted,
         )?;
+        if *auth_store != previous_auth_store {
+            auth_store.save(auth_path)?;
+        }
         return Ok(());
     }
 
@@ -594,6 +639,7 @@ fn handle_submit(
         },
     )?;
 
+    let previous_auth_store = auth_store.clone();
     match execute_user_turn(state, resources, providers, auth_store, &submitted) {
         Ok(turn) => {
             append_tool_messages(state, session_store, &turn.tool_invocations)?;
@@ -614,6 +660,9 @@ fn handle_submit(
             )?;
         }
     }
+    if *auth_store != previous_auth_store {
+        auth_store.save(auth_path)?;
+    }
 
     Ok(())
 }
@@ -629,6 +678,32 @@ fn apply_selected_provider(state: &mut AppState, provider_id: &str) -> Result<()
 fn persist_user_config(state: &AppState) -> Result<()> {
     let paths = ConfigPaths::discover(&state.cwd);
     save_user_config(&paths, &state.config)
+}
+
+fn builtin_openai_base_url(resources: &LoadedResources) -> Option<String> {
+    resources
+        .providers
+        .iter()
+        .find(|provider| provider.value.id == "openai")
+        .map(|provider| provider.value.base_url.clone())
+}
+
+fn builtin_openai_headers(resources: &LoadedResources) -> indexmap::IndexMap<String, String> {
+    resources
+        .providers
+        .iter()
+        .find(|provider| provider.value.id == "openai")
+        .map(|provider| provider.value.headers.clone())
+        .unwrap_or_default()
+}
+
+fn builtin_openai_query_params(resources: &LoadedResources) -> indexmap::IndexMap<String, String> {
+    resources
+        .providers
+        .iter()
+        .find(|provider| provider.value.id == "openai")
+        .map(|provider| provider.value.query_params.clone())
+        .unwrap_or_default()
 }
 
 fn submit_queued_prompt_if_ready(

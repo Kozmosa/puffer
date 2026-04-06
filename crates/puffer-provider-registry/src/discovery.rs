@@ -34,6 +34,7 @@ impl ModelDiscoveryClient {
             provider.base_url.trim_end_matches('/'),
             discovery.path
         );
+        let url = append_query_params(url, &provider.query_params);
         let mut request = self.client.get(&url);
         for (key, value) in &provider.headers {
             request = request.header(key, value);
@@ -106,6 +107,23 @@ fn provider_auth_family(provider: &ProviderDescriptor) -> &'static str {
     } else {
         "bearer"
     }
+}
+
+fn append_query_params(url: String, query_params: &indexmap::IndexMap<String, String>) -> String {
+    if query_params.is_empty() {
+        return url;
+    }
+    let mut parsed = match reqwest::Url::parse(&url) {
+        Ok(url) => url,
+        Err(_) => return url,
+    };
+    {
+        let mut pairs = parsed.query_pairs_mut();
+        for (key, value) in query_params {
+            pairs.append_pair(key, value);
+        }
+    }
+    parsed.to_string()
 }
 
 fn parse_discovered_models(
@@ -192,6 +210,7 @@ mod tests {
             default_api: "custom-api".to_string(),
             auth_modes: vec![AuthMode::ApiKey],
             headers: IndexMap::new(),
+            query_params: IndexMap::new(),
             discovery: Some(discovery),
             models: Vec::new(),
         }
@@ -351,6 +370,7 @@ mod tests {
             default_api: "anthropic-messages".to_string(),
             auth_modes: vec![crate::auth::AuthMode::ApiKey],
             headers: IndexMap::new(),
+            query_params: IndexMap::new(),
             discovery: Some(ModelDiscoveryConfig {
                 path: "/v1/models".to_string(),
                 response: ModelDiscoveryFormat::AnthropicModels,

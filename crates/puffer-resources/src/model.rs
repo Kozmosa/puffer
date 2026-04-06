@@ -225,6 +225,8 @@ pub struct ProviderPack {
     #[serde(default)]
     pub headers: indexmap::IndexMap<String, String>,
     #[serde(default)]
+    pub query_params: indexmap::IndexMap<String, String>,
+    #[serde(default)]
     pub discovery: Option<ModelDiscoveryConfig>,
     #[serde(default)]
     pub models: Vec<ModelDescriptor>,
@@ -240,6 +242,7 @@ impl ProviderPack {
             default_api: self.default_api,
             auth_modes: self.auth_modes,
             headers: self.headers,
+            query_params: self.query_params,
             discovery: self.discovery,
             models: self.models,
         }

@@ -1,9 +1,15 @@
 use super::*;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use puffer_config::PufferConfig;
 use puffer_provider_openai::OpenAIResponseToolCall;
-use puffer_provider_registry::{AuthMode, ProviderDescriptor};
+use puffer_provider_registry::{AuthMode, ProviderDescriptor, StoredCredential};
 use puffer_resources::{LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
 use puffer_session_store::SessionMetadata;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use uuid::Uuid;
 
 fn provider() -> ProviderDescriptor {
@@ -14,6 +20,7 @@ fn provider() -> ProviderDescriptor {
         default_api: "anthropic-messages".to_string(),
         auth_modes: vec![AuthMode::ApiKey],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![puffer_provider_registry::ModelDescriptor {
             id: "claude-sonnet-4-5".to_string(),
@@ -66,6 +73,37 @@ fn loaded_tool(id: &str, description: &str, handler: &str) -> LoadedItem<ToolSpe
             kind: SourceKind::Builtin,
         },
     }
+}
+
+fn openai_provider(base_url: String) -> ProviderDescriptor {
+    ProviderDescriptor {
+        id: "openai".to_string(),
+        display_name: "OpenAI".to_string(),
+        base_url,
+        default_api: "openai-responses".to_string(),
+        auth_modes: vec![AuthMode::ApiKey, AuthMode::OAuth],
+        headers: Default::default(),
+        query_params: Default::default(),
+        discovery: None,
+        models: vec![puffer_provider_registry::ModelDescriptor {
+            id: "gpt-5".to_string(),
+            display_name: "GPT-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+        }],
+    }
+}
+
+fn fake_jwt(payload: Value) -> String {
+    format!("header.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()))
+}
+
+fn refresh_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[test]
@@ -126,7 +164,7 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
         &azure_state,
         &LoadedResources::default(),
         &registry,
-        &auth,
+        &mut auth,
         "hello",
     )
     .unwrap_err();
@@ -152,7 +190,7 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
         &openrouter_state,
         &LoadedResources::default(),
         &registry,
-        &auth,
+        &mut auth,
         "hello",
     )
     .unwrap_err();
@@ -178,7 +216,7 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
         &mistral_state,
         &LoadedResources::default(),
         &registry,
-        &auth,
+        &mut auth,
         "hello",
     )
     .unwrap_err();
@@ -206,7 +244,7 @@ fn execute_user_prompt_allows_no_auth_providers() {
         &state,
         &LoadedResources::default(),
         &registry,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         "hello",
     )
     .unwrap_err();
@@ -255,6 +293,230 @@ fn openai_tool_definitions_use_registry_schema() {
     assert_eq!(tools[0].name, "search_text");
     assert_eq!(tools[0].kind, "function");
     assert_eq!(tools[0].parameters["type"], "object");
+}
+
+#[test]
+fn resolve_openai_execution_config_uses_codex_chatgpt_route_for_builtin_oauth() {
+    let mut auth_store = AuthStore::default();
+    auth_store.set_oauth(
+        "openai",
+        OAuthCredential {
+            access_token: fake_jwt(json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct-123"
+                }
+            })),
+            refresh_token: "refresh-123".to_string(),
+            expires_at_ms: 42,
+            account_id: Some("acct-123".to_string()),
+            organization_id: None,
+            email: Some("dev@example.com".to_string()),
+            plan_type: Some("pro".to_string()),
+            rate_limit_tier: None,
+            scopes: vec!["openid".to_string()],
+        },
+    );
+
+    let config = resolve_openai_execution_config(
+        &state(),
+        &auth_store,
+        &openai_provider("https://api.openai.com".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(config.request_config.base_url, OPENAI_CHATGPT_BASE_URL);
+    assert_eq!(
+        config.request_config.account_id.as_deref(),
+        Some("acct-123")
+    );
+    assert!(config.codex_style);
+    assert!(config
+        .request_config
+        .custom_headers
+        .iter()
+        .any(|(key, _)| key == "version"));
+}
+
+#[test]
+fn build_codex_openai_request_body_matches_codex_shape() {
+    let state = state();
+    let body = build_codex_openai_request_body(
+        &state,
+        "gpt-5",
+        Value::String("hello".to_string()),
+        &Vec::new(),
+        None,
+        true,
+    );
+
+    assert_eq!(body["model"], json!("gpt-5"));
+    assert_eq!(body["stream"], json!(true));
+    assert_eq!(
+        body["include"][0],
+        json!("reasoning.encrypted_content")
+    );
+    assert_eq!(body["prompt_cache_key"], json!(Uuid::nil().to_string()));
+    assert_eq!(body["input"][0]["type"], json!("message"));
+    assert_eq!(body["input"][0]["content"][0]["text"], json!("hello"));
+    assert_eq!(body["reasoning"]["summary"], json!("auto"));
+    assert_eq!(body["reasoning"]["effort"], json!("medium"));
+}
+
+#[test]
+fn parse_openai_sse_response_reconstructs_output_items() {
+    let stream = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_123\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"Cargo.toml\\\"}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\"}}\n\n"
+    );
+
+    let parsed = parse_openai_sse_response(stream).unwrap();
+    assert_eq!(parsed["id"], json!("resp_123"));
+    assert_eq!(parsed["output"].as_array().map(Vec::len), Some(2));
+    assert_eq!(parsed["output"][0]["type"], json!("message"));
+    assert_eq!(parsed["output"][1]["type"], json!("function_call"));
+}
+
+#[test]
+fn execute_user_prompt_refreshes_openai_oauth_after_401() {
+    let _guard = refresh_env_lock().lock().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let request_log = Arc::clone(&requests);
+
+    let initial_access_token = fake_jwt(json!({
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-123"
+        }
+    }));
+    let refreshed_access_token = fake_jwt(json!({
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-123"
+        }
+    }));
+    let refreshed_id_token = fake_jwt(json!({
+        "email": "dev@example.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_plan_type": "pro"
+        }
+    }));
+    let refreshed_access_token_for_server = refreshed_access_token.clone();
+    let refreshed_id_token_for_server = refreshed_id_token.clone();
+    let refresh_url = format!("http://{address}/oauth/token");
+    std::env::set_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url);
+
+    let server = thread::spawn(move || {
+        for index in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 8192];
+            let bytes = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            request_log.lock().unwrap().push(request);
+
+            let (status, content_type, body) = match index {
+                0 => (
+                    401,
+                    "application/json",
+                    json!({ "error": "unauthorized" }).to_string(),
+                ),
+                1 => (
+                    200,
+                    "application/json",
+                    json!({
+                        "access_token": refreshed_access_token_for_server,
+                        "refresh_token": "refresh-2",
+                        "expires_in": 3600,
+                        "id_token": refreshed_id_token_for_server,
+                    })
+                    .to_string(),
+                ),
+                _ => (
+                    200,
+                    "text/event-stream",
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+                        "event: response.output_item.done\n",
+                        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"refreshed ok\"}]}}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n"
+                    )
+                    .to_string(),
+                ),
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                if status == 200 { "OK" } else { "Unauthorized" },
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    let mut registry = ProviderRegistry::new();
+    registry.register(openai_provider(format!("http://{address}/api/codex")));
+    let mut auth_store = AuthStore::default();
+    auth_store.set_oauth(
+        "openai",
+        OAuthCredential {
+            access_token: initial_access_token.clone(),
+            refresh_token: "refresh-1".to_string(),
+            expires_at_ms: 0,
+            account_id: Some("acct-123".to_string()),
+            organization_id: None,
+            email: None,
+            plan_type: None,
+            rate_limit_tier: None,
+            scopes: vec!["openid".to_string()],
+        },
+    );
+    let mut state = state();
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+
+    let turn = execute_user_prompt(
+        &state,
+        &LoadedResources::default(),
+        &registry,
+        &mut auth_store,
+        "hello",
+    )
+    .unwrap();
+    std::env::remove_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE");
+    server.join().unwrap();
+
+    assert_eq!(turn.assistant_text, "refreshed ok");
+    let stored = match auth_store.get("openai") {
+        Some(StoredCredential::OAuth(credential)) => credential,
+        other => panic!("expected oauth credential, got {other:?}"),
+    };
+    assert_eq!(stored.access_token, refreshed_access_token);
+    assert_eq!(stored.refresh_token, "refresh-2");
+    assert_eq!(stored.email.as_deref(), Some("dev@example.com"));
+    assert_eq!(stored.plan_type.as_deref(), Some("pro"));
+
+    let requests = requests.lock().unwrap();
+    let first = requests[0].to_ascii_lowercase();
+    let second = requests[1].to_ascii_lowercase();
+    let third = requests[2].to_ascii_lowercase();
+    assert!(first.contains("post /api/codex/responses http/1.1"));
+    assert!(first.contains(&format!(
+        "authorization: bearer {}",
+        initial_access_token.to_ascii_lowercase()
+    )));
+    assert!(first.contains("originator: codex_cli_rs"));
+    assert!(second.contains("post /oauth/token http/1.1"));
+    assert!(third.contains(&format!(
+        "authorization: bearer {}",
+        refreshed_access_token.to_ascii_lowercase()
+    )));
 }
 
 #[test]
