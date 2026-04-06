@@ -20,6 +20,14 @@ pub struct ModelDiscoveryConfig {
     pub max_output_tokens: u32,
     #[serde(default)]
     pub supports_reasoning: bool,
+    #[serde(default = "default_items_field")]
+    pub items_field: String,
+    #[serde(default = "default_id_field")]
+    pub id_field: String,
+    #[serde(default)]
+    pub display_name_field: Option<String>,
+    #[serde(default)]
+    pub headers: IndexMap<String, String>,
 }
 
 /// Describes the origin of a registered provider.
@@ -75,4 +83,12 @@ pub struct ProviderDescriptor {
 pub struct RegisteredProvider {
     pub descriptor: ProviderDescriptor,
     pub source: ProviderSource,
+}
+
+fn default_items_field() -> String {
+    "data".to_string()
+}
+
+fn default_id_field() -> String {
+    "id".to_string()
 }

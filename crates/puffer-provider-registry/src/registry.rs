@@ -1,12 +1,10 @@
-use crate::auth::{AuthStore, StoredCredential};
+use crate::auth::AuthStore;
+use crate::discovery::{merge_discovered_models, ModelDiscoveryClient};
 use crate::model::{
-    ModelDescriptor, ModelDiscoveryConfig, ModelDiscoveryFormat, ProviderDescriptor, ProviderSource,
-    ProviderSourceKind, RegisteredProvider,
+    ModelDescriptor, ProviderDescriptor, ProviderSource, ProviderSourceKind, RegisteredProvider,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use reqwest::blocking::Client;
-use serde_json::Value;
 
 /// Stores all providers and models known to the application.
 #[derive(Debug, Clone, Default)]
@@ -87,9 +85,10 @@ impl ProviderRegistry {
 
     /// Discovers and merges runtime models for every provider that exposes discovery config.
     pub fn discover_and_merge_all(&mut self, auth_store: &AuthStore) -> Result<()> {
+        let client = ModelDiscoveryClient::new();
         let provider_ids = self.providers.keys().cloned().collect::<Vec<_>>();
         for provider_id in provider_ids {
-            self.discover_and_merge_provider(&provider_id, auth_store)?;
+            self.discover_and_merge_provider_with_client(&provider_id, auth_store, &client)?;
         }
         Ok(())
     }
@@ -100,13 +99,25 @@ impl ProviderRegistry {
         provider_id: &str,
         auth_store: &AuthStore,
     ) -> Result<()> {
+        let client = ModelDiscoveryClient::new();
+        self.discover_and_merge_provider_with_client(provider_id, auth_store, &client)
+    }
+}
+
+impl ProviderRegistry {
+    fn discover_and_merge_provider_with_client(
+        &mut self,
+        provider_id: &str,
+        auth_store: &AuthStore,
+        client: &ModelDiscoveryClient,
+    ) -> Result<()> {
         let Some(provider) = self.providers.get(provider_id).cloned() else {
             return Err(anyhow!("provider {provider_id} is not registered"));
         };
-        let Some(discovery) = provider.descriptor.discovery.clone() else {
+        if provider.descriptor.discovery.is_none() {
             return Ok(());
-        };
-        let discovered = fetch_models_for_provider(&provider.descriptor, &discovery, auth_store)?;
+        }
+        let discovered = client.discover_models(&provider.descriptor, auth_store)?;
         if discovered.is_empty() {
             return Ok(());
         }
@@ -117,106 +128,14 @@ impl ProviderRegistry {
     }
 }
 
-fn fetch_models_for_provider(
-    provider: &ProviderDescriptor,
-    discovery: &ModelDiscoveryConfig,
-    auth_store: &AuthStore,
-) -> Result<Vec<ModelDescriptor>> {
-    let url = format!(
-        "{}{}",
-        provider.base_url.trim_end_matches('/'),
-        discovery.path
-    );
-    let client = Client::new();
-    let mut request = client.get(&url);
-    for (key, value) in &provider.headers {
-        request = request.header(key, value);
-    }
-    request = apply_discovery_auth(request, provider.id.as_str(), auth_store);
-    let response = request
-        .send()
-        .with_context(|| format!("failed to fetch models from {url}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(anyhow!("model discovery for {} failed with {status}", provider.id));
-    }
-    let payload = response
-        .json::<Value>()
-        .with_context(|| format!("failed to parse discovery response from {url}"))?;
-    parse_discovered_models(provider, discovery, &payload)
-}
-
-fn apply_discovery_auth(
-    mut request: reqwest::blocking::RequestBuilder,
-    provider_id: &str,
-    auth_store: &AuthStore,
-) -> reqwest::blocking::RequestBuilder {
-    match auth_store.get(provider_id) {
-        Some(StoredCredential::ApiKey { key }) if provider_id == "anthropic" => {
-            request = request.header("x-api-key", key);
-            request = request.header("anthropic-version", "2023-06-01");
-            request
-        }
-        Some(StoredCredential::ApiKey { key }) => request.header("Authorization", format!("Bearer {key}")),
-        Some(StoredCredential::OAuth(credential)) => {
-            request.header("Authorization", format!("Bearer {}", credential.access_token))
-        }
-        None => request,
-    }
-}
-
-fn parse_discovered_models(
-    provider: &ProviderDescriptor,
-    discovery: &ModelDiscoveryConfig,
-    payload: &Value,
-) -> Result<Vec<ModelDescriptor>> {
-    let items = payload
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("discovery response for {} missing data array", provider.id))?;
-    let mut models = Vec::new();
-    for item in items {
-        let id = item
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("discovery model for {} missing id", provider.id))?;
-        let display_name = match discovery.response {
-            ModelDiscoveryFormat::AnthropicModels => item
-                .get("display_name")
-                .or_else(|| item.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or(id),
-            ModelDiscoveryFormat::OpenAiModels => item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(id),
-        };
-        models.push(ModelDescriptor {
-            id: id.to_string(),
-            display_name: display_name.to_string(),
-            provider: provider.id.clone(),
-            api: discovery.api.clone(),
-            context_window: discovery.context_window,
-            max_output_tokens: discovery.max_output_tokens,
-            supports_reasoning: discovery.supports_reasoning,
-        });
-    }
-    Ok(models)
-}
-
-fn merge_discovered_models(existing: &mut Vec<ModelDescriptor>, discovered: Vec<ModelDescriptor>) {
-    for model in discovered {
-        if existing.iter().any(|current| current.id == model.id) {
-            continue;
-        }
-        existing.push(model);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::AuthMode;
+    use crate::model::{ModelDiscoveryConfig, ModelDiscoveryFormat};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn provider_descriptor() -> ProviderDescriptor {
         ProviderDescriptor {
@@ -265,68 +184,61 @@ mod tests {
 
     #[test]
     fn parse_openai_discovery_response_maps_models() {
-        let provider = ProviderDescriptor {
-            discovery: Some(ModelDiscoveryConfig {
-                path: "/v1/models".to_string(),
-                response: ModelDiscoveryFormat::OpenAiModels,
-                api: "openai-responses".to_string(),
-                context_window: 272_000,
-                max_output_tokens: 16_384,
-                supports_reasoning: true,
-            }),
-            ..provider_descriptor()
-        };
-        let models = parse_discovered_models(
-            &provider,
-            provider.discovery.as_ref().unwrap(),
-            &serde_json::json!({
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || -> String {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).expect("request");
+            let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            let body = serde_json::json!({
                 "data": [
                     { "id": "gpt-5" },
                     { "id": "gpt-5-mini" }
                 ]
-            }),
-        )
-        .unwrap();
-        assert_eq!(models.len(), 2);
-        assert_eq!(models[0].id, "gpt-5");
-        assert_eq!(models[0].api, "openai-responses");
-    }
-
-    #[test]
-    fn merge_discovered_models_only_adds_missing_ids() {
-        let mut models = vec![ModelDescriptor {
-            id: "claude-sonnet-4-5".to_string(),
-            display_name: "Claude Sonnet 4.5".to_string(),
-            provider: "anthropic".to_string(),
-            api: "anthropic-messages".to_string(),
-            context_window: 200_000,
-            max_output_tokens: 8_192,
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response write");
+            request
+        });
+        let mut provider = provider_descriptor();
+        provider.id = "openai".to_string();
+        provider.base_url = format!("http://{address}");
+        provider.default_api = "openai-responses".to_string();
+        provider.discovery = Some(ModelDiscoveryConfig {
+            path: "/v1/models".to_string(),
+            response: ModelDiscoveryFormat::OpenAiModels,
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
             supports_reasoning: true,
-        }];
-        merge_discovered_models(
-            &mut models,
-            vec![
-                ModelDescriptor {
-                    id: "claude-sonnet-4-5".to_string(),
-                    display_name: "Claude Sonnet 4.5".to_string(),
-                    provider: "anthropic".to_string(),
-                    api: "anthropic-messages".to_string(),
-                    context_window: 200_000,
-                    max_output_tokens: 8_192,
-                    supports_reasoning: true,
-                },
-                ModelDescriptor {
-                    id: "claude-opus-4-1".to_string(),
-                    display_name: "Claude Opus 4.1".to_string(),
-                    provider: "anthropic".to_string(),
-                    api: "anthropic-messages".to_string(),
-                    context_window: 200_000,
-                    max_output_tokens: 8_192,
-                    supports_reasoning: true,
-                },
-            ],
-        );
-        assert_eq!(models.len(), 2);
-        assert!(models.iter().any(|model| model.id == "claude-opus-4-1"));
+            items_field: "data".to_string(),
+            id_field: "id".to_string(),
+            display_name_field: None,
+            headers: IndexMap::from([("x-test-header".to_string(), "present".to_string())]),
+        });
+        let mut auth = AuthStore::default();
+        auth.set_api_key("openai", "sk-openai");
+        let mut registry = ProviderRegistry::new();
+        registry.register(provider);
+
+        registry
+            .discover_and_merge_provider("openai", &auth)
+            .expect("discovery succeeds");
+
+        let request = server.join().expect("server thread");
+        let entry = registry.provider("openai").expect("provider");
+        assert!(entry.models.iter().any(|model| model.id == "gpt-5"));
+        assert!(entry.models.iter().any(|model| model.id == "gpt-5-mini"));
+        assert!(request.contains("GET /v1/models HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer sk-openai"));
+        assert!(request.contains("x-test-header: present"));
     }
 }
