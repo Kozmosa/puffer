@@ -1,15 +1,28 @@
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
+use crate::{ModelPickerEntry, OverlayState};
 use puffer_core::{AppState, CommandKind, CommandSpec, MessageRole, RenderedMessage};
 use puffer_provider_registry::{AuthStore, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_tools::{ToolKind, ToolRegistry};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
+use std::cell::RefCell;
 use std::path::Path;
+
+thread_local! {
+    static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
+}
+
+/// Sets the active overlay rendered by the TUI on the next draw.
+pub(crate) fn set_active_overlay(overlay: Option<OverlayState>) {
+    ACTIVE_OVERLAY.with(|value| {
+        *value.borrow_mut() = overlay;
+    });
+}
 
 /// Renders the current application frame.
 pub(crate) fn render(
@@ -116,6 +129,11 @@ pub(crate) fn render(
     if input.starts_with('/') {
         render_command_popup(frame, body[0], input, slash_selection, commands);
     }
+    ACTIVE_OVERLAY.with(|value| {
+        if let Some(overlay) = value.borrow().as_ref() {
+            render_overlay(frame, body[0], overlay);
+        }
+    });
 }
 
 fn transcript_text(state: &AppState) -> Text<'static> {
@@ -587,6 +605,76 @@ fn command_kind_label(kind: CommandKind) -> &'static str {
         CommandKind::Local => "local",
         CommandKind::Ui => "ui",
     }
+}
+
+fn render_overlay(frame: &mut Frame<'_>, transcript_area: Rect, overlay: &OverlayState) {
+    let area = Rect {
+        x: transcript_area.x + 2,
+        y: transcript_area.y + 1,
+        width: transcript_area.width.saturating_sub(4).min(88),
+        height: overlay_rows(overlay).len() as u16 + 2,
+    };
+    let rows = overlay_rows(overlay)
+        .into_iter()
+        .map(|row| {
+            ListItem::new(row.text).style(if row.selected {
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            })
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        List::new(rows).block(Block::default().title(overlay_title(overlay)).borders(Borders::ALL)),
+        area,
+    );
+}
+
+fn overlay_title(overlay: &OverlayState) -> &'static str {
+    match overlay {
+        OverlayState::SessionPicker { .. } => "Resume Session",
+        OverlayState::ModelPicker { .. } => "Select Model",
+    }
+}
+
+fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
+    match overlay {
+        OverlayState::SessionPicker {
+            sessions,
+            selection,
+        } => sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| OverlayRow {
+                selected: index == *selection,
+                text: format!(
+                    "{}  {}",
+                    short_id(&session.id.to_string()),
+                    session.display_name.as_deref().unwrap_or("<unnamed>")
+                ),
+            })
+            .collect(),
+        OverlayState::ModelPicker { entries, selection } => entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| OverlayRow {
+                selected: index == *selection,
+                text: render_model_entry(entry),
+            })
+            .collect(),
+    }
+}
+
+fn render_model_entry(entry: &ModelPickerEntry) -> String {
+    format!("{}  {}", entry.selector, entry.description)
+}
+
+struct OverlayRow {
+    text: String,
+    selected: bool,
 }
 
 #[cfg(test)]

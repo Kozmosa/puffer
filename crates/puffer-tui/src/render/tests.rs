@@ -141,6 +141,7 @@ fn render_draws_session_tool_and_status_surfaces() {
                 3,
                 0,
                 0,
+                None,
                 &sample_commands(),
             )
         })
