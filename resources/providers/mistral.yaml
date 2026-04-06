@@ -6,7 +6,7 @@ auth_modes:
   - api_key
 discovery:
   path: /v1/models
-  response: open_ai_models
+  response: mistral_models
   api: mistral-conversations
   context_window: 131072
   max_output_tokens: 32768
