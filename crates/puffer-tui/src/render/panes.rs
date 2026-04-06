@@ -8,7 +8,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-const WIDE_PANE_BREAKPOINT: u16 = 96;
+const HOME_WIDE_BREAKPOINT: u16 = 96;
+const HELP_WIDE_BREAKPOINT: u16 = 120;
 const FEATURED_HELP_COMMANDS: [&str; 10] = [
     "help",
     "review",
@@ -25,12 +26,12 @@ const FEATURED_HELP_COMMANDS: [&str; 10] = [
 /// Renders the empty-session welcome body with width-aware cards.
 pub(super) fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let card_width = area.width.saturating_sub(6).clamp(38, 104);
-    let wide = area.width >= WIDE_PANE_BREAKPOINT && area.height >= 12;
+    let wide = area.width >= HOME_WIDE_BREAKPOINT && area.height >= 12;
     let desired_height = if wide { 12 } else { 10 };
     let card_height = desired_height.min(area.height.saturating_sub(1).max(6));
     let card_area = Rect {
         x: area.x + area.width.saturating_sub(card_width) / 2,
-        y: area.y + area.height.saturating_sub(card_height) / 3,
+        y: area.y + area.height.saturating_sub(card_height).min(2),
         width: card_width,
         height: card_height,
     };
@@ -94,7 +95,7 @@ pub(super) fn render_help_pane(
         height: inner.height,
     };
 
-    if content.width >= WIDE_PANE_BREAKPOINT {
+    if content.width >= HELP_WIDE_BREAKPOINT && content.height >= 20 {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([

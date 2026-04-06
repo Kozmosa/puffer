@@ -57,8 +57,13 @@ pub(crate) fn render(
         .as_ref()
         .map(OverlayState::is_onboarding)
         .unwrap_or(false);
+    let help_active = help_pane_active(state, &active_overlay);
+    let home_active = state.transcript.is_empty() && active_overlay.is_none() && !onboarding_active;
+    let simplified_surface = home_active || help_active;
     let compact_composer = frame.area().width < COMPACT_COMPOSER_BREAKPOINT;
     let footer_height = if onboarding_active {
+        4
+    } else if simplified_surface {
         4
     } else if compact_composer {
         4
@@ -84,13 +89,13 @@ pub(crate) fn render(
         ])
         .split(frame.area());
 
-    if header_height > 0 {
+    if header_height > 0 && !simplified_surface {
         render_top_panel(frame, layout[0], state, resources, auth_store, &tool_registry);
     }
 
-    if help_pane_active(state, &active_overlay) {
+    if help_active {
         render_help_pane(frame, layout[1], state, commands, resources);
-    } else if state.transcript.is_empty() && !onboarding_active {
+    } else if home_active {
         render_empty_state(frame, layout[1], state);
     } else {
         frame.render_widget(
@@ -110,6 +115,14 @@ pub(crate) fn render(
     let footer = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if onboarding_active {
+            [
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(0),
+                Constraint::Length(0),
+            ]
+            .as_ref()
+        } else if simplified_surface {
             [
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -144,7 +157,9 @@ pub(crate) fn render(
         })
         .split(footer_area);
 
-    if compact_composer && !onboarding_active {
+    if simplified_surface {
+        // Home/help surfaces carry the key context already, so keep only prompt and hint below.
+    } else if compact_composer && !onboarding_active {
         frame.render_widget(
             Paragraph::new(status_compact_line(
                 state,
@@ -175,6 +190,8 @@ pub(crate) fn render(
 
     let prompt_row = if onboarding_active {
         footer[0]
+    } else if simplified_surface {
+        footer[0]
     } else if compact_composer {
         footer[1]
     } else if state.statusline_enabled {
@@ -184,6 +201,8 @@ pub(crate) fn render(
     };
     let hint_row = if onboarding_active {
         footer[1]
+    } else if simplified_surface {
+        footer[1]
     } else if compact_composer {
         footer[2]
     } else if state.statusline_enabled {
@@ -191,7 +210,10 @@ pub(crate) fn render(
     } else {
         footer[1]
     };
-    let summary_row = if compact_composer || (state.statusline_enabled && !onboarding_active) {
+    let summary_row = if simplified_surface
+        || compact_composer
+        || (state.statusline_enabled && !onboarding_active)
+    {
         None
     } else {
         Some(footer[2])
