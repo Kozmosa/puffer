@@ -1,0 +1,22 @@
+   ╭ Puffer Code ───────────────────────────────────────────────────────────────╮
+   │Welcome to Puffer Code                     │Tips to get started             │
+   │                                           │                                │
+   │Clawd on duty                              │/help   Browse common commands  │
+   │anthropic/claude-sonnet-4-5                │/review Review the current      │
+   │dockyard                                   │worktree                        │
+   │                                           │/login  Switch provider auth    │
+   │                                           │                                │
+   │                                           │Recent activity                 │
+   │                                           │No recent activity yet.         │
+   │                                           │                                │
+   ╰────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────
+❯ Review changes, ask a question, or type /
+? for shortcuts · /help · /review · !pwd

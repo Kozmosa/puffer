@@ -1,0 +1,10 @@
+Supported commands
+/help        Show help and available commands
+/review      Review the current worktree or pull request
+/resume      Resume a previous conversation
+/login       Sign in to a provider
+/model       Select the active model
+/agents      Manage agent configurations
+/usage       Show plan usage limits
+/doctor      Diagnose and verify your Puffer Code installation and settings
+/config      Open config panel

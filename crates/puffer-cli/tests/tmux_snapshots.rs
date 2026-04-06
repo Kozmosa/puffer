@@ -16,6 +16,10 @@ const MEDIUM_TMUX_SIZE: TerminalSize = TerminalSize {
     rows: 24,
     cols: 100,
 };
+const COMPACT_WIDE_TMUX_SIZE: TerminalSize = TerminalSize {
+    rows: 22,
+    cols: 84,
+};
 const NARROW_TMUX_SIZE: TerminalSize = TerminalSize { rows: 20, cols: 72 };
 
 #[test]
@@ -26,6 +30,14 @@ fn tmux_home_wide_matches_snapshot() {
 #[test]
 fn tmux_home_narrow_matches_snapshot() {
     assert_tmux_home_snapshot(NARROW_TMUX_SIZE, "tmux_home_narrow_snapshot.txt");
+}
+
+#[test]
+fn tmux_home_compact_wide_matches_snapshot() {
+    assert_tmux_home_snapshot(
+        COMPACT_WIDE_TMUX_SIZE,
+        "tmux_home_compact_wide_snapshot.txt",
+    );
 }
 
 #[test]
@@ -46,6 +58,14 @@ fn tmux_help_medium_matches_snapshot() {
 #[test]
 fn tmux_help_narrow_matches_snapshot() {
     assert_tmux_help_snapshot(NARROW_TMUX_SIZE, "tmux_help_narrow_snapshot.txt");
+}
+
+#[test]
+fn tmux_help_compact_wide_matches_snapshot() {
+    assert_tmux_help_snapshot(
+        COMPACT_WIDE_TMUX_SIZE,
+        "tmux_help_compact_wide_snapshot.txt",
+    );
 }
 
 fn assert_tmux_home_snapshot(size: TerminalSize, snapshot_name: &str) {

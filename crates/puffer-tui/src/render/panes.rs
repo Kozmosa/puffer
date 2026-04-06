@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-const HOME_WIDE_BREAKPOINT: u16 = 96;
+const HOME_WIDE_BREAKPOINT: u16 = 84;
 const HELP_WIDE_BREAKPOINT: u16 = 120;
 const FEATURED_HELP_COMMANDS: [&str; 10] = [
     "help",
@@ -31,7 +31,7 @@ pub(super) fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppS
     let card_height = desired_height.min(area.height.saturating_sub(1).max(6));
     let card_area = Rect {
         x: area.x + area.width.saturating_sub(card_width) / 2,
-        y: area.y + area.height.saturating_sub(card_height).min(2),
+        y: area.y,
         width: card_width,
         height: card_height,
     };
