@@ -186,6 +186,26 @@ fn try_open_overlay_builds_login_picker() {
 }
 
 #[test]
+fn login_picker_query_selects_matching_provider() {
+    let mut overlay = OverlayState::LoginPicker {
+        entries: vec![
+            ModelPickerEntry {
+                selector: "anthropic".to_string(),
+                description: "Anthropic".to_string(),
+            },
+            ModelPickerEntry {
+                selector: "openai".to_string(),
+                description: "OpenAI".to_string(),
+            },
+        ],
+        selection: 0,
+    };
+
+    overlay.select_matching_query("open");
+    assert_eq!(overlay.selected_provider(), Some("openai"));
+}
+
+#[test]
 fn try_open_overlay_builds_logout_picker() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
@@ -315,6 +335,7 @@ fn logout_clears_selection_when_model_provider_matches_logged_out_provider() {
         &session_store,
         &mut tui,
         true,
+        handle_submit,
     )
     .unwrap();
     assert!(matches!(
@@ -366,6 +387,7 @@ fn missing_auth_for_selected_provider_reopens_auth_picker() {
         &session_store,
         &mut tui,
         true,
+        handle_submit,
     )
     .unwrap();
 
@@ -550,6 +572,49 @@ fn render_shows_status_line_when_enabled() {
     assert!(rendered.contains("anthropic · anthropic/claude-sonnet-4-5 · auth"));
     assert!(rendered.contains("/help · /review · !pwd"));
     assert!(rendered.contains("workspace-write"));
+}
+
+#[test]
+fn render_shows_overlay_query_in_prompt_row() {
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let state = sample_state();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let overlay = OverlayState::LoginPicker {
+        entries: vec![
+            ModelPickerEntry {
+                selector: "anthropic".to_string(),
+                description: "Anthropic".to_string(),
+            },
+            ModelPickerEntry {
+                selector: "openai".to_string(),
+                description: "OpenAI".to_string(),
+            },
+        ],
+        selection: 1,
+    };
+    terminal
+        .draw(|frame| {
+            render::set_active_overlay(Some(overlay.clone()));
+            render::render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "open",
+                4,
+                0,
+                0,
+                &supported_commands(),
+            )
+        })
+        .unwrap();
+    let rendered = buffer_to_string(terminal.backend().buffer());
+    assert!(rendered.contains("❯ open"));
+    assert!(rendered.contains("Type") || rendered.contains("Typing jumps"));
 }
 
 fn sample_state() -> AppState {

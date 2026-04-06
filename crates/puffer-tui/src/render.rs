@@ -1,9 +1,16 @@
+mod summary;
+
+use self::summary::{
+    hint_line, status_primary_line, status_secondary_line, top_panel_columns, top_panel_height,
+};
+#[cfg(test)]
+use self::summary::{footer_lines, header_lines, session_lines};
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use crate::state::AuthPickerEntry;
 use crate::{ModelPickerEntry, OverlayState};
 use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
-use puffer_provider_registry::{AuthStore, StoredCredential};
+use puffer_provider_registry::AuthStore;
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -13,7 +20,6 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::cell::RefCell;
-use std::path::Path;
 
 thread_local! {
     static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
@@ -45,12 +51,6 @@ pub(crate) fn render(
         .as_ref()
         .map(OverlayState::is_onboarding)
         .unwrap_or(false);
-    let header = if state.transcript.is_empty() || onboarding_active {
-        Vec::new()
-    } else {
-        header_lines(state, resources, auth_store, &tool_registry)
-    };
-    let header_height = header.len() as u16;
     let footer_height = if onboarding_active {
         4
     } else if state.statusline_enabled {
@@ -58,6 +58,8 @@ pub(crate) fn render(
     } else {
         5
     };
+    let header_height = top_panel_height(state, resources, auth_store, &tool_registry)
+        .min(frame.area().height.saturating_sub(footer_height + 1));
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -68,13 +70,12 @@ pub(crate) fn render(
         .split(frame.area());
 
     if header_height > 0 {
-        frame.render_widget(
-            Paragraph::new(Text::from(header)).style(Style::default().add_modifier(Modifier::DIM)),
-            layout[0],
-        );
+        render_top_panel(frame, layout[0], state, resources, auth_store, &tool_registry);
     }
 
-    if state.transcript.is_empty() && !onboarding_active {
+    if let Some(help_text) = active_help_text(state, &active_overlay) {
+        render_help_pane(frame, layout[1], state, help_text);
+    } else if state.transcript.is_empty() && !onboarding_active {
         render_empty_state(frame, layout[1], state);
     } else {
         frame.render_widget(
@@ -154,10 +155,16 @@ pub(crate) fn render(
         Some(footer[2])
     };
 
-    if onboarding_active {
-        frame.render_widget(Paragraph::new(""), prompt_row);
+    let overlay_active = active_overlay.is_some();
+    if overlay_active {
+        frame.render_widget(Paragraph::new(overlay_prompt_line(input)), prompt_row);
+        let max_cursor = usize::from(prompt_row.width.saturating_sub(3));
+        frame.set_cursor_position((
+            prompt_row.x + 2 + cursor.min(max_cursor) as u16,
+            prompt_row.y,
+        ));
         frame.render_widget(
-            Paragraph::new("Enter to continue · Esc to go back · Ctrl-C to exit")
+            Paragraph::new(overlay_hint_line(input, onboarding_active))
                 .style(Style::default().add_modifier(Modifier::DIM)),
             hint_row,
         );
@@ -194,6 +201,64 @@ pub(crate) fn render(
     if let Some(overlay) = active_overlay.as_ref() {
         render_overlay(frame, layout[1], overlay);
     }
+}
+
+fn render_top_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    resources: &LoadedResources,
+    auth_store: &AuthStore,
+    tool_registry: &ToolRegistry,
+) {
+    let [left, right] = top_panel_columns(state, resources, auth_store, tool_registry);
+    let block = Block::default()
+        .title(" Puffer Code ")
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(prompt_border_style(state));
+    frame.render_widget(&block, area);
+    let inner = block.inner(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(44),
+            Constraint::Length(1),
+            Constraint::Percentage(56),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(left)).wrap(Wrap { trim: false }),
+        columns[0],
+    );
+    if columns[1].width > 0 {
+        let separator = (0..columns[1].height)
+            .map(|_| {
+                Line::from(Span::styled(
+                    "│",
+                    Style::default().add_modifier(Modifier::DIM),
+                ))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(Paragraph::new(Text::from(separator)), columns[1]);
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(right)).wrap(Wrap { trim: false }),
+        columns[2],
+    );
+}
+
+fn active_help_text<'a>(
+    state: &'a AppState,
+    active_overlay: &Option<OverlayState>,
+) -> Option<&'a str> {
+    if !state.config.ui.tmux_golden_mode || active_overlay.is_some() {
+        return None;
+    }
+    state.transcript.last().and_then(|message| {
+        (message.role == MessageRole::System && message.text.starts_with("Supported commands:"))
+            .then_some(message.text.as_str())
+    })
 }
 
 fn transcript_text(state: &AppState) -> Text<'static> {
@@ -241,44 +306,11 @@ fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn header_lines(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-) -> Vec<Line<'static>> {
-    let mut line = format!(
-        "Puffer Code · {} · {} · auth {} · tools {}/{}",
-        truncate(&session_name(state), 18),
-        truncate(current_model(state), 28),
-        auth_status(state, auth_store),
-        tool_status(tool_registry).executable,
-        resources.tools.len(),
-    );
-    let remote = remote_label(state);
-    if remote != "local" {
-        line.push_str(&format!(" · {}", truncate(&remote, 18)));
-    }
-    let mut lines = vec![Line::from(line)];
-    if let Some(account) = account_header_line(state, auth_store) {
-        lines.push(Line::from(account));
-    }
-    lines
-}
-
 fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let card_width = area.width.saturating_sub(8).min(58).max(24);
-    let card_height = area.height.min(9);
-    let card_area = Rect {
-        x: area.x + area.width.saturating_sub(card_width) / 2,
-        y: area.y + area.height.saturating_sub(card_height) / 3,
-        width: card_width,
-        height: card_height,
-    };
-    let model = if current_model(state) == "<unset>" {
+    let model = if state.current_model.is_none() {
         "/model to choose a model".to_string()
     } else {
-        truncate(current_model(state), 34)
+        state.current_model.clone().unwrap_or_default()
     };
     let mascot = if state.config.mascot.enabled {
         format!("{} on duty", state.config.mascot.display_name)
@@ -288,29 +320,48 @@ fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let text = Text::from(vec![
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Welcome to Puffer Code",
+            mascot,
             Style::default().add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from(mascot),
-        Line::from(model),
-        Line::from(path_tail(&state.cwd)),
+        Line::from(Span::styled(model, Style::default().add_modifier(Modifier::DIM))),
+        Line::from(Span::styled(
+            state.cwd.display().to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        )),
         Line::from(""),
-        Line::from("? for shortcuts · /help to begin"),
+        Line::from(Span::styled(
+            "Review changes, ask a question, or type /",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+        Line::from(Span::styled(
+            "? for shortcuts · /help to begin",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
     ]);
-    frame.render_widget(Clear, card_area);
     frame.render_widget(
         Paragraph::new(text)
             .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .title(" Puffer Code ")
-                    .borders(Borders::ALL)
-                    .border_set(border::ROUNDED)
-                    .border_style(prompt_border_style(state)),
-            ),
-        card_area,
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_help_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState, text: &str) {
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(prompt_border_style(state));
+    frame.render_widget(&block, area);
+    let inner = block.inner(area);
+    let content = Rect {
+        x: inner.x.saturating_add(2),
+        y: inner.y,
+        width: inner.width.saturating_sub(4),
+        height: inner.height,
+    };
+    frame.render_widget(
+        Paragraph::new(text.to_string()).wrap(Wrap { trim: false }),
+        content,
     );
 }
 
@@ -328,273 +379,35 @@ fn prompt_line(input: &str) -> Line<'static> {
     }
 }
 
-fn status_primary_line(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-) -> String {
-    format!(
-        "{} · {} · auth {} · tools {}/{}",
-        truncate(current_provider(state), 18),
-        truncate(current_model(state), 28),
-        auth_status(state, auth_store),
-        tool_status(tool_registry).executable,
-        resources.tools.len(),
-    )
-}
-
-fn status_secondary_line(
-    state: &AppState,
-    resources: &LoadedResources,
-    tool_registry: &ToolRegistry,
-) -> String {
-    let mut line = format!(
-        "{} · shell {} · prompts {} · {} workdirs",
-        truncate(&path_tail(&state.cwd), 18),
-        shell_activity(&state.transcript).total_runs,
-        resources.prompts.len(),
-        state.working_dirs.len(),
-    );
-    let remote = remote_label(state);
-    if remote != "local" {
-        line.push_str(&format!(" · {}", truncate(&remote, 18)));
-    }
-    if state.statusline_enabled {
-        line.push_str(&format!(
-            " · sandbox {}",
-            truncate(&state.sandbox_mode, 18)
-        ));
-    }
-    if tool_status(tool_registry).executable == 0 {
-        line.push_str(" · no tools");
-    }
-    line
-}
-
-#[cfg(test)]
-fn session_lines(state: &AppState) -> Vec<String> {
-    let parent = state
-        .session
-        .parent_session_id
-        .map(|value| short_id(&value.to_string()))
-        .unwrap_or_else(|| "root".to_string());
-    vec![
-        format!("Name: {}", truncate(&session_name(state), 26)),
-        format!("Id: {}", short_id(&state.session.id.to_string())),
-        format!("Parent: {parent}"),
-        format!("Dir: {}", truncate(&path_tail(&state.cwd), 26)),
-        format!("Transcript: {} messages", state.transcript.len()),
-        format!("Workdirs: {}", state.working_dirs.len()),
-        format!(
-            "Tags: {}",
-            truncate(&format_tag_summary(&state.session.tags), 26)
-        ),
-        format!("Note: {}", state.session.note.as_deref().unwrap_or("-")),
-    ]
-}
-
-#[cfg(test)]
-fn footer_lines(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-    input: &str,
-    commands: &[CommandSpec],
-) -> Vec<Line<'static>> {
-    vec![
-        Line::from(status_primary_line(
-            state,
-            resources,
-            auth_store,
-            tool_registry,
-        )),
-        Line::from(status_secondary_line(state, resources, tool_registry)),
-        Line::from(hint_line(input, commands)),
-    ]
-}
-
-fn current_provider(state: &AppState) -> &str {
-    state.current_provider.as_deref().unwrap_or("<unset>")
-}
-
-fn current_model(state: &AppState) -> &str {
-    state.current_model.as_deref().unwrap_or("<unset>")
-}
-
-fn auth_status(state: &AppState, auth_store: &AuthStore) -> &'static str {
-    match state
-        .current_provider
-        .as_deref()
-        .and_then(|id| auth_store.get(id))
-    {
-        Some(StoredCredential::ApiKey { .. }) => "api-key",
-        Some(StoredCredential::OAuth(_)) => "oauth",
-        None if state.current_provider.is_some() => "missing",
-        None => "n/a",
-    }
-}
-
-fn account_header_line(state: &AppState, auth_store: &AuthStore) -> Option<String> {
-    let provider_id = state.current_provider.as_deref()?;
-    let StoredCredential::OAuth(credential) = auth_store.get(provider_id)? else {
-        return None;
-    };
-    let mut parts = Vec::new();
-    if let Some(email) = credential.email.as_deref() {
-        parts.push(email.to_string());
-    }
-    if let Some(plan_type) = credential.plan_type.as_deref() {
-        parts.push(format!("plan {}", format_metadata_value(plan_type)));
-    }
-    if let Some(organization_id) = credential.organization_id.as_deref() {
-        parts.push(format!("org {}", organization_id));
-    } else if let Some(account_id) = credential.account_id.as_deref() {
-        parts.push(format!("acct {}", account_id));
-    }
-    if parts.is_empty() {
-        None
+fn overlay_prompt_line(input: &str) -> Line<'static> {
+    if input.is_empty() {
+        Line::from(vec![
+            Span::raw("❯ "),
+            Span::styled(
+                "Type to jump",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ])
     } else {
-        Some(parts.join(" · "))
+        Line::from(format!("❯ {input}"))
     }
 }
 
-fn format_metadata_value(value: &str) -> String {
-    value
-        .split(['-', '_'])
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let mut chars = segment.chars();
-            match chars.next() {
-                Some(first) => {
-                    let mut word = String::new();
-                    word.extend(first.to_uppercase());
-                    word.push_str(chars.as_str());
-                    word
-                }
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn session_name(state: &AppState) -> String {
-    state
-        .session
-        .display_name
-        .as_deref()
-        .or(state.session.slug.as_deref())
-        .unwrap_or("untitled")
-        .to_string()
-}
-
-fn remote_label(state: &AppState) -> String {
-    match (
-        state.remote_name.as_deref(),
-        state.remote_environment.as_deref(),
-    ) {
-        (Some(name), Some(environment)) => format!("{name}@{environment}"),
-        (Some(name), None) => name.to_string(),
-        (None, Some(environment)) => environment.to_string(),
-        (None, None) => "local".to_string(),
+fn overlay_hint_line(input: &str, onboarding_active: bool) -> String {
+    let prefix = if input.is_empty() {
+        "Type to jump"
+    } else {
+        "Typing jumps selection"
+    };
+    if onboarding_active {
+        format!("{prefix} · Enter to continue · Esc to go back")
+    } else {
+        format!("{prefix} · Enter to select · Esc to close")
     }
-}
-
-fn path_tail(path: &Path) -> String {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn short_id(value: &str) -> String {
     value.chars().take(8).collect()
-}
-
-#[cfg(test)]
-#[cfg(test)]
-fn format_tag_summary(tags: &[String]) -> String {
-    if tags.is_empty() {
-        "-".to_string()
-    } else {
-        tags.join(",")
-    }
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    let char_count = value.chars().count();
-    if char_count <= max_chars {
-        return value.to_string();
-    }
-    if max_chars <= 3 {
-        return ".".repeat(max_chars);
-    }
-    let prefix = value.chars().take(max_chars - 3).collect::<String>();
-    format!("{prefix}...")
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ToolStatus {
-    executable: usize,
-}
-
-fn tool_status(tool_registry: &ToolRegistry) -> ToolStatus {
-    let mut status = ToolStatus::default();
-    for _tool in tool_registry.tools() {
-        status.executable += 1;
-    }
-    status
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ShellActivity {
-    total_runs: usize,
-    last_command: Option<String>,
-}
-
-fn shell_activity(messages: &[RenderedMessage]) -> ShellActivity {
-    let mut activity = ShellActivity::default();
-    for message in messages {
-        if message.role != MessageRole::User {
-            continue;
-        }
-        let Some(command) = shell_command_from_message(&message.text) else {
-            continue;
-        };
-        activity.total_runs += 1;
-        activity.last_command = Some(command.to_string());
-    }
-    activity
-}
-
-fn shell_command_from_message(text: &str) -> Option<&str> {
-    let command = text.strip_prefix("!!").or_else(|| text.strip_prefix('!'))?;
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
-}
-
-fn hint_line(input: &str, commands: &[CommandSpec]) -> String {
-    if input.starts_with('/') {
-        let rows = popup_rows(input, commands);
-        let best = rows
-            .first()
-            .map(|command| format!("/{}", command.name))
-            .unwrap_or_else(|| "<none>".to_string());
-        return format!(
-            "slash {} · {} matches · best {} · Enter submits · Esc clears",
-            truncate(input, 18),
-            rows.len(),
-            best,
-        );
-    }
-
-    "? for shortcuts · /help · /review · !pwd".to_string()
 }
 
 fn render_command_popup(
@@ -654,6 +467,10 @@ fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState)
         render_onboarding_overlay(frame, viewport, overlay);
         return;
     }
+    if matches!(overlay, OverlayState::LoginPicker { .. }) {
+        render_login_overlay(frame, viewport, overlay);
+        return;
+    }
     let width = viewport.width.saturating_sub(8).min(72);
     let height = overlay_rows(overlay).len() as u16 + 2;
     let area = Rect {
@@ -687,6 +504,46 @@ fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState)
     );
 }
 
+fn render_login_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState) {
+    let rows = overlay_rows(overlay)
+        .into_iter()
+        .map(|row| {
+            ListItem::new(row.text).style(if row.selected {
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            })
+        })
+        .collect::<Vec<_>>();
+    let width = viewport.width.saturating_sub(8).min(72);
+    let height = rows.len() as u16 + 4;
+    let area = Rect {
+        x: viewport.x + viewport.width.saturating_sub(width) / 2,
+        y: viewport.y + viewport.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" Login ")
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(accent_border_style());
+    frame.render_widget(Clear, area);
+    frame.render_widget(&block, area);
+    let inner = block.inner(area);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new("Select Provider").style(Style::default().add_modifier(Modifier::DIM)),
+        sections[0],
+    );
+    frame.render_widget(List::new(rows), sections[1]);
+}
+
 fn overlay_title(overlay: &OverlayState) -> &'static str {
     match overlay {
         OverlayState::SessionPicker { .. } => "Resume Session",
@@ -698,11 +555,6 @@ fn overlay_title(overlay: &OverlayState) -> &'static str {
         OverlayState::LoginPicker { .. } => "Select Provider",
         OverlayState::LogoutPicker { .. } => "Logout Provider",
         OverlayState::ThemePicker { .. } => "Select Theme",
-        OverlayState::OnboardingTheme { .. } => "Choose Theme",
-        OverlayState::OnboardingProvider { .. } => "Choose Provider",
-        OverlayState::OnboardingAuth { .. } => "Choose Sign-In",
-        OverlayState::OnboardingModel { .. } => "Choose Model",
-        OverlayState::OnboardingApiKey { .. } => "Enter API Key",
     }
 }
 
@@ -732,10 +584,7 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
         }
         | OverlayState::LoginPicker { entries, selection }
         | OverlayState::LogoutPicker { entries, selection }
-        | OverlayState::ThemePicker { entries, selection }
-        | OverlayState::OnboardingTheme { entries, selection }
-        | OverlayState::OnboardingProvider { entries, selection }
-        | OverlayState::OnboardingModel { entries, selection, .. } => entries
+        | OverlayState::ThemePicker { entries, selection } => entries
             .iter()
             .enumerate()
             .map(|(index, entry)| OverlayRow {
@@ -751,16 +600,7 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
                 text: render_auth_entry(entry),
             })
             .collect(),
-        OverlayState::OnboardingAuth { entries, selection, .. } => entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| OverlayRow {
-                selected: index == *selection,
-                text: render_model_entry(entry),
-            })
-            .collect(),
-        OverlayState::ApiKeyPrompt { value, .. }
-        | OverlayState::OnboardingApiKey { input: value, .. } => vec![
+        OverlayState::ApiKeyPrompt { value, .. } => vec![
             OverlayRow {
                 selected: false,
                 text: "Paste an API key and press Enter.".to_string(),
@@ -889,9 +729,7 @@ fn onboarding_body_lines(overlay: &OverlayState) -> Vec<Line<'static>> {
             overlay_rows(overlay),
             "Enter to confirm · Esc to go back",
         ),
-        OverlayState::ApiKeyPrompt {
-            provider_id, value, ..
-        } => {
+        OverlayState::ApiKeyPrompt { provider_id, value, .. } => {
             let key_line = format!("> {}", masked_secret(value));
             return vec![
                 Line::from(Span::styled(

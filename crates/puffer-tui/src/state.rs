@@ -201,7 +201,6 @@ pub(crate) struct ModelPickerEntry {
 }
 
 /// Represents one interactive picker or onboarding panel inside the TUI.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OverlayState {
     SessionPicker {
@@ -247,32 +246,6 @@ pub(crate) enum OverlayState {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
     },
-    OnboardingTheme {
-        entries: Vec<ModelPickerEntry>,
-        selection: usize,
-    },
-    OnboardingProvider {
-        entries: Vec<ModelPickerEntry>,
-        selection: usize,
-    },
-    OnboardingAuth {
-        provider_id: String,
-        provider_name: String,
-        entries: Vec<ModelPickerEntry>,
-        selection: usize,
-    },
-    OnboardingModel {
-        provider_id: String,
-        provider_name: String,
-        entries: Vec<ModelPickerEntry>,
-        selection: usize,
-    },
-    OnboardingApiKey {
-        provider_id: String,
-        provider_name: String,
-        input: String,
-        cursor: usize,
-    },
 }
 
 impl OverlayState {
@@ -286,14 +259,10 @@ impl OverlayState {
             | Self::ProviderPicker { selection, .. }
             | Self::AuthPicker { selection, .. }
             | Self::LogoutPicker { selection, .. }
-            | Self::ThemePicker { selection, .. }
-            | Self::OnboardingTheme { selection, .. }
-            | Self::OnboardingProvider { selection, .. }
-            | Self::OnboardingAuth { selection, .. }
-            | Self::OnboardingModel { selection, .. } => {
+            | Self::ThemePicker { selection, .. } => {
                 *selection = selection.saturating_sub(1);
             }
-            Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. } => {}
         }
     }
 
@@ -311,11 +280,7 @@ impl OverlayState {
             | Self::LoginPicker { entries, selection }
             | Self::ProviderPicker { entries, selection, .. }
             | Self::LogoutPicker { entries, selection }
-            | Self::ThemePicker { entries, selection }
-            | Self::OnboardingTheme { entries, selection }
-            | Self::OnboardingProvider { entries, selection }
-            | Self::OnboardingAuth { entries, selection, .. }
-            | Self::OnboardingModel { entries, selection, .. } => {
+            | Self::ThemePicker { entries, selection } => {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
             Self::AuthPicker {
@@ -325,7 +290,7 @@ impl OverlayState {
             } => {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
-            Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. } => {}
         }
     }
 
@@ -377,12 +342,7 @@ impl OverlayState {
                 .map(|entry| format!("/theme {}", entry.selector)),
             Self::ProviderPicker { .. }
             | Self::AuthPicker { .. }
-            | Self::ApiKeyPrompt { .. }
-            | Self::OnboardingTheme { .. }
-            | Self::OnboardingProvider { .. }
-            | Self::OnboardingAuth { .. }
-            | Self::OnboardingModel { .. }
-            | Self::OnboardingApiKey { .. } => None,
+            | Self::ApiKeyPrompt { .. } => None,
         }
     }
 
@@ -395,30 +355,20 @@ impl OverlayState {
             }
             Self::ModelPicker { provider_id, .. }
             | Self::AuthPicker { provider_id, .. }
-            | Self::ApiKeyPrompt { provider_id, .. }
-            | Self::OnboardingAuth { provider_id, .. }
-            | Self::OnboardingModel { provider_id, .. }
-            | Self::OnboardingApiKey { provider_id, .. } => Some(provider_id.as_str()),
-            Self::OnboardingProvider { entries, selection } => {
-                entries.get(*selection).map(|entry| entry.selector.as_str())
-            }
+            | Self::ApiKeyPrompt { provider_id, .. } => Some(provider_id.as_str()),
             Self::SessionPicker { .. }
             | Self::AgentPicker { .. }
             | Self::LogoutPicker { .. }
-            | Self::ThemePicker { .. }
-            | Self::OnboardingTheme { .. } => None,
+            | Self::ThemePicker { .. } => None,
         }
     }
 
     /// Returns the currently selected model id when the overlay is model-backed.
     pub(crate) fn selected_model(&self) -> Option<&str> {
         match self {
-            Self::ModelPicker {
-                entries, selection, ..
+            Self::ModelPicker { entries, selection, .. } => {
+                entries.get(*selection).map(|entry| entry.selector.as_str())
             }
-            | Self::OnboardingModel {
-                entries, selection, ..
-            } => entries.get(*selection).map(|entry| entry.selector.as_str()),
             _ => None,
         }
     }
@@ -433,14 +383,58 @@ impl OverlayState {
         }
     }
 
-    /// Returns the currently selected onboarding auth selector when present.
-    #[allow(dead_code)]
-    pub(crate) fn selected_auth_selector(&self) -> Option<&str> {
+    /// Moves the selection to the first entry that matches the typed query.
+    pub(crate) fn select_matching_query(&mut self, query: &str) {
+        let query = query.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return;
+        }
         match self {
-            Self::OnboardingAuth {
+            Self::SessionPicker {
+                sessions,
+                selection,
+            } => {
+                if let Some(index) = sessions.iter().position(|session| {
+                    session
+                        .display_name
+                        .as_deref()
+                        .map(|name| name.to_ascii_lowercase().contains(&query))
+                        .unwrap_or(false)
+                        || session.id.to_string().to_ascii_lowercase().contains(&query)
+                }) {
+                    *selection = index;
+                }
+            }
+            Self::AgentPicker { entries, selection }
+            | Self::ModelPicker {
                 entries, selection, ..
-            } => entries.get(*selection).map(|entry| entry.selector.as_str()),
-            _ => None,
+            }
+            | Self::LoginPicker { entries, selection }
+            | Self::ProviderPicker {
+                entries, selection, ..
+            }
+            | Self::LogoutPicker { entries, selection }
+            | Self::ThemePicker { entries, selection } => {
+                if let Some(index) = entries.iter().position(|entry| {
+                    entry.selector.to_ascii_lowercase().contains(&query)
+                        || entry.description.to_ascii_lowercase().contains(&query)
+                }) {
+                    *selection = index;
+                }
+            }
+            Self::AuthPicker {
+                entries,
+                selection,
+                ..
+            } => {
+                if let Some(index) = entries.iter().position(|entry| {
+                    entry.label.to_ascii_lowercase().contains(&query)
+                        || entry.description.to_ascii_lowercase().contains(&query)
+                }) {
+                    *selection = index;
+                }
+            }
+            Self::ApiKeyPrompt { .. } => {}
         }
     }
 
@@ -461,28 +455,18 @@ impl OverlayState {
                 onboarding: true,
                 ..
             } | Self::ThemePicker { .. }
-                | Self::OnboardingTheme { .. }
-                | Self::OnboardingProvider { .. }
-                | Self::OnboardingAuth { .. }
-                | Self::OnboardingModel { .. }
-                | Self::OnboardingApiKey { .. }
         )
     }
 
     /// Returns true when the overlay accepts inline text input.
     pub(crate) fn accepts_text_input(&self) -> bool {
-        matches!(self, Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. })
+        matches!(self, Self::ApiKeyPrompt { .. })
     }
 
     /// Moves the text cursor left for inline API-key input.
     pub(crate) fn move_left(&mut self) {
         match self {
-            Self::ApiKeyPrompt { value, cursor, .. }
-            | Self::OnboardingApiKey {
-                input: value,
-                cursor,
-                ..
-            } => {
+            Self::ApiKeyPrompt { value, cursor, .. } => {
                 *cursor = previous_boundary(value, *cursor);
             }
             _ => {}
@@ -492,12 +476,7 @@ impl OverlayState {
     /// Moves the text cursor right for inline API-key input.
     pub(crate) fn move_right(&mut self) {
         match self {
-            Self::ApiKeyPrompt { value, cursor, .. }
-            | Self::OnboardingApiKey {
-                input: value,
-                cursor,
-                ..
-            } => {
+            Self::ApiKeyPrompt { value, cursor, .. } => {
                 *cursor = next_boundary(value, *cursor);
             }
             _ => {}
@@ -507,7 +486,7 @@ impl OverlayState {
     /// Moves the text cursor to the beginning for inline API-key input.
     pub(crate) fn move_home(&mut self) {
         match self {
-            Self::ApiKeyPrompt { cursor, .. } | Self::OnboardingApiKey { cursor, .. } => {
+            Self::ApiKeyPrompt { cursor, .. } => {
                 *cursor = 0;
             }
             _ => {}
@@ -517,12 +496,7 @@ impl OverlayState {
     /// Moves the text cursor to the end for inline API-key input.
     pub(crate) fn move_end(&mut self) {
         match self {
-            Self::ApiKeyPrompt { value, cursor, .. }
-            | Self::OnboardingApiKey {
-                input: value,
-                cursor,
-                ..
-            } => {
+            Self::ApiKeyPrompt { value, cursor, .. } => {
                 *cursor = value.len();
             }
             _ => {}
@@ -532,12 +506,7 @@ impl OverlayState {
     /// Inserts one character into the API-key prompt.
     pub(crate) fn insert_char(&mut self, ch: char) {
         match self {
-            Self::ApiKeyPrompt { value, cursor, .. }
-            | Self::OnboardingApiKey {
-                input: value,
-                cursor,
-                ..
-            } => {
+            Self::ApiKeyPrompt { value, cursor, .. } => {
                 value.insert(*cursor, ch);
                 *cursor += ch.len_utf8();
             }
@@ -548,12 +517,7 @@ impl OverlayState {
     /// Deletes the previous character from the API-key prompt.
     pub(crate) fn backspace(&mut self) {
         match self {
-            Self::ApiKeyPrompt { value, cursor, .. }
-            | Self::OnboardingApiKey {
-                input: value,
-                cursor,
-                ..
-            } => {
+            Self::ApiKeyPrompt { value, cursor, .. } => {
                 if *cursor == 0 {
                     return;
                 }
@@ -568,12 +532,7 @@ impl OverlayState {
     /// Deletes the next character from the API-key prompt.
     pub(crate) fn delete(&mut self) {
         match self {
-            Self::ApiKeyPrompt { value, cursor, .. }
-            | Self::OnboardingApiKey {
-                input: value,
-                cursor,
-                ..
-            } => {
+            Self::ApiKeyPrompt { value, cursor, .. } => {
                 if *cursor >= value.len() {
                     return;
                 }
@@ -588,7 +547,6 @@ impl OverlayState {
     pub(crate) fn api_key_value(&self) -> Option<&str> {
         match self {
             Self::ApiKeyPrompt { value, .. } => Some(value.as_str()),
-            Self::OnboardingApiKey { input, .. } => Some(input.as_str()),
             _ => None,
         }
     }

@@ -36,7 +36,16 @@ fn header_snapshot_reports_compact_status() {
     assert_snapshot!(
         snapshot,
         @r"
-Puffer Code · Shipyard · anthropic/claude-sonnet-4-5 · auth api-key · tools 3/4 · dockyard@staging
+Puffer Code
+Mascot    Clawd on duty
+User      anthropic via API key
+Provider  anthropic · auth api-key
+Mode      effort high · fast · vim
+
+Session    Shipyard · 12345678
+Model      anthropic/claude-sonn... · tools 3/4
+Directory  /tmp/puffer
+Activity   2 messages · 2 workdirs · dockyard@staging
 "
     );
 }
@@ -78,8 +87,16 @@ fn header_snapshot_includes_oauth_identity_when_available() {
     assert_snapshot!(
         snapshot,
         @r"
-Puffer Code · Shipyard · openai/gpt-5 · auth oauth · tools 3/4 · dockyard@staging
-dev@example.com · plan Pro · acct acct-1
+Puffer Code
+Mascot    Clawd on duty
+User      dev@example.com · plan Pro · acct acct-1
+Provider  openai · auth oauth
+Mode      effort high · fast · vim
+
+Session    Shipyard · 12345678
+Model      openai/gpt-5 · tools 3/4
+Directory  /tmp/puffer
+Activity   2 messages · 2 workdirs · dockyard@staging
 "
     );
 }
@@ -112,15 +129,49 @@ fn render_draws_sparse_transcript_and_popup() {
 
     let rendered = terminal_view(&terminal);
     assert!(rendered.contains("Puffer Code"));
+    assert!(rendered.contains("Clawd"));
+    assert!(rendered.contains("Session"));
     assert!(rendered.contains("working tree clean"));
     assert!(rendered.contains("/review"));
-    assert!(!rendered.contains("Session"));
-    assert!(!rendered.contains("Tools"));
-    assert!(!rendered.contains("Inspector"));
 }
 
 #[test]
-fn render_empty_state_shows_welcome_card() {
+fn render_layout_includes_header_body_and_composer() {
+    let backend = TestBackend::new(100, 36);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let state = sample_state();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            )
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert!(lines.first().map_or(false, |line| line.contains("Puffer Code")));
+    assert!(lines.iter().any(|line| line.contains("Clawd")));
+    assert!(lines.iter().any(|line| line.contains("Session")));
+    assert!(lines.iter().any(|line| line.contains("working tree clean")));
+    assert!(lines.iter().rev().take(8).any(|line| line.contains("❯")));
+}
+
+#[test]
+fn render_empty_state_shows_transcript_guidance() {
     let backend = TestBackend::new(100, 28);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut state = sample_state();
@@ -147,7 +198,7 @@ fn render_empty_state_shows_welcome_card() {
         .unwrap();
 
     let rendered = terminal_view(&terminal);
-    assert!(rendered.contains("Welcome to Puffer Code"));
+    assert!(!rendered.contains("Welcome to Puffer Code"));
     assert!(rendered.contains("Clawd on duty"));
     assert!(rendered.contains("? for shortcuts"));
 }

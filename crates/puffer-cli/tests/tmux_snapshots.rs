@@ -21,12 +21,7 @@ fn tmux_help_matches_snapshot() {
     let capture =
         wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(10)).unwrap();
     assert_normalized_snapshot(
-        &normalize_tmux_capture(&focused_tmux_capture(
-            &capture,
-            "Supported commands:",
-            2,
-            44,
-        )),
+        &normalize_tmux_capture(&focused_help_capture(&capture)),
         &snapshot_path("tmux_help_snapshot.txt"),
     )
     .unwrap();
@@ -143,14 +138,24 @@ fn focused_tmux_capture(capture: &str, anchor: &str, before: usize, after: usize
     lines[start..end].join("\n")
 }
 
+fn focused_help_capture(capture: &str) -> String {
+    trim_common_padding(&focused_tmux_capture(capture, "Supported commands:", 0, 4))
+}
+
 fn focused_login_capture(capture: &str) -> String {
-    capture
-        .lines()
-        .filter(|line| {
-            line.contains("Select Provider")
-                || line.contains("anthropic")
-                || line.contains("openai")
-        })
+    trim_common_padding(&focused_tmux_capture(capture, " Login ", 0, 4))
+}
+
+fn trim_common_padding(capture: &str) -> String {
+    let lines = capture.lines().collect::<Vec<_>>();
+    let padding = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take_while(|ch| *ch == ' ').count())
+        .min()
+        .unwrap_or(0);
+    lines.into_iter()
+        .map(|line| line.chars().skip(padding).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
 }
