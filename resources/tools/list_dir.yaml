@@ -1,0 +1,6 @@
+id: list_dir
+name: list_dir
+description: List files and directories from the workspace.
+handler: list_dir
+approval_policy: auto
+sandbox_policy: read-only

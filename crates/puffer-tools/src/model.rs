@@ -86,6 +86,8 @@ pub enum ToolKind {
     Bash,
     ReadFile,
     WriteFile,
+    ListDir,
+    SearchText,
 }
 
 impl ToolKind {
@@ -95,6 +97,8 @@ impl ToolKind {
             "bash" => Some(Self::Bash),
             "read_file" => Some(Self::ReadFile),
             "write_file" => Some(Self::WriteFile),
+            "list_dir" => Some(Self::ListDir),
+            "search_text" => Some(Self::SearchText),
             _ => None,
         }
     }
@@ -105,6 +109,8 @@ impl ToolKind {
             Self::Bash => "bash",
             Self::ReadFile => "read_file",
             Self::WriteFile => "write_file",
+            Self::ListDir => "list_dir",
+            Self::SearchText => "search_text",
         }
     }
 
@@ -157,6 +163,21 @@ pub struct WriteFileToolInput {
     pub contents: String,
 }
 
+/// Typed input for the built-in directory-listing tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListDirToolInput {
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+}
+
+/// Typed input for the built-in workspace text-search tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchTextToolInput {
+    pub query: String,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+}
+
 /// Tagged tool input accepted by the tool CLI and model tool loops.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
@@ -164,6 +185,8 @@ pub enum ToolInput {
     Bash { command: String },
     ReadFile { path: PathBuf },
     WriteFile { path: PathBuf, contents: String },
+    ListDir { path: Option<PathBuf> },
+    SearchText { query: String, path: Option<PathBuf> },
 }
 
 impl ToolInput {
@@ -173,6 +196,8 @@ impl ToolInput {
             Self::Bash { .. } => ToolKind::Bash,
             Self::ReadFile { .. } => ToolKind::ReadFile,
             Self::WriteFile { .. } => ToolKind::WriteFile,
+            Self::ListDir { .. } => ToolKind::ListDir,
+            Self::SearchText { .. } => ToolKind::SearchText,
         }
     }
 
@@ -191,6 +216,14 @@ impl ToolInput {
                 ToolKind::WriteFile,
                 TypedToolInput::WriteFile(WriteFileToolInput { path, contents }),
             ),
+            Self::ListDir { path } => (
+                ToolKind::ListDir,
+                TypedToolInput::ListDir(ListDirToolInput { path }),
+            ),
+            Self::SearchText { query, path } => (
+                ToolKind::SearchText,
+                TypedToolInput::SearchText(SearchTextToolInput { query, path }),
+            ),
         }
     }
 }
@@ -201,6 +234,8 @@ pub enum TypedToolInput {
     Bash(BashToolInput),
     ReadFile(ReadFileToolInput),
     WriteFile(WriteFileToolInput),
+    ListDir(ListDirToolInput),
+    SearchText(SearchTextToolInput),
 }
 
 /// Captures normalized stdout, stderr, and metadata from one tool run.
@@ -225,6 +260,8 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         builtin_tool_definition(ToolKind::Bash),
         builtin_tool_definition(ToolKind::ReadFile),
         builtin_tool_definition(ToolKind::WriteFile),
+        builtin_tool_definition(ToolKind::ListDir),
+        builtin_tool_definition(ToolKind::SearchText),
     ]
 }
 
@@ -310,6 +347,63 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             },
             policy: ToolPolicyHints::default(),
         },
+        ToolKind::ListDir => ToolDefinition {
+            id: "list_dir".to_string(),
+            name: "list_dir".to_string(),
+            description: "List files and directories from the current workspace.".to_string(),
+            handler: kind.handler().to_string(),
+            kind,
+            input_schema: ToolInputSchema {
+                properties: BTreeMap::from([(
+                    "path".to_string(),
+                    ToolPropertySchema {
+                        value_type: ToolSchemaType::String,
+                        description: "Optional directory path to inspect.".to_string(),
+                        required: false,
+                    },
+                )]),
+            },
+            metadata: ToolMetadata {
+                may_spawn_processes: false,
+                may_read_files: true,
+                may_write_files: false,
+            },
+            policy: ToolPolicyHints::default(),
+        },
+        ToolKind::SearchText => ToolDefinition {
+            id: "search_text".to_string(),
+            name: "search_text".to_string(),
+            description: "Search for text in workspace files with ripgrep-style semantics."
+                .to_string(),
+            handler: kind.handler().to_string(),
+            kind,
+            input_schema: ToolInputSchema {
+                properties: BTreeMap::from([
+                    (
+                        "query".to_string(),
+                        ToolPropertySchema {
+                            value_type: ToolSchemaType::String,
+                            description: "Text or regex pattern to search for.".to_string(),
+                            required: true,
+                        },
+                    ),
+                    (
+                        "path".to_string(),
+                        ToolPropertySchema {
+                            value_type: ToolSchemaType::String,
+                            description: "Optional path scope for the search.".to_string(),
+                            required: false,
+                        },
+                    ),
+                ]),
+            },
+            metadata: ToolMetadata {
+                may_spawn_processes: true,
+                may_read_files: true,
+                may_write_files: false,
+            },
+            policy: ToolPolicyHints::default(),
+        },
     }
 }
 
@@ -319,6 +413,8 @@ pub fn builtin_tool_definition_by_handler(handler: &str) -> Option<ToolDefinitio
         "bash" => Some(builtin_tool_definition(ToolKind::Bash)),
         "read_file" => Some(builtin_tool_definition(ToolKind::ReadFile)),
         "write_file" => Some(builtin_tool_definition(ToolKind::WriteFile)),
+        "list_dir" => Some(builtin_tool_definition(ToolKind::ListDir)),
+        "search_text" => Some(builtin_tool_definition(ToolKind::SearchText)),
         _ => None,
     }
 }
@@ -334,7 +430,10 @@ mod tests {
             .iter()
             .map(|definition| definition.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["bash", "read_file", "write_file"]);
+        assert_eq!(
+            ids,
+            vec!["bash", "read_file", "write_file", "list_dir", "search_text"]
+        );
     }
 
     #[test]
@@ -389,6 +488,14 @@ mod tests {
             }
             .kind(),
             ToolKind::Bash
+        );
+        assert_eq!(
+            ToolInput::SearchText {
+                query: "needle".to_string(),
+                path: None,
+            }
+            .kind(),
+            ToolKind::SearchText
         );
     }
 }
