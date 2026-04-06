@@ -1,11 +1,13 @@
 mod panes;
 mod summary;
+mod tool_messages;
 
 use self::panes::{render_empty_state, render_help_pane};
 use self::summary::{
     hint_line, status_compact_line, status_primary_line, status_secondary_line,
     top_panel_columns, top_panel_compact_lines, top_panel_height, use_compact_top_panel,
 };
+use self::tool_messages::render_tool_message;
 #[cfg(test)]
 use self::summary::{footer_lines, header_lines, session_lines};
 use crate::markdown::render_markdown;
@@ -37,6 +39,7 @@ thread_local! {
     static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
     static ACTIVE_PENDING_SUBMIT: RefCell<PendingSubmitRenderState> =
         RefCell::new(PendingSubmitRenderState::default());
+    static ACTIVE_TOOL_DETAILS_EXPANDED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Sets the active overlay rendered by the TUI on the next draw.
@@ -56,6 +59,13 @@ pub(crate) fn set_pending_submit_state(
             loading_prompt,
             queued_prompts,
         };
+    });
+}
+
+/// Sets whether transcript tool messages should render their raw details.
+pub(crate) fn set_tool_details_expanded(expanded: bool) {
+    ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| {
+        *value.borrow_mut() = expanded;
     });
 }
 
@@ -416,6 +426,14 @@ pub(crate) fn transcript_line_count(state: &AppState, pending_submit: bool) -> u
 }
 
 fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
+    if message.role == MessageRole::System {
+        if let Some(lines) = render_tool_message(
+            &message.text,
+            ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| *value.borrow()),
+        ) {
+            return lines;
+        }
+    }
     let (first_prefix, continuation_prefix) = match message.role {
         MessageRole::User => ("› ", "  "),
         MessageRole::Assistant => ("", "  "),

@@ -149,6 +149,7 @@ pub fn run_app(
                     .map(|pending| pending.prompt.clone()),
                 tui.queued_prompts.iter().cloned().collect(),
             );
+            render::set_tool_details_expanded(tui.tool_details_expanded);
             render::render(
                 frame,
                 state,
@@ -223,6 +224,9 @@ fn handle_key(
     }
 
     match key.code {
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui.tool_details_expanded = !tui.tool_details_expanded;
+        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_exit = true;
             return Ok(true);

@@ -643,6 +643,37 @@ fn render_shows_overlay_query_in_prompt_row() {
     assert!(rendered.contains("Type") || rendered.contains("Typing jumps"));
 }
 
+#[test]
+fn ctrl_o_toggles_tool_detail_expansion() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let mut state = sample_state();
+    let mut resources = sample_resources();
+    let mut providers = sample_providers();
+    let mut auth_store = sample_auth_store();
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let commands = supported_commands();
+    let mut tui = TuiState::default();
+
+    assert!(!tui.tool_details_expanded);
+    handle_key(
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        &mut state,
+        &mut resources,
+        &mut providers,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &commands,
+        &mut tui,
+        true,
+    )
+    .unwrap();
+    assert!(tui.tool_details_expanded);
+}
+
 fn sample_state() -> AppState {
     let mut state = AppState::new(
         PufferConfig::default(),
