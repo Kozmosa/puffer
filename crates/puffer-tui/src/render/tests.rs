@@ -30,6 +30,8 @@ fn tool_lines_include_registry_status_and_shell_activity() {
     assert!(lines.contains("Configured: 4"));
     assert!(lines.contains("Executable: 3"));
     assert!(lines.contains("Kinds: bash=on read=on write=on"));
+    assert!(lines.contains("move=off"));
+    assert!(lines.contains("remove=off"));
     assert!(lines.contains("Shell runs: 1"));
     assert!(lines.contains("Last shell: git status"));
 }
