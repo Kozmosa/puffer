@@ -1,5 +1,7 @@
 use crate::{AppState, CommandSpec, MessageRole};
-use puffer_provider_registry::{AuthStore, ProviderRegistry};
+use puffer_provider_registry::{
+    AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
+};
 use puffer_resources::{mascot_by_id, LoadedResources};
 use std::fmt::Write as _;
 
@@ -56,26 +58,23 @@ pub(crate) fn render_usage_summary(
     providers: &ProviderRegistry,
     auth_store: &AuthStore,
 ) -> String {
-    let providers_with_discovery = providers
-        .provider_entries()
-        .filter(|provider| provider.descriptor.discovery.is_some())
-        .count();
-    format!(
-        "Usage summary:\ncommands={}\nmessages={}\nproviders={}\nmodels={}\nauthed_providers={}\nproviders_with_discovery={}\nprompts={}\ntools={}\nskills={}\nplugins={}\nhooks={}\nactive_provider={}\nactive_model={}",
-        commands.len(),
-        state.transcript.len(),
-        providers.providers().count(),
-        providers.models().count(),
-        auth_store.provider_ids().count(),
-        providers_with_discovery,
-        resources.prompts.len(),
-        resources.tools.len(),
-        resources.skills.len(),
-        resources.plugins.len(),
-        resources.hooks.len(),
-        state.current_provider.as_deref().unwrap_or("<unset>"),
-        state.current_model.as_deref().unwrap_or("<unset>"),
-    )
+    let active_provider_id = state.current_provider.as_deref();
+    let active_provider =
+        active_provider_id.and_then(|provider_id| providers.provider(provider_id));
+    let active_credential = active_provider_id.and_then(|provider_id| auth_store.get(provider_id));
+    let mut sections = vec![String::from("Usage")];
+    sections.extend(account_summary_lines(
+        state,
+        active_provider,
+        active_credential,
+    ));
+    sections.push(String::new());
+    sections.extend(provider_usage_lines(active_provider, active_credential));
+    sections.push(String::new());
+    sections.extend(runtime_summary_lines(
+        state, commands, resources, providers, auth_store,
+    ));
+    sections.join("\n")
 }
 
 /// Renders the current mascot summary, including any loaded introduction text.
@@ -97,4 +96,242 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn account_summary_lines(
+    state: &AppState,
+    provider: Option<&ProviderDescriptor>,
+    credential: Option<&StoredCredential>,
+) -> Vec<String> {
+    let provider_label = provider
+        .map(|provider| provider.display_name.as_str())
+        .or(state.current_provider.as_deref())
+        .unwrap_or("<unset>");
+    let auth_label = credential_auth_label(state, credential);
+    let mut lines = vec![
+        format!("Provider: {provider_label}"),
+        format!(
+            "Model: {}",
+            state.current_model.as_deref().unwrap_or("<unset>")
+        ),
+        format!("Authentication: {auth_label}"),
+    ];
+
+    if let Some(StoredCredential::OAuth(credential)) = credential {
+        match provider_family(provider, state.current_provider.as_deref()) {
+            ProviderSummaryFamily::Anthropic => {
+                if let Some(email) = credential.email.as_deref() {
+                    lines.push(format!("Logged in as: {email}"));
+                }
+                if let Some(organization_id) = credential.organization_id.as_deref() {
+                    lines.push(format!("Organization: {organization_id}"));
+                }
+                if let Some(plan_type) = credential.plan_type.as_deref() {
+                    lines.push(format!("Plan: {}", format_metadata_value(plan_type)));
+                }
+                if let Some(rate_limit_tier) = credential.rate_limit_tier.as_deref() {
+                    lines.push(format!(
+                        "Rate limit tier: {}",
+                        format_metadata_value(rate_limit_tier)
+                    ));
+                }
+                if let Some(account_id) = credential.account_id.as_deref() {
+                    lines.push(format!("Account ID: {account_id}"));
+                }
+            }
+            ProviderSummaryFamily::OpenAi => {
+                if let Some(email) = credential.email.as_deref() {
+                    lines.push(format!("Logged in as: {email}"));
+                }
+                if let Some(account_id) = credential.account_id.as_deref() {
+                    lines.push(format!("Account ID: {account_id}"));
+                }
+                if let Some(plan_type) = credential.plan_type.as_deref() {
+                    lines.push(format!("Plan: {}", format_metadata_value(plan_type)));
+                }
+            }
+            ProviderSummaryFamily::Other => {
+                if let Some(email) = credential.email.as_deref() {
+                    lines.push(format!("Account: {email}"));
+                }
+                if let Some(account_id) = credential.account_id.as_deref() {
+                    lines.push(format!("Account ID: {account_id}"));
+                }
+            }
+        }
+    }
+
+    lines
+}
+
+fn provider_usage_lines(
+    provider: Option<&ProviderDescriptor>,
+    credential: Option<&StoredCredential>,
+) -> Vec<String> {
+    match provider_family(provider, provider.map(|provider| provider.id.as_str())) {
+        ProviderSummaryFamily::Anthropic => anthropic_usage_lines(credential),
+        ProviderSummaryFamily::OpenAi => openai_usage_lines(credential),
+        ProviderSummaryFamily::Other => generic_usage_lines(credential),
+    }
+}
+
+fn anthropic_usage_lines(credential: Option<&StoredCredential>) -> Vec<String> {
+    let mut lines = vec![String::from("Claude subscription usage")];
+    let Some(StoredCredential::OAuth(credential)) = credential else {
+        lines.push(String::from(
+            "Sign in with Anthropic OAuth to view Claude subscription limits.",
+        ));
+        return lines;
+    };
+
+    lines.push(String::from(
+        "Current session: unavailable in local summary",
+    ));
+    lines.push(String::from(
+        "Current week (all models): unavailable in local summary",
+    ));
+    if shows_anthropic_sonnet_limit(credential) {
+        lines.push(String::from(
+            "Current week (Sonnet only): unavailable in local summary",
+        ));
+    }
+    if supports_extra_usage(credential) {
+        lines.push(String::from("Extra usage: unavailable in local summary"));
+    }
+    lines.push(String::from(
+        "Live Claude usage fetch is not wired into this command yet.",
+    ));
+    lines
+}
+
+fn openai_usage_lines(credential: Option<&StoredCredential>) -> Vec<String> {
+    let mut lines = vec![String::from("OpenAI/Codex account usage")];
+    match credential {
+        Some(StoredCredential::OAuth(_)) => {
+            lines.push(String::from(
+                "Provider-reported usage is unavailable in the local summary.",
+            ));
+        }
+        Some(StoredCredential::ApiKey { .. }) => {
+            lines.push(String::from(
+                "Sign in with OAuth to view account-linked usage details.",
+            ));
+        }
+        None => lines.push(String::from(
+            "Add credentials to view provider-specific account details.",
+        )),
+    }
+    lines
+}
+
+fn generic_usage_lines(credential: Option<&StoredCredential>) -> Vec<String> {
+    let mut lines = vec![String::from("Provider usage")];
+    match credential {
+        Some(StoredCredential::OAuth(_)) => lines.push(String::from(
+            "Provider-specific usage details are unavailable in the local summary.",
+        )),
+        Some(StoredCredential::ApiKey { .. }) => lines.push(String::from(
+            "OAuth-backed account usage is unavailable for API-key auth.",
+        )),
+        None => lines.push(String::from(
+            "Select a provider and add credentials to view provider-specific usage.",
+        )),
+    }
+    lines
+}
+
+fn runtime_summary_lines(
+    state: &AppState,
+    commands: &[CommandSpec],
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+) -> Vec<String> {
+    let providers_with_discovery = providers
+        .provider_entries()
+        .filter(|provider| provider.descriptor.discovery.is_some())
+        .count();
+    vec![
+        String::from("Runtime summary"),
+        format!("Commands: {}", commands.len()),
+        format!("Messages: {}", state.transcript.len()),
+        format!("Providers: {}", providers.providers().count()),
+        format!("Models: {}", providers.models().count()),
+        format!(
+            "Authenticated providers: {}",
+            auth_store.provider_ids().count()
+        ),
+        format!("Providers with discovery: {providers_with_discovery}"),
+        format!("Prompts: {}", resources.prompts.len()),
+        format!("Tools: {}", resources.tools.len()),
+        format!("Skills: {}", resources.skills.len()),
+        format!("Plugins: {}", resources.plugins.len()),
+        format!("Hooks: {}", resources.hooks.len()),
+    ]
+}
+
+fn credential_auth_label(state: &AppState, credential: Option<&StoredCredential>) -> &'static str {
+    match credential {
+        Some(StoredCredential::ApiKey { .. }) => "API key",
+        Some(StoredCredential::OAuth(_)) => "OAuth",
+        None if state.current_provider.is_some() => "missing",
+        None => "n/a",
+    }
+}
+
+fn shows_anthropic_sonnet_limit(credential: &OAuthCredential) -> bool {
+    matches!(credential.plan_type.as_deref(), Some("max" | "team"))
+        || credential.plan_type.is_none()
+}
+
+fn supports_extra_usage(credential: &OAuthCredential) -> bool {
+    matches!(credential.plan_type.as_deref(), Some("pro" | "max"))
+}
+
+fn format_metadata_value(value: &str) -> String {
+    value
+        .split(['_', '-', ' '])
+        .filter(|part| !part.is_empty())
+        .map(capitalize_word)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn capitalize_word(value: &str) -> String {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    let mut text = String::new();
+    text.push(first.to_ascii_uppercase());
+    text.push_str(&characters.as_str().to_ascii_lowercase());
+    text
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderSummaryFamily {
+    Anthropic,
+    OpenAi,
+    Other,
+}
+
+fn provider_family(
+    provider: Option<&ProviderDescriptor>,
+    provider_id: Option<&str>,
+) -> ProviderSummaryFamily {
+    let provider_id = provider_id.unwrap_or_default();
+    let api = provider
+        .map(|provider| provider.default_api.as_str())
+        .unwrap_or_default();
+    if provider_id == "anthropic" || api == "anthropic-messages" {
+        ProviderSummaryFamily::Anthropic
+    } else if provider_id == "openai"
+        || api.starts_with("openai")
+        || api.contains("responses")
+        || api.contains("completions")
+    {
+        ProviderSummaryFamily::OpenAi
+    } else {
+        ProviderSummaryFamily::Other
+    }
 }
