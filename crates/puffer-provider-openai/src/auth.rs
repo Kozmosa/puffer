@@ -36,6 +36,8 @@ pub struct OpenAIOAuthCredentials {
     pub refresh_token: String,
     pub expires_at_ms: u64,
     pub account_id: Option<String>,
+    pub email: Option<String>,
+    pub plan_type: Option<String>,
 }
 
 /// Stores generated PKCE values for the OpenAI OAuth flow.
@@ -201,6 +203,8 @@ fn token_response_to_credentials(payload: OpenAITokenResponse) -> Result<OpenAIO
         .ok_or_else(|| anyhow!("OpenAI token response did not include expires_in"))?;
     Ok(OpenAIOAuthCredentials {
         account_id: decode_account_id(&access_token),
+        email: payload.id_token.as_deref().and_then(decode_email),
+        plan_type: payload.id_token.as_deref().and_then(decode_plan_type),
         access_token,
         refresh_token,
         expires_at_ms: now_ms() + (expires_in as u64) * 1000,
@@ -230,6 +234,37 @@ struct OpenAITokenResponse {
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_in: Option<u32>,
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
+fn decode_email(id_token: &str) -> Option<String> {
+    let value = decode_jwt_payload(id_token)?;
+    value
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            value
+                .pointer("/https://api.openai.com/profile/email")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        })
+}
+
+fn decode_plan_type(id_token: &str) -> Option<String> {
+    let value = decode_jwt_payload(id_token)?;
+    value
+        .get("https://api.openai.com/auth")
+        .and_then(|claim| claim.get("chatgpt_plan_type"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
+    serde_json::from_slice(&decoded).ok()
 }
 
 #[cfg(test)]
@@ -275,5 +310,19 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
         let token = format!("header.{payload}.sig");
         assert_eq!(decode_account_id(&token).as_deref(), Some("acct-123"));
+    }
+
+    #[test]
+    fn decodes_email_and_plan_type_from_id_token() {
+        let payload = serde_json::json!({
+            "email": "dev@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "pro"
+            }
+        });
+        let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
+        let token = format!("header.{payload}.sig");
+        assert_eq!(decode_email(&token).as_deref(), Some("dev@example.com"));
+        assert_eq!(decode_plan_type(&token).as_deref(), Some("pro"));
     }
 }

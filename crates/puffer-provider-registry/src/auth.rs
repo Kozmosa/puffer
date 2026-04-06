@@ -24,7 +24,13 @@ pub struct OAuthCredential {
     #[serde(default)]
     pub account_id: Option<String>,
     #[serde(default)]
+    pub organization_id: Option<String>,
+    #[serde(default)]
     pub email: Option<String>,
+    #[serde(default)]
+    pub plan_type: Option<String>,
+    #[serde(default)]
+    pub rate_limit_tier: Option<String>,
     #[serde(default)]
     pub scopes: Vec<String>,
 }
@@ -128,7 +134,10 @@ mod tests {
                 refresh_token: "ref".to_string(),
                 expires_at_ms: 42,
                 account_id: Some("acct".to_string()),
+                organization_id: Some("org".to_string()),
                 email: None,
+                plan_type: Some("pro".to_string()),
+                rate_limit_tier: Some("tier-1".to_string()),
                 scopes: vec!["openid".to_string()],
             },
         );
@@ -136,6 +145,8 @@ mod tests {
             store.get("openai"),
             Some(StoredCredential::OAuth(credential))
                 if credential.account_id.as_deref() == Some("acct")
+                    && credential.organization_id.as_deref() == Some("org")
+                    && credential.plan_type.as_deref() == Some("pro")
         ));
 
         let removed = store.remove("anthropic");

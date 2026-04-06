@@ -1601,11 +1601,14 @@ name = "puffer-provider-registry"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "dirs",
  "indexmap",
  "puffer-config",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "uuid",
 ]
 

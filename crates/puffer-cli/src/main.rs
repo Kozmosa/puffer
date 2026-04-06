@@ -853,7 +853,10 @@ fn to_registry_oauth_credential_openai(
         refresh_token: credential.refresh_token,
         expires_at_ms: credential.expires_at_ms,
         account_id: credential.account_id,
-        email: None,
+        organization_id: None,
+        email: credential.email,
+        plan_type: credential.plan_type,
+        rate_limit_tier: None,
         scopes: Vec::new(),
     }
 }
@@ -866,7 +869,10 @@ fn to_registry_oauth_credential_anthropic(
         refresh_token: credential.refresh_token,
         expires_at_ms: credential.expires_at_ms,
         account_id: credential.account_uuid,
+        organization_id: credential.organization_uuid,
         email: credential.email_address,
+        plan_type: None,
+        rate_limit_tier: None,
         scopes: credential.scopes,
     }
 }

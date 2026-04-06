@@ -81,6 +81,16 @@ impl ConfigPaths {
     pub fn user_config_file(&self) -> PathBuf {
         self.user_config_dir.join("config.toml")
     }
+
+    /// Returns true when the user-level config file already exists.
+    pub fn has_user_config(&self) -> bool {
+        self.user_config_file().exists()
+    }
+
+    /// Returns true when the workspace-level config file already exists.
+    pub fn has_workspace_config(&self) -> bool {
+        self.workspace_config_file().exists()
+    }
 }
 
 /// Loads layered Puffer configuration from the user and workspace config files.
@@ -93,6 +103,18 @@ pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
         merge_config_file(&mut config, &paths.workspace_config_file())?;
     }
     Ok(config)
+}
+
+/// Saves the user-level Puffer configuration file.
+pub fn save_user_config(paths: &ConfigPaths, config: &PufferConfig) -> Result<()> {
+    ensure_workspace_dirs(paths)?;
+    write_config_file(&paths.user_config_file(), config)
+}
+
+/// Saves the workspace-level Puffer configuration file.
+pub fn save_workspace_config(paths: &ConfigPaths, config: &PufferConfig) -> Result<()> {
+    ensure_workspace_dirs(paths)?;
+    write_config_file(&paths.workspace_config_file(), config)
 }
 
 /// Ensures the standard user and workspace configuration directories exist.
@@ -119,4 +141,15 @@ fn merge_config_file(config: &mut PufferConfig, path: &Path) -> Result<()> {
         .with_context(|| format!("failed to parse config file {}", path.display()))?;
     *config = parsed;
     Ok(())
+}
+
+fn write_config_file(path: &Path, config: &PufferConfig) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create config parent dir {}", parent.display())
+        })?;
+    }
+    let raw = toml::to_string_pretty(config)
+        .with_context(|| format!("failed to serialize config file {}", path.display()))?;
+    fs::write(path, raw).with_context(|| format!("failed to write config file {}", path.display()))
 }
