@@ -1,18 +1,17 @@
 use crate::command_helpers::{
     copy_last_message, describe_context, describe_git_diff, describe_permissions,
-    describe_plugin, emit_system, event_to_rendered_message, execute_skill_command, list_ides,
+    describe_plugin, emit_system, execute_skill_command, list_ides,
     list_mcp_servers, list_skills, rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::AppState;
 use anyhow::Result;
-use puffer_config::PufferConfig;
 use puffer_provider_openai::{
     build_authorization_url as build_openai_authorization_url,
     generate_pkce as generate_openai_pkce, OpenAIOAuthConfig,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{prompt_by_id, LoadedResources};
-use puffer_session_store::{SessionMetadata, SessionStore, TranscriptEvent};
+use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url,
     generate_pkce as generate_anthropic_pkce, AnthropicOAuthConfig,
@@ -419,7 +418,6 @@ fn execute_local_command(
             emit_system(state, session_store, format!("Exported transcript to {}.", target.display()))
         }
         "copy" => copy_last_message(state, session_store),
-        "context" => describe_context(state, resources, session_store),
         "diff" => describe_git_diff(state, session_store),
         "doctor" => run_doctor(state, resources, providers, session_store),
         "buddy" => emit_system(

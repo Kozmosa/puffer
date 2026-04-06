@@ -6,6 +6,10 @@ use puffer_provider_openai::{
 use puffer_provider_registry::{
     AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
 };
+use puffer_resources::LoadedResources;
+use puffer_tools::{
+    BashToolInput, ReadFileToolInput, ToolInput, ToolKind, ToolRegistry, WriteFileToolInput,
+};
 use puffer_transport_anthropic::{
     build_messages_request, AnthropicAuth, AnthropicMessage, AnthropicModelRequest,
     AnthropicRequestConfig,
@@ -260,6 +264,115 @@ fn parse_anthropic_text(response: &Value) -> Result<String> {
     Ok(parts.join("\n"))
 }
 
+fn anthropic_tool_definitions(tool_registry: &ToolRegistry) -> Vec<Value> {
+    tool_registry
+        .tools()
+        .map(|tool| {
+            json!({
+                "name": tool.spec.name,
+                "description": tool.spec.description,
+                "input_schema": anthropic_tool_schema(tool.kind),
+            })
+        })
+        .collect()
+}
+
+fn anthropic_tool_schema(kind: ToolKind) -> Value {
+    match kind {
+        ToolKind::Bash => json!({
+            "type": "object",
+            "properties": { "command": { "type": "string" } },
+            "required": ["command"],
+        }),
+        ToolKind::ReadFile => json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+        }),
+        ToolKind::WriteFile => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "contents": { "type": "string" }
+            },
+            "required": ["path", "contents"],
+        }),
+    }
+}
+
+fn parse_anthropic_tool_calls(
+    content: &[Value],
+    tool_registry: &ToolRegistry,
+) -> Result<Vec<AnthropicToolCall>> {
+    let mut calls = Vec::new();
+    for item in content {
+        if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("anthropic tool_use missing name"))?;
+        let tool_use_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("anthropic tool_use missing id"))?
+            .to_string();
+        let tool = tool_registry
+            .tools()
+            .find(|tool| tool.spec.name == name || tool.spec.id == name)
+            .ok_or_else(|| anyhow!("unknown anthropic tool {name}"))?;
+        let input = tool_input_from_json(
+            tool.kind,
+            item.get("input")
+                .ok_or_else(|| anyhow!("anthropic tool_use missing input"))?,
+        )?;
+        calls.push(AnthropicToolCall {
+            tool_id: tool.spec.id.clone(),
+            tool_use_id,
+            input,
+        });
+    }
+    Ok(calls)
+}
+
+fn tool_input_from_json(kind: ToolKind, value: &Value) -> Result<ToolInput> {
+    match kind {
+        ToolKind::Bash => Ok(ToolInput::Bash(BashToolInput {
+            command: value
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("bash tool input missing command"))?
+                .to_string(),
+        })),
+        ToolKind::ReadFile => Ok(ToolInput::ReadFile(ReadFileToolInput {
+            path: value
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("read_file tool input missing path"))?
+                .into(),
+        })),
+        ToolKind::WriteFile => Ok(ToolInput::WriteFile(WriteFileToolInput {
+            path: value
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("write_file tool input missing path"))?
+                .into(),
+            contents: value
+                .get("contents")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("write_file tool input missing contents"))?
+                .to_string(),
+        })),
+    }
+}
+
+struct AnthropicToolCall {
+    tool_id: String,
+    tool_use_id: String,
+    input: ToolInput,
+}
+
 fn parse_openai_text(response: &Value) -> Result<String> {
     if let Some(text) = response.get("output_text").and_then(Value::as_str) {
         return Ok(text.to_string());
@@ -302,4 +415,147 @@ fn parse_openai_text_fallback(response: &Value, state: &AppState) -> Result<Stri
         state.current_provider.as_deref().unwrap_or("unknown"),
         state.session.id
     )
+}
+
+fn anthropic_tool_definitions(registry: &ToolRegistry) -> Vec<Value> {
+    registry
+        .tools()
+        .map(|tool| {
+            let input_schema = match tool.spec.handler.as_str() {
+                "bash" => json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to execute",
+                        }
+                    },
+                    "required": ["command"],
+                }),
+                "read_file" => json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to read",
+                        }
+                    },
+                    "required": ["path"],
+                }),
+                "write_file" => json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to write",
+                        },
+                        "contents": {
+                            "type": "string",
+                            "description": "Text to write to the file",
+                        }
+                    },
+                    "required": ["path", "contents"],
+                }),
+                _ => json!({
+                    "type": "object",
+                    "properties": {},
+                }),
+            };
+            json!({
+                "name": tool.spec.id,
+                "description": tool.spec.description,
+                "input_schema": input_schema,
+            })
+        })
+        .collect()
+}
+
+fn parse_anthropic_tool_calls(
+    content: &[Value],
+    registry: &ToolRegistry,
+) -> Result<Vec<ParsedAnthropicToolCall>> {
+    let mut calls = Vec::new();
+    for item in content {
+        if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let tool_id = item
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("anthropic tool_use block missing name"))?;
+        if registry.tool(tool_id).is_none() {
+            bail!("anthropic requested unknown tool {tool_id}");
+        }
+        let tool_use_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("anthropic tool_use block missing id"))?
+            .to_string();
+        let input = item
+            .get("input")
+            .ok_or_else(|| anyhow!("anthropic tool_use block missing input"))?;
+        calls.push(ParsedAnthropicToolCall {
+            tool_id: tool_id.to_string(),
+            tool_use_id,
+            input: parse_tool_input(tool_id, input)?,
+        });
+    }
+    Ok(calls)
+}
+
+fn parse_tool_input(tool_id: &str, input: &Value) -> Result<ToolInput> {
+    match tool_id {
+        "bash" => {
+            let command = input
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("bash tool input missing command"))?;
+            Ok(ToolInput::Bash(BashToolInput {
+                command: command.to_string(),
+            }))
+        }
+        "read_file" => {
+            let path = input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("read_file tool input missing path"))?;
+            Ok(ToolInput::ReadFile(ReadFileToolInput {
+                path: path.into(),
+            }))
+        }
+        "write_file" => {
+            let path = input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("write_file tool input missing path"))?;
+            let contents = input
+                .get("contents")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("write_file tool input missing contents"))?;
+            Ok(ToolInput::WriteFile(WriteFileToolInput {
+                path: path.into(),
+                contents: contents.to_string(),
+            }))
+        }
+        other => bail!("tool input parsing is not implemented for {other}"),
+    }
+}
+
+struct ParsedAnthropicToolCall {
+    tool_id: String,
+    tool_use_id: String,
+    input: ToolInput,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_tool_schema_lists_expected_fields() {
+        let schema = anthropic_tool_schema(ToolKind::WriteFile);
+        let required = schema.get("required").and_then(Value::as_array).unwrap();
+        assert!(required.iter().any(|value| value == "path"));
+        assert!(required.iter().any(|value| value == "contents"));
+    }
 }

@@ -279,31 +279,6 @@ pub(crate) fn emit_system(
     Ok(())
 }
 
-pub(crate) fn event_to_rendered_message(event: &TranscriptEvent) -> Option<RenderedMessage> {
-    match event {
-        TranscriptEvent::UserMessage { text } => Some(RenderedMessage {
-            role: MessageRole::User,
-            text: text.clone(),
-        }),
-        TranscriptEvent::AssistantMessage { text } => Some(RenderedMessage {
-            role: MessageRole::Assistant,
-            text: text.clone(),
-        }),
-        TranscriptEvent::SystemMessage { text } => Some(RenderedMessage {
-            role: MessageRole::System,
-            text: text.clone(),
-        }),
-        TranscriptEvent::CommandInvoked { name, args } => Some(RenderedMessage {
-            role: MessageRole::System,
-            text: format!("Command /{name} {args}"),
-        }),
-        TranscriptEvent::SessionRenamed { name } => Some(RenderedMessage {
-            role: MessageRole::System,
-            text: format!("Session renamed to {name}"),
-        }),
-    }
-}
-
 fn render_git_diff_summary(cwd: &PathBuf) -> String {
     let output = Command::new("git")
         .arg("-C")

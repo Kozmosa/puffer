@@ -157,7 +157,7 @@ fn handle_submit(
         },
     )?;
 
-    match execute_user_turn(state, providers, auth_store, &submitted) {
+    match execute_user_turn(state, resources, providers, auth_store, &submitted) {
         Ok(reply) => {
             state.push_message(MessageRole::Assistant, reply.clone());
             session_store.append_event(
