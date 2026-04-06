@@ -582,23 +582,10 @@ fn execute_local_command(
                 resources.plugins.len()
             ),
         ),
-        "context" => emit_system(
-            state,
-            session_store,
-            format!(
-                "Context summary:\nmessages={}\ncharacters={}\nprompts={}\ntools={}\nskills={}",
-                state.transcript.len(),
-                state.transcript.iter().map(|message| message.text.len()).sum::<usize>(),
-                resources.prompts.len(),
-                resources.tools.len(),
-                resources.skills.len()
-            ),
-        ),
         "clear" => {
             state.transcript.clear();
             emit_system(state, session_store, "Transcript cleared.".to_string())
         }
-        "copy" => copy_last_message(state, session_store),
         "context" => describe_context(state, resources, session_store),
         "diff" => describe_git_diff(state, session_store),
         "doctor" => run_doctor(state, resources, providers, session_store),
@@ -715,20 +702,7 @@ fn execute_local_command(
                 emit_system(state, session_store, format!("Unknown model {args}."))
             }
         }
-        "copy" => {
-            let copied = state
-                .transcript
-                .iter()
-                .rev()
-                .find(|message| matches!(message.role, MessageRole::Assistant))
-                .map(|message| message.text.clone())
-                .unwrap_or_else(|| "No assistant message is available to copy.".to_string());
-            emit_system(
-                state,
-                session_store,
-                format!("Latest assistant output:\n{copied}"),
-            )
-        }
+        "copy" => copy_last_message(state, session_store),
         "cost" => emit_system(
             state,
             session_store,
@@ -742,13 +716,7 @@ fn execute_local_command(
                     .count()
             ),
         ),
-        "diff" => emit_system(
-            state,
-            session_store,
-            render_git_diff_summary(&state.cwd),
-        ),
         "permissions" => describe_permissions(state, resources, session_store),
-        "doctor" => run_doctor(state, resources, providers, session_store),
         "hooks" => emit_system(
             state,
             session_store,
@@ -822,16 +790,7 @@ fn execute_local_command(
         "memory" => emit_system(
             state,
             session_store,
-            format!(
-                "Session memory summary:\nslug={}\nnote={}\ntags={}",
-                state.session.slug.as_deref().unwrap_or("<none>"),
-                state.session.note.as_deref().unwrap_or("<none>"),
-                if state.session.tags.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    state.session.tags.join(", ")
-                },
-            ),
+            handle_memory_command(state, session_store, args)?,
         ),
         "keybindings" => emit_system(
             state,
@@ -1079,6 +1038,54 @@ fn list_skills(
     emit_system(state, session_store, text)
 }
 
+fn handle_memory_command(state: &mut AppState, session_store: &SessionStore, args: &str) -> Result<String> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "show" {
+        return Ok(format!(
+            "Session memory summary:\nslug={}\nnote={}\ntags={}",
+            state.session.slug.as_deref().unwrap_or("<none>"),
+            state.session.note.as_deref().unwrap_or("<none>"),
+            if state.session.tags.is_empty() {
+                "<none>".to_string()
+            } else {
+                state.session.tags.join(", ")
+            },
+        ));
+    }
+
+    if let Some(note) = trimmed.strip_prefix("note ") {
+        let note = note.trim().to_string();
+        session_store.set_note(state.session.id, Some(note.clone()))?;
+        state.session.note = Some(note.clone());
+        return Ok(format!("Session note set to: {note}"));
+    }
+
+    if trimmed == "clear-note" {
+        session_store.set_note(state.session.id, None)?;
+        state.session.note = None;
+        return Ok("Session note cleared.".to_string());
+    }
+
+    if let Some(tag) = trimmed.strip_prefix("tag add ") {
+        let tag = tag.trim();
+        session_store.add_tag(state.session.id, tag)?;
+        if !state.session.tags.iter().any(|existing| existing == tag) {
+            state.session.tags.push(tag.to_string());
+            state.session.tags.sort();
+        }
+        return Ok(format!("Added tag `{tag}`."));
+    }
+
+    if let Some(tag) = trimmed.strip_prefix("tag remove ") {
+        let tag = tag.trim();
+        session_store.remove_tag(state.session.id, tag)?;
+        state.session.tags.retain(|existing| existing != tag);
+        return Ok(format!("Removed tag `{tag}`."));
+    }
+
+    Ok("Usage: /memory [show|note <text>|clear-note|tag add <tag>|tag remove <tag>]".to_string())
+}
+
 fn describe_permissions(
     state: &mut AppState,
     resources: &LoadedResources,
@@ -1165,6 +1172,30 @@ fn terminal_setup_advice(state: &AppState) -> String {
         state.config.ui.no_alt_screen,
         state.config.ui.tmux_golden_mode
     )
+}
+
+fn handle_memory_command(
+    state: &AppState,
+    _session_store: &SessionStore,
+    args: &str,
+) -> Result<String> {
+    if args.is_empty() {
+        return Ok(format!(
+            "Session memory summary:\nslug={}\nnote={}\ntags={}",
+            state.session.slug.as_deref().unwrap_or("<none>"),
+            state.session.note.as_deref().unwrap_or("<none>"),
+            if state.session.tags.is_empty() {
+                "<none>".to_string()
+            } else {
+                state.session.tags.join(", ")
+            },
+        ));
+    }
+
+    Ok(format!(
+        "Memory editing is not yet interactive.\nCurrent args: {}\nUse `puffer sessions note` and `puffer sessions tag-*` from the CLI for now.",
+        args
+    ))
 }
 
 fn describe_plugin(
@@ -1499,6 +1530,10 @@ fn cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puffer_config::UiConfig;
+    use puffer_session_store::SessionStore;
+    use tempfile::tempdir;
+    use uuid::Uuid;
 
     #[test]
     fn command_registry_contains_review_usage_and_resume_alias() {
@@ -1506,5 +1541,46 @@ mod tests {
         assert!(find_command(&commands, "review").is_some());
         assert!(find_command(&commands, "usage").is_some());
         assert!(find_command(&commands, "continue").is_some());
+    }
+
+    #[test]
+    fn memory_command_updates_note_and_tags() {
+        let temp = tempdir().unwrap();
+        let paths = puffer_config::ConfigPaths::discover(temp.path());
+        std::fs::create_dir_all(&paths.workspace_config_dir).unwrap();
+        let store = SessionStore::from_paths(&paths).unwrap();
+        let session = store.create_session(temp.path().to_path_buf()).unwrap();
+        let mut state = AppState::new(
+            PufferConfig {
+                app_name: "Puffer Code".to_string(),
+                default_model: None,
+                default_provider: Some("anthropic".to_string()),
+                theme: "puffer".to_string(),
+                mascot: puffer_config::MascotConfig {
+                    id: "clawd".to_string(),
+                    display_name: "Clawd".to_string(),
+                    enabled: true,
+                },
+                ui: UiConfig {
+                    no_alt_screen: false,
+                    tmux_golden_mode: false,
+                },
+            },
+            temp.path().to_path_buf(),
+            session,
+        );
+        let note = handle_memory_command(&mut state, &store, "note follow up").unwrap();
+        assert!(note.contains("follow up"));
+        assert_eq!(state.session.note.as_deref(), Some("follow up"));
+
+        let add_tag = handle_memory_command(&mut state, &store, "tag add review").unwrap();
+        assert!(add_tag.contains("review"));
+        assert!(state.session.tags.contains(&"review".to_string()));
+
+        let remove_tag = handle_memory_command(&mut state, &store, "tag remove review").unwrap();
+        assert!(remove_tag.contains("review"));
+        assert!(!state.session.tags.contains(&"review".to_string()));
+
+        let _ = Uuid::nil();
     }
 }

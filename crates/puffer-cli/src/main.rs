@@ -147,6 +147,11 @@ enum AuthCommand {
 enum ToolCommand {
     /// List the registered built-in tools and their policies.
     List,
+    /// Show one registered tool and its policies.
+    Describe {
+        /// Tool id, for example `bash`, `read_file`, or `write_file`.
+        tool_id: String,
+    },
     /// Run a registered tool using a JSON argument payload.
     Run {
         /// Tool id, for example `bash`, `read_file`, or `write_file`.
@@ -363,6 +368,23 @@ fn run_tool_command(
                         })
                         .collect::<Vec<_>>(),
                 )?
+            );
+        }
+        ToolCommand::Describe { tool_id } => {
+            let registry = ToolRegistry::from_resources(resources);
+            let tool = registry
+                .tool(&tool_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown tool {tool_id}"))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "id": tool.spec.id,
+                    "name": tool.spec.name,
+                    "description": tool.spec.description,
+                    "handler": tool.spec.handler,
+                    "approval_policy": tool.spec.approval_policy,
+                    "sandbox_policy": tool.spec.sandbox_policy,
+                }))?
             );
         }
         ToolCommand::Run { tool_id, args } => {
