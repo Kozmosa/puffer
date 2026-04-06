@@ -261,10 +261,11 @@ fn tool_lines(
         format!("Configured: {}", resources.tools.len()),
         format!("Executable: {}", tool_status.executable),
         format!(
-            "Kinds: bash={} read={} write={} list={} search={}",
+            "Kinds: bash={} read={} write={} replace={} list={} search={}",
             toggle_word(tool_status.has_bash),
             toggle_word(tool_status.has_read_file),
             toggle_word(tool_status.has_write_file),
+            toggle_word(tool_status.has_replace_in_file),
             toggle_word(tool_status.has_list_dir),
             toggle_word(tool_status.has_search_text),
         ),
@@ -480,6 +481,7 @@ struct ToolStatus {
     has_bash: bool,
     has_read_file: bool,
     has_write_file: bool,
+    has_replace_in_file: bool,
     has_list_dir: bool,
     has_search_text: bool,
 }
@@ -492,6 +494,7 @@ fn tool_status(tool_registry: &ToolRegistry) -> ToolStatus {
             ToolKind::Bash => status.has_bash = true,
             ToolKind::ReadFile => status.has_read_file = true,
             ToolKind::WriteFile => status.has_write_file = true,
+            ToolKind::ReplaceInFile => status.has_replace_in_file = true,
             ToolKind::ListDir => status.has_list_dir = true,
             ToolKind::SearchText => status.has_search_text = true,
         }
