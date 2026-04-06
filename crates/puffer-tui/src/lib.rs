@@ -31,7 +31,7 @@ use std::time::Duration;
 pub fn run_app(
     state: &mut AppState,
     resources: &LoadedResources,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &mut AuthStore,
     auth_path: &Path,
     session_store: &SessionStore,
@@ -114,7 +114,7 @@ fn handle_key(
     key: KeyEvent,
     state: &mut AppState,
     resources: &LoadedResources,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &mut AuthStore,
     auth_path: &Path,
     session_store: &SessionStore,
@@ -200,7 +200,7 @@ fn handle_overlay_key(
     key: KeyEvent,
     state: &mut AppState,
     resources: &LoadedResources,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &mut AuthStore,
     auth_path: &Path,
     session_store: &SessionStore,
@@ -245,7 +245,7 @@ fn handle_overlay_key(
 
 fn try_open_overlay(
     state: &AppState,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
     tui: &mut TuiState,
@@ -368,7 +368,7 @@ fn try_open_overlay(
 fn handle_submit(
     state: &mut AppState,
     resources: &LoadedResources,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &mut AuthStore,
     auth_path: &Path,
     session_store: &SessionStore,

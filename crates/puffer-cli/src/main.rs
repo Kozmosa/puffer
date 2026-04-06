@@ -361,7 +361,7 @@ fn main() -> Result<()> {
             puffer_tui::run_app(
                 &mut state,
                 &resources,
-                &providers,
+                &mut providers,
                 &mut auth_store,
                 &auth_path,
                 &session_store,
@@ -378,7 +378,7 @@ fn main() -> Result<()> {
             puffer_tui::run_app(
                 &mut state,
                 &resources,
-                &providers,
+                &mut providers,
                 &mut auth_store,
                 &auth_path,
                 &session_store,
@@ -393,7 +393,7 @@ fn main() -> Result<()> {
             puffer_tui::run_app(
                 &mut state,
                 &resources,
-                &providers,
+                &mut providers,
                 &mut auth_store,
                 &auth_path,
                 &session_store,
