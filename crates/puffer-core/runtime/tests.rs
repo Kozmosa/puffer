@@ -162,6 +162,34 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
 }
 
 #[test]
+fn execute_user_prompt_allows_no_auth_providers() {
+    let mut descriptor = provider();
+    descriptor.id = "ollama".to_string();
+    descriptor.display_name = "Ollama".to_string();
+    descriptor.base_url = "http://127.0.0.1:11434".to_string();
+    descriptor.default_api = "openai-completions".to_string();
+    descriptor.auth_modes.clear();
+    descriptor.models[0].provider = "ollama".to_string();
+    descriptor.models[0].api = "openai-completions".to_string();
+    let mut registry = ProviderRegistry::new();
+    registry.register(descriptor);
+    let mut state = state();
+    state.current_provider = Some("ollama".to_string());
+    state.current_model = Some("ollama/claude-sonnet-4-5".to_string());
+    let error = execute_user_prompt(
+        &state,
+        &LoadedResources::default(),
+        &registry,
+        &AuthStore::default(),
+        "hello",
+    )
+    .unwrap_err();
+    assert!(!error
+        .to_string()
+        .contains("no credentials configured for provider ollama"));
+}
+
+#[test]
 fn execute_anthropic_tool_calls_runs_registered_tools() {
     let resources = LoadedResources {
         tools: vec![loaded_tool("bash", "Run shell", "bash")],
