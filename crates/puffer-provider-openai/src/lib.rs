@@ -21,6 +21,7 @@ pub use request::BuiltOpenAIRequest;
 pub use request::OpenAIRequestConfig;
 pub use request::OpenAIResponsesNamedToolChoice;
 pub use request::OpenAIResponsesRequest;
+pub use request::OpenAIResponsesFunctionCallOutput;
 pub use request::OpenAIResponsesTool;
 pub use request::OpenAIResponsesToolChoice;
 pub use request::OpenAIResponsesToolChoiceMode;
@@ -137,7 +138,7 @@ mod tests {
             },
             &OpenAIResponsesToolRequest {
                 model: "gpt-5".to_string(),
-                input: "use tools".to_string(),
+                input: json!("use tools"),
                 tools: vec![OpenAIResponsesTool {
                     kind: "function".to_string(),
                     name: "read_file".to_string(),
@@ -152,6 +153,7 @@ mod tests {
                 tool_choice: Some(OpenAIResponsesToolChoice::Mode(
                     OpenAIResponsesToolChoiceMode::Auto,
                 )),
+                previous_response_id: None,
             },
         )
         .expect("request should build");

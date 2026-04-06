@@ -13,11 +13,13 @@ pub struct OpenAIResponsesRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAIResponsesToolRequest {
     pub model: String,
-    pub input: String,
+    pub input: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<OpenAIResponsesTool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<OpenAIResponsesToolChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
 }
 
 /// A tool definition accepted by the OpenAI Responses API.
@@ -53,6 +55,15 @@ pub struct OpenAIResponsesNamedToolChoice {
     #[serde(rename = "type")]
     pub kind: String,
     pub name: String,
+}
+
+/// A tool-result item accepted by the OpenAI Responses API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAIResponsesFunctionCallOutput {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub call_id: String,
+    pub output: String,
 }
 
 /// Runtime request configuration for the OpenAI provider.
@@ -147,7 +158,7 @@ mod tests {
             },
             &OpenAIResponsesToolRequest {
                 model: "gpt-5".to_string(),
-                input: "inspect Cargo.toml".to_string(),
+                input: json!("inspect Cargo.toml"),
                 tools: vec![OpenAIResponsesTool {
                     kind: "function".to_string(),
                     name: "read_file".to_string(),
@@ -165,14 +176,17 @@ mod tests {
                 tool_choice: Some(OpenAIResponsesToolChoice::Mode(
                     OpenAIResponsesToolChoiceMode::Auto,
                 )),
+                previous_response_id: Some("resp_123".to_string()),
             },
         )
         .unwrap();
 
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["model"], json!("gpt-5"));
+        assert_eq!(body["input"], json!("inspect Cargo.toml"));
         assert_eq!(body["tools"][0]["name"], json!("read_file"));
         assert_eq!(body["tool_choice"], json!("auto"));
+        assert_eq!(body["previous_response_id"], json!("resp_123"));
         assert_eq!(
             request.headers[2],
             (

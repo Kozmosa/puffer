@@ -1,7 +1,10 @@
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
-    build_responses_request, OpenAIAuth, OpenAIRequestConfig, OpenAIResponsesRequest,
+    build_responses_request, build_tool_responses_request, extract_responses_text,
+    extract_responses_tool_calls, parse_responses_response, OpenAIAuth, OpenAIRequestConfig,
+    OpenAIResponsesFunctionCallOutput, OpenAIResponsesRequest, OpenAIResponsesTool,
+    OpenAIResponsesToolChoice, OpenAIResponsesToolChoiceMode, OpenAIResponsesToolRequest,
 };
 use puffer_provider_registry::{
     AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
@@ -42,7 +45,7 @@ pub fn execute_user_prompt(
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match provider.id.as_str() {
         "anthropic" => execute_anthropic(state, resources, provider, model_id, auth_store, input),
-        "openai" => execute_openai(state, provider, model_id, auth_store, input),
+        "openai" => execute_openai(state, resources, provider, model_id, auth_store, input),
         other => bail!("provider {other} is not executable yet"),
     }
 }
@@ -191,29 +194,87 @@ fn execute_anthropic(
 
 fn execute_openai(
     state: &AppState,
+    resources: &LoadedResources,
     provider: &ProviderDescriptor,
     model_id: String,
     auth_store: &AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
     let auth = openai_auth_for_provider(auth_store, &provider.id)?;
-    let request = build_responses_request(
-        &OpenAIRequestConfig {
-            base_url: provider.base_url.clone(),
-            version: "0.1.0".to_string(),
-            auth,
-        },
-        &OpenAIResponsesRequest {
-            model: model_id,
-            input: input.to_string(),
+    let request_config = OpenAIRequestConfig {
+        base_url: provider.base_url.clone(),
+        version: "0.1.0".to_string(),
+        auth,
+    };
+    let registry = ToolRegistry::from_resources(resources);
+    let tools = openai_tool_definitions(&registry);
+    let response = if tools.is_empty() {
+        let request = build_responses_request(
+            &request_config,
+            &OpenAIResponsesRequest {
+                model: model_id.clone(),
+                input: input.to_string(),
+            },
+        )?;
+        send_http_request(&request.url, &request.headers, &request.body, false)?
+    } else {
+        let request = build_tool_responses_request(
+            &request_config,
+            &OpenAIResponsesToolRequest {
+                model: model_id.clone(),
+                input: json!(input),
+                tools,
+                tool_choice: Some(OpenAIResponsesToolChoice::Mode(
+                    OpenAIResponsesToolChoiceMode::Auto,
+                )),
+                previous_response_id: None,
+            },
+        )?;
+        send_http_request(&request.url, &request.headers, &request.body, false)?
+    };
+
+    let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
+    let tool_calls = extract_responses_tool_calls(&parsed)?;
+    if tool_calls.is_empty() {
+        return Ok(TurnExecution {
+            assistant_text: parse_openai_text(&response)
+                .or_else(|_| parse_openai_text_fallback(&response, state))?,
+            tool_invocations: Vec::new(),
+        });
+    }
+
+    let tool_results = execute_openai_tool_calls(&tool_calls, &registry, &state.cwd)?;
+    let follow_up = build_tool_responses_request(
+        &request_config,
+        &OpenAIResponsesToolRequest {
+            model: model_id.clone(),
+            input: json!(tool_results.outputs),
+            tools: openai_tool_definitions(&registry),
+            tool_choice: Some(OpenAIResponsesToolChoice::Mode(
+                OpenAIResponsesToolChoiceMode::Auto,
+            )),
+            previous_response_id: parsed.id.clone(),
         },
     )?;
-    let response = send_http_request(&request.url, &request.headers, &request.body, false)?;
-    let assistant_text =
-        parse_openai_text(&response).or_else(|_| parse_openai_text_fallback(&response, state))?;
+    let follow_up_response = send_http_request(
+        &follow_up.url,
+        &follow_up.headers,
+        &follow_up.body,
+        false,
+    )?;
+    let follow_up_parsed = parse_responses_response(&serde_json::to_string(&follow_up_response)?)?;
+    let assistant_text = {
+        let text = extract_responses_text(&follow_up_parsed);
+        if text.trim().is_empty() {
+            parse_openai_text(&follow_up_response)
+                .or_else(|_| parse_openai_text_fallback(&follow_up_response, state))?
+        } else {
+            text
+        }
+    };
     Ok(TurnExecution {
         assistant_text,
-        tool_invocations: Vec::new(),
+        tool_invocations: tool_results.invocations,
     })
 }
 
@@ -416,6 +477,57 @@ struct AnthropicToolResults {
     invocations: Vec<ToolInvocation>,
 }
 
+struct OpenAIToolResults {
+    outputs: Vec<OpenAIResponsesFunctionCallOutput>,
+    invocations: Vec<ToolInvocation>,
+}
+
+fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResponsesTool> {
+    registry
+        .definitions()
+        .map(|definition| OpenAIResponsesTool {
+            kind: "function".to_string(),
+            name: definition.id.clone(),
+            description: definition.description.clone(),
+            parameters: definition.input_schema.as_json_schema(),
+        })
+        .collect()
+}
+
+fn execute_openai_tool_calls(
+    tool_calls: &[puffer_provider_openai::OpenAIResponseToolCall],
+    registry: &ToolRegistry,
+    cwd: &std::path::Path,
+) -> Result<OpenAIToolResults> {
+    let mut outputs = Vec::new();
+    let mut invocations = Vec::new();
+    for tool_call in tool_calls {
+        let execution = registry.execute_json(&tool_call.name, cwd, tool_call.arguments.clone())?;
+        let output = if execution.output.stderr.is_empty() {
+            execution.output.stdout
+        } else if execution.output.stdout.is_empty() {
+            execution.output.stderr
+        } else {
+            format!("{}\n{}", execution.output.stdout, execution.output.stderr)
+        };
+        outputs.push(OpenAIResponsesFunctionCallOutput {
+            kind: "function_call_output".to_string(),
+            call_id: tool_call.call_id.clone(),
+            output: output.clone(),
+        });
+        invocations.push(ToolInvocation {
+            tool_id: tool_call.name.clone(),
+            input: serde_json::to_string(&tool_call.arguments)?,
+            output,
+            success: execution.success,
+        });
+    }
+    Ok(OpenAIToolResults {
+        outputs,
+        invocations,
+    })
+}
+
 fn parse_openai_text(response: &Value) -> Result<String> {
     if let Some(text) = response.get("output_text").and_then(Value::as_str) {
         return Ok(text.to_string());
@@ -464,6 +576,7 @@ fn parse_openai_text_fallback(response: &Value, state: &AppState) -> Result<Stri
 mod tests {
     use super::*;
     use puffer_config::PufferConfig;
+    use puffer_provider_openai::OpenAIResponseToolCall;
     use puffer_provider_registry::{AuthMode, ProviderDescriptor};
     use puffer_resources::{LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
     use puffer_session_store::SessionMetadata;
@@ -564,5 +677,70 @@ mod tests {
         )
         .unwrap();
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn openai_tool_definitions_use_registry_schema() {
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    id: "search_text".to_string(),
+                    name: "search_text".to_string(),
+                    description: "Search".to_string(),
+                    handler: "search_text".to_string(),
+                    approval_policy: None,
+                    sandbox_policy: None,
+                },
+                source_info: SourceInfo {
+                    path: "search_text.yaml".into(),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let tools = openai_tool_definitions(&registry);
+        assert_eq!(tools[0].name, "search_text");
+        assert_eq!(tools[0].kind, "function");
+        assert_eq!(tools[0].parameters["type"], "object");
+    }
+
+    #[test]
+    fn execute_openai_tool_calls_serializes_outputs() {
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    id: "bash".to_string(),
+                    name: "bash".to_string(),
+                    description: "Run shell".to_string(),
+                    handler: "bash".to_string(),
+                    approval_policy: None,
+                    sandbox_policy: None,
+                },
+                source_info: SourceInfo {
+                    path: "bash.yaml".into(),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let tool_calls = vec![OpenAIResponseToolCall {
+            item_id: Some("fc_1".to_string()),
+            status: Some("completed".to_string()),
+            call_id: "call_1".to_string(),
+            name: "bash".to_string(),
+            arguments: json!({ "command": "printf hi" }),
+        }];
+        let result = execute_openai_tool_calls(
+            &tool_calls,
+            &registry,
+            std::env::current_dir().unwrap().as_path(),
+        )
+        .unwrap();
+        assert_eq!(result.outputs[0].kind, "function_call_output");
+        assert_eq!(result.outputs[0].call_id, "call_1");
+        assert!(result.outputs[0].output.contains("hi"));
+        assert_eq!(result.invocations[0].tool_id, "bash");
     }
 }
