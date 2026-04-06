@@ -789,6 +789,9 @@ pub(crate) fn handle_ide_command(
             format!("IDE directory: {}", ide_dir.display()),
         );
     }
+    if args.trim() == "list" {
+        return list_ides(state, resources, session_store);
+    }
     if args.trim() == "open" {
         return emit_system(
             state,
