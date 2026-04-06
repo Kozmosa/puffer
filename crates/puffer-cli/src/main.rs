@@ -177,6 +177,18 @@ enum ToolCommand {
         /// File contents to write.
         contents: String,
     },
+    /// Run the built-in directory listing tool.
+    ListDir {
+        /// Optional directory path to list. Defaults to the current working directory.
+        path: Option<String>,
+    },
+    /// Run the built-in text search tool.
+    SearchText {
+        /// Query text to search for.
+        query: String,
+        /// Optional file or directory path to search. Defaults to the current working directory.
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -435,6 +447,29 @@ fn run_tool_command(
                 puffer_tools::ToolInput::WriteFile {
                     path: path.into(),
                     contents,
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        ToolCommand::ListDir { path } => {
+            let registry = ToolRegistry::from_resources(resources);
+            let result = registry.execute(
+                "list_dir",
+                cwd,
+                puffer_tools::ToolInput::ListDir {
+                    path: path.map(Into::into),
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        ToolCommand::SearchText { query, path } => {
+            let registry = ToolRegistry::from_resources(resources);
+            let result = registry.execute(
+                "search_text",
+                cwd,
+                puffer_tools::ToolInput::SearchText {
+                    query,
+                    path: path.map(Into::into),
                 },
             )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
