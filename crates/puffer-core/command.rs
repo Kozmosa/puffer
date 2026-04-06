@@ -420,16 +420,19 @@ pub fn dispatch_command(
         CommandKind::Prompt => {
             execute_prompt_command(state, resources, session_store, command, args)
         }
-        CommandKind::Local | CommandKind::Ui => execute_local_command(
-            state,
-            commands,
-            resources,
-            providers,
-            auth_store,
-            session_store,
-            command,
-            args,
-        ),
+        CommandKind::Local | CommandKind::Ui => {
+            execute_local_command(
+                state,
+                commands,
+                resources,
+                providers,
+                auth_store,
+                session_store,
+                command,
+                args,
+            )?;
+            append_state_snapshot(state, session_store)
+        }
     }
 }
 
@@ -700,6 +703,7 @@ fn execute_local_command(
         "rename" => {
             let name = if args.is_empty() { format!("session-{}", &state.session.id.to_string()[..8]) } else { args.to_string() };
             session_store.rename_session(state.session.id, name.clone())?;
+            state.session.display_name = Some(name.clone());
             emit_system(state, session_store, format!("Session renamed to {name}."))
         }
         "export" => {
@@ -829,6 +833,29 @@ fn execute_local_command(
     }
 }
 
+fn append_state_snapshot(state: &AppState, session_store: &SessionStore) -> Result<()> {
+    session_store.append_event(
+        state.session.id,
+        TranscriptEvent::StateSnapshot {
+            current_model: state.current_model.clone(),
+            current_provider: state.current_provider.clone(),
+            theme: state.config.theme.clone(),
+            prompt_color: state.prompt_color.clone(),
+            effort_level: state.effort_level.clone(),
+            fast_mode: state.fast_mode,
+            sandbox_mode: state.sandbox_mode.clone(),
+            remote_name: state.remote_name.clone(),
+            remote_environment: state.remote_environment.clone(),
+            statusline_enabled: state.statusline_enabled,
+            working_dirs: state
+                .working_dirs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        },
+    )
+}
+
 fn cmd(
     name: &'static str,
     aliases: &'static [&'static str],
@@ -848,9 +875,12 @@ fn cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puffer_config::{MascotConfig, PufferConfig, UiConfig};
-    use puffer_session_store::SessionMetadata;
+    use puffer_config::{ensure_workspace_dirs, ConfigPaths, MascotConfig, PufferConfig, UiConfig};
+    use puffer_provider_registry::{AuthStore, ProviderRegistry};
+    use puffer_resources::LoadedResources;
+    use puffer_session_store::{SessionMetadata, SessionStore};
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn command_registry_contains_review_usage_and_resume_alias() {
@@ -895,5 +925,38 @@ mod tests {
         assert_eq!(state.effort_level, "medium");
         assert_eq!(state.sandbox_mode, "workspace-write");
         assert!(state.statusline_enabled);
+    }
+
+    #[test]
+    fn local_commands_append_state_snapshots() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let session = session_store
+            .create_session(tempdir.path().to_path_buf())
+            .unwrap();
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            tempdir.path().to_path_buf(),
+            session.clone(),
+        );
+
+        dispatch_command(
+            &mut state,
+            &supported_commands(),
+            &LoadedResources::default(),
+            &ProviderRegistry::new(),
+            &AuthStore::default(),
+            &session_store,
+            "/theme harbor",
+        )
+        .unwrap();
+
+        let record = session_store.load_session(session.id).unwrap();
+        assert!(matches!(
+            record.events.last(),
+            Some(TranscriptEvent::StateSnapshot { theme, .. }) if theme == "harbor"
+        ));
     }
 }

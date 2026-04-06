@@ -2,13 +2,16 @@ mod markdown;
 mod popup;
 mod render;
 
+use crate::popup::popup_rows;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use puffer_core::{dispatch_command, execute_user_turn, supported_commands, AppState, MessageRole};
+use puffer_core::{
+    dispatch_command, execute_user_turn, supported_commands, AppState, CommandSpec, MessageRole,
+};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{SessionStore, TranscriptEvent};
@@ -45,13 +48,20 @@ pub fn run_app(
     }
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut input = String::new();
+    let mut tui = TuiState::default();
     let commands = supported_commands();
 
     loop {
         terminal.draw(|frame| {
             render::render(
-                frame, state, resources, providers, auth_store, &input, &commands,
+                frame,
+                state,
+                resources,
+                providers,
+                auth_store,
+                &tui.input,
+                tui.slash_selection,
+                &commands,
             )
         })?;
         if state.should_exit {
@@ -67,7 +77,8 @@ pub fn run_app(
                         providers,
                         auth_store,
                         session_store,
-                        &mut input,
+                        &commands,
+                        &mut tui,
                     )? {
                         break;
                     }
@@ -92,19 +103,31 @@ fn handle_key(
     providers: &ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
-    input: &mut String,
+    commands: &[CommandSpec],
+    tui: &mut TuiState,
 ) -> Result<bool> {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_exit = true;
             return Ok(true);
         }
-        KeyCode::Esc => input.clear(),
-        KeyCode::Backspace => {
-            input.pop();
+        KeyCode::Esc => tui.clear(commands),
+        KeyCode::Left => tui.move_left(),
+        KeyCode::Right => tui.move_right(),
+        KeyCode::Home => tui.move_home(),
+        KeyCode::End => tui.move_end(),
+        KeyCode::Up => tui.select_previous(commands),
+        KeyCode::Down => tui.select_next(commands),
+        KeyCode::Backspace => tui.backspace(commands),
+        KeyCode::Delete => tui.delete(commands),
+        KeyCode::Tab => {
+            let _ = tui.apply_selected_command(commands);
         }
         KeyCode::Enter => {
-            let submitted = std::mem::take(input);
+            if tui.complete_on_enter(commands) {
+                return Ok(false);
+            }
+            let submitted = tui.take_input();
             handle_submit(
                 state,
                 resources,
@@ -114,7 +137,9 @@ fn handle_key(
                 submitted,
             )?;
         }
-        KeyCode::Char(ch) => input.push(ch),
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui.insert_char(ch, commands)
+        }
         _ => {}
     }
     Ok(false)
@@ -236,6 +261,157 @@ fn parse_shell_shortcut(input: &str) -> Option<&str> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct TuiState {
+    input: String,
+    cursor: usize,
+    slash_selection: usize,
+}
+
+impl TuiState {
+    fn clear(&mut self, commands: &[CommandSpec]) {
+        self.input.clear();
+        self.cursor = 0;
+        self.slash_selection = 0;
+        self.sync(commands);
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = previous_boundary(&self.input, self.cursor);
+    }
+
+    fn move_right(&mut self) {
+        self.cursor = next_boundary(&self.input, self.cursor);
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.input.len();
+    }
+
+    fn insert_char(&mut self, ch: char, commands: &[CommandSpec]) {
+        self.input.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+        self.sync(commands);
+    }
+
+    fn backspace(&mut self, commands: &[CommandSpec]) {
+        if self.cursor == 0 {
+            return;
+        }
+        let start = previous_boundary(&self.input, self.cursor);
+        self.input.drain(start..self.cursor);
+        self.cursor = start;
+        self.sync(commands);
+    }
+
+    fn delete(&mut self, commands: &[CommandSpec]) {
+        if self.cursor >= self.input.len() {
+            return;
+        }
+        let end = next_boundary(&self.input, self.cursor);
+        self.input.drain(self.cursor..end);
+        self.sync(commands);
+    }
+
+    fn select_previous(&mut self, commands: &[CommandSpec]) {
+        let count = self.matching_rows(commands).len();
+        if count == 0 {
+            return;
+        }
+        self.slash_selection = self.slash_selection.saturating_sub(1);
+    }
+
+    fn select_next(&mut self, commands: &[CommandSpec]) {
+        let count = self.matching_rows(commands).len();
+        if count == 0 {
+            return;
+        }
+        self.slash_selection = (self.slash_selection + 1).min(count.saturating_sub(1));
+    }
+
+    fn apply_selected_command(&mut self, commands: &[CommandSpec]) -> bool {
+        let rows = self.matching_rows(commands);
+        let Some(command) = rows.get(self.slash_selection).copied() else {
+            return false;
+        };
+        self.input = format!("/{}", command.name);
+        if command.argument_hint.is_some() {
+            self.input.push(' ');
+        }
+        self.cursor = self.input.len();
+        self.sync(commands);
+        true
+    }
+
+    fn complete_on_enter(&mut self, commands: &[CommandSpec]) -> bool {
+        if !self.input.starts_with('/') || self.input.contains(' ') {
+            return false;
+        }
+        let trimmed = self.input.trim_start_matches('/');
+        if trimmed.is_empty() {
+            return false;
+        }
+        let rows = self.matching_rows(commands);
+        let Some(command) = rows.get(self.slash_selection).copied() else {
+            return false;
+        };
+        if command.name == trimmed || command.aliases.contains(&trimmed) {
+            return false;
+        }
+        self.apply_selected_command(commands)
+    }
+
+    fn take_input(&mut self) -> String {
+        self.cursor = 0;
+        self.slash_selection = 0;
+        std::mem::take(&mut self.input)
+    }
+
+    fn matching_rows<'a>(&self, commands: &'a [CommandSpec]) -> Vec<&'a CommandSpec> {
+        if self.input.starts_with('/') {
+            popup_rows(&self.input, commands)
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn sync(&mut self, commands: &[CommandSpec]) {
+        self.cursor = self.cursor.min(self.input.len());
+        let count = self.matching_rows(commands).len();
+        if count == 0 {
+            self.slash_selection = 0;
+        } else {
+            self.slash_selection = self.slash_selection.min(count - 1);
+        }
+    }
+}
+
+fn previous_boundary(input: &str, cursor: usize) -> usize {
+    if cursor == 0 {
+        return 0;
+    }
+    let mut index = cursor - 1;
+    while index > 0 && !input.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn next_boundary(input: &str, cursor: usize) -> usize {
+    if cursor >= input.len() {
+        return input.len();
+    }
+    let mut index = cursor + 1;
+    while index < input.len() && !input.is_char_boundary(index) {
+        index += 1;
+    }
+    index.min(input.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +446,7 @@ mod tests {
                     &providers,
                     &auth_store,
                     "/rev",
+                    0,
                     &supported_commands(),
                 )
             })
@@ -289,6 +466,30 @@ mod tests {
     }
 
     #[test]
+    fn slash_completion_appends_argument_space_for_commands_with_args() {
+        let commands = supported_commands();
+        let mut tui = TuiState::default();
+        tui.insert_char('/', &commands);
+        tui.insert_char('m', &commands);
+        tui.insert_char('o', &commands);
+        assert!(tui.apply_selected_command(&commands));
+        assert_eq!(tui.input, "/model ");
+        assert_eq!(tui.cursor, tui.input.len());
+    }
+
+    #[test]
+    fn enter_completion_prefers_selected_slash_command() {
+        let commands = supported_commands();
+        let mut tui = TuiState::default();
+        tui.insert_char('/', &commands);
+        tui.insert_char('r', &commands);
+        tui.insert_char('e', &commands);
+        tui.insert_char('v', &commands);
+        assert!(tui.complete_on_enter(&commands));
+        assert_eq!(tui.input, "/review");
+    }
+
+    #[test]
     fn render_shows_status_line_when_enabled() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -305,6 +506,7 @@ mod tests {
                     &providers,
                     &auth_store,
                     "",
+                    0,
                     &supported_commands(),
                 )
             })

@@ -19,6 +19,7 @@ pub(crate) fn render(
     providers: &puffer_provider_registry::ProviderRegistry,
     auth_store: &AuthStore,
     input: &str,
+    slash_selection: usize,
     commands: &[CommandSpec],
 ) {
     let tool_registry = ToolRegistry::from_resources(resources);
@@ -105,7 +106,7 @@ pub(crate) fn render(
     frame.render_widget(footer, layout[3]);
 
     if input.starts_with('/') {
-        render_command_popup(frame, body[0], input, commands);
+        render_command_popup(frame, body[0], input, slash_selection, commands);
     }
 }
 
@@ -515,11 +516,13 @@ fn render_command_popup(
     frame: &mut Frame<'_>,
     transcript_area: Rect,
     input: &str,
+    slash_selection: usize,
     commands: &[CommandSpec],
 ) {
     let matching = popup_rows(input, commands)
         .into_iter()
-        .map(|command| {
+        .enumerate()
+        .map(|(index, command)| {
             let alias_suffix = if command.aliases.is_empty() {
                 String::new()
             } else {
@@ -537,7 +540,13 @@ fn render_command_popup(
                 argument_hint,
                 alias_suffix,
             ))
-            .style(Style::default().add_modifier(Modifier::BOLD))
+            .style(if index == slash_selection {
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            })
         })
         .collect::<Vec<_>>();
 
@@ -704,6 +713,7 @@ slash=/re matches=2 best=/review  Enter submits  Esc clears
                     &providers,
                     &auth_store,
                     "/re",
+                    0,
                     &sample_commands(),
                 )
             })
