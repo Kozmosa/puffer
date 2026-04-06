@@ -635,20 +635,7 @@ fn execute_local_command(
             session_store,
             "Agent management:\ninteractive_agent=default\nforkable_sessions=yes\nnamed_presets=not yet implemented".to_string(),
         ),
-        "memory" => emit_system(
-            state,
-            session_store,
-            format!(
-                "Session memory summary:\nslug={}\nnote={}\ntags={}",
-                state.session.slug.as_deref().unwrap_or("<none>"),
-                state.session.note.as_deref().unwrap_or("<none>"),
-                if state.session.tags.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    state.session.tags.join(", ")
-                },
-            ),
-        ),
+        "memory" => handle_memory_command(state, session_store, args),
         "keybindings" => emit_system(
             state,
             session_store,
@@ -882,6 +869,106 @@ fn append_state_snapshot(state: &AppState, session_store: &SessionStore) -> Resu
     )
 }
 
+fn handle_memory_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "show" {
+        return emit_system(state, session_store, render_memory_summary(state));
+    }
+
+    if trimmed == "clear" {
+        let tags = state.session.tags.clone();
+        session_store.set_note(state.session.id, None)?;
+        session_store.set_slug(state.session.id, None)?;
+        for tag in &tags {
+            session_store.remove_tag(state.session.id, tag)?;
+        }
+        state.session.note = None;
+        state.session.slug = None;
+        state.session.tags.clear();
+        return emit_system(
+            state,
+            session_store,
+            "Cleared session note, slug, and tags.".to_string(),
+        );
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("note ") {
+        if matches!(rest, "clear" | "none" | "off") {
+            session_store.set_note(state.session.id, None)?;
+            state.session.note = None;
+            return emit_system(state, session_store, "Cleared session note.".to_string());
+        }
+        session_store.set_note(state.session.id, Some(rest.to_string()))?;
+        state.session.note = Some(rest.to_string());
+        return emit_system(state, session_store, format!("Session note set to `{rest}`."));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("slug ") {
+        if matches!(rest, "clear" | "none" | "off") {
+            session_store.set_slug(state.session.id, None)?;
+            state.session.slug = None;
+            return emit_system(state, session_store, "Cleared session slug.".to_string());
+        }
+        session_store.set_slug(state.session.id, Some(rest.to_string()))?;
+        state.session.slug = Some(rest.to_string());
+        return emit_system(state, session_store, format!("Session slug set to `{rest}`."));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("tag add ") {
+        let tag = rest.trim();
+        if tag.is_empty() {
+            return emit_system(
+                state,
+                session_store,
+                "Usage: /memory tag add <tag>".to_string(),
+            );
+        }
+        session_store.add_tag(state.session.id, tag)?;
+        if !state.session.tags.iter().any(|existing| existing == tag) {
+            state.session.tags.push(tag.to_string());
+            state.session.tags.sort();
+        }
+        return emit_system(state, session_store, format!("Added session tag `{tag}`."));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("tag remove ") {
+        let tag = rest.trim();
+        if tag.is_empty() {
+            return emit_system(
+                state,
+                session_store,
+                "Usage: /memory tag remove <tag>".to_string(),
+            );
+        }
+        session_store.remove_tag(state.session.id, tag)?;
+        state.session.tags.retain(|existing| existing != tag);
+        return emit_system(state, session_store, format!("Removed session tag `{tag}`."));
+    }
+
+    emit_system(
+        state,
+        session_store,
+        "Usage: /memory [show|clear|note <text>|note clear|slug <value>|slug clear|tag add <tag>|tag remove <tag>]".to_string(),
+    )
+}
+
+fn render_memory_summary(state: &AppState) -> String {
+    format!(
+        "Session memory summary:\nslug={}\nnote={}\ntags={}",
+        state.session.slug.as_deref().unwrap_or("<none>"),
+        state.session.note.as_deref().unwrap_or("<none>"),
+        if state.session.tags.is_empty() {
+            "<none>".to_string()
+        } else {
+            state.session.tags.join(", ")
+        },
+    )
+}
+
 fn cmd(
     name: &'static str,
     aliases: &'static [&'static str],
@@ -984,5 +1071,95 @@ mod tests {
             record.events.last(),
             Some(TranscriptEvent::StateSnapshot { theme, .. }) if theme == "harbor"
         ));
+    }
+
+    #[test]
+    fn resume_switches_to_matching_session_record() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let primary = session_store
+            .create_session(tempdir.path().join("primary"))
+            .unwrap();
+        let secondary = session_store
+            .create_session(tempdir.path().join("secondary"))
+            .unwrap();
+        session_store
+            .rename_session(secondary.id, "dockyard".to_string())
+            .unwrap();
+        session_store
+            .append_event(
+                secondary.id,
+                TranscriptEvent::StateSnapshot {
+                    current_model: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    current_provider: Some("anthropic".to_string()),
+                    theme: "lagoon".to_string(),
+                    prompt_color: "teal".to_string(),
+                    effort_level: "high".to_string(),
+                    fast_mode: true,
+                    sandbox_mode: "workspace-write".to_string(),
+                    remote_name: None,
+                    remote_environment: None,
+                    statusline_enabled: true,
+                    working_dirs: vec![tempdir.path().join("secondary").display().to_string()],
+                },
+            )
+            .unwrap();
+
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            tempdir.path().join("primary"),
+            primary,
+        );
+        dispatch_command(
+            &mut state,
+            &supported_commands(),
+            &LoadedResources::default(),
+            &ProviderRegistry::new(),
+            &AuthStore::default(),
+            &session_store,
+            "/resume dockyard",
+        )
+        .unwrap();
+
+        assert_eq!(state.session.id, secondary.id);
+        assert_eq!(state.config.theme, "lagoon");
+        assert_eq!(
+            state.current_model.as_deref(),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+    }
+
+    #[test]
+    fn branch_forks_and_switches_current_session() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let session = session_store
+            .create_session(tempdir.path().to_path_buf())
+            .unwrap();
+        let original_id = session.id;
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            tempdir.path().to_path_buf(),
+            session,
+        );
+
+        dispatch_command(
+            &mut state,
+            &supported_commands(),
+            &LoadedResources::default(),
+            &ProviderRegistry::new(),
+            &AuthStore::default(),
+            &session_store,
+            "/branch drydock",
+        )
+        .unwrap();
+
+        assert_ne!(state.session.id, original_id);
+        assert_eq!(state.session.parent_session_id, Some(original_id));
+        assert_eq!(state.session.display_name.as_deref(), Some("drydock"));
     }
 }
