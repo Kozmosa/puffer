@@ -19,6 +19,7 @@ pub(crate) fn render(
     providers: &puffer_provider_registry::ProviderRegistry,
     auth_store: &AuthStore,
     input: &str,
+    cursor: usize,
     slash_selection: usize,
     scroll_offset: u16,
     commands: &[CommandSpec],
@@ -89,6 +90,11 @@ pub(crate) fn render(
     let input_widget =
         Paragraph::new(input_text).block(Block::default().title("Composer").borders(Borders::ALL));
     frame.render_widget(input_widget, layout[2]);
+    let max_cursor = usize::from(layout[2].width.saturating_sub(3));
+    frame.set_cursor_position((
+        layout[2].x + 1 + cursor.min(max_cursor) as u16,
+        layout[2].y + 1,
+    ));
 
     let footer_title = if state.statusline_enabled {
         "Status Line"
@@ -719,6 +725,7 @@ slash=/re matches=2 best=/review  Enter submits  Esc clears
                     &providers,
                     &auth_store,
                     "/re",
+                    3,
                     0,
                     0,
                     &sample_commands(),
