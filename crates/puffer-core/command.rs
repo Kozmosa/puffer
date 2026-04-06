@@ -542,6 +542,7 @@ fn execute_local_command(
                 resources.plugins.len()
             ),
         ),
+        "cost" => emit_system(state, session_store, render_cost_summary(state)),
         "clear" => {
             state.transcript.clear();
             emit_system(state, session_store, "Transcript cleared.".to_string())
@@ -721,6 +722,16 @@ fn execute_local_command(
         ),
         "skills" => list_skills(state, resources, session_store),
         "plugin" => describe_plugin(state, resources, session_store, args),
+        "reload-plugins" => emit_system(
+            state,
+            session_store,
+            format!(
+                "Reloaded plugin registry for this session.\nplugins={}\nskills={}\nmcp_servers={}",
+                resources.plugins.len(),
+                resources.skills.len(),
+                resources.mcp_servers.len()
+            ),
+        ),
         "mcp" => list_mcp_servers(state, resources, session_store),
         "ide" => list_ides(state, resources, session_store),
         "login" => {
@@ -887,6 +898,38 @@ fn render_task_summary(state: &AppState) -> String {
         );
     }
     text.trim_end().to_string()
+}
+
+fn render_cost_summary(state: &AppState) -> String {
+    let elapsed_ms = now_ms().saturating_sub(state.session.created_at_ms);
+    let assistant_messages = state
+        .transcript
+        .iter()
+        .filter(|message| message.role == MessageRole::Assistant)
+        .count();
+    let user_messages = state
+        .transcript
+        .iter()
+        .filter(|message| message.role == MessageRole::User)
+        .count();
+    let tool_invocations = state
+        .transcript
+        .iter()
+        .filter(|message| {
+            message.role == MessageRole::System && message.text.starts_with("Tool ")
+        })
+        .count();
+    format!(
+        "Session cost summary:\nelapsed_ms={elapsed_ms}\nuser_messages={user_messages}\nassistant_messages={assistant_messages}\ntool_invocations={tool_invocations}\nrecorded_tasks={}\nestimated_cost_usd=unavailable",
+        state.tasks().len()
+    )
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]

@@ -94,8 +94,10 @@ fn try_open_overlay_builds_resume_picker() {
         .unwrap();
 
     let providers = sample_providers();
+    let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened = try_open_overlay(&providers, &session_store, &mut tui, "/resume").unwrap();
+    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/resume")
+        .unwrap();
     assert!(opened);
     assert!(matches!(tui.overlay, Some(OverlayState::SessionPicker { .. })));
 }
@@ -108,10 +110,44 @@ fn try_open_overlay_builds_login_picker() {
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
     let providers = sample_providers();
+    let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened = try_open_overlay(&providers, &session_store, &mut tui, "/login").unwrap();
+    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/login")
+        .unwrap();
     assert!(opened);
     assert!(matches!(tui.overlay, Some(OverlayState::LoginPicker { .. })));
+}
+
+#[test]
+fn try_open_overlay_builds_logout_picker() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/logout")
+        .unwrap();
+    assert!(opened);
+    assert!(matches!(tui.overlay, Some(OverlayState::LogoutPicker { .. })));
+}
+
+#[test]
+fn try_open_overlay_builds_theme_picker() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/theme")
+        .unwrap();
+    assert!(opened);
+    assert!(matches!(tui.overlay, Some(OverlayState::ThemePicker { .. })));
 }
 
 #[test]
