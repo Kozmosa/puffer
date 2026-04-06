@@ -748,7 +748,7 @@ fn execute_local_command(
             render_git_diff_summary(&state.cwd),
         ),
         "permissions" => describe_permissions(state, resources, session_store),
-        "doctor" => run_doctor(state, resources, session_store),
+        "doctor" => run_doctor(state, resources, providers, session_store),
         "hooks" => emit_system(
             state,
             session_store,
@@ -1097,7 +1097,7 @@ fn describe_permissions(
     for tool in registry.tools() {
         let _ = writeln!(
             &mut text,
-            "- {} [{}]: approval={} sandbox={}",
+            "- {} [{}]: approval={} sandbox={} executable=yes",
             tool.spec.name,
             tool.spec.handler,
             tool.spec
@@ -1108,33 +1108,6 @@ fn describe_permissions(
                 .sandbox_policy
                 .as_deref()
                 .unwrap_or("<unspecified>")
-        );
-    }
-    emit_system(state, session_store, text)
-}
-
-fn run_doctor(
-    state: &mut AppState,
-    resources: &LoadedResources,
-    session_store: &SessionStore,
-) -> Result<()> {
-    let registry = ToolRegistry::from_resources(resources);
-    let mut text = String::from("Puffer doctor summary:\n");
-    let _ = writeln!(
-        &mut text,
-        "provider={} model={}",
-        state.current_provider.as_deref().unwrap_or("<unset>"),
-        state.current_model.as_deref().unwrap_or("<unset>")
-    );
-    let _ = writeln!(&mut text, "tool_count={}", registry.tools().count());
-    for tool in registry.tools() {
-        let _ = writeln!(
-            &mut text,
-            "- {} handler={} approval={} sandbox={}",
-            tool.spec.id,
-            tool.spec.handler,
-            tool.spec.approval_policy.as_deref().unwrap_or("<unspecified>"),
-            tool.spec.sandbox_policy.as_deref().unwrap_or("<unspecified>")
         );
     }
     emit_system(state, session_store, text)
@@ -1436,12 +1409,30 @@ fn run_doctor(
     }
     let _ = writeln!(&mut text, "providers={}", providers.providers().count());
     let _ = writeln!(&mut text, "tools={}", resources.tools.len());
+    let registry = ToolRegistry::from_resources(resources);
+    let _ = writeln!(&mut text, "executable_tools={}", registry.tools().count());
     let _ = writeln!(&mut text, "skills={}", resources.skills.len());
     let _ = writeln!(
         &mut text,
         "auth_provider={}",
         state.current_provider.as_deref().unwrap_or("<unset>")
     );
+    for tool in registry.tools() {
+        let _ = writeln!(
+            &mut text,
+            "- {} handler={} approval={} sandbox={}",
+            tool.spec.id,
+            tool.spec.handler,
+            tool.spec
+                .approval_policy
+                .as_deref()
+                .unwrap_or("<unspecified>"),
+            tool.spec
+                .sandbox_policy
+                .as_deref()
+                .unwrap_or("<unspecified>")
+        );
+    }
     emit_system(state, session_store, text)
 }
 

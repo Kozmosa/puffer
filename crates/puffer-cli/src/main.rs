@@ -55,8 +55,11 @@ enum Command {
     Commands,
     /// List known providers and models.
     Providers,
-    /// List stored sessions.
-    Sessions,
+    /// Inspect or modify stored sessions.
+    Sessions {
+        #[command(subcommand)]
+        command: Option<SessionCommand>,
+    },
     /// List loaded declarative resources.
     Resources,
     /// Print a sample Anthropic request fixture from the current config.
@@ -153,6 +156,36 @@ enum ToolCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// List stored sessions.
+    List,
+    /// Set or clear the free-form note on a session.
+    Note {
+        /// Session UUID to update.
+        session_id: String,
+        /// Note text to store.
+        note: Option<String>,
+        /// Clear the note instead of setting it.
+        #[arg(long = "clear", default_value_t = false)]
+        clear: bool,
+    },
+    /// Add a tag to a session.
+    TagAdd {
+        /// Session UUID to update.
+        session_id: String,
+        /// Tag value to add.
+        tag: String,
+    },
+    /// Remove a tag from a session.
+    TagRemove {
+        /// Session UUID to update.
+        session_id: String,
+        /// Tag value to remove.
+        tag: String,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
@@ -195,14 +228,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Some(Command::Sessions) => {
-            let session_store = SessionStore::from_paths(&paths)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&session_store.list_sessions()?)?
-            );
-            Ok(())
-        }
+        Some(Command::Sessions { command }) => run_session_command(command, &paths),
         Some(Command::Resources) => {
             println!(
                 "{}",
@@ -344,6 +370,42 @@ fn run_tool_command(
             let payload: puffer_tools::ToolInput = serde_json::from_str(&args)?;
             let result = registry.execute(&tool_id, cwd, payload)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+    Ok(())
+}
+
+fn run_session_command(command: Option<SessionCommand>, paths: &ConfigPaths) -> Result<()> {
+    let session_store = SessionStore::from_paths(paths)?;
+    match command.unwrap_or(SessionCommand::List) {
+        SessionCommand::List => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&session_store.list_sessions()?)?
+            );
+        }
+        SessionCommand::Note {
+            session_id,
+            note,
+            clear,
+        } => {
+            let id = session_id.parse()?;
+            if clear {
+                session_store.set_note(id, None)?;
+                println!("cleared note for session {session_id}");
+            } else {
+                let note = note.ok_or_else(|| anyhow::anyhow!("note text is required unless --clear is used"))?;
+                session_store.set_note(id, Some(note))?;
+                println!("updated note for session {session_id}");
+            }
+        }
+        SessionCommand::TagAdd { session_id, tag } => {
+            session_store.add_tag(session_id.parse()?, tag.clone())?;
+            println!("added tag `{tag}` to session {session_id}");
+        }
+        SessionCommand::TagRemove { session_id, tag } => {
+            session_store.remove_tag(session_id.parse()?, &tag)?;
+            println!("removed tag `{tag}` from session {session_id}");
         }
     }
     Ok(())
