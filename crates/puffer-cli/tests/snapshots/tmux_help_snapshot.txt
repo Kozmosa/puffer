@@ -1,14 +1,14 @@
 ┌Header───────────────────────────────────────────────────┐
-│Puffer Code  session=session-2f2b87ff0e6f4...            │
+│Puffer Code  session=session-ba2e5ae68a314...            │
 │cwd=workspace  msgs=1                                    │
 │provider=anthropic  model=<unset>  auth=api-key          │
 │remote=local                                             │
 └─────────────────────────────────────────────────────────┘
 ┌Transcript─────────────────────────────┐┌Session─────────┐
 │System: Supported commands:            ││Name:           │
-│        /add-dir          Add a new    ││session-2f2b87ff│
-│working directory                      ││0e6f4da...      │
-│        /agents           Manage agent ││Id: 06b1fc1e    │
+│        /add-dir          Add a new    ││session-ba2e5ae6│
+│working directory                      ││8a314fd...      │
+│        /agents           Manage agent ││Id: 7f74ed7b    │
 │configurations                         ││Parent: root    │
 │        /branch           Create a     ││Dir: workspace  │
 │branch of the current conversation at  ││Transcript: 1   │

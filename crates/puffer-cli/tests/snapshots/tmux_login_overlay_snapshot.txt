@@ -1,14 +1,14 @@
 ┌Header───────────────────────────────────────────────────┐
-│Puffer Code  session=session-79bc437d7c3b4...            │
+│Puffer Code  session=session-b5d8e3638f134...            │
 │cwd=workspace  msgs=0                                    │
 │provider=anthropic  model=<unset>  auth=api-key          │
 │remote=local                                             │
 └─────────────────────────────────────────────────────────┘
 ┌Transcript─────────────────────────────┐┌Session─────────┐
 │N┌Login Provider─────────────────────┐ ││Name:           │
-│s│openai  OpenAI                     │ ││session-79bc437d│
-│ │anthropic  Anthropic               │ ││7c3b453...      │
-│ └───────────────────────────────────┘ ││Id: b3b1617a    │
+│s│openai  OpenAI                     │ ││session-b5d8e363│
+│ │anthropic  Anthropic               │ ││8f13496...      │
+│ └───────────────────────────────────┘ ││Id: 0477d87a    │
 │                                       ││Parent: root    │
 │                                       ││Dir: workspace  │
 │                                       ││Transcript: 0   │
