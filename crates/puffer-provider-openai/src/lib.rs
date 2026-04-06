@@ -5,6 +5,7 @@
 //! crates consume a stable, curated API from one place.
 
 mod auth;
+mod codex;
 mod request;
 mod response;
 
@@ -93,6 +94,15 @@ pub fn build_chat_completions_request(
     request::build_chat_completions_request(config, request)
 }
 
+/// Builds an ordered JSON POST request for OpenAI-compatible endpoints.
+pub fn build_json_post_request(
+    config: &OpenAIRequestConfig,
+    path: &str,
+    body: &serde_json::Value,
+) -> anyhow::Result<BuiltOpenAIRequest> {
+    request::build_json_post_request(config, path, body)
+}
+
 /// Parses a serialized OpenAI Responses API payload into typed response data.
 pub fn parse_responses_response(payload: &str) -> anyhow::Result<OpenAIResponsesResponse> {
     response::parse_responses_response(payload)
@@ -153,6 +163,11 @@ mod tests {
                 base_url: "https://api.openai.com".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &OpenAIResponsesRequest {
                 model: "gpt-5".to_string(),
@@ -171,6 +186,11 @@ mod tests {
                 base_url: "https://api.openai.com".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &OpenAIResponsesToolRequest {
                 model: "gpt-5".to_string(),
@@ -206,6 +226,11 @@ mod tests {
                 base_url: "https://openrouter.ai/api/v1".to_string(),
                 version: "0.1.0".to_string(),
                 auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &OpenAIChatCompletionsRequest {
                 model: "auto".to_string(),

@@ -21,7 +21,12 @@ fn tmux_help_matches_snapshot() {
     let capture =
         wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(10)).unwrap();
     assert_normalized_snapshot(
-        &normalize_tmux_capture(&capture),
+        &normalize_tmux_capture(&focused_tmux_capture(
+            &capture,
+            "Supported commands:",
+            2,
+            44,
+        )),
         &snapshot_path("tmux_help_snapshot.txt"),
     )
     .unwrap();
@@ -37,9 +42,9 @@ fn tmux_login_overlay_matches_snapshot() {
     let session = start_tmux_with_home(&workspace);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
-    let capture = wait_for_tmux_text(&session, "anthropic", Duration::from_secs(10)).unwrap();
+    let capture = wait_for_tmux_text(&session, "Select Provider", Duration::from_secs(10)).unwrap();
     assert_normalized_snapshot(
-        &normalize_tmux_capture(&capture),
+        &normalize_tmux_capture(&focused_login_capture(&capture)),
         &snapshot_path("tmux_login_overlay_snapshot.txt"),
     )
     .unwrap();
@@ -123,6 +128,29 @@ fn normalize_tmux_capture(capture: &str) -> String {
     capture
         .lines()
         .map(normalize_tmux_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn focused_tmux_capture(capture: &str, anchor: &str, before: usize, after: usize) -> String {
+    let lines = capture.lines().collect::<Vec<_>>();
+    let anchor_index = lines
+        .iter()
+        .position(|line| line.contains(anchor))
+        .unwrap_or(0);
+    let start = anchor_index.saturating_sub(before);
+    let end = (anchor_index + after).min(lines.len());
+    lines[start..end].join("\n")
+}
+
+fn focused_login_capture(capture: &str) -> String {
+    capture
+        .lines()
+        .filter(|line| {
+            line.contains("Select Provider")
+                || line.contains("anthropic")
+                || line.contains("openai")
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

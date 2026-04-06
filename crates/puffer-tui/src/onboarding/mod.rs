@@ -40,7 +40,9 @@ pub(crate) fn initial_overlay(
     providers: &ProviderRegistry,
     auth_store: &AuthStore,
 ) -> Result<Option<OverlayState>> {
-    if !needs_initial_provider_setup(state, providers) {
+    if !needs_initial_provider_setup(state, providers)
+        && !missing_required_auth(state, providers, auth_store)
+    {
         return Ok(None);
     }
     let paths = ConfigPaths::discover(&state.cwd);
@@ -154,6 +156,20 @@ pub(crate) fn back_overlay(
         | OverlayState::OnboardingApiKey { .. } => None,
     };
     Ok(next)
+}
+
+fn missing_required_auth(
+    state: &AppState,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+) -> bool {
+    let Some(provider_id) = state.current_provider.as_deref() else {
+        return false;
+    };
+    let Some(provider) = providers.provider(provider_id) else {
+        return false;
+    };
+    needs_auth_choice(provider, auth_store)
 }
 
 fn needs_auth_choice(provider: &ProviderDescriptor, auth_store: &AuthStore) -> bool {

@@ -2,9 +2,10 @@ use crate::hooks::run_resource_hooks;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
-    build_chat_completions_request, build_responses_request, build_tool_responses_request,
-    extract_chat_completions_text, extract_chat_completions_tool_calls, extract_responses_text,
-    extract_responses_tool_calls, parse_chat_completions_response, parse_responses_response,
+    build_chat_completions_request, build_json_post_request, build_responses_request,
+    build_tool_responses_request, extract_chat_completions_text,
+    extract_chat_completions_tool_calls, extract_responses_text, extract_responses_tool_calls,
+    parse_chat_completions_response, parse_responses_response, refresh_oauth_token,
     OpenAIAuth, OpenAIChatCompletionTool, OpenAIChatCompletionToolFunction,
     OpenAIChatCompletionsRequest, OpenAIChatFunctionCall, OpenAIChatMessage, OpenAIChatToolCall,
     OpenAIRequestConfig, OpenAIResponsesFunctionCallOutput, OpenAIResponsesRequest,
@@ -21,11 +22,30 @@ use puffer_transport_anthropic::{
     AnthropicModelRequest, AnthropicRequestConfig,
 };
 use reqwest::blocking::Client;
+use reqwest::StatusCode;
 use serde_json::{json, Value};
 
 mod mistral;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
+
+#[derive(Debug, Clone)]
+struct OpenAIExecutionConfig {
+    provider_id: String,
+    request_config: OpenAIRequestConfig,
+    refresh_token: Option<String>,
+    codex_style: bool,
+}
+
+#[derive(Debug)]
+struct RawHttpResponse {
+    status: StatusCode,
+    content_type: Option<String>,
+    text: String,
+}
+
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
@@ -45,7 +65,7 @@ pub fn execute_user_prompt(
     state: &AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
@@ -217,52 +237,66 @@ fn execute_openai(
     resources: &LoadedResources,
     provider: &ProviderDescriptor,
     model_id: String,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
-    let auth = openai_auth_for_provider(auth_store, provider)?;
-    let request_config = OpenAIRequestConfig {
-        base_url: provider.base_url.clone(),
-        version: APP_VERSION.to_string(),
-        auth,
-    };
+    let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let tools = openai_tool_definitions(&registry);
     let mut previous_response_id = None;
     let mut next_input = transcript_to_openai_input(state, input);
     let mut invocations = Vec::new();
+    let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
 
     for _ in 0..8 {
-        let response = if tools.is_empty()
+        let response = if execution.codex_style {
+            send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
+                let body = build_codex_openai_request_body(
+                    state,
+                    &model_id,
+                    next_input.clone(),
+                    &tools,
+                    previous_response_id.as_ref(),
+                    supports_reasoning,
+                );
+                build_json_post_request(
+                    request_config,
+                    openai_responses_path(&request_config.base_url),
+                    &body,
+                )
+            })?
+        } else if tools.is_empty()
             && previous_response_id.is_none()
             && matches!(next_input, Value::String(_))
         {
-            let request = build_responses_request(
-                &request_config,
-                &OpenAIResponsesRequest {
-                    model: model_id.clone(),
-                    input: next_input.as_str().unwrap_or_default().to_string(),
-                },
-            )?;
-            send_http_request(&request.url, &request.headers, &request.body, false)?
-        } else {
-            let request = build_tool_responses_request(
-                &request_config,
-                &OpenAIResponsesToolRequest {
-                    model: model_id.clone(),
-                    input: next_input.clone(),
-                    tools: tools.clone(),
-                    tool_choice: if tools.is_empty() {
-                        None
-                    } else {
-                        Some(OpenAIResponsesToolChoice::Mode(
-                            OpenAIResponsesToolChoiceMode::Auto,
-                        ))
+            send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
+                build_responses_request(
+                    request_config,
+                    &OpenAIResponsesRequest {
+                        model: model_id.clone(),
+                        input: next_input.as_str().unwrap_or_default().to_string(),
                     },
-                    previous_response_id: previous_response_id.clone(),
-                },
-            )?;
-            send_http_request(&request.url, &request.headers, &request.body, false)?
+                )
+            })?
+        } else {
+            send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
+                build_tool_responses_request(
+                    request_config,
+                    &OpenAIResponsesToolRequest {
+                        model: model_id.clone(),
+                        input: next_input.clone(),
+                        tools: tools.clone(),
+                        tool_choice: if tools.is_empty() {
+                            None
+                        } else {
+                            Some(OpenAIResponsesToolChoice::Mode(
+                                OpenAIResponsesToolChoiceMode::Auto,
+                            ))
+                        },
+                        previous_response_id: previous_response_id.clone(),
+                    },
+                )
+            })?
         };
 
         let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
@@ -295,35 +329,31 @@ fn execute_openai_completions(
     resources: &LoadedResources,
     provider: &ProviderDescriptor,
     model_id: String,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
-    let auth = openai_auth_for_provider(auth_store, provider)?;
-    let request_config = OpenAIRequestConfig {
-        base_url: provider.base_url.clone(),
-        version: APP_VERSION.to_string(),
-        auth,
-    };
+    let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let tools = openai_chat_completion_tools(&registry);
     let mut messages = transcript_to_openai_chat_messages(state, input);
     let mut invocations = Vec::new();
 
     for _ in 0..8 {
-        let request = build_chat_completions_request(
-            &request_config,
-            &OpenAIChatCompletionsRequest {
-                model: model_id.clone(),
-                messages: messages.clone(),
-                tools: tools.clone(),
-                tool_choice: if tools.is_empty() {
-                    None
-                } else {
-                    Some(OpenAIResponsesToolChoiceMode::Auto)
+        let response = send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
+            build_chat_completions_request(
+                request_config,
+                &OpenAIChatCompletionsRequest {
+                    model: model_id.clone(),
+                    messages: messages.clone(),
+                    tools: tools.clone(),
+                    tool_choice: if tools.is_empty() {
+                        None
+                    } else {
+                        Some(OpenAIResponsesToolChoiceMode::Auto)
+                    },
                 },
-            },
-        )?;
-        let response = send_http_request(&request.url, &request.headers, &request.body, false)?;
+            )
+        })?;
         let parsed = parse_chat_completions_response(&serde_json::to_string(&response)?)?;
         let tool_calls = extract_chat_completions_tool_calls(&parsed)?;
         let choice = parsed
@@ -387,6 +417,16 @@ fn send_http_request(
     body: &str,
     anthropic: bool,
 ) -> Result<Value> {
+    let response = send_http_request_raw(url, headers, body, anthropic)?;
+    parse_http_json_response(url, anthropic, response)
+}
+
+fn send_http_request_raw(
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+    anthropic: bool,
+) -> Result<RawHttpResponse> {
     let client = Client::new();
     let mut request = client.post(url);
     for (key, value) in headers {
@@ -410,13 +450,33 @@ fn send_http_request(
         .send()
         .with_context(|| format!("request to {url} failed"))?;
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
     let text = response.text()?;
-    if !status.is_success() {
-        bail!("request failed with status {}: {}", status, text);
+    Ok(RawHttpResponse {
+        status,
+        content_type,
+        text,
+    })
+}
+
+fn parse_http_json_response(url: &str, anthropic: bool, response: RawHttpResponse) -> Result<Value> {
+    if !response.status.is_success() {
+        bail!(
+            "request failed with status {}: {}",
+            response.status,
+            response.text
+        );
     }
-    let json = serde_json::from_str::<Value>(&text)
-        .with_context(|| format!("response from {url} was not valid JSON"))?;
-    Ok(json)
+    if !anthropic && is_event_stream(response.content_type.as_deref(), &response.text) {
+        return parse_openai_sse_response(&response.text)
+            .with_context(|| format!("failed to parse SSE response from {url}"));
+    }
+    serde_json::from_str::<Value>(&response.text)
+        .with_context(|| format!("response from {url} was not valid JSON"))
 }
 fn anthropic_auth_for_provider(
     auth_store: &AuthStore,
@@ -435,23 +495,6 @@ fn anthropic_auth_for_provider(
                 provider.id
             )
         }),
-    }
-}
-fn openai_auth_for_provider(
-    auth_store: &AuthStore,
-    provider: &ProviderDescriptor,
-) -> Result<OpenAIAuth> {
-    match auth_store.get(&provider.id) {
-        Some(StoredCredential::ApiKey { key }) => Ok(OpenAIAuth::ApiKey(key.clone())),
-        Some(StoredCredential::OAuth(OAuthCredential { access_token, .. })) => {
-            Ok(OpenAIAuth::OAuthBearer(access_token.clone()))
-        }
-        None if provider.auth_modes.is_empty() => Ok(OpenAIAuth::None),
-        None => bail!(
-            "no credentials configured for provider {}; use `puffer auth set-api-key {}` first",
-            provider.id,
-            provider.id
-        ),
     }
 }
 fn parse_anthropic_text(response: &Value) -> Result<String> {
@@ -906,6 +949,307 @@ fn parse_openai_text_fallback(response: &Value, state: &AppState) -> Result<Stri
         state.current_provider.as_deref().unwrap_or("unknown"),
         state.session.id
     )
+}
+
+fn resolve_openai_execution_config(
+    state: &AppState,
+    auth_store: &AuthStore,
+    provider: &ProviderDescriptor,
+) -> Result<OpenAIExecutionConfig> {
+    let mut custom_headers = provider
+        .headers
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    append_default_openai_headers(&mut custom_headers, provider.id.as_str());
+    let codex_style = is_codex_openai_provider(provider);
+    let session_id = Some(state.session.id.to_string());
+    let originator = OPENAI_CODEX_ORIGINATOR.to_string();
+    match auth_store.get(provider.id.as_str()) {
+        Some(StoredCredential::ApiKey { key }) => Ok(OpenAIExecutionConfig {
+            provider_id: provider.id.clone(),
+            request_config: OpenAIRequestConfig {
+                base_url: provider.base_url.clone(),
+                version: APP_VERSION.to_string(),
+                auth: OpenAIAuth::ApiKey(key.clone()),
+                originator,
+                session_id,
+                account_id: None,
+                custom_headers,
+                query_params: provider
+                    .query_params
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            },
+            refresh_token: None,
+            codex_style,
+        }),
+        Some(StoredCredential::OAuth(credential)) => Ok(OpenAIExecutionConfig {
+            provider_id: provider.id.clone(),
+            request_config: OpenAIRequestConfig {
+                base_url: openai_base_url_for_auth(provider, /*oauth*/ true),
+                version: APP_VERSION.to_string(),
+                auth: OpenAIAuth::OAuthBearer(credential.access_token.clone()),
+                originator,
+                session_id,
+                account_id: credential.account_id.clone(),
+                custom_headers,
+                query_params: provider
+                    .query_params
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            },
+            refresh_token: Some(credential.refresh_token.clone()),
+            codex_style,
+        }),
+        None if provider.auth_modes.is_empty() => Ok(OpenAIExecutionConfig {
+            provider_id: provider.id.clone(),
+            request_config: OpenAIRequestConfig {
+                base_url: provider.base_url.clone(),
+                version: APP_VERSION.to_string(),
+                auth: OpenAIAuth::None,
+                originator,
+                session_id,
+                account_id: None,
+                custom_headers,
+                query_params: provider
+                    .query_params
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            },
+            refresh_token: None,
+            codex_style,
+        }),
+        None => bail!(
+            "no credentials configured for provider {}; use `puffer auth set-api-key {}` first",
+            provider.id,
+            provider.id
+        ),
+    }
+}
+
+fn send_openai_request_with_refresh<F>(
+    auth_store: &mut AuthStore,
+    execution: &mut OpenAIExecutionConfig,
+    build_request: F,
+) -> Result<Value>
+where
+    F: Fn(&OpenAIRequestConfig) -> Result<puffer_provider_openai::BuiltOpenAIRequest>,
+{
+    let request = build_request(&execution.request_config)?;
+    let response = send_http_request_raw(&request.url, &request.headers, &request.body, false)?;
+    if response.status != StatusCode::UNAUTHORIZED || execution.refresh_token.is_none() {
+        return parse_http_json_response(&request.url, false, response);
+    }
+
+    let refresh_token = execution
+        .refresh_token
+        .clone()
+        .ok_or_else(|| anyhow!("missing refresh token for OpenAI OAuth retry"))?;
+    let refreshed = refresh_oauth_token(&refresh_token)
+        .context("failed to refresh OpenAI OAuth credentials after 401")?;
+    let stored = openai_registry_credential(refreshed);
+    execution.request_config.auth = OpenAIAuth::OAuthBearer(stored.access_token.clone());
+    execution.request_config.account_id = stored.account_id.clone();
+    execution.refresh_token = Some(stored.refresh_token.clone());
+    auth_store.set_oauth(execution.provider_id.clone(), stored);
+
+    let retry = build_request(&execution.request_config)?;
+    let retry_response = send_http_request_raw(&retry.url, &retry.headers, &retry.body, false)?;
+    parse_http_json_response(&retry.url, false, retry_response)
+}
+
+fn append_default_openai_headers(headers: &mut Vec<(String, String)>, provider_id: &str) {
+    if provider_id == "openai" && !has_header(headers, "version") {
+        headers.push(("version".to_string(), APP_VERSION.to_string()));
+    }
+    append_env_header(headers, "OpenAI-Organization", "OPENAI_ORGANIZATION");
+    append_env_header(headers, "OpenAI-Project", "OPENAI_PROJECT");
+}
+
+fn append_env_header(headers: &mut Vec<(String, String)>, header: &str, env_var: &str) {
+    if has_header(headers, header) {
+        return;
+    }
+    if let Ok(value) = std::env::var(env_var) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            headers.push((header.to_string(), trimmed.to_string()));
+        }
+    }
+}
+
+fn has_header(headers: &[(String, String)], name: &str) -> bool {
+    headers
+        .iter()
+        .any(|(header, _)| header.eq_ignore_ascii_case(name))
+}
+
+fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
+    provider.id == "openai" || provider.default_api == "openai-codex-responses"
+}
+
+fn openai_base_url_for_auth(provider: &ProviderDescriptor, oauth: bool) -> String {
+    if !oauth || provider.id != "openai" {
+        return provider.base_url.clone();
+    }
+    let trimmed = provider.base_url.trim_end_matches('/');
+    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
+        trimmed.to_string()
+    } else {
+        OPENAI_CHATGPT_BASE_URL.to_string()
+    }
+}
+
+fn openai_responses_path(base_url: &str) -> &'static str {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
+        "/responses"
+    } else {
+        "/v1/responses"
+    }
+}
+
+fn openai_model_supports_reasoning(provider: &ProviderDescriptor, model_id: &str) -> bool {
+    provider
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .map(|model| model.supports_reasoning)
+        .unwrap_or(false)
+}
+
+fn build_codex_openai_request_body(
+    state: &AppState,
+    model_id: &str,
+    input: Value,
+    tools: &[OpenAIResponsesTool],
+    previous_response_id: Option<&String>,
+    supports_reasoning: bool,
+) -> Value {
+    let reasoning = codex_reasoning_config(state, supports_reasoning);
+    let include = if reasoning.is_some() {
+        vec![json!("reasoning.encrypted_content")]
+    } else {
+        Vec::new()
+    };
+    let mut body = json!({
+        "model": model_id,
+        "instructions": "",
+        "input": codex_input_items(input),
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": !tools.is_empty(),
+        "store": false,
+        "stream": true,
+        "include": include,
+        "prompt_cache_key": state.session.id.to_string(),
+    });
+    if let Some(reasoning) = reasoning {
+        body["reasoning"] = reasoning;
+    }
+    if let Some(previous_response_id) = previous_response_id {
+        body["previous_response_id"] = json!(previous_response_id);
+    }
+    body
+}
+
+fn codex_input_items(input: Value) -> Value {
+    match input {
+        Value::Array(_) => input,
+        Value::String(text) => json!([
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": text,
+                    }
+                ],
+            }
+        ]),
+        other => other,
+    }
+}
+
+fn codex_reasoning_config(state: &AppState, supports_reasoning: bool) -> Option<Value> {
+    if !supports_reasoning {
+        return None;
+    }
+    let mut reasoning = json!({ "summary": "auto" });
+    match state.effort_level.as_str() {
+        "low" | "medium" | "high" => {
+            reasoning["effort"] = json!(state.effort_level);
+        }
+        "max" => {
+            reasoning["effort"] = json!("high");
+        }
+        _ => {}
+    }
+    Some(reasoning)
+}
+
+fn is_event_stream(content_type: Option<&str>, text: &str) -> bool {
+    content_type
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+        || text.trim_start().starts_with("event:")
+}
+
+fn parse_openai_sse_response(stream: &str) -> Result<Value> {
+    let mut response_id = None;
+    let mut output = Vec::new();
+
+    for chunk in stream.split("\n\n") {
+        let data = chunk
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let event: Value = serde_json::from_str(&data)
+            .with_context(|| format!("invalid SSE payload: {data}"))?;
+        match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "response.created" | "response.completed" => {
+                if let Some(id) = event.pointer("/response/id").and_then(Value::as_str) {
+                    response_id = Some(id.to_string());
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = event.get("item") {
+                    output.push(item.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(json!({
+        "id": response_id,
+        "output": output,
+    }))
+}
+
+fn openai_registry_credential(
+    credential: puffer_provider_openai::OpenAIOAuthCredentials,
+) -> OAuthCredential {
+    OAuthCredential {
+        access_token: credential.access_token,
+        refresh_token: credential.refresh_token,
+        expires_at_ms: credential.expires_at_ms,
+        account_id: credential.account_id,
+        organization_id: None,
+        email: credential.email,
+        plan_type: credential.plan_type,
+        rate_limit_tier: None,
+        scopes: Vec::new(),
+    }
 }
 #[cfg(test)]
 mod tests;

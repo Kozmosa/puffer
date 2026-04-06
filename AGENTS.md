@@ -196,6 +196,8 @@ constraints:
 ## Working Style
 
 - Prefer incremental commits for small, coherent steps.
+- Create any additional git worktrees under the repo-local `.worktree/`
+  directory.
 - Keep the workspace green with `cargo test --workspace`.
 - When adding new features, wire tests in the same step where practical.
 - If there is a conflict between fidelity and maintainability, document the

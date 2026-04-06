@@ -20,7 +20,7 @@ fn sandbox_command_writes_workspace_sandbox_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/sandbox read-only",
     )
@@ -30,7 +30,7 @@ fn sandbox_command_writes_workspace_sandbox_file() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/sandbox exclude \"rm -rf\"",
     )

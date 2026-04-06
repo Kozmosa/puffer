@@ -8,7 +8,7 @@ use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::symbols::border;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
@@ -52,11 +52,11 @@ pub(crate) fn render(
     };
     let header_height = header.len() as u16;
     let footer_height = if onboarding_active {
-        2
-    } else if state.statusline_enabled {
         4
+    } else if state.statusline_enabled {
+        6
     } else {
-        3
+        5
     };
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -85,12 +85,23 @@ pub(crate) fn render(
         );
     }
 
-    let footer_block = Block::default().borders(Borders::TOP);
+    let footer_block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(prompt_border_style(state));
     frame.render_widget(&footer_block, layout[2]);
     let footer_area = footer_block.inner(layout[2]);
     let footer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if state.statusline_enabled {
+        .constraints(if onboarding_active {
+            [
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(0),
+                Constraint::Length(0),
+            ]
+            .as_ref()
+        } else if state.statusline_enabled {
             [
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -296,7 +307,8 @@ fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 Block::default()
                     .title(" Puffer Code ")
                     .borders(Borders::ALL)
-                    .border_set(border::ROUNDED),
+                    .border_set(border::ROUNDED)
+                    .border_style(prompt_border_style(state)),
             ),
         card_area,
     );
@@ -630,7 +642,8 @@ fn render_command_popup(
         List::new(matching).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_set(border::ROUNDED),
+                .border_set(border::ROUNDED)
+                .border_style(accent_border_style()),
         ),
         popup_area,
     );
@@ -667,7 +680,8 @@ fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState)
             Block::default()
                 .title(overlay_title(overlay))
                 .borders(Borders::ALL)
-                .border_set(border::ROUNDED),
+                .border_set(border::ROUNDED)
+                .border_style(accent_border_style()),
         ),
         area,
     );
@@ -774,6 +788,23 @@ fn masked_secret(value: &str) -> String {
     "*".repeat(value.chars().count().min(32))
 }
 
+fn accent_border_style() -> Style {
+    Style::default().fg(Color::Cyan)
+}
+
+fn prompt_border_style(state: &AppState) -> Style {
+    let color = match state.prompt_color.as_str() {
+        "amber" | "yellow" => Color::Yellow,
+        "teal" | "cyan" => Color::Cyan,
+        "green" => Color::Green,
+        "blue" => Color::Blue,
+        "red" => Color::Red,
+        "magenta" | "pink" => Color::Magenta,
+        _ => Color::Cyan,
+    };
+    Style::default().fg(color)
+}
+
 struct OverlayRow {
     text: String,
     selected: bool,
@@ -797,7 +828,12 @@ fn render_onboarding_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &Ov
     frame.render_widget(
         Paragraph::new(Text::from(body_lines))
             .wrap(Wrap { trim: false })
-            .block(Block::default()),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
+                    .border_style(accent_border_style()),
+            ),
         area,
     );
     if let OverlayState::ApiKeyPrompt { value, cursor, .. } = overlay {

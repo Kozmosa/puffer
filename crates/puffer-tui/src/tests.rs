@@ -1,16 +1,27 @@
 use super::*;
-use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
-use puffer_provider_registry::{AuthMode, ModelDescriptor, OAuthCredential, ProviderDescriptor};
+use puffer_config::{ensure_workspace_dirs, save_user_config, ConfigPaths, PufferConfig};
+use puffer_provider_registry::{
+    AuthMode, ExternalImportCandidate, ExternalImportFamily, ExternalImportSource, ModelDescriptor,
+    OAuthCredential, ProviderDescriptor, StoredCredential,
+};
 use puffer_resources::{
     IdeSpec, LoadedItem, MascotSpec, McpServerSpec, PluginCommandSpec, PluginSpec, PromptTemplate,
-    SkillSpec, SourceInfo, SourceKind, ToolSpec,
+    ProviderPack, SkillSpec, SourceInfo, SourceKind, ToolSpec,
 };
 use puffer_session_store::{SessionMetadata, SessionStore};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use crate::state::AuthPickerEntry;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
 use uuid::Uuid;
+
+fn puffer_home_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[test]
 fn render_shows_command_popup_for_slash_input() {
@@ -202,6 +213,175 @@ fn try_open_overlay_builds_logout_picker() {
 }
 
 #[test]
+fn logout_clears_active_provider_selection() {
+    let tempdir = tempdir().unwrap();
+    let _lock = puffer_home_lock().lock().unwrap();
+    let old_home = std::env::var_os("PUFFER_HOME");
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::env::set_var("PUFFER_HOME", &home);
+
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.default_model = Some("anthropic/claude-sonnet-4-5".to_string());
+    save_user_config(&paths, &config).unwrap();
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    state.current_model = Some("anthropic/claude-sonnet-4-5".to_string());
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = sample_auth_store();
+    auth_store.save(&auth_path).unwrap();
+
+    handle_auth_command(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        "/logout anthropic",
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider, None);
+    assert_eq!(state.current_model, None);
+    assert_eq!(state.config.default_provider, None);
+    assert_eq!(state.config.default_model, None);
+    assert!(!auth_store.has_auth("anthropic"));
+
+    if let Some(value) = old_home {
+        std::env::set_var("PUFFER_HOME", value);
+    } else {
+        std::env::remove_var("PUFFER_HOME");
+    }
+}
+
+#[test]
+fn logout_clears_selection_when_model_provider_matches_logged_out_provider() {
+    let tempdir = tempdir().unwrap();
+    let _lock = puffer_home_lock().lock().unwrap();
+    let old_home = std::env::var_os("PUFFER_HOME");
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::env::set_var("PUFFER_HOME", &home);
+
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    save_user_config(&paths, &config).unwrap();
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = sample_auth_store();
+    auth_store.set_api_key("openai", "sk-openai");
+    auth_store.save(&auth_path).unwrap();
+
+    handle_auth_command(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        "/logout openai",
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider, None);
+    assert_eq!(state.current_model, None);
+    assert_eq!(state.config.default_provider, None);
+    assert_eq!(state.config.default_model, None);
+    assert!(!auth_store.has_auth("openai"));
+
+    let mut providers = sample_providers();
+    let mut tui = TuiState::default();
+    submit_queued_prompt_if_ready(
+        &mut state,
+        &sample_resources(),
+        &mut providers,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+        true,
+    )
+    .unwrap();
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::ProviderPicker {
+            onboarding: true,
+            ..
+        })
+    ));
+
+    if let Some(value) = old_home {
+        std::env::set_var("PUFFER_HOME", value);
+    } else {
+        std::env::remove_var("PUFFER_HOME");
+    }
+}
+
+#[test]
+fn missing_auth_for_selected_provider_reopens_auth_picker() {
+    let tempdir = tempdir().unwrap();
+    let _lock = puffer_home_lock().lock().unwrap();
+    let old_home = std::env::var_os("PUFFER_HOME");
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::env::set_var("PUFFER_HOME", &home);
+
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("openai".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    save_user_config(&paths, &config).unwrap();
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    let mut providers = sample_providers();
+    let mut tui = TuiState::default();
+
+    submit_queued_prompt_if_ready(
+        &mut state,
+        &sample_resources(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &paths.user_config_dir.join("auth.json"),
+        &session_store,
+        &mut tui,
+        true,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::AuthPicker { ref provider_id, .. }) if provider_id == "openai"
+    ));
+
+    if let Some(value) = old_home {
+        std::env::set_var("PUFFER_HOME", value);
+    } else {
+        std::env::remove_var("PUFFER_HOME");
+    }
+}
+
+#[test]
 fn try_open_overlay_builds_theme_picker() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
@@ -226,6 +406,103 @@ fn try_open_overlay_builds_theme_picker() {
         tui.overlay,
         Some(OverlayState::ThemePicker { .. })
     ));
+}
+
+#[test]
+fn codex_import_without_base_url_clears_previous_openai_override() {
+    let tempdir = tempdir().unwrap();
+    let _lock = puffer_home_lock().lock().unwrap();
+    let old_home = std::env::var_os("PUFFER_HOME");
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::env::set_var("PUFFER_HOME", &home);
+
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.openai_base_url = Some("https://stale.example/v1".to_string());
+    config.openai_headers = BTreeMap::from([("x-stale".to_string(), "present".to_string())]);
+    config.openai_query_params = BTreeMap::from([("api-version".to_string(), "stale".to_string())]);
+    save_user_config(&paths, &config).unwrap();
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("openai".to_string());
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::default();
+    let mut providers = sample_providers();
+    providers.set_openai_base_url("https://stale.example/v1");
+    providers.set_openai_headers(indexmap::IndexMap::from([(
+        "x-stale".to_string(),
+        "present".to_string(),
+    )]));
+    providers.set_openai_query_params(indexmap::IndexMap::from([(
+        "api-version".to_string(),
+        "stale".to_string(),
+    )]));
+    let resources = openai_provider_resources();
+    let mut tui = TuiState {
+        overlay: Some(OverlayState::AuthPicker {
+            provider_id: "openai".to_string(),
+            entries: vec![AuthPickerEntry {
+                label: "import-codex".to_string(),
+                description: "Import Codex OAuth".to_string(),
+                action: AuthPickerAction::Import(ExternalImportCandidate {
+                    source: ExternalImportSource::Codex,
+                    family: ExternalImportFamily::OpenAi,
+                    description: "Import Codex OAuth".to_string(),
+                    source_path: PathBuf::from("/tmp/codex/auth.json"),
+                    credential: StoredCredential::ApiKey {
+                        key: "sk-openai".to_string(),
+                    },
+                    openai_base_url: None,
+                    openai_headers: BTreeMap::new(),
+                    openai_query_params: BTreeMap::new(),
+                }),
+            }],
+            selection: 0,
+            onboarding: false,
+        }),
+        ..TuiState::default()
+    };
+
+    handle_overlay_key(
+        KeyEvent::from(KeyCode::Enter),
+        &mut state,
+        &resources,
+        &mut providers,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+        true,
+    )
+    .unwrap();
+
+    let saved = puffer_config::load_config(&paths).unwrap();
+    assert_eq!(saved.openai_base_url, None);
+    assert!(saved.openai_headers.is_empty());
+    assert!(saved.openai_query_params.is_empty());
+    assert_eq!(
+        providers.provider("openai").map(|provider| provider.base_url.as_str()),
+        Some("https://api.openai.com")
+    );
+    assert!(providers
+        .provider("openai")
+        .map(|provider| provider.headers.is_empty())
+        .unwrap_or(false));
+    assert!(providers
+        .provider("openai")
+        .map(|provider| provider.query_params.is_empty())
+        .unwrap_or(false));
+
+    if let Some(value) = old_home {
+        std::env::set_var("PUFFER_HOME", value);
+    } else {
+        std::env::remove_var("PUFFER_HOME");
+    }
 }
 
 #[test]
@@ -437,6 +714,34 @@ fn sample_resources() -> LoadedResources {
     }
 }
 
+fn openai_provider_resources() -> LoadedResources {
+    LoadedResources {
+        providers: vec![loaded_item(
+            "providers/openai.yaml",
+            ProviderPack {
+                id: "openai".to_string(),
+                display_name: "OpenAI".to_string(),
+                base_url: "https://api.openai.com".to_string(),
+                default_api: "openai-responses".to_string(),
+                auth_modes: vec![AuthMode::ApiKey, AuthMode::OAuth],
+                headers: Default::default(),
+                query_params: Default::default(),
+                discovery: None,
+                models: vec![ModelDescriptor {
+                    id: "gpt-5".to_string(),
+                    display_name: "GPT-5".to_string(),
+                    provider: "openai".to_string(),
+                    api: "openai-responses".to_string(),
+                    context_window: 272_000,
+                    max_output_tokens: 16_384,
+                    supports_reasoning: true,
+                }],
+            },
+        )],
+        ..LoadedResources::default()
+    }
+}
+
 fn sample_providers() -> ProviderRegistry {
     let mut providers = ProviderRegistry::default();
     providers.register(ProviderDescriptor {
@@ -446,6 +751,7 @@ fn sample_providers() -> ProviderRegistry {
         default_api: "anthropic-messages".to_string(),
         auth_modes: vec![AuthMode::ApiKey, AuthMode::OAuth],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![
             ModelDescriptor {
@@ -475,6 +781,7 @@ fn sample_providers() -> ProviderRegistry {
         default_api: "responses".to_string(),
         auth_modes: vec![AuthMode::ApiKey, AuthMode::OAuth],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![ModelDescriptor {
             id: "gpt-5".to_string(),
@@ -493,6 +800,7 @@ fn sample_providers() -> ProviderRegistry {
         default_api: "openai-completions".to_string(),
         auth_modes: Vec::new(),
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![ModelDescriptor {
             id: "qwen3:14b".to_string(),

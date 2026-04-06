@@ -18,6 +18,7 @@ fn provider(
         default_api: "openai-responses".to_string(),
         auth_modes: vec![AuthMode::ApiKey],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: models
             .iter()
@@ -61,7 +62,7 @@ fn model_command_lists_only_models_for_selected_provider() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut providers,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/model",
     )
@@ -107,7 +108,7 @@ fn model_command_rejects_cross_provider_selection() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut providers,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/model groq/compound",
     )
@@ -151,7 +152,7 @@ fn model_command_persists_selected_model_to_user_config() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut providers,
-        &AuthStore::default(),
+        &mut AuthStore::default(),
         &session_store,
         "/model gpt-5-mini",
     )

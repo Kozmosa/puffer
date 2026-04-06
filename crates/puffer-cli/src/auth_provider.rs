@@ -96,6 +96,7 @@ mod tests {
             default_api: api.to_string(),
             auth_modes,
             headers: Default::default(),
+            query_params: Default::default(),
             discovery: None,
             models: vec![ModelDescriptor {
                 id: "model".to_string(),

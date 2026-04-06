@@ -5,6 +5,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Distinguishes external credential sources that Puffer can import.
@@ -29,6 +30,9 @@ pub struct ExternalImportCandidate {
     pub description: String,
     pub source_path: PathBuf,
     pub credential: StoredCredential,
+    pub openai_base_url: Option<String>,
+    pub openai_headers: BTreeMap<String, String>,
+    pub openai_query_params: BTreeMap<String, String>,
 }
 
 /// Detects importable external credentials for the requested provider family.
@@ -87,6 +91,9 @@ fn read_claude_candidates(home: &Path) -> Result<Vec<ExternalImportCandidate>> {
                     rate_limit_tier: oauth.rate_limit_tier,
                     scopes: oauth.scopes,
                 }),
+                openai_base_url: None,
+                openai_headers: BTreeMap::new(),
+                openai_query_params: BTreeMap::new(),
             });
         }
     }
@@ -104,6 +111,9 @@ fn read_claude_candidates(home: &Path) -> Result<Vec<ExternalImportCandidate>> {
                 description: "Import Claude API key".to_string(),
                 source_path: config_path,
                 credential: StoredCredential::ApiKey { key: api_key },
+                openai_base_url: None,
+                openai_headers: BTreeMap::new(),
+                openai_query_params: BTreeMap::new(),
             });
         }
     }
@@ -116,6 +126,7 @@ fn read_codex_candidates(home: &Path) -> Result<Vec<ExternalImportCandidate>> {
     if !auth_path.exists() {
         return Ok(Vec::new());
     }
+    let imported_provider = read_codex_openai_import(&home.join(".codex").join("config.toml"))?;
     let raw = fs::read_to_string(&auth_path)
         .with_context(|| format!("failed to read {}", auth_path.display()))?;
     let auth: CodexAuthFile = serde_json::from_str(&raw)
@@ -129,6 +140,9 @@ fn read_codex_candidates(home: &Path) -> Result<Vec<ExternalImportCandidate>> {
             description: "Import Codex API key".to_string(),
             source_path: auth_path.clone(),
             credential: StoredCredential::ApiKey { key: api_key },
+            openai_base_url: imported_provider.base_url.clone(),
+            openai_headers: imported_provider.headers.clone(),
+            openai_query_params: imported_provider.query_params.clone(),
         });
     }
     if let Some(tokens) = auth.tokens {
@@ -139,6 +153,9 @@ fn read_codex_candidates(home: &Path) -> Result<Vec<ExternalImportCandidate>> {
         let mut description = String::from("Import Codex OAuth");
         if let Some(email) = email.as_deref() {
             description.push_str(&format!(" ({email})"));
+        }
+        if let Some(base_url) = imported_provider.base_url.as_deref() {
+            description.push_str(&format!(" via {base_url}"));
         }
         candidates.push(ExternalImportCandidate {
             source: ExternalImportSource::Codex,
@@ -156,9 +173,73 @@ fn read_codex_candidates(home: &Path) -> Result<Vec<ExternalImportCandidate>> {
                 rate_limit_tier: None,
                 scopes: Vec::new(),
             }),
+            openai_base_url: imported_provider.base_url,
+            openai_headers: imported_provider.headers,
+            openai_query_params: imported_provider.query_params,
         });
     }
     Ok(candidates)
+}
+
+fn read_codex_openai_import(config_path: &Path) -> Result<CodexOpenAiImport> {
+    if !config_path.exists() {
+        return Ok(CodexOpenAiImport::default());
+    }
+    let raw = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let config: CodexConfigToml = toml::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    Ok(resolve_codex_openai_import(&config))
+}
+
+fn resolve_codex_openai_import(config: &CodexConfigToml) -> CodexOpenAiImport {
+    let base_url = config
+        .openai_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            let selected_provider = config.model_provider.as_deref()?;
+            let provider = config.model_providers.as_ref()?.get(selected_provider)?;
+            provider
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        });
+    let provider = config
+        .model_provider
+        .as_deref()
+        .and_then(|selected_provider| config.model_providers.as_ref()?.get(selected_provider));
+    let headers = provider
+        .map(resolve_codex_provider_headers)
+        .unwrap_or_default();
+    let query_params = provider
+        .and_then(|provider| provider.query_params.clone())
+        .unwrap_or_default();
+    CodexOpenAiImport {
+        base_url,
+        headers,
+        query_params,
+    }
+}
+
+fn resolve_codex_provider_headers(provider: &CodexModelProviderToml) -> BTreeMap<String, String> {
+    let mut headers = provider.http_headers.clone().unwrap_or_default();
+    for (header, env_var) in provider.env_http_headers.clone().unwrap_or_default() {
+        if headers.contains_key(&header) {
+            continue;
+        }
+        if let Ok(value) = std::env::var(&env_var) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                headers.insert(header, trimmed.to_string());
+            }
+        }
+    }
+    headers
 }
 
 fn parse_codex_id_token(raw_jwt: Option<&str>) -> Option<CodexIdClaims> {
@@ -250,6 +331,35 @@ struct CodexAuthFile {
     tokens: Option<CodexTokens>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct CodexConfigToml {
+    #[serde(default)]
+    openai_base_url: Option<String>,
+    #[serde(default)]
+    model_provider: Option<String>,
+    #[serde(default)]
+    model_providers: Option<BTreeMap<String, CodexModelProviderToml>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodexModelProviderToml {
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    http_headers: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    env_http_headers: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    query_params: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Default)]
+struct CodexOpenAiImport {
+    base_url: Option<String>,
+    headers: BTreeMap<String, String>,
+    query_params: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CodexTokens {
     access_token: String,
@@ -323,6 +433,13 @@ mod tests {
             .to_string(),
         )
         .expect("write");
+        fs::write(
+            codex_dir.join("config.toml"),
+            r#"
+openai_base_url = "https://proxy.example/v1"
+"#,
+        )
+        .expect("write");
         let old_home = std::env::var_os("PUFFER_HOME");
         std::env::set_var("PUFFER_HOME", temp.path());
         let candidates =
@@ -343,6 +460,80 @@ mod tests {
                 if credential.email.as_deref() == Some("dev@example.com")
                     && credential.plan_type.as_deref() == Some("pro")
         )));
+        assert!(candidates.iter().all(|candidate| {
+            candidate.openai_base_url.as_deref() == Some("https://proxy.example/v1")
+        }));
+        assert!(candidates.iter().all(|candidate| candidate.openai_headers.is_empty()));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.openai_query_params.is_empty()));
+    }
+
+    #[test]
+    fn resolve_codex_openai_import_falls_back_to_selected_provider_base_url() {
+        let config: CodexConfigToml = toml::from_str(
+            r#"
+model_provider = "corp"
+
+[model_providers.corp]
+base_url = "https://corp-proxy.example/v1"
+"#,
+        )
+        .expect("config");
+
+        let resolved = resolve_codex_openai_import(&config);
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://corp-proxy.example/v1")
+        );
+        assert!(resolved.headers.is_empty());
+        assert!(resolved.query_params.is_empty());
+    }
+
+    #[test]
+    fn resolve_codex_openai_import_reads_http_and_env_headers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = puffer_home_lock().lock().expect("lock");
+        let old_header = std::env::var_os("PUFFER_CODEX_IMPORT_TEST_HEADER");
+        std::env::set_var("PUFFER_CODEX_IMPORT_TEST_HEADER", "from-env");
+        let config: CodexConfigToml = toml::from_str(
+            r#"
+model_provider = "corp"
+
+[model_providers.corp]
+base_url = "https://corp-proxy.example/v1"
+
+[model_providers.corp.http_headers]
+x-static = "static-value"
+
+[model_providers.corp.env_http_headers]
+x-env = "PUFFER_CODEX_IMPORT_TEST_HEADER"
+
+[model_providers.corp.query_params]
+api-version = "2025-01-01"
+"#,
+        )
+        .expect("config");
+
+        let resolved = resolve_codex_openai_import(&config);
+        assert_eq!(
+            resolved.headers.get("x-static").map(String::as_str),
+            Some("static-value")
+        );
+        assert_eq!(
+            resolved.headers.get("x-env").map(String::as_str),
+            Some("from-env")
+        );
+        assert_eq!(
+            resolved.query_params.get("api-version").map(String::as_str),
+            Some("2025-01-01")
+        );
+        drop(temp);
+        if let Some(value) = old_header {
+            std::env::set_var("PUFFER_CODEX_IMPORT_TEST_HEADER", value);
+        } else {
+            std::env::remove_var("PUFFER_CODEX_IMPORT_TEST_HEADER");
+        }
     }
 
     #[test]

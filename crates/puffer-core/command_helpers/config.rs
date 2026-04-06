@@ -95,11 +95,12 @@ pub(crate) fn handle_config_command(
             state,
             session_store,
             format!(
-                "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}",
+                "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\nopenai_base_url={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}",
                 config_path.display(),
                 state.config.app_name,
                 state.config.default_provider.as_deref().unwrap_or("<unset>"),
                 state.config.default_model.as_deref().unwrap_or("<unset>"),
+                state.config.openai_base_url.as_deref().unwrap_or("<unset>"),
                 state.config.theme,
                 state.config.ui.no_alt_screen,
                 state.config.ui.tmux_golden_mode,
@@ -119,7 +120,7 @@ pub(crate) fn handle_config_command(
         return emit_system(
             state,
             session_store,
-            "Usage: /config [show|path|set <theme|default_provider|default_model|no_alt_screen|tmux_golden_mode> <value>]".to_string(),
+            "Usage: /config [show|path|set <theme|default_provider|default_model|openai_base_url|no_alt_screen|tmux_golden_mode> <value>]".to_string(),
         );
     };
     let Some((key, value)) = rest.split_once(' ') else {
@@ -134,6 +135,12 @@ pub(crate) fn handle_config_command(
         "theme" => state.config.theme = value.to_string(),
         "default_provider" => state.config.default_provider = Some(value.to_string()),
         "default_model" => state.config.default_model = Some(value.to_string()),
+        "openai_base_url" => {
+            state.config.openai_base_url = match value {
+                "none" | "default" | "<unset>" => None,
+                _ => Some(value.to_string()),
+            }
+        }
         "no_alt_screen" => state.config.ui.no_alt_screen = parse_bool(value)?,
         "tmux_golden_mode" => state.config.ui.tmux_golden_mode = parse_bool(value)?,
         _ => {

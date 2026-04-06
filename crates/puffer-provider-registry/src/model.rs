@@ -75,6 +75,8 @@ pub struct ProviderDescriptor {
     #[serde(default)]
     pub headers: IndexMap<String, String>,
     #[serde(default)]
+    pub query_params: IndexMap<String, String>,
+    #[serde(default)]
     pub discovery: Option<ModelDiscoveryConfig>,
     #[serde(default)]
     pub models: Vec<ModelDescriptor>,
