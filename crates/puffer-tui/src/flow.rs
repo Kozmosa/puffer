@@ -70,6 +70,10 @@ pub(crate) fn handle_prompt_submit(
     if submitted.is_empty() {
         return Ok(());
     }
+    if tui.has_pending_submit() && is_provider_prompt_input(&submitted) {
+        tui.enqueue_prompt(submitted);
+        return Ok(());
+    }
     if !is_provider_prompt_input(&submitted) {
         return handle_submit(
             state,
@@ -129,6 +133,52 @@ pub(crate) fn handle_prompt_submit(
         rendered_tool_invocations: 0,
     });
     Ok(())
+}
+
+/// Cancels the in-flight provider turn and discards future worker output.
+pub(crate) fn cancel_pending_submit(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    tui: &mut TuiState,
+) -> Result<bool> {
+    if tui.pending_submit.take().is_none() {
+        return Ok(false);
+    }
+    let message = "Interrupted by user.".to_string();
+    state.push_message(MessageRole::System, message.clone());
+    session_store.append_event(
+        state.session.id,
+        TranscriptEvent::SystemMessage { text: message },
+    )?;
+    Ok(true)
+}
+
+/// Starts the next queued prompt when no turn is currently running.
+pub(crate) fn submit_next_queued_prompt(
+    state: &mut AppState,
+    resources: &mut LoadedResources,
+    providers: &mut ProviderRegistry,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
+    session_store: &SessionStore,
+    tui: &mut TuiState,
+    no_alt_screen: bool,
+) -> Result<bool> {
+    let Some(prompt) = tui.dequeue_prompt() else {
+        return Ok(false);
+    };
+    handle_prompt_submit(
+        state,
+        resources,
+        providers,
+        auth_store,
+        auth_path,
+        session_store,
+        tui,
+        prompt,
+        no_alt_screen,
+    )?;
+    Ok(true)
 }
 
 /// Applies any completed async provider turn to session and transcript state.
@@ -774,6 +824,116 @@ mod tests {
         assert!(state.transcript.iter().any(|message| {
             message.role == MessageRole::System
                 && message.text.starts_with("Provider request failed:")
+        }));
+    }
+
+    #[test]
+    fn handle_prompt_submit_queues_prompt_while_turn_is_running() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let session = session_store.create_session(tempdir.path().to_path_buf()).unwrap();
+        let mut state = sample_state(session, tempdir.path());
+        let mut resources = LoadedResources::default();
+        let mut providers = ProviderRegistry::new();
+        let auth_path = paths.user_config_dir.join("auth.json");
+        let mut auth_store = AuthStore::default();
+        let mut tui = TuiState::default();
+
+        handle_prompt_submit(
+            &mut state,
+            &mut resources,
+            &mut providers,
+            &mut auth_store,
+            &auth_path,
+            &session_store,
+            &mut tui,
+            "first".to_string(),
+            true,
+        )
+        .unwrap();
+        handle_prompt_submit(
+            &mut state,
+            &mut resources,
+            &mut providers,
+            &mut auth_store,
+            &auth_path,
+            &session_store,
+            &mut tui,
+            "second".to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert!(tui.has_pending_submit());
+        assert_eq!(tui.queued_prompts.len(), 1);
+        assert_eq!(tui.queued_prompts.front().map(String::as_str), Some("second"));
+        assert!(matches!(state.transcript.first(), Some(message) if message.text == "first"));
+    }
+
+    #[test]
+    fn cancel_pending_submit_records_interrupt_and_starts_next_queued_prompt() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let session = session_store.create_session(tempdir.path().to_path_buf()).unwrap();
+        let mut state = sample_state(session, tempdir.path());
+        let mut resources = LoadedResources::default();
+        let mut providers = ProviderRegistry::new();
+        let auth_path = paths.user_config_dir.join("auth.json");
+        let mut auth_store = AuthStore::default();
+        let mut tui = TuiState::default();
+
+        handle_prompt_submit(
+            &mut state,
+            &mut resources,
+            &mut providers,
+            &mut auth_store,
+            &auth_path,
+            &session_store,
+            &mut tui,
+            "first".to_string(),
+            true,
+        )
+        .unwrap();
+        handle_prompt_submit(
+            &mut state,
+            &mut resources,
+            &mut providers,
+            &mut auth_store,
+            &auth_path,
+            &session_store,
+            &mut tui,
+            "second".to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert!(cancel_pending_submit(&mut state, &session_store, &mut tui).unwrap());
+        assert!(!tui.has_pending_submit());
+        assert!(state.transcript.iter().any(|message| {
+            message.role == MessageRole::System && message.text == "Interrupted by user."
+        }));
+
+        assert!(
+            submit_next_queued_prompt(
+                &mut state,
+                &mut resources,
+                &mut providers,
+                &mut auth_store,
+                &auth_path,
+                &session_store,
+                &mut tui,
+                true,
+        )
+        .unwrap()
+        );
+        assert!(tui.has_pending_submit());
+        assert!(tui.queued_prompts.is_empty());
+        assert!(state.transcript.iter().any(|message| {
+            message.role == MessageRole::User && message.text == "second"
         }));
     }
 }

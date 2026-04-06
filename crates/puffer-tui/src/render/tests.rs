@@ -201,7 +201,10 @@ fn render_pending_submit_shows_loading_below_prompt() {
 
     terminal
         .draw(|frame| {
-            set_pending_submit_loading(true);
+            set_pending_submit_state(
+                Some("Review the current worktree and call out any risks.".to_string()),
+                Vec::new(),
+            );
             render(
                 frame,
                 &state,
@@ -214,7 +217,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_loading(false);
+            set_pending_submit_state(None, Vec::new());
         })
         .unwrap();
 
@@ -227,6 +230,46 @@ fn render_pending_submit_shows_loading_below_prompt() {
             .unwrap()
             < rendered.find("Loading...").unwrap()
     );
+}
+
+#[test]
+fn render_pending_submit_shows_queued_prompts() {
+    let backend = TestBackend::new(100, 28);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    state.push_message(MessageRole::User, "first prompt");
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            set_pending_submit_state(
+                Some("first prompt".to_string()),
+                vec!["second prompt".to_string(), "third prompt".to_string()],
+            );
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            );
+            set_pending_submit_state(None, Vec::new());
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("⎿ Loading..."));
+    assert!(rendered.contains("› second prompt"));
+    assert!(rendered.contains("⎿ Queued"));
+    assert!(rendered.contains("› third prompt"));
 }
 
 #[test]

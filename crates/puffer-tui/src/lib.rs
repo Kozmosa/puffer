@@ -31,9 +31,10 @@ use state::TuiState;
 pub(crate) use state::{AuthPickerAction, ModelPickerEntry, OverlayState};
 use crate::flow::{
     allow_prompt_before_onboarding, apply_selected_provider, builtin_openai_base_url,
-    builtin_openai_headers, builtin_openai_query_params, emit_system_message, handle_prompt_submit,
-    handle_submit, is_provider_prompt_input, persist_user_config, poll_pending_submit,
-    run_embedded_auth_login, set_overlay_state, submit_queued_prompt_if_ready, try_open_overlay,
+    builtin_openai_headers, builtin_openai_query_params, cancel_pending_submit,
+    emit_system_message, handle_prompt_submit, handle_submit, persist_user_config,
+    poll_pending_submit, run_embedded_auth_login, set_overlay_state, submit_next_queued_prompt,
+    submit_queued_prompt_if_ready, try_open_overlay,
 };
 
 /// Runs the interactive Puffer TUI until the user exits.
@@ -129,14 +130,24 @@ pub fn run_app(
                 &mut tui,
                 no_alt_screen,
             )?;
+            submit_next_queued_prompt(
+                state,
+                resources,
+                providers,
+                auth_store,
+                auth_path,
+                session_store,
+                &mut tui,
+                no_alt_screen,
+            )?;
         }
         terminal.draw(|frame| {
             render::set_active_overlay(tui.overlay.clone());
-            render::set_pending_submit_loading(
+            render::set_pending_submit_state(
                 tui.pending_submit
                     .as_ref()
-                    .map(|pending| !pending.prompt.is_empty())
-                    .unwrap_or(false),
+                    .map(|pending| pending.prompt.clone()),
+                tui.queued_prompts.iter().cloned().collect(),
             );
             render::render(
                 frame,
@@ -216,7 +227,22 @@ fn handle_key(
             state.should_exit = true;
             return Ok(true);
         }
-        KeyCode::Esc => tui.clear(commands),
+        KeyCode::Esc => {
+            if cancel_pending_submit(state, session_store, tui)? {
+                submit_next_queued_prompt(
+                    state,
+                    resources,
+                    providers,
+                    auth_store,
+                    auth_path,
+                    session_store,
+                    tui,
+                    no_alt_screen,
+                )?;
+            } else {
+                tui.clear(commands);
+            }
+        }
         KeyCode::Left => tui.move_left(),
         KeyCode::Right => tui.move_right(),
         KeyCode::Home => tui.move_home(),
@@ -274,9 +300,6 @@ fn handle_key(
                 tui,
                 &current_input,
             )? {
-                return Ok(false);
-            }
-            if tui.has_pending_submit() && is_provider_prompt_input(&current_input) {
                 return Ok(false);
             }
             let submitted = tui.take_input();

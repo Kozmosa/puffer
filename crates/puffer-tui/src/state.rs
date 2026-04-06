@@ -6,6 +6,7 @@ use puffer_core::{CommandSpec, ToolInvocation, TurnExecution};
 use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 use std::sync::mpsc::Receiver;
@@ -19,6 +20,7 @@ pub(crate) struct TuiState {
     pub(crate) overlay: Option<OverlayState>,
     pub(crate) deferred_prompt: Option<String>,
     pub(crate) pending_submit: Option<PendingSubmit>,
+    pub(crate) queued_prompts: VecDeque<String>,
 }
 
 /// Carries one completed background provider turn back to the UI thread.
@@ -51,6 +53,7 @@ impl Default for TuiState {
             overlay: None,
             deferred_prompt: None,
             pending_submit: None,
+            queued_prompts: VecDeque::new(),
         }
     }
 }
@@ -59,6 +62,16 @@ impl TuiState {
     /// Returns true when a provider-backed prompt is still running.
     pub(crate) fn has_pending_submit(&self) -> bool {
         self.pending_submit.is_some()
+    }
+
+    /// Adds one prompt to the back of the staged prompt queue.
+    pub(crate) fn enqueue_prompt(&mut self, prompt: String) {
+        self.queued_prompts.push_back(prompt);
+    }
+
+    /// Pops the next staged prompt in FIFO order.
+    pub(crate) fn dequeue_prompt(&mut self) -> Option<String> {
+        self.queued_prompts.pop_front()
     }
 }
 
