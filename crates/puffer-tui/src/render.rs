@@ -154,10 +154,16 @@ pub(crate) fn render(
         Some(footer[2])
     };
 
-    if onboarding_active {
-        frame.render_widget(Paragraph::new(""), prompt_row);
+    let overlay_active = active_overlay.is_some();
+    if overlay_active {
+        frame.render_widget(Paragraph::new(overlay_prompt_line(input)), prompt_row);
+        let max_cursor = usize::from(prompt_row.width.saturating_sub(3));
+        frame.set_cursor_position((
+            prompt_row.x + 2 + cursor.min(max_cursor) as u16,
+            prompt_row.y,
+        ));
         frame.render_widget(
-            Paragraph::new("Enter to continue · Esc to go back · Ctrl-C to exit")
+            Paragraph::new(overlay_hint_line(input, onboarding_active))
                 .style(Style::default().add_modifier(Modifier::DIM)),
             hint_row,
         );
@@ -325,6 +331,33 @@ fn prompt_line(input: &str) -> Line<'static> {
         ])
     } else {
         Line::from(format!("❯ {input}"))
+    }
+}
+
+fn overlay_prompt_line(input: &str) -> Line<'static> {
+    if input.is_empty() {
+        Line::from(vec![
+            Span::raw("❯ "),
+            Span::styled(
+                "Type to jump",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ])
+    } else {
+        Line::from(format!("❯ {input}"))
+    }
+}
+
+fn overlay_hint_line(input: &str, onboarding_active: bool) -> String {
+    let prefix = if input.is_empty() {
+        "Type to jump"
+    } else {
+        "Typing jumps selection"
+    };
+    if onboarding_active {
+        format!("{prefix} · Enter to continue · Esc to go back")
+    } else {
+        format!("{prefix} · Enter to select · Esc to close")
     }
 }
 

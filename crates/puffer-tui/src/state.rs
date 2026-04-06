@@ -383,6 +383,61 @@ impl OverlayState {
         }
     }
 
+    /// Moves the selection to the first entry that matches the typed query.
+    pub(crate) fn select_matching_query(&mut self, query: &str) {
+        let query = query.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        match self {
+            Self::SessionPicker {
+                sessions,
+                selection,
+            } => {
+                if let Some(index) = sessions.iter().position(|session| {
+                    session
+                        .display_name
+                        .as_deref()
+                        .map(|name| name.to_ascii_lowercase().contains(&query))
+                        .unwrap_or(false)
+                        || session.id.to_string().to_ascii_lowercase().contains(&query)
+                }) {
+                    *selection = index;
+                }
+            }
+            Self::AgentPicker { entries, selection }
+            | Self::ModelPicker {
+                entries, selection, ..
+            }
+            | Self::LoginPicker { entries, selection }
+            | Self::ProviderPicker {
+                entries, selection, ..
+            }
+            | Self::LogoutPicker { entries, selection }
+            | Self::ThemePicker { entries, selection } => {
+                if let Some(index) = entries.iter().position(|entry| {
+                    entry.selector.to_ascii_lowercase().contains(&query)
+                        || entry.description.to_ascii_lowercase().contains(&query)
+                }) {
+                    *selection = index;
+                }
+            }
+            Self::AuthPicker {
+                entries,
+                selection,
+                ..
+            } => {
+                if let Some(index) = entries.iter().position(|entry| {
+                    entry.label.to_ascii_lowercase().contains(&query)
+                        || entry.description.to_ascii_lowercase().contains(&query)
+                }) {
+                    *selection = index;
+                }
+            }
+            Self::ApiKeyPrompt { .. } => {}
+        }
+    }
+
     /// Returns true when the overlay is part of the onboarding flow.
     pub(crate) fn is_onboarding(&self) -> bool {
         matches!(

@@ -38,7 +38,7 @@ tmux_golden_mode = true
 
     let binary = env!("CARGO_BIN_EXE_puffer");
     let session = start_tmux_command(binary, &[], Some(workspace.as_path())).unwrap();
-    wait_for_tmux_text(&session, "Welcome to Puffer Code", Duration::from_secs(15)).unwrap();
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(15)).unwrap();
     send_tmux_keys(&session, &["/help", "Enter"]).unwrap();
     let capture =
         wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(15)).unwrap();
