@@ -6,5 +6,5 @@
  /model       Select the active model
  Esc to cancel
 ╭──────────────────────────────────────────────────────────────────────╮
-│anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 0/0    │
-│dockyard · shell 0 · prompts 0 · 0 workdirs · sandbox workspace-write │
+│anthropic · anthropic/claude-so... · auth api-key · tools 0/0 · dockya│
+│? for shortcuts · /help · /review · !pwd                              │

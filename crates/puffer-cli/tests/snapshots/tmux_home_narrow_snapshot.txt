@@ -1,8 +1,10 @@
 ╭ Puffer Code ─────────────────────────────────────────────────────────╮
-│Mascot    Clawd on duty       │Session    session-<id> ·    │
-│User      anthropic via API   │<id>                               │
-│key                           │Model      anthropic/claude-sonn... ·  │
-│Provider  anthropic · auth    │tools 0/0                              │
+│Mascot    Clawd on duty                                               │
+│User      anthropic via API key                                       │
+│Provider  anthropic · auth api-key                                    │
+│Mode      effort medium                                               │
+│Session    session-<id> · <id>                          │
+│Model      anthropic/claude-sonn... · tools 0/0                       │
 ╰──────────────────────────────────────────────────────────────────────╯
    ╭ Puffer Code ───────────────────────────────────────────────────╮
    │                     Welcome to Puffer Code                     │
@@ -13,8 +15,6 @@
    ╰────────────────────────────────────────────────────────────────╯
 
 ╭──────────────────────────────────────────────────────────────────────╮
-│anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 0/0    │
-│dockyard · shell 0 · prompts 0 · 0 workdirs · sandbox workspace-write │
-│❯ Review changes, ask a question, or type /                           │
+│anthropic · anthropic/claude-so... · auth api-key · tools 0/0 · dockya│
 │? for shortcuts · /help · /review · !pwd                              │
 ╰──────────────────────────────────────────────────────────────────────╯
