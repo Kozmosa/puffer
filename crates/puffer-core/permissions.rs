@@ -337,11 +337,14 @@ pub(crate) fn load_runtime_permission_context(
 ) -> Result<RuntimePermissionContext> {
     let paths = ConfigPaths::discover(cwd);
     let permissions_path = paths.workspace_config_dir.join("permissions.toml");
-    let permissions = if permissions_path.exists() {
+    let mut permissions = if permissions_path.exists() {
         load_permissions_settings(&permissions_path)?
     } else {
         PermissionsSettings::default()
     };
+    permissions
+        .tools
+        .extend(state.session_tool_permissions.clone());
     Ok(RuntimePermissionContext {
         permissions,
         sandbox: load_runtime_sandbox_settings(cwd, state)?,
