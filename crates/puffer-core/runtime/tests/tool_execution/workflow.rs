@@ -1,12 +1,10 @@
 use super::*;
 use puffer_config::ConfigPaths;
 use std::fs;
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-fn puffer_home_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn puffer_home_lock() -> &'static std::sync::Mutex<()> {
+    crate::test_locks::env_lock()
 }
 
 #[test]

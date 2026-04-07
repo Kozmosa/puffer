@@ -40,17 +40,12 @@ enum SupportedTerminal {
 
 /// Returns the Claude-style `/terminal-setup` description for the current terminal.
 pub(crate) fn terminal_setup_command_description() -> &'static str {
-    match detect_terminal() {
-        DetectedTerminal::Supported(SupportedTerminal::AppleTerminal) => {
-            "Enable Option+Enter key binding for newlines and visual bell"
-        }
-        _ => "Install Shift+Enter key binding for newlines",
-    }
+    description_for_detected(&detect_terminal())
 }
 
 /// Returns whether `/terminal-setup` should be hidden from slash-command UI surfaces.
 pub(crate) fn should_hide_terminal_setup_command() -> bool {
-    matches!(detect_terminal(), DetectedTerminal::Native(_))
+    hidden_for_detected(&detect_terminal())
 }
 
 /// Handles `/terminal-setup` by installing supported keybindings or falling
@@ -71,6 +66,19 @@ fn render_supported_terminal_guidance(terminal: SupportedTerminal) -> String {
         SupportedTerminal::Alacritty => render_alacritty_guidance(),
         SupportedTerminal::Zed => render_zed_guidance(),
     }
+}
+
+fn description_for_detected(detected: &DetectedTerminal) -> &'static str {
+    match detected {
+        DetectedTerminal::Supported(SupportedTerminal::AppleTerminal) => {
+            "Enable Option+Enter key binding for newlines and visual bell"
+        }
+        _ => "Install Shift+Enter key binding for newlines",
+    }
+}
+
+fn hidden_for_detected(detected: &DetectedTerminal) -> bool {
+    matches!(detected, DetectedTerminal::Native(_))
 }
 
 fn terminal_setup_result() -> String {
@@ -132,13 +140,24 @@ fn render_zed_guidance() -> String {
 }
 
 fn install_vscode_keybinding(editor_name: &str, editor_dir: &str) -> Result<String, String> {
-    if is_vscode_remote_ssh() {
+    install_vscode_keybinding_at(
+        editor_name,
+        &vscode_keybindings_path(editor_dir),
+        is_vscode_remote_ssh(),
+    )
+}
+
+fn install_vscode_keybinding_at(
+    editor_name: &str,
+    keybindings_path: &Path,
+    remote_session: bool,
+) -> Result<String, String> {
+    if remote_session {
         return Err(format!(
             "Cannot install keybindings from a remote {editor_name} session.\n\n{editor_name} keybindings must be installed on your local machine, not the remote server."
         ));
     }
 
-    let keybindings_path = vscode_keybindings_path(editor_dir);
     if let Some(parent) = keybindings_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -148,7 +167,7 @@ fn install_vscode_keybinding(editor_name: &str, editor_dir: &str) -> Result<Stri
         })?;
     }
 
-    let mut keybindings = match read_or_initialize_json_array(&keybindings_path, true)? {
+    let mut keybindings = match read_or_initialize_json_array(keybindings_path, true)? {
         Some(items) => items,
         None => {
             return Err(format!(
@@ -170,7 +189,7 @@ fn install_vscode_keybinding(editor_name: &str, editor_dir: &str) -> Result<Stri
         ));
     }
 
-    backup_existing_file(&keybindings_path).map_err(|error| {
+    backup_existing_file(keybindings_path).map_err(|error| {
         format!(
             "Error backing up existing {editor_name} terminal keybindings: {error}\nPath: {}",
             keybindings_path.display()
@@ -182,7 +201,7 @@ fn install_vscode_keybinding(editor_name: &str, editor_dir: &str) -> Result<Stri
         "args": { "text": "\u{001b}\r" },
         "when": "terminalFocus",
     }));
-    write_json_array(&keybindings_path, &keybindings).map_err(|error| {
+    write_json_array(keybindings_path, &keybindings).map_err(|error| {
         format!(
             "Failed to install {editor_name} terminal Shift+Enter key binding: {error}\nPath: {}",
             keybindings_path.display()
@@ -195,7 +214,10 @@ fn install_vscode_keybinding(editor_name: &str, editor_dir: &str) -> Result<Stri
 }
 
 fn install_alacritty_keybinding() -> Result<String, String> {
-    let config_path = alacritty_config_path();
+    install_alacritty_keybinding_at(&alacritty_config_path())
+}
+
+fn install_alacritty_keybinding_at(config_path: &Path) -> Result<String, String> {
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -216,7 +238,7 @@ fn install_alacritty_keybinding() -> Result<String, String> {
         ));
     }
 
-    backup_existing_file(&config_path).map_err(|error| {
+    backup_existing_file(config_path).map_err(|error| {
         format!(
             "Error backing up existing Alacritty config: {error}\nPath: {}",
             config_path.display()
@@ -242,7 +264,10 @@ fn install_alacritty_keybinding() -> Result<String, String> {
 }
 
 fn install_zed_keybinding() -> Result<String, String> {
-    let keymap_path = zed_keymap_path();
+    install_zed_keybinding_at(&zed_keymap_path())
+}
+
+fn install_zed_keybinding_at(keymap_path: &Path) -> Result<String, String> {
     if let Some(parent) = keymap_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -252,7 +277,7 @@ fn install_zed_keybinding() -> Result<String, String> {
         })?;
     }
 
-    let mut keymap = match read_or_initialize_json_array(&keymap_path, true)? {
+    let mut keymap = match read_or_initialize_json_array(keymap_path, true)? {
         Some(items) => items,
         None => {
             return Err(format!(
@@ -274,7 +299,7 @@ fn install_zed_keybinding() -> Result<String, String> {
         ));
     }
 
-    backup_existing_file(&keymap_path).map_err(|error| {
+    backup_existing_file(keymap_path).map_err(|error| {
         format!(
             "Error backing up existing Zed keymap: {error}\nPath: {}",
             keymap_path.display()
@@ -286,7 +311,7 @@ fn install_zed_keybinding() -> Result<String, String> {
             "shift-enter": ["terminal::SendText", "\u{001b}\r"],
         },
     }));
-    write_json_array(&keymap_path, &keymap).map_err(|error| {
+    write_json_array(keymap_path, &keymap).map_err(|error| {
         format!(
             "Failed to install Zed Shift+Enter key binding: {error}\nPath: {}",
             keymap_path.display()
@@ -587,5 +612,68 @@ fn plist_buddy(plist: &str, command: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("PlistBuddy rejected `{command}`."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        description_for_detected, hidden_for_detected, install_alacritty_keybinding_at,
+        install_vscode_keybinding_at, render_unsupported_terminal_guidance, DetectedTerminal,
+        SupportedTerminal,
+    };
+    use std::fs;
+
+    #[test]
+    fn native_terminal_metadata_matches_expected_visibility() {
+        let detected = DetectedTerminal::Native("WezTerm");
+        assert_eq!(
+            description_for_detected(&detected),
+            "Install Shift+Enter key binding for newlines"
+        );
+        assert!(hidden_for_detected(&detected));
+    }
+
+    #[test]
+    fn apple_terminal_uses_specialized_description() {
+        let detected = DetectedTerminal::Supported(SupportedTerminal::AppleTerminal);
+        assert_eq!(
+            description_for_detected(&detected),
+            "Enable Option+Enter key binding for newlines and visual bell"
+        );
+        assert!(!hidden_for_detected(&detected));
+    }
+
+    #[test]
+    fn unsupported_terminal_guidance_mentions_supported_reroute() {
+        let message = render_unsupported_terminal_guidance("tmux");
+        assert!(message.contains("Terminal setup cannot be run from tmux"));
+        assert!(message.contains("Run /terminal-setup directly in one of these terminals"));
+    }
+
+    #[test]
+    fn vscode_install_writes_keybinding_file() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("Code/User/keybindings.json");
+        let message = install_vscode_keybinding_at("VSCode", &path, false).unwrap();
+        let contents = fs::read_to_string(path).unwrap();
+
+        assert!(message.contains("Installed VSCode terminal Shift+Enter key binding"));
+        assert!(contents.contains("\"shift+enter\""));
+        assert!(contents.contains("workbench.action.terminal.sendSequence"));
+    }
+
+    #[test]
+    fn alacritty_install_appends_binding_block() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("alacritty.toml");
+        fs::write(&path, "live_config_reload = true\n").unwrap();
+
+        let message = install_alacritty_keybinding_at(&path).unwrap();
+        let contents = fs::read_to_string(path).unwrap();
+
+        assert!(message.contains("Installed Alacritty Shift+Enter key binding"));
+        assert!(contents.contains("mods = \"Shift\""));
+        assert!(contents.contains("chars = "));
     }
 }

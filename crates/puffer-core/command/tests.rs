@@ -6,7 +6,7 @@ use puffer_resources::{LoadedItem, LoadedResources, PromptTemplate, SourceInfo, 
 use puffer_session_store::SessionStore;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 use tempfile::tempdir;
 
 mod artifacts;
@@ -31,8 +31,7 @@ mod terminal_setup;
 mod usage_buddy;
 
 pub(super) fn puffer_home_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::test_locks::env_lock()
 }
 
 pub(super) fn lock_puffer_home() -> MutexGuard<'static, ()> {

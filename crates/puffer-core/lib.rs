@@ -10,6 +10,8 @@ mod plans;
 mod runtime;
 mod skill_support;
 mod state;
+#[cfg(test)]
+pub(crate) mod test_locks;
 mod tool_names;
 mod workspace_paths;
 

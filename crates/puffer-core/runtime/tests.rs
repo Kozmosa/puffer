@@ -11,7 +11,7 @@ use puffer_resources::{AgentSpec, LoadedItem, LoadedResources, SourceInfo, Sourc
 use puffer_session_store::SessionMetadata;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use uuid::Uuid;
 
@@ -189,8 +189,7 @@ fn fake_jwt(payload: Value) -> String {
 }
 
 pub(super) fn refresh_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::test_locks::env_lock()
 }
 
 #[test]
