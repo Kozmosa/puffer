@@ -1,12 +1,17 @@
 id: Sleep
 name: Sleep
 description: |-
-  Wait for a specified duration without holding a shell process.
+  Wait for a specified duration. The user can interrupt the sleep at any time.
 
-  Use this when you need to pause briefly, poll for external progress, or avoid
-  wasting a Bash process on `sleep`.
+  Use this when the user tells you to sleep or rest, when you have nothing to do, or when you're waiting for something.
 
-  Keep sleeps short unless the user explicitly asks for a longer wait.
+  You may receive <tick> prompts — these are periodic check-ins. Look for useful work to do before sleeping.
+
+  You can call this concurrently with other tools — it won't interfere with them.
+
+  Prefer this over `Bash(sleep ...)` — it doesn't hold a shell process.
+
+  Each wake-up costs an API call, but the prompt cache expires after 5 minutes of inactivity — balance accordingly.
 handler: runtime:sleep
 approval_policy: never
 sandbox_policy: read-only
@@ -16,6 +21,7 @@ input_schema:
     duration_ms:
       type: integer
       minimum: 1
+      maximum: 300000
       description: Duration to wait in milliseconds.
     reason:
       type: string

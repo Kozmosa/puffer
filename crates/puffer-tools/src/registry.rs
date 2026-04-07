@@ -266,7 +266,41 @@ fn enabled_if_value_disables_tool(value: &str) -> bool {
 mod tests {
     use super::*;
     use puffer_resources::{LoadedItem, SourceInfo, SourceKind};
+    use std::collections::BTreeSet;
+    use std::fs;
     use std::path::PathBuf;
+
+    fn workspace_builtin_tool_resources() -> LoadedResources {
+        let tools_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/tools");
+        let mut tool_paths = fs::read_dir(&tools_dir)
+            .expect("read builtin tool dir")
+            .map(|entry| entry.expect("directory entry").path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("yaml"))
+            .collect::<Vec<_>>();
+        tool_paths.sort();
+
+        let tools = tool_paths
+            .into_iter()
+            .map(|path| {
+                let spec = serde_yaml::from_str::<ToolSpec>(
+                    &fs::read_to_string(&path).expect("read builtin tool resource"),
+                )
+                .expect("parse builtin tool resource");
+                LoadedItem {
+                    value: spec,
+                    source_info: SourceInfo {
+                        path,
+                        kind: SourceKind::Builtin,
+                    },
+                }
+            })
+            .collect();
+
+        LoadedResources {
+            tools,
+            ..LoadedResources::default()
+        }
+    }
 
     fn bash_tool_spec() -> ToolSpec {
         ToolSpec {
@@ -299,6 +333,78 @@ mod tests {
         };
         let registry = ToolRegistry::from_resources(&resources);
         assert!(registry.tool("bash").is_some());
+    }
+
+    #[test]
+    fn registry_builds_runtime_sleep_tool_from_resources() {
+        let description = "Wait for a specified duration. The user can interrupt the sleep at any time.\n\nUse this when the user tells you to sleep or rest, when you have nothing to do, or when you're waiting for something.\n\nYou may receive <tick> prompts — these are periodic check-ins. Look for useful work to do before sleeping.\n\nYou can call this concurrently with other tools — it won't interfere with them.\n\nPrefer this over `Bash(sleep ...)` — it doesn't hold a shell process.\n\nEach wake-up costs an API call, but the prompt cache expires after 5 minutes of inactivity — balance accordingly.";
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    id: "Sleep".to_string(),
+                    name: "Sleep".to_string(),
+                    description: description.to_string(),
+                    handler: "runtime:sleep".to_string(),
+                    handler_args: Vec::new(),
+                    approval_policy: Some("never".to_string()),
+                    sandbox_policy: Some("read-only".to_string()),
+                    shared_lib: None,
+                    enabled_if: None,
+                    input_schema: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "duration_ms": {
+                                "type": "integer",
+                                "description": "Duration to wait in milliseconds."
+                            }
+                        },
+                        "required": ["duration_ms"],
+                        "additionalProperties": false
+                    })),
+                    metadata: Default::default(),
+                    display: Default::default(),
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("sleep.yaml"),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let definition = registry.definition("Sleep").expect("sleep tool definition");
+        assert_eq!(definition.description, description);
+        assert_eq!(definition.handler, "runtime:sleep");
+        assert_eq!(
+            definition.input_schema.as_json_schema()["required"],
+            serde_json::json!(["duration_ms"])
+        );
+    }
+
+    #[test]
+    fn workspace_builtin_tool_resources_are_registerable() {
+        let resources = workspace_builtin_tool_resources();
+        let registry = ToolRegistry::from_resources(&resources);
+        let expected = resources
+            .tools
+            .iter()
+            .filter_map(|item| definition_from_spec(&item.value))
+            .map(|definition| definition.id)
+            .collect::<BTreeSet<_>>();
+        let registered = registry
+            .definitions()
+            .map(|definition| definition.id.clone())
+            .collect::<BTreeSet<_>>();
+        let missing = expected
+            .difference(&registered)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "builtin resources produced unsupported tool registrations: {missing:?}"
+        );
+        assert!(registry.definition("Sleep").is_some());
     }
 
     #[test]

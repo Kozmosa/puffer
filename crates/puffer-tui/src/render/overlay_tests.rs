@@ -46,6 +46,7 @@ fn render_model_overlay_shows_overflow_indicator() {
             .map(|index| ModelPickerEntry {
                 selector: format!("model-{index}"),
                 description: format!("Model {index}"),
+                command: None,
             })
             .collect(),
         selection: 0,
@@ -75,6 +76,7 @@ fn render_model_entry_deduplicates_case_only_labels() {
     let entry = ModelPickerEntry {
         selector: "openai".to_string(),
         description: "OpenAI".to_string(),
+        command: None,
     };
 
     assert_eq!(render_model_entry(&entry), "OpenAI");

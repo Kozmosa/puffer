@@ -5,6 +5,7 @@ pub(crate) fn rewind_picker_entries(state: &AppState) -> Vec<crate::ModelPickerE
     let mut entries = vec![crate::ModelPickerEntry {
         selector: "/rewind".to_string(),
         description: "Remove the latest rendered transcript item".to_string(),
+        command: None,
     }];
     entries.extend(
         state
@@ -15,6 +16,7 @@ pub(crate) fn rewind_picker_entries(state: &AppState) -> Vec<crate::ModelPickerE
             .map(|(index, message)| crate::ModelPickerEntry {
                 selector: format!("/rewind {}", index + 1),
                 description: truncate_rewind_label(&message.text),
+                command: None,
             }),
     );
     entries
@@ -48,6 +50,7 @@ pub(crate) fn memory_picker_entries(state: &AppState) -> Vec<crate::ModelPickerE
             path.display(),
             if path.exists() { "present" } else { "new" }
         ),
+        command: None,
     })
     .collect()
 }

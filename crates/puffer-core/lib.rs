@@ -17,7 +17,7 @@ pub(crate) use command_summary::{render_buddy_summary, render_cost_summary, rend
 pub use hooks::run_resource_hooks;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::{
-    execute_user_prompt_streaming as execute_user_turn_streaming,
+    execute_side_question, execute_user_prompt_streaming as execute_user_turn_streaming,
     execute_user_prompt_streaming_with_permissions as execute_user_turn_streaming_with_permissions,
     execute_user_prompt_streaming_with_structured_output as execute_user_turn_streaming_with_structured_output,
     execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
@@ -54,6 +54,11 @@ pub fn render_permissions_panel(state: &AppState, resources: &LoadedResources) -
 /// Renders the current `/hooks` summary used by interactive overlays.
 pub fn render_hooks_summary(state: &AppState, resources: &LoadedResources) -> Result<String> {
     command_helpers::render_hooks_summary(state, resources)
+}
+
+/// Renders the grouped `/skills` summary used by the interactive overlay.
+pub fn render_skills_panel(resources: &LoadedResources) -> String {
+    command_helpers::render_skills_panel(resources)
 }
 
 /// Renders the current `/mcp` summary used by interactive overlays.

@@ -979,6 +979,8 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
 mod permissions;
 #[path = "tests/tool_execution.rs"]
 mod tool_execution;
+#[path = "tests/tool_visibility.rs"]
+mod tool_visibility;
 
 fn request_json_body(raw_request: &str) -> Value {
     let body = raw_request.split("\r\n\r\n").nth(1).unwrap_or_default();

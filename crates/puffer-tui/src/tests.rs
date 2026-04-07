@@ -106,11 +106,15 @@ fn try_open_overlay_builds_resume_picker() {
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
+    let current = session_store
+        .create_session(tempdir.path().join("current"))
+        .unwrap();
     session_store
         .create_session(tempdir.path().join("dockyard"))
         .unwrap();
 
-    let state = sample_state();
+    let mut state = sample_state();
+    state.session.id = current.id;
     let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
@@ -126,10 +130,13 @@ fn try_open_overlay_builds_resume_picker() {
     )
     .unwrap();
     assert!(opened);
-    assert!(matches!(
-        tui.overlay,
-        Some(OverlayState::SessionPicker { .. })
-    ));
+    match tui.overlay {
+        Some(OverlayState::SessionPicker { sessions, .. }) => {
+            assert_eq!(sessions.len(), 1);
+            assert_ne!(sessions[0].id, current.id);
+        }
+        _ => panic!("resume picker"),
+    }
 }
 
 #[test]
@@ -167,6 +174,32 @@ fn try_open_overlay_builds_agent_picker() {
         _ => panic!("agent picker"),
     };
     assert!(entries.iter().any(|entry| entry.selector == "reviewer"));
+}
+
+#[test]
+fn try_open_overlay_builds_skills_panel() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+
+    let state = sample_state();
+    let resources = sample_resources();
+    let mut providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+    let opened = try_open_overlay(
+        &state,
+        &resources,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/skills",
+    )
+    .unwrap();
+    assert!(opened);
+    assert!(matches!(tui.overlay, Some(OverlayState::Text(_))));
 }
 
 #[test]
@@ -213,10 +246,12 @@ fn login_picker_query_selects_matching_provider() {
             ModelPickerEntry {
                 selector: "anthropic".to_string(),
                 description: "Anthropic".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "openai".to_string(),
                 description: "OpenAI".to_string(),
+                command: None,
             },
         ],
         selection: 0,
@@ -561,6 +596,7 @@ fn model_overlay_selected_command_uses_selector() {
         entries: vec![ModelPickerEntry {
             selector: "anthropic/claude-sonnet-4-5".to_string(),
             description: "Claude Sonnet 4.5".to_string(),
+            command: None,
         }],
         selection: 0,
         onboarding: false,
@@ -613,10 +649,12 @@ fn render_shows_overlay_query_in_prompt_row() {
             ModelPickerEntry {
                 selector: "anthropic".to_string(),
                 description: "Anthropic".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "openai".to_string(),
                 description: "OpenAI".to_string(),
+                command: None,
             },
         ],
         selection: 1,

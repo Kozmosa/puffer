@@ -3,9 +3,9 @@ use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
     dispatch_command, execute_user_turn, execute_user_turn_streaming_with_permissions,
     reload_runtime_resources, render_config_summary, render_hooks_summary, render_mcp_actions,
-    render_permissions_panel, render_plugin_actions, render_task_actions, run_resource_hooks,
-    supported_commands, AppState, MessageRole, PermissionPromptAction, PermissionPromptRequest,
-    ToolInvocation, TurnStreamEvent,
+    render_permissions_panel, render_plugin_actions, render_skills_panel, render_task_actions,
+    run_resource_hooks, supported_commands, AppState, MessageRole, PermissionPromptAction,
+    PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -18,6 +18,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
 use crate::approval_overlay::ApprovalOverlay;
+use crate::btw_overlay::BtwOverlay;
 #[path = "flow_pickers.rs"]
 mod flow_pickers;
 use crate::onboarding;
@@ -44,6 +45,13 @@ pub(crate) fn try_open_overlay(
         .split_once(' ')
         .map(|(name, args)| (name, args.trim()))
         .unwrap_or((without_slash, ""));
+    if name == "btw" && !args.is_empty() {
+        set_overlay_state(
+            tui,
+            Some(BtwOverlay::open(state, resources, providers, auth_store, args)),
+        );
+        return Ok(true);
+    }
     if name == "status" && args.is_empty() {
         set_overlay_state(
             tui,
@@ -61,6 +69,7 @@ pub(crate) fn try_open_overlay(
             "Hooks",
             render_hooks_summary(state, resources)?,
         )),
+        ("skills", true) => Some(TextOverlay::open("Skills", render_skills_panel(resources))),
         _ => None,
     };
     if let Some(overlay) = text_overlay {
@@ -76,6 +85,7 @@ pub(crate) fn try_open_overlay(
             .map(|entry| crate::ModelPickerEntry {
                 selector: entry.command,
                 description: entry.description,
+                command: None,
             })
             .collect::<Vec<_>>();
         if open_command_picker(tui, "Plugins", entries) {
@@ -88,6 +98,7 @@ pub(crate) fn try_open_overlay(
             .map(|entry| crate::ModelPickerEntry {
                 selector: entry.command,
                 description: entry.description,
+                command: None,
             })
             .collect::<Vec<_>>();
         if open_command_picker(tui, "MCP", entries) {
@@ -113,12 +124,16 @@ pub(crate) fn try_open_overlay(
             return Ok(true);
         }
     }
+    if name == "tag" && open_tag_confirmation_picker(state, tui, args) {
+        return Ok(true);
+    }
     if name == "tasks" && args.is_empty() {
         let entries = render_task_actions(&mut state.clone())?
             .into_iter()
             .map(|entry| crate::ModelPickerEntry {
                 selector: entry.command,
                 description: entry.description,
+                command: None,
             })
             .collect::<Vec<_>>();
         if open_command_picker(tui, "Tasks", entries) {
@@ -147,6 +162,55 @@ fn open_command_picker(
         Some(OverlayState::CommandPicker {
             title: title.to_string(),
             entries,
+            selection: 0,
+        }),
+    );
+    true
+}
+
+fn open_tag_confirmation_picker(state: &AppState, tui: &mut TuiState, args: &str) -> bool {
+    let tag = args.trim();
+    if tag.is_empty()
+        || matches!(
+            tag,
+            "help"
+                | "-h"
+                | "--help"
+                | "list"
+                | "show"
+                | "display"
+                | "current"
+                | "view"
+                | "get"
+                | "check"
+                | "describe"
+                | "print"
+                | "version"
+                | "about"
+                | "status"
+                | "?"
+        )
+        || !state.session.tags.iter().any(|existing| existing == tag)
+    {
+        return false;
+    }
+
+    set_overlay_state(
+        tui,
+        Some(OverlayState::CommandPicker {
+            title: "Remove Tag?".to_string(),
+            entries: vec![
+                crate::ModelPickerEntry {
+                    selector: "Yes, remove tag".to_string(),
+                    description: format!("Current tag: #{tag}"),
+                    command: Some(format!("/tag --confirm-remove {tag}")),
+                },
+                crate::ModelPickerEntry {
+                    selector: "No, keep tag".to_string(),
+                    description: String::new(),
+                    command: Some(format!("/tag --keep {tag}")),
+                },
+            ],
             selection: 0,
         }),
     );

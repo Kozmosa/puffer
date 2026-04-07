@@ -7,6 +7,7 @@ mod ecosystem;
 mod model;
 mod plugins;
 pub(crate) mod prompt;
+mod resume;
 mod session;
 mod tasks;
 
@@ -15,7 +16,8 @@ pub(crate) use artifacts::{handle_copy_command, handle_export_command};
 pub(crate) use auth::render_login_guidance;
 pub(crate) use common::{
     describe_context, describe_git_diff, emit_system, execute_skill_command, list_skills,
-    record_command_checkpoint, rewind_transcript, run_doctor, terminal_setup_advice,
+    record_command_checkpoint, render_skills_panel, rewind_transcript, run_doctor,
+    terminal_setup_advice,
 };
 pub(crate) use config::{
     handle_config_command, handle_hooks_command, handle_keybindings_command,
@@ -32,11 +34,12 @@ pub use plugins::PluginActionEntry;
 pub(crate) use plugins::{
     handle_plugin_command, reload_plugins_summary, render_plugin_actions, render_plugin_summary,
 };
+pub(crate) use resume::handle_resume_command;
 pub use session::SessionOverlayView;
 pub(crate) use session::{
     append_tool_invocations, handle_memory_command, handle_remote_control_command,
-    handle_remote_env_command, handle_session_command, render_memory_panel, render_session_overlay,
-    render_session_panel,
+    handle_remote_env_command, handle_session_command, handle_tag_command, render_memory_panel,
+    render_session_overlay, render_session_panel,
 };
 pub use tasks::TaskActionEntry;
 pub(crate) use tasks::{handle_tasks_command, render_task_actions};

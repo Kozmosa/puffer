@@ -1,5 +1,7 @@
 use crate::state::AuthPickerEntry;
 use crate::{ModelPickerEntry, OverlayState};
+use puffer_session_store::SessionSummary;
+use std::borrow::Cow;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct OverlayRow {
@@ -11,30 +13,30 @@ pub(super) fn short_id(value: &str) -> String {
     value.chars().take(8).collect()
 }
 
-pub(super) fn overlay_title(overlay: &OverlayState) -> &'static str {
+pub(super) fn overlay_title(overlay: &OverlayState) -> Cow<'_, str> {
     match overlay {
-        OverlayState::SessionPicker { .. } => "Resume Session",
-        OverlayState::AgentPicker { .. } => "Select Agent",
-        OverlayState::ModelPicker { .. } => "Select Model",
-        OverlayState::EffortPicker { .. } => "Select Effort",
-        OverlayState::FastModePicker { .. } => "Fast Mode",
-        OverlayState::ProviderPicker { .. } => "Select Provider",
-        OverlayState::AuthPicker { .. } => "Select Login Method",
-        OverlayState::ApiKeyPrompt { .. } => "Enter API Key",
-        OverlayState::LoginPicker { .. } => "Select Provider",
-        OverlayState::LogoutPicker { .. } => "Logout Provider",
-        OverlayState::ThemePicker { .. } => "Select Theme",
-        OverlayState::CommandPicker { .. } => "Select Command",
-        OverlayState::PermissionPrompt { .. } => "Permission Needed",
-        OverlayState::Session(..) => "Session",
-        OverlayState::Status(..) => "Status",
-        OverlayState::Text(..) => "Panel",
-        OverlayState::OnboardingTheme { .. } => "Select Theme",
-        OverlayState::OnboardingProvider { .. } => "Select Provider",
-        OverlayState::OnboardingAuth { .. } => "Select Login Method",
-        OverlayState::OnboardingModel { .. } => "Select Model",
-        OverlayState::OnboardingApiKey { .. } => "Enter API Key",
-        OverlayState::Usage(..) => "Usage",
+        OverlayState::SessionPicker { .. } => Cow::Borrowed("Resume Session"),
+        OverlayState::AgentPicker { .. } => Cow::Borrowed("Select Agent"),
+        OverlayState::ModelPicker { .. } => Cow::Borrowed("Select Model"),
+        OverlayState::EffortPicker { .. } => Cow::Borrowed("Select Effort"),
+        OverlayState::FastModePicker { .. } => Cow::Borrowed("Fast Mode"),
+        OverlayState::ProviderPicker { .. } => Cow::Borrowed("Select Provider"),
+        OverlayState::AuthPicker { .. } => Cow::Borrowed("Select Login Method"),
+        OverlayState::ApiKeyPrompt { .. } => Cow::Borrowed("Enter API Key"),
+        OverlayState::LoginPicker { .. } => Cow::Borrowed("Select Provider"),
+        OverlayState::LogoutPicker { .. } => Cow::Borrowed("Logout Provider"),
+        OverlayState::ThemePicker { .. } => Cow::Borrowed("Select Theme"),
+        OverlayState::CommandPicker { title, .. } => Cow::Borrowed(title.as_str()),
+        OverlayState::PermissionPrompt { .. } => Cow::Borrowed("Permission Needed"),
+        OverlayState::Session(..) => Cow::Borrowed("Session"),
+        OverlayState::Status(..) => Cow::Borrowed("Status"),
+        OverlayState::Text(..) => Cow::Borrowed("Panel"),
+        OverlayState::OnboardingTheme { .. } => Cow::Borrowed("Select Theme"),
+        OverlayState::OnboardingProvider { .. } => Cow::Borrowed("Select Provider"),
+        OverlayState::OnboardingAuth { .. } => Cow::Borrowed("Select Login Method"),
+        OverlayState::OnboardingModel { .. } => Cow::Borrowed("Select Model"),
+        OverlayState::OnboardingApiKey { .. } => Cow::Borrowed("Enter API Key"),
+        OverlayState::Usage(..) => Cow::Borrowed("Usage"),
     }
 }
 
@@ -48,11 +50,7 @@ pub(super) fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
             .enumerate()
             .map(|(index, session)| OverlayRow {
                 selected: index == *selection,
-                text: format!(
-                    "{}  {}",
-                    short_id(&session.id.to_string()),
-                    session.display_name.as_deref().unwrap_or("<unnamed>")
-                ),
+                text: render_session_entry(session),
             })
             .collect(),
         OverlayState::AgentPicker { entries, selection }
@@ -149,4 +147,31 @@ pub(super) fn render_model_entry(entry: &ModelPickerEntry) -> String {
 
 fn render_auth_entry(entry: &AuthPickerEntry) -> String {
     format!("{}  {}", entry.label, entry.description)
+}
+
+fn render_session_entry(session: &SessionSummary) -> String {
+    let mut context = vec![path_tail(&session.cwd)];
+    if let Some(slug) = session
+        .slug
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        context.push(format!("slug={slug}"));
+    }
+    if !session.tags.is_empty() {
+        context.push(format!("#{}", session.tags.join(" #")));
+    }
+    format!(
+        "{}  {}  {}",
+        short_id(&session.id.to_string()),
+        session.display_name.as_deref().unwrap_or("<unnamed>"),
+        context.join("  ")
+    )
+}
+
+fn path_tail(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.display().to_string())
 }

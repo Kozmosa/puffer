@@ -8,6 +8,21 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
+const TAG_HELP_ARGS: &[&str] = &[
+    "help", "-h", "--help", "list", "show", "display", "current", "view", "get", "check",
+    "describe", "print", "version", "about", "status", "?",
+];
+
+const TAG_HELP_TEXT: &str = "Usage: /tag <tag-name>\n\n\
+Toggle a searchable tag on the current session.\n\
+Run the same command again to remove the tag.\n\
+Tags are displayed after the branch name in /resume and can be searched with /.\n\n\
+Examples:\n\
+  /tag bugfix        # Add tag\n\
+  /tag bugfix        # Remove tag (toggle)\n\
+  /tag feature-auth\n\
+  /tag wip";
+
 /// Describes the remote-session content shown by the interactive `/session` overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOverlayView {
@@ -36,6 +51,67 @@ pub(crate) fn append_tool_invocations(
         emit_system(state, session_store, format_tool_invocation(invocation))?;
     }
     Ok(())
+}
+
+/// Handles `/tag` by toggling one searchable session tag.
+pub(crate) fn handle_tag_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || TAG_HELP_ARGS.contains(&trimmed) {
+        return emit_system(state, session_store, TAG_HELP_TEXT.to_string());
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("--confirm-remove ") {
+        let tag = rest.trim();
+        if tag.is_empty() {
+            return emit_system(state, session_store, TAG_HELP_TEXT.to_string());
+        }
+        return remove_tag_message(state, session_store, tag, "Removed tag");
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("--keep ") {
+        let tag = rest.trim();
+        if tag.is_empty() {
+            return emit_system(state, session_store, TAG_HELP_TEXT.to_string());
+        }
+        return emit_system(state, session_store, format!("Kept tag #{tag}"));
+    }
+
+    let tag = trimmed;
+    if state.session.tags.iter().any(|existing| existing == tag) {
+        return remove_tag_message(state, session_store, tag, "Removed tag");
+    }
+
+    add_session_tag(state, session_store, tag)?;
+    emit_system(state, session_store, format!("Tagged session with #{tag}"))
+}
+
+fn add_session_tag(state: &mut AppState, session_store: &SessionStore, tag: &str) -> Result<()> {
+    session_store.add_tag(state.session.id, tag)?;
+    if !state.session.tags.iter().any(|existing| existing == tag) {
+        state.session.tags.push(tag.to_string());
+        state.session.tags.sort();
+    }
+    Ok(())
+}
+
+fn remove_session_tag(state: &mut AppState, session_store: &SessionStore, tag: &str) -> Result<()> {
+    session_store.remove_tag(state.session.id, tag)?;
+    state.session.tags.retain(|existing| existing != tag);
+    Ok(())
+}
+
+fn remove_tag_message(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    tag: &str,
+    prefix: &str,
+) -> Result<()> {
+    remove_session_tag(state, session_store, tag)?;
+    emit_system(state, session_store, format!("{prefix} #{tag}"))
 }
 
 /// Handles `/memory` file helpers plus session note, slug, and tag operations.
@@ -137,11 +213,7 @@ pub(crate) fn handle_memory_command(
                 "Usage: /memory tag add <tag>".to_string(),
             );
         }
-        session_store.add_tag(state.session.id, tag)?;
-        if !state.session.tags.iter().any(|existing| existing == tag) {
-            state.session.tags.push(tag.to_string());
-            state.session.tags.sort();
-        }
+        add_session_tag(state, session_store, tag)?;
         return emit_system(state, session_store, format!("Added session tag `{tag}`."));
     }
 
@@ -154,8 +226,7 @@ pub(crate) fn handle_memory_command(
                 "Usage: /memory tag remove <tag>".to_string(),
             );
         }
-        session_store.remove_tag(state.session.id, tag)?;
-        state.session.tags.retain(|existing| existing != tag);
+        remove_session_tag(state, session_store, tag)?;
         return emit_system(
             state,
             session_store,
@@ -243,11 +314,7 @@ pub(crate) fn handle_session_command(
                     "Usage: /session tag add <tag>".to_string(),
                 );
             }
-            session_store.add_tag(state.session.id, tag)?;
-            if !state.session.tags.iter().any(|existing| existing == tag) {
-                state.session.tags.push(tag.to_string());
-                state.session.tags.sort();
-            }
+            add_session_tag(state, session_store, tag)?;
             emit_system(state, session_store, format!("Added session tag `{tag}`."))
         }
         _ if trimmed.starts_with("tag remove ") => {
@@ -259,8 +326,7 @@ pub(crate) fn handle_session_command(
                     "Usage: /session tag remove <tag>".to_string(),
                 );
             }
-            session_store.remove_tag(state.session.id, tag)?;
-            state.session.tags.retain(|existing| existing != tag);
+            remove_session_tag(state, session_store, tag)?;
             emit_system(state, session_store, format!("Removed session tag `{tag}`."))
         }
         _ => emit_system(

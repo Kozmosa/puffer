@@ -109,6 +109,107 @@ fn execute_openai_tool_calls_return_permission_denials_as_tool_results() {
 }
 
 #[test]
+fn execute_openai_tool_calls_support_runtime_sleep() {
+    let mut tool = loaded_tool("Sleep", "Wait for a specified duration", "runtime:sleep");
+    tool.value.approval_policy = Some("never".to_string());
+    tool.value.sandbox_policy = Some("read-only".to_string());
+    let resources = LoadedResources {
+        tools: vec![tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(openai_provider("http://127.0.0.1".to_string()));
+    let request_config = test_openai_request_config();
+    let tool_calls = vec![OpenAIResponseToolCall {
+        item_id: Some("fc_sleep".to_string()),
+        status: Some("completed".to_string()),
+        call_id: "call_sleep".to_string(),
+        name: "Sleep".to_string(),
+        arguments: json!({
+            "duration_ms": 1,
+            "reason": "wait briefly"
+        }),
+    }];
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+
+    let result = execute_openai_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &tool_calls,
+        &registry,
+        &cwd,
+        &request_config,
+        "gpt-5",
+        None,
+    )
+    .unwrap();
+
+    assert!(result.invocations[0].success);
+    assert_eq!(result.invocations[0].tool_id, "Sleep");
+    assert!(result.outputs[0].output.contains("\"completed\": true"));
+    assert!(result.outputs[0]
+        .output
+        .contains("\"reason\": \"wait briefly\""));
+}
+
+#[test]
+fn execute_anthropic_tool_calls_support_runtime_sleep() {
+    let mut tool = loaded_tool("Sleep", "Wait for a specified duration", "runtime:sleep");
+    tool.value.approval_policy = Some("never".to_string());
+    tool.value.sandbox_policy = Some("read-only".to_string());
+    let resources = LoadedResources {
+        tools: vec![tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider());
+    let request_config = test_anthropic_request_config();
+    let response = json!({
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_sleep",
+                "name": "Sleep",
+                "input": {
+                    "duration_ms": 1,
+                    "reason": "wait briefly"
+                }
+            }
+        ]
+    });
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+
+    let result = execute_anthropic_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &response,
+        &registry,
+        &cwd,
+        &request_config,
+        "claude-sonnet-4-5",
+        None,
+    )
+    .unwrap();
+
+    let result = result.expect("anthropic sleep tool results");
+
+    assert!(result.invocations[0].success);
+    assert_eq!(result.invocations[0].tool_id, "Sleep");
+    assert!(result.invocations[0].output.contains("\"completed\": true"));
+    assert!(result.invocations[0]
+        .output
+        .contains("\"reason\": \"wait briefly\""));
+}
+
+#[test]
 fn tool_hooks_run_for_completed_tool_calls() {
     let temp = tempfile::tempdir().unwrap();
     let hook_output = temp.path().join("hook.txt");

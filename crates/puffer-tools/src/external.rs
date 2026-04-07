@@ -205,6 +205,7 @@ fn is_runtime_local_handler(handler: &str) -> bool {
             | "runtime:tool_search"
             | "runtime:glob"
             | "runtime:notebook_edit"
+            | "runtime:sleep"
             | "runtime:list_mcp_resources"
             | "runtime:read_mcp_resource"
     ) || handler.starts_with("runtime:claude_")
@@ -261,6 +262,26 @@ fn parse_output_metadata(stdout: &[u8]) -> Value {
 mod tests {
     use super::*;
     use crate::{ToolDisplayHints, ToolInputSchema, ToolKind, ToolMetadata, ToolPolicyHints};
+
+    #[test]
+    fn runtime_from_definition_accepts_sleep_runtime_handler() {
+        let definition = ToolDefinition {
+            id: "Sleep".to_string(),
+            name: "Sleep".to_string(),
+            description: "Wait without keeping bash busy".to_string(),
+            handler: "runtime:sleep".to_string(),
+            handler_args: Vec::new(),
+            kind: ToolKind::Custom,
+            input_schema: ToolInputSchema::default(),
+            metadata: ToolMetadata::default(),
+            policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
+        };
+        let runtime = runtime_from_definition(&definition).expect("runtime");
+        assert!(matches!(runtime, ToolRuntime::RuntimeLocal));
+    }
 
     #[test]
     fn shared_library_runtime_executes_json_abi() {

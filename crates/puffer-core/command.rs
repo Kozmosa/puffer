@@ -4,9 +4,9 @@ use crate::command_helpers::{
     handle_export_command, handle_hooks_command, handle_ide_command, handle_keybindings_command,
     handle_mcp_command, handle_memory_command, handle_model_command, handle_permissions_command,
     handle_plugin_command, handle_remote_control_command, handle_remote_env_command,
-    handle_sandbox_command, handle_session_command, handle_tasks_command, list_skills,
-    record_command_checkpoint, reload_config_from_disk, render_login_guidance, rewind_transcript,
-    run_doctor, terminal_setup_advice,
+    handle_resume_command, handle_sandbox_command, handle_session_command, handle_tag_command,
+    handle_tasks_command, list_skills, record_command_checkpoint, reload_config_from_disk,
+    render_login_guidance, rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{
     render_buddy_summary, render_cost_summary, render_status_summary, render_usage_summary,
@@ -65,7 +65,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
         cmd(
             "btw",
             &[],
-            "Capture a quick side question or context note",
+            "Ask a quick side question without interrupting the main conversation",
             Some("<question>"),
             CommandKind::Prompt,
         ),
@@ -352,6 +352,13 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             CommandKind::Prompt,
         ),
         cmd(
+            "tag",
+            &[],
+            "Toggle a searchable tag on the current session",
+            Some("<tag-name>"),
+            CommandKind::Ui,
+        ),
+        cmd(
             "tasks",
             &["bashes"],
             "List and manage background tasks",
@@ -481,6 +488,32 @@ fn execute_prompt_command(
         return Ok(());
     }
 
+    if let Some(crate::command_helpers::prompt::PromptCommandPreparation::SideQuestion(question)) =
+        preparation.clone()
+    {
+        match crate::runtime::execute_side_question(
+            state, resources, providers, auth_store, &question,
+        ) {
+            Ok(turn) => {
+                state.push_message(MessageRole::Assistant, turn.assistant_text.clone());
+                session_store.append_event(
+                    state.session.id,
+                    TranscriptEvent::AssistantMessage {
+                        text: turn.assistant_text,
+                    },
+                )?;
+            }
+            Err(error) => {
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Prompt command /btw failed: {error}"),
+                )?;
+            }
+        }
+        return Ok(());
+    }
+
     let prompt = prompt_by_id(resources, command.name);
     if let Some(prompt) = prompt {
         if let Some(model_override) = prompt
@@ -496,7 +529,7 @@ fn execute_prompt_command(
             state.current_provider = Some(provider_override.clone());
         }
     }
-    let variables = std::collections::BTreeMap::from([
+    let mut variables = std::collections::BTreeMap::from([
         ("ARGUMENTS".to_string(), args.to_string()),
         ("CWD".to_string(), state.cwd.display().to_string()),
         (
@@ -513,15 +546,25 @@ fn execute_prompt_command(
             state.session.slug.clone().unwrap_or_default(),
         ),
     ]);
+    if let Some(crate::command_helpers::prompt::PromptCommandPreparation::VariableOverrides(
+        extra_variables,
+    )) = preparation.as_ref()
+    {
+        variables.extend(extra_variables.clone());
+    }
     let mut rendered = match preparation {
         Some(crate::command_helpers::prompt::PromptCommandPreparation::PromptOverride(prompt)) => {
             prompt
         }
+        Some(crate::command_helpers::prompt::PromptCommandPreparation::SideQuestion(_)) => {
+            unreachable!("handled above")
+        }
+        Some(crate::command_helpers::prompt::PromptCommandPreparation::VariableOverrides(_))
+        | None => render_prompt_by_id(resources, command.name, &variables)
+            .unwrap_or_else(|| format!("Prompt command /{} invoked with: {}", command.name, args)),
         Some(crate::command_helpers::prompt::PromptCommandPreparation::HandledLocally) => {
             unreachable!("handled above")
         }
-        None => render_prompt_by_id(resources, command.name, &variables)
-            .unwrap_or_else(|| format!("Prompt command /{} invoked with: {}", command.name, args)),
     };
     if let Some(mode) = prompt.and_then(|prompt| prompt.value.mode.as_deref()) {
         rendered = format!("Command mode: {mode}\n\n{rendered}");
@@ -796,28 +839,8 @@ fn execute_local_command(
             )
         }
         "session" => handle_session_command(state, session_store, args),
-        "resume" => {
-            if args.is_empty() {
-                let sessions = session_store.list_sessions()?;
-                let mut text = String::from("Sessions:\n");
-                for session in sessions.iter().take(10) {
-                    let name = session.display_name.as_deref().unwrap_or("<unnamed>");
-                    let _ = writeln!(&mut text, "{} {}", session.id, name);
-                }
-                emit_system(state, session_store, text)
-            } else if let Some(session) = session_store.find_session(args)? {
-                let record = session_store.load_session(session.id)?;
-                let config = state.config.clone();
-                *state = AppState::from_session_record(config, record);
-                emit_system(
-                    state,
-                    session_store,
-                    format!("Resumed session {}.", state.session.id),
-                )
-            } else {
-                emit_system(state, session_store, format!("No session matched {args}."))
-            }
-        }
+        "tag" => handle_tag_command(state, session_store, args),
+        "resume" => handle_resume_command(state, session_store, args),
         "branch" => {
             let fork = session_store.fork_session(state.session.id, state.cwd.clone())?;
             if !args.is_empty() {

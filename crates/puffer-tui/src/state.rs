@@ -1,4 +1,5 @@
 use crate::approval_overlay::ApprovalOverlay;
+use crate::btw_overlay::BtwOverlay;
 use crate::popup::popup_rows;
 use crate::session_overlay::SessionOverlay;
 use crate::status_overlay::StatusOverlay;
@@ -279,6 +280,7 @@ pub(crate) struct AuthPickerEntry {
 pub(crate) struct ModelPickerEntry {
     pub(crate) selector: String,
     pub(crate) description: String,
+    pub(crate) command: Option<String>,
 }
 
 /// Represents one interactive picker or onboarding panel inside the TUI.
@@ -351,6 +353,7 @@ pub(crate) enum OverlayState {
     PermissionPrompt {
         overlay: ApprovalOverlay,
     },
+    Btw(BtwOverlay),
     Session(SessionOverlay),
     Status(StatusOverlay),
     Text(TextOverlay),
@@ -405,6 +408,7 @@ impl OverlayState {
                 *selection = selection.saturating_sub(1);
             }
             Self::PermissionPrompt { overlay } => overlay.select_previous(),
+            Self::Btw(overlay) => overlay.scroll_up(),
             Self::Session(overlay) => overlay.scroll_up(),
             Self::Status(overlay) => overlay.scroll_up(),
             Self::Text(overlay) => overlay.scroll_up(),
@@ -456,6 +460,7 @@ impl OverlayState {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
             Self::PermissionPrompt { overlay } => overlay.select_next(),
+            Self::Btw(overlay) => overlay.scroll_down(),
             Self::Session(overlay) => overlay.scroll_down(),
             Self::Status(overlay) => overlay.scroll_down(),
             Self::Text(overlay) => overlay.scroll_down(),
@@ -467,6 +472,7 @@ impl OverlayState {
     pub(crate) fn page_up(&mut self) {
         match self {
             Self::PermissionPrompt { overlay } => overlay.page_up(),
+            Self::Btw(overlay) => overlay.page_up(),
             Self::Session(overlay) => overlay.page_up(),
             Self::Status(overlay) => overlay.page_up(),
             Self::Text(overlay) => overlay.page_up(),
@@ -482,6 +488,7 @@ impl OverlayState {
     pub(crate) fn page_down(&mut self) {
         match self {
             Self::PermissionPrompt { overlay } => overlay.page_down(),
+            Self::Btw(overlay) => overlay.page_down(),
             Self::Session(overlay) => overlay.page_down(),
             Self::Status(overlay) => overlay.page_down(),
             Self::Text(overlay) => overlay.page_down(),
@@ -529,7 +536,7 @@ impl OverlayState {
             Self::CommandPicker {
                 entries, selection, ..
             } => entries.get(*selection).and_then(|entry| {
-                let command = entry.selector.trim();
+                let command = entry.command.as_deref().unwrap_or(&entry.selector).trim();
                 if command.is_empty() {
                     None
                 } else {
@@ -540,6 +547,7 @@ impl OverlayState {
             | Self::AuthPicker { .. }
             | Self::ApiKeyPrompt { .. }
             | Self::PermissionPrompt { .. }
+            | Self::Btw(..)
             | Self::Session(..)
             | Self::Status(..)
             | Self::Text(..)
@@ -576,6 +584,7 @@ impl OverlayState {
             | Self::ThemePicker { .. }
             | Self::CommandPicker { .. }
             | Self::PermissionPrompt { .. }
+            | Self::Btw(..)
             | Self::Session(..)
             | Self::Status(..)
             | Self::Text(..)
@@ -670,6 +679,7 @@ impl OverlayState {
                 }
             }
             Self::PermissionPrompt { .. }
+            | Self::Btw(..)
             | Self::Session(..)
             | Self::Status(..)
             | Self::Text(..) => {}

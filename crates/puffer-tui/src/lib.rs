@@ -1,4 +1,5 @@
 mod approval_overlay;
+mod btw_overlay;
 mod flow;
 mod list_selection_view;
 mod markdown;
@@ -461,6 +462,51 @@ fn handle_overlay_key(
     let Some(active_overlay) = tui.overlay.as_ref() else {
         return Ok(false);
     };
+
+    if matches!(active_overlay, OverlayState::Btw(..)) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') => {
+                set_overlay_state(tui, None);
+            }
+            KeyCode::Up => {
+                if let Some(overlay) = tui.overlay.as_mut() {
+                    overlay.select_previous();
+                }
+            }
+            KeyCode::Down => {
+                if let Some(overlay) = tui.overlay.as_mut() {
+                    overlay.select_next();
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(overlay) = tui.overlay.as_mut() {
+                    overlay.page_up();
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(overlay) = tui.overlay.as_mut() {
+                    overlay.page_down();
+                }
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(overlay) = tui.overlay.as_mut() {
+                    overlay.select_previous();
+                }
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(overlay) = tui.overlay.as_mut() {
+                    overlay.select_next();
+                }
+            }
+            KeyCode::Char('c') | KeyCode::Char('d')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                set_overlay_state(tui, None);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
 
     if active_overlay.accepts_text_input() {
         match key.code {

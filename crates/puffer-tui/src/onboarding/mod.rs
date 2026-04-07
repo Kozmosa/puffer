@@ -70,7 +70,11 @@ pub(crate) fn overlay_from_command(
 
     let overlay = match name {
         "resume" | "continue" if args.is_empty() => {
-            let sessions = session_store.list_sessions()?;
+            let sessions = session_store
+                .list_sessions()?
+                .into_iter()
+                .filter(|session| session.id != state.session.id)
+                .collect::<Vec<_>>();
             if sessions.is_empty() {
                 None
             } else {
@@ -109,6 +113,7 @@ pub(crate) fn overlay_from_command(
                             .unwrap_or_default(),
                         agent.description
                     ),
+                    command: None,
                 })
                 .collect::<Vec<_>>();
             if entries.is_empty() {
@@ -270,6 +275,7 @@ fn login_provider_picker(providers: &ProviderRegistry) -> Option<OverlayState> {
         .map(|provider| ModelPickerEntry {
             selector: provider.id.clone(),
             description: provider.display_name.clone(),
+            command: None,
         })
         .collect::<Vec<_>>();
     if entries.is_empty() {
@@ -286,6 +292,7 @@ fn provider_entry(provider: &ProviderDescriptor) -> ModelPickerEntry {
     ModelPickerEntry {
         selector: provider.id.clone(),
         description: provider.display_name.clone(),
+        command: None,
     }
 }
 
@@ -398,6 +405,7 @@ pub(crate) fn model_picker_with_selection(
         .map(|model| ModelPickerEntry {
             selector: model.id.clone(),
             description: model.display_name.clone(),
+            command: None,
         })
         .collect::<Vec<_>>();
     let selection = selected_model
@@ -513,6 +521,7 @@ fn picker_entry(selector: &str, description: &str) -> ModelPickerEntry {
     ModelPickerEntry {
         selector: selector.to_string(),
         description: description.to_string(),
+        command: None,
     }
 }
 
@@ -556,6 +565,7 @@ fn logout_picker(providers: &ProviderRegistry, auth_store: &AuthStore) -> Option
                 .provider(provider_id)
                 .map(|provider| provider.display_name.clone())
                 .unwrap_or_else(|| provider_id.to_string()),
+            command: None,
         })
         .collect::<Vec<_>>();
     if entries.is_empty() {
@@ -574,14 +584,17 @@ fn theme_picker() -> OverlayState {
             ModelPickerEntry {
                 selector: "puffer".to_string(),
                 description: "Default Puffer text style".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "harbor".to_string(),
                 description: "Calmer contrast for long sessions".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "sunrise".to_string(),
                 description: "Warmer light-on-dark palette".to_string(),
+                command: None,
             },
         ],
         selection: 0,

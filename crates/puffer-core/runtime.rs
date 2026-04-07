@@ -24,6 +24,7 @@ mod local_tools;
 mod openai;
 mod openai_sse;
 mod permission_prompt;
+mod side_question;
 mod structured_output_support;
 mod tool_executor;
 
@@ -87,6 +88,17 @@ pub fn execute_user_prompt(
     input: &str,
 ) -> Result<TurnExecution> {
     execute_user_prompt_with_options(state, resources, providers, auth_store, input, None)
+}
+
+/// Executes a Claude-style side question without mutating the main session transcript state.
+pub fn execute_side_question(
+    state: &AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    question: &str,
+) -> Result<TurnExecution> {
+    side_question::execute_side_question(state, resources, providers, auth_store, question)
 }
 
 /// Shuts down long-lived runtime services such as cached LSP sessions.

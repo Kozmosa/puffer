@@ -7,9 +7,11 @@ use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{SessionStore, TranscriptEvent};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 /// Describes how a prompt command should be handled after specialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,10 @@ pub(crate) enum PromptCommandPreparation {
     HandledLocally,
     /// The command should execute through the provider with a custom prompt body.
     PromptOverride(String),
+    /// The command should execute as a one-off side question outside the main transcript.
+    SideQuestion(String),
+    /// The command should render its resource prompt with extra computed variables.
+    VariableOverrides(BTreeMap<String, String>),
 }
 
 /// Returns any specialized handling required for prompt commands with local semantics.
@@ -28,6 +34,11 @@ pub(crate) fn prepare_prompt_command_specialization(
     args: &str,
 ) -> Result<Option<PromptCommandPreparation>> {
     match command_name {
+        "btw" => Ok(Some(prepare_btw_prompt_command(
+            state,
+            session_store,
+            args,
+        )?)),
         "compact" => Ok(Some(prepare_compact_prompt_command(
             state,
             session_store,
@@ -39,9 +50,28 @@ pub(crate) fn prepare_prompt_command_specialization(
             args,
         )?)),
         "pr-comments" => Ok(Some(prepare_pr_comments_prompt_command(args))),
+        "security-review" => Ok(Some(prepare_security_review_prompt_command(state)?)),
         "statusline" => Ok(Some(prepare_statusline_prompt_command(args)?)),
         _ => Ok(None),
     }
+}
+
+/// Prepares `/btw` side-question handling without appending a user prompt to the main transcript.
+pub(crate) fn prepare_btw_prompt_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<PromptCommandPreparation> {
+    let question = args.trim();
+    if question.is_empty() {
+        emit_system(
+            state,
+            session_store,
+            "Usage: /btw <your question>".to_string(),
+        )?;
+        return Ok(PromptCommandPreparation::HandledLocally);
+    }
+    Ok(PromptCommandPreparation::SideQuestion(question.to_string()))
 }
 
 /// Prepares `/compact` by generating a provider-driven compaction prompt override.
@@ -119,9 +149,18 @@ pub(crate) fn prepare_plan_prompt_command(
     Ok(PromptCommandPreparation::PromptOverride(prompt))
 }
 
-/// Builds a stronger `/pr-comments` prompt that follows Claude-style CLI guidance.
+/// Supplies the optional user-input block used by the declarative `/pr-comments` prompt.
 pub(crate) fn prepare_pr_comments_prompt_command(args: &str) -> PromptCommandPreparation {
-    PromptCommandPreparation::PromptOverride(build_pr_comments_prompt_override(args))
+    PromptCommandPreparation::VariableOverrides(build_pr_comments_prompt_variables(args))
+}
+
+/// Computes git-aware context variables for `/security-review`.
+pub(crate) fn prepare_security_review_prompt_command(
+    state: &AppState,
+) -> Result<PromptCommandPreparation> {
+    Ok(PromptCommandPreparation::VariableOverrides(
+        build_security_review_prompt_variables(&state.cwd),
+    ))
 }
 
 /// Builds the Claude-style `/statusline` setup prompt override.
@@ -324,30 +363,16 @@ Current plan:\n{}",
     )
 }
 
-fn build_pr_comments_prompt_override(args: &str) -> String {
+fn build_pr_comments_prompt_variables(args: &str) -> BTreeMap<String, String> {
     let trimmed = args.trim();
-    if trimmed.is_empty() {
-        return String::from(
-            "Collect and summarize GitHub pull-request comments relevant to this workspace.\n\
-1. Run `gh pr list --limit 20` to find candidate PRs.\n\
-2. Pick the most relevant PR and run `gh pr view <number> --comments`.\n\
-3. Group comments by theme and identify unresolved or blocking feedback.\n\
-4. Provide a concise action plan for addressing outstanding comments.\n\
-\n\
-If no PR is available, explain what failed and what command output you saw.",
-        );
-    }
-
-    format!(
-        "Collect and summarize GitHub pull-request comments.\n\
-Provided target/context: {}\n\
-\n\
-1. If a PR number is present, run `gh pr view <number> --comments`.\n\
-2. Otherwise run `gh pr list --limit 20` and select the best match before viewing comments.\n\
-3. Summarize comments by reviewer and status (open vs resolved).\n\
-4. Produce a concrete response plan with next edits/tests.",
-        trimmed
-    )
+    BTreeMap::from([(
+        "ADDITIONAL_USER_INPUT_BLOCK".to_string(),
+        if trimmed.is_empty() {
+            String::new()
+        } else {
+            format!("Additional user input: {trimmed}")
+        },
+    )])
 }
 
 fn build_statusline_prompt_override(args: &str) -> Result<String> {
@@ -360,6 +385,90 @@ fn build_statusline_prompt_override(args: &str) -> Result<String> {
     Ok(format!(
         "Create an Agent with subagent_type \"statusline-setup\" and the prompt {prompt_json}"
     ))
+}
+
+fn build_security_review_prompt_variables(cwd: &PathBuf) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "GIT_STATUS".to_string(),
+            run_git_with_fallbacks(cwd, &[&["status"]]),
+        ),
+        (
+            "FILES_MODIFIED".to_string(),
+            run_git_with_fallbacks(
+                cwd,
+                &[
+                    &["diff", "--name-only", "origin/HEAD..."],
+                    &["diff", "--name-only"],
+                ],
+            ),
+        ),
+        (
+            "COMMITS".to_string(),
+            run_git_with_fallbacks(
+                cwd,
+                &[
+                    &["log", "--no-decorate", "origin/HEAD..."],
+                    &["log", "--no-decorate", "-n", "10"],
+                ],
+            ),
+        ),
+        (
+            "DIFF_CONTENT".to_string(),
+            run_git_with_fallbacks(cwd, &[&["diff", "origin/HEAD..."], &["diff"]]),
+        ),
+    ])
+}
+
+fn run_git_with_fallbacks(cwd: &PathBuf, candidates: &[&[&str]]) -> String {
+    let mut last_failure = String::new();
+    for candidate in candidates {
+        match run_git_command(cwd, candidate) {
+            Ok(output) => return output,
+            Err(error) => last_failure = error,
+        }
+    }
+    last_failure
+}
+
+fn run_git_command(cwd: &PathBuf, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run `git {}`: {error}", args.join(" ")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        if stdout.is_empty() {
+            Ok("<no output>".to_string())
+        } else {
+            Ok(stdout)
+        }
+    } else {
+        let exit = output
+            .status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        Err(format!(
+            "Command `git {}` failed with exit code {exit}.\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            if stdout.is_empty() {
+                "<no output>"
+            } else {
+                &stdout
+            },
+            if stderr.is_empty() {
+                "<no output>"
+            } else {
+                &stderr
+            }
+        ))
+    }
 }
 
 fn single_line_excerpt(text: &str) -> String {
@@ -399,9 +508,10 @@ fn default_plan_file_contents() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_compact_prompt_command, prepare_plan_prompt_command,
+        prepare_btw_prompt_command, prepare_compact_prompt_command, prepare_plan_prompt_command,
         prepare_pr_comments_prompt_command, prepare_prompt_command_specialization,
-        prepare_statusline_prompt_command, PromptCommandPreparation,
+        prepare_security_review_prompt_command, prepare_statusline_prompt_command,
+        PromptCommandPreparation,
     };
     use crate::{AppState, MessageRole};
     use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
@@ -425,10 +535,44 @@ mod tests {
                 assert!(prompt.contains("Summarize the current conversation"));
                 assert!(prompt.contains("custom_instruction: focus on tests"));
             }
-            PromptCommandPreparation::HandledLocally => {
+            PromptCommandPreparation::HandledLocally
+            | PromptCommandPreparation::SideQuestion(_)
+            | PromptCommandPreparation::VariableOverrides(_) => {
                 panic!("expected compact prompt override")
             }
         }
+    }
+
+    #[test]
+    fn btw_specialization_requires_a_question() {
+        let fixture = sample_state();
+        let mut state = fixture.state;
+        let session_store = fixture.session_store;
+
+        let outcome = prepare_btw_prompt_command(&mut state, &session_store, "").unwrap();
+
+        assert_eq!(outcome, PromptCommandPreparation::HandledLocally);
+        assert!(state
+            .transcript
+            .last()
+            .unwrap()
+            .text
+            .contains("Usage: /btw <your question>"));
+    }
+
+    #[test]
+    fn btw_specialization_uses_side_question_variant() {
+        let fixture = sample_state();
+        let mut state = fixture.state;
+        let session_store = fixture.session_store;
+
+        let outcome =
+            prepare_btw_prompt_command(&mut state, &session_store, "what changed?").unwrap();
+
+        assert_eq!(
+            outcome,
+            PromptCommandPreparation::SideQuestion("what changed?".to_string())
+        );
     }
 
     #[test]
@@ -470,30 +614,65 @@ mod tests {
                 assert!(prompt.contains("Current plan:"));
                 assert!(prompt.contains(".puffer/plans/"));
             }
-            PromptCommandPreparation::HandledLocally => {
+            PromptCommandPreparation::HandledLocally
+            | PromptCommandPreparation::SideQuestion(_)
+            | PromptCommandPreparation::VariableOverrides(_) => {
                 panic!("expected prompt override for non-empty plan arguments")
             }
         }
     }
 
     #[test]
-    fn pr_comments_specialization_builds_cli_focused_prompt() {
+    fn pr_comments_specialization_supplies_optional_input_block() {
         let empty = prepare_pr_comments_prompt_command("");
         let targeted = prepare_pr_comments_prompt_command("123");
 
         match empty {
-            PromptCommandPreparation::PromptOverride(prompt) => {
-                assert!(prompt.contains("gh pr list --limit 20"));
-                assert!(prompt.contains("gh pr view <number> --comments"));
+            PromptCommandPreparation::VariableOverrides(variables) => {
+                assert_eq!(
+                    variables.get("ADDITIONAL_USER_INPUT_BLOCK"),
+                    Some(&String::new())
+                );
             }
-            PromptCommandPreparation::HandledLocally => panic!("expected prompt override"),
+            PromptCommandPreparation::HandledLocally
+            | PromptCommandPreparation::SideQuestion(_)
+            | PromptCommandPreparation::PromptOverride(_) => {
+                panic!("expected variable overrides")
+            }
         }
         match targeted {
-            PromptCommandPreparation::PromptOverride(prompt) => {
-                assert!(prompt.contains("Provided target/context: 123"));
-                assert!(prompt.contains("gh pr view <number> --comments"));
+            PromptCommandPreparation::VariableOverrides(variables) => {
+                assert_eq!(
+                    variables.get("ADDITIONAL_USER_INPUT_BLOCK"),
+                    Some(&"Additional user input: 123".to_string())
+                );
             }
-            PromptCommandPreparation::HandledLocally => panic!("expected prompt override"),
+            PromptCommandPreparation::HandledLocally
+            | PromptCommandPreparation::SideQuestion(_)
+            | PromptCommandPreparation::PromptOverride(_) => {
+                panic!("expected variable overrides")
+            }
+        }
+    }
+
+    #[test]
+    fn security_review_specialization_collects_git_context() {
+        let fixture = sample_state();
+        let state = fixture.state;
+        let outcome = prepare_security_review_prompt_command(&state).unwrap();
+
+        match outcome {
+            PromptCommandPreparation::VariableOverrides(variables) => {
+                assert!(variables.contains_key("GIT_STATUS"));
+                assert!(variables.contains_key("FILES_MODIFIED"));
+                assert!(variables.contains_key("COMMITS"));
+                assert!(variables.contains_key("DIFF_CONTENT"));
+            }
+            PromptCommandPreparation::HandledLocally
+            | PromptCommandPreparation::SideQuestion(_)
+            | PromptCommandPreparation::PromptOverride(_) => {
+                panic!("expected variable overrides")
+            }
         }
     }
 
@@ -506,7 +685,11 @@ mod tests {
                 assert!(prompt.contains("subagent_type \"statusline-setup\""));
                 assert!(prompt.contains("Configure my statusLine from my shell PS1 configuration"));
             }
-            PromptCommandPreparation::HandledLocally => panic!("expected prompt override"),
+            PromptCommandPreparation::HandledLocally
+            | PromptCommandPreparation::SideQuestion(_)
+            | PromptCommandPreparation::VariableOverrides(_) => {
+                panic!("expected prompt override")
+            }
         }
     }
 
@@ -530,10 +713,10 @@ mod tests {
             prepare_prompt_command_specialization(&mut state, &session_store, "pr-comments", "")
                 .unwrap();
         match pr_comments {
-            Some(PromptCommandPreparation::PromptOverride(prompt)) => {
-                assert!(prompt.contains("Collect and summarize GitHub pull-request comments"));
+            Some(PromptCommandPreparation::VariableOverrides(variables)) => {
+                assert!(variables.contains_key("ADDITIONAL_USER_INPUT_BLOCK"));
             }
-            _ => panic!("expected pr-comments prompt override"),
+            _ => panic!("expected pr-comments prompt variable overrides"),
         }
 
         let statusline =
@@ -544,6 +727,20 @@ mod tests {
                 assert!(prompt.contains("statusline-setup"));
             }
             _ => panic!("expected statusline prompt override"),
+        }
+
+        let security_review = prepare_prompt_command_specialization(
+            &mut state,
+            &session_store,
+            "security-review",
+            "",
+        )
+        .unwrap();
+        match security_review {
+            Some(PromptCommandPreparation::VariableOverrides(variables)) => {
+                assert!(variables.contains_key("DIFF_CONTENT"));
+            }
+            _ => panic!("expected security-review variable overrides"),
         }
 
         let none = prepare_prompt_command_specialization(&mut state, &session_store, "review", "")

@@ -12,4 +12,5 @@ serde_json.workspace = true
 puffer-resources = { path = "../puffer-resources" }
 
 [dev-dependencies]
+serde_yaml.workspace = true
 tempfile.workspace = true

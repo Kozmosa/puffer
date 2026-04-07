@@ -2,8 +2,9 @@ use super::*;
 use crate::RenderedMessage;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
 use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry};
-use puffer_resources::{LoadedItem, LoadedResources};
+use puffer_resources::{LoadedItem, LoadedResources, PromptTemplate, SourceInfo, SourceKind};
 use puffer_session_store::SessionStore;
+use std::path::PathBuf;
 use tempfile::tempdir;
 
 mod artifacts;
@@ -15,6 +16,7 @@ mod plugin;
 mod remote_history;
 mod sandbox;
 mod status;
+mod tag;
 mod tasks;
 mod usage_buddy;
 
@@ -604,6 +606,58 @@ fn prompt_commands_append_user_message_and_surface_runtime_failures() {
             role: MessageRole::System,
             text,
         }) if text.contains("Prompt command /review failed")
+    ));
+}
+
+#[test]
+fn pr_comments_command_uses_reference_prompt_text_from_resources() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let resources = LoadedResources {
+        prompts: vec![LoadedItem {
+            value: serde_yaml::from_str::<PromptTemplate>(include_str!(
+                "../../../resources/prompts/pr-comments.yaml"
+            ))
+            .unwrap(),
+            source_info: SourceInfo {
+                path: PathBuf::from("resources/prompts/pr-comments.yaml"),
+                kind: SourceKind::Builtin,
+            },
+        }],
+        ..LoadedResources::default()
+    };
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/pr-comments 123",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.first(),
+        Some(RenderedMessage {
+            role: MessageRole::User,
+            text,
+        }) if text.contains("gh pr view --json number,headRepository")
+            && text.contains("gh api /repos/{owner}/{repo}/issues/{number}/comments")
+            && text.contains("Return ONLY the formatted comments")
+            && text.contains("Additional user input: 123")
+            && !text.contains("Command mode:")
     ));
 }
 

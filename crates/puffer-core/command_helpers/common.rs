@@ -1,7 +1,7 @@
 use crate::{AppState, MessageRole};
 use anyhow::{Context, Result};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{skill_by_name, LoadedResources};
+use puffer_resources::{skill_by_name, LoadedResources, SourceKind};
 use puffer_session_store::{GitDiffSnapshot, SessionStore, TranscriptEvent};
 use puffer_tools::ToolRegistry;
 use std::fmt::Write as _;
@@ -15,18 +15,36 @@ pub(crate) fn list_skills(
     resources: &LoadedResources,
     session_store: &SessionStore,
 ) -> Result<()> {
+    emit_system(state, session_store, render_skills_panel(resources))
+}
+
+/// Renders the grouped `/skills` panel used by the TUI and transcript fallback.
+pub fn render_skills_panel(resources: &LoadedResources) -> String {
     if resources.skills.is_empty() {
-        return emit_system(state, session_store, "No skills are available.".to_string());
+        return [
+            "No skills found.",
+            "",
+            "Create skills in one of these locations:",
+            "- ~/.puffer/resources/skills/",
+            "- .puffer/resources/skills/",
+        ]
+        .join("\n");
     }
-    let mut text = String::from("Available skills:\n");
-    for skill in &resources.skills {
-        let _ = writeln!(
-            &mut text,
-            "/skill:{} - {}",
-            skill.value.name, skill.value.description
-        );
-    }
-    emit_system(state, session_store, text)
+
+    let mut text = String::new();
+    let skill_count = resources.skills.len();
+    let _ = writeln!(
+        &mut text,
+        "{} {} loaded.",
+        skill_count,
+        if skill_count == 1 { "skill" } else { "skills" }
+    );
+
+    append_skill_group(&mut text, resources, SourceKind::Workspace);
+    append_skill_group(&mut text, resources, SourceKind::User);
+    append_skill_group(&mut text, resources, SourceKind::Builtin);
+
+    text.trim_end().to_string()
 }
 
 /// Summarizes workspace health, loaded resources, and auth state.
@@ -387,6 +405,40 @@ fn capture_git_diff_snapshot(cwd: &PathBuf, command_name: &str, args: &str) -> G
     }
 }
 
+fn append_skill_group(text: &mut String, resources: &LoadedResources, kind: SourceKind) {
+    let mut skills = resources
+        .skills
+        .iter()
+        .filter(|skill| skill.source_info.kind == kind)
+        .collect::<Vec<_>>();
+    if skills.is_empty() {
+        return;
+    }
+
+    skills.sort_by(|left, right| left.value.name.cmp(&right.value.name));
+    let _ = writeln!(text);
+    let _ = writeln!(text, "{}:", skill_source_heading(kind));
+    for skill in skills {
+        let _ = writeln!(
+            text,
+            "- /skill:{}  {}",
+            skill.value.name, skill.value.description
+        );
+        let _ = writeln!(text, "  {}", skill.source_info.path.display());
+        if skill.value.disable_model_invocation {
+            let _ = writeln!(text, "  model invocation disabled");
+        }
+    }
+}
+
+fn skill_source_heading(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Workspace => "Workspace skills",
+        SourceKind::User => "User skills",
+        SourceKind::Builtin => "Built-in skills",
+    }
+}
+
 fn rewind_pop_count(state: &AppState, trimmed: &str) -> Option<usize> {
     if trimmed.is_empty() {
         return Some(1);
@@ -438,6 +490,76 @@ fn append_patch_section(text: &mut String, cwd: &PathBuf, title: &str, args: &[&
             let _ = writeln!(text, "{title}:");
             let _ = writeln!(text, "{error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_skills_panel;
+    use puffer_resources::{LoadedItem, LoadedResources, SkillSpec, SourceInfo, SourceKind};
+    use std::path::PathBuf;
+
+    fn loaded_skill(
+        name: &str,
+        description: &str,
+        path: &str,
+        kind: SourceKind,
+    ) -> LoadedItem<SkillSpec> {
+        LoadedItem {
+            value: SkillSpec {
+                name: name.to_string(),
+                description: description.to_string(),
+                content: "content".to_string(),
+                disable_model_invocation: false,
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from(path),
+                kind,
+            },
+        }
+    }
+
+    #[test]
+    fn render_skills_panel_groups_skills_by_source() {
+        let resources = LoadedResources {
+            skills: vec![
+                loaded_skill(
+                    "workspace-review",
+                    "Review workspace changes",
+                    "/tmp/project/.puffer/resources/skills/workspace-review/SKILL.md",
+                    SourceKind::Workspace,
+                ),
+                loaded_skill(
+                    "user-review",
+                    "Review shared changes",
+                    "/home/test/.puffer/resources/skills/user-review/SKILL.md",
+                    SourceKind::User,
+                ),
+                loaded_skill(
+                    "builtin-review",
+                    "Review builtin changes",
+                    "/app/resources/skills/builtin-review/SKILL.md",
+                    SourceKind::Builtin,
+                ),
+            ],
+            ..LoadedResources::default()
+        };
+
+        let rendered = render_skills_panel(&resources);
+        assert!(rendered.contains("3 skills loaded."));
+        assert!(rendered.contains("Workspace skills:"));
+        assert!(rendered.contains("/skill:workspace-review  Review workspace changes"));
+        assert!(rendered.contains("User skills:"));
+        assert!(rendered.contains("/skill:user-review  Review shared changes"));
+        assert!(rendered.contains("Built-in skills:"));
+        assert!(rendered.contains("/skill:builtin-review  Review builtin changes"));
+    }
+
+    #[test]
+    fn render_skills_panel_reports_missing_skills() {
+        let rendered = render_skills_panel(&LoadedResources::default());
+        assert!(rendered.contains("No skills found."));
+        assert!(rendered.contains("~/.puffer/resources/skills/"));
     }
 }
 

@@ -37,10 +37,12 @@ fn model_picker_enter_opens_effort_picker_with_high_default_for_openai() {
             ModelPickerEntry {
                 selector: "gpt-5".to_string(),
                 description: "GPT-5".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "gpt-5-mini".to_string(),
                 description: "GPT-5 Mini".to_string(),
+                command: None,
             },
         ],
         selection: 0,
@@ -107,10 +109,12 @@ fn effort_picker_enter_opens_fast_mode_picker_with_provider_defaults() {
             ModelPickerEntry {
                 selector: "low".to_string(),
                 description: "low".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "high".to_string(),
                 description: "high".to_string(),
+                command: None,
             },
         ],
         selection: 1,
@@ -178,10 +182,12 @@ fn fast_mode_picker_enter_applies_model_effort_and_fast_mode() {
             ModelPickerEntry {
                 selector: "on".to_string(),
                 description: "fast".to_string(),
+                command: None,
             },
             ModelPickerEntry {
                 selector: "off".to_string(),
                 description: "normal".to_string(),
+                command: None,
             },
         ],
         selection: 0,
