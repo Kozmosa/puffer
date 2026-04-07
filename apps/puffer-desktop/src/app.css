@@ -129,7 +129,7 @@ a {
 }
 
 .workspace-split.no-diff {
-  grid-template-columns: minmax(0, 1.9fr) minmax(150px, 0.16fr);
+  grid-template-columns: minmax(0, 2.08fr) minmax(110px, 0.08fr);
 }
 
 .workspace-split {
@@ -183,14 +183,14 @@ a {
   display: grid;
   place-content: start center;
   gap: 0.35rem;
-  padding: 5rem 1rem 1rem;
+  padding: 4rem 0.7rem 0.7rem;
   text-align: center;
   color: var(--text-soft);
 }
 
 .empty-diff strong {
   color: var(--text);
-  font-size: 0.88rem;
+  font-size: 0.8rem;
 }
 
 .statusbar {
