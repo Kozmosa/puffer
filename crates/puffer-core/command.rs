@@ -1,12 +1,13 @@
 use crate::command_helpers::{
-    append_tool_invocations, describe_context, describe_git_diff, emit_system,
-    execute_skill_command, handle_agents_command, handle_config_command, handle_copy_command,
-    handle_export_command, handle_hooks_command, handle_ide_command, handle_keybindings_command,
-    handle_mcp_command, handle_memory_command, handle_model_command, handle_permissions_command,
-    handle_plugin_command, handle_remote_control_command, handle_remote_env_command,
-    handle_resume_command, handle_sandbox_command, handle_session_command, handle_tag_command,
-    handle_tasks_command, list_skills, record_command_checkpoint, reload_config_from_disk,
-    render_login_guidance, rewind_transcript, run_doctor, terminal_setup_advice,
+    append_tool_invocations, describe_context, describe_files_in_context, describe_git_diff,
+    emit_system, execute_skill_command, handle_agents_command, handle_config_command,
+    handle_copy_command, handle_export_command, handle_hooks_command, handle_ide_command,
+    handle_keybindings_command, handle_mcp_command, handle_memory_command,
+    handle_model_command, handle_permissions_command, handle_plugin_command,
+    handle_remote_control_command, handle_remote_env_command, handle_resume_command,
+    handle_sandbox_command, handle_session_command, handle_tag_command, handle_tasks_command,
+    list_skills, record_command_checkpoint, reload_config_from_disk, render_login_guidance,
+    rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{
     render_buddy_summary, render_cost_summary, render_status_summary, render_usage_summary,
@@ -152,6 +153,13 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             &[],
             "Export the current conversation to a file or clipboard",
             Some("[filename]"),
+            CommandKind::Local,
+        ),
+        cmd(
+            "files",
+            &[],
+            "List all files currently in context",
+            None,
             CommandKind::Local,
         ),
         cmd(
@@ -790,6 +798,7 @@ fn execute_local_command(
         "export" => handle_export_command(state, session_store, args),
         "copy" => handle_copy_command(state, session_store, args),
         "diff" => describe_git_diff(state, session_store),
+        "files" => describe_files_in_context(state, session_store),
         "doctor" => run_doctor(state, resources, providers, auth_store, session_store),
         "buddy" => emit_system(state, session_store, render_buddy_summary(state, resources)),
         "skills" => list_skills(state, resources, session_store),

@@ -90,7 +90,7 @@ pub(crate) fn try_open_overlay(
                 command: None,
             })
             .collect::<Vec<_>>();
-        if open_command_picker(tui, "Plugins", entries) {
+        if flow_pickers::open_command_picker(tui, "Plugins", entries) {
             return Ok(true);
         }
     }
@@ -103,7 +103,7 @@ pub(crate) fn try_open_overlay(
                 command: None,
             })
             .collect::<Vec<_>>();
-        if open_command_picker(tui, "MCP", entries) {
+        if flow_pickers::open_command_picker(tui, "MCP", entries) {
             return Ok(true);
         }
     }
@@ -116,17 +116,17 @@ pub(crate) fn try_open_overlay(
     }
     if name == "rewind" && args.is_empty() {
         let entries = flow_pickers::rewind_picker_entries(state);
-        if open_command_picker(tui, "Rewind", entries) {
+        if flow_pickers::open_command_picker(tui, "Rewind", entries) {
             return Ok(true);
         }
     }
     if name == "memory" && args.is_empty() {
         let entries = flow_pickers::memory_picker_entries(state);
-        if open_command_picker(tui, "Memory", entries) {
+        if flow_pickers::open_command_picker(tui, "Memory", entries) {
             return Ok(true);
         }
     }
-    if name == "tag" && open_tag_confirmation_picker(state, tui, args) {
+    if name == "tag" && flow_pickers::open_tag_confirmation_picker(state, tui, args) {
         return Ok(true);
     }
     if name == "tasks" && args.is_empty() {
@@ -138,7 +138,7 @@ pub(crate) fn try_open_overlay(
                 command: None,
             })
             .collect::<Vec<_>>();
-        if open_command_picker(tui, "Tasks", entries) {
+        if flow_pickers::open_command_picker(tui, "Tasks", entries) {
             return Ok(true);
         }
     }
@@ -149,74 +149,6 @@ pub(crate) fn try_open_overlay(
         return Ok(true);
     }
     Ok(false)
-}
-
-fn open_command_picker(
-    tui: &mut TuiState,
-    title: &str,
-    entries: Vec<crate::ModelPickerEntry>,
-) -> bool {
-    if entries.is_empty() {
-        return false;
-    }
-    set_overlay_state(
-        tui,
-        Some(OverlayState::CommandPicker {
-            title: title.to_string(),
-            entries,
-            selection: 0,
-        }),
-    );
-    true
-}
-
-fn open_tag_confirmation_picker(state: &AppState, tui: &mut TuiState, args: &str) -> bool {
-    let tag = args.trim();
-    if tag.is_empty()
-        || matches!(
-            tag,
-            "help"
-                | "-h"
-                | "--help"
-                | "list"
-                | "show"
-                | "display"
-                | "current"
-                | "view"
-                | "get"
-                | "check"
-                | "describe"
-                | "print"
-                | "version"
-                | "about"
-                | "status"
-                | "?"
-        )
-        || !state.session.tags.iter().any(|existing| existing == tag)
-    {
-        return false;
-    }
-
-    set_overlay_state(
-        tui,
-        Some(OverlayState::CommandPicker {
-            title: "Remove Tag?".to_string(),
-            entries: vec![
-                crate::ModelPickerEntry {
-                    selector: "Yes, remove tag".to_string(),
-                    description: format!("Current tag: #{tag}"),
-                    command: Some(format!("/tag --confirm-remove {tag}")),
-                },
-                crate::ModelPickerEntry {
-                    selector: "No, keep tag".to_string(),
-                    description: String::new(),
-                    command: Some(format!("/tag --keep {tag}")),
-                },
-            ],
-            selection: 0,
-        }),
-    );
-    true
 }
 
 /// Replaces the active overlay and clears the overlay query buffer.

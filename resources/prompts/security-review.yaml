@@ -11,6 +11,8 @@ variables:
     description: The full branch diff content.
   - name: ARGUMENTS
     description: Optional additional user input.
+  - name: ADDITIONAL_USER_INPUT_BLOCK
+    description: Optional extra user input appended when slash-command arguments are provided.
 template: |
   You are a senior security engineer conducting a focused security review of the changes on this branch.
 
@@ -199,4 +201,4 @@ template: |
 
   Your final reply must contain the markdown report and nothing else.
 
-  Additional user input: $ARGUMENTS
+  $ADDITIONAL_USER_INPUT_BLOCK

@@ -15,9 +15,9 @@ pub(crate) use agents::handle_agents_command;
 pub(crate) use artifacts::{handle_copy_command, handle_export_command};
 pub(crate) use auth::render_login_guidance;
 pub(crate) use common::{
-    describe_context, describe_git_diff, emit_system, execute_skill_command, list_skills,
-    record_command_checkpoint, render_skills_panel, rewind_transcript, run_doctor,
-    terminal_setup_advice,
+    describe_context, describe_files_in_context, describe_git_diff, emit_system,
+    execute_skill_command, list_skills, record_command_checkpoint, render_skills_panel,
+    rewind_transcript, run_doctor, terminal_setup_advice,
 };
 pub(crate) use config::{
     handle_config_command, handle_hooks_command, handle_keybindings_command,

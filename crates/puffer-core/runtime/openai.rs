@@ -1,23 +1,23 @@
 use super::{
     execute_tool_call, parse_http_json_response, run_tool_hooks, run_turn_hooks,
     send_http_request_raw, ToolExecutionBackend, ToolInvocation, TurnStreamEvent, APP_VERSION,
-    OPENAI_CHATGPT_BASE_URL,
 };
 use crate::permissions::load_runtime_permission_context;
 mod support;
 
 pub(super) use self::support::build_codex_openai_request_body;
 use self::support::{
-    extend_input_with_continuation, is_openai_structured_output_error,
-    openai_model_supports_reasoning, openai_registry_credential, openai_responses_path,
-    prefer_native_structured_output, structured_output_endpoint_id,
-    OPENAI_STRUCTURED_OUTPUT_FAMILY,
+    append_default_openai_headers, extend_input_with_continuation, is_codex_openai_provider,
+    is_openai_structured_output_error, openai_base_url_for_auth, openai_model_supports_reasoning,
+    openai_registry_credential, openai_responses_path, prefer_native_structured_output,
+    structured_output_endpoint_id, OPENAI_STRUCTURED_OUTPUT_FAMILY,
 };
 pub(super) use super::structured_output_support::openai_tool_definitions;
 use super::structured_output_support::{
     openai_chat_completion_tools_for_request, openai_chat_response_format,
     openai_responses_text_config, openai_tool_definitions_for_request, StructuredOutputConfig,
 };
+use super::system_prompt::render_runtime_system_prompt;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
@@ -122,7 +122,16 @@ fn execute_openai_once(
         use_native,
         Some(&permission_context),
     )?;
-    let mut next_input = transcript_to_openai_input(state, input)?;
+    let system_prompt = render_runtime_system_prompt(
+        state,
+        resources,
+        &model_id,
+        &tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+    )?;
+    let mut next_input = transcript_to_openai_input(state, input, Some(&system_prompt))?;
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
 
@@ -269,7 +278,16 @@ where
         use_native,
         Some(&permission_context),
     )?;
-    let mut next_input = transcript_to_openai_input(state, input)?;
+    let system_prompt = render_runtime_system_prompt(
+        state,
+        resources,
+        &model_id,
+        &tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+    )?;
+    let mut next_input = transcript_to_openai_input(state, input, Some(&system_prompt))?;
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
 
@@ -401,7 +419,16 @@ fn execute_openai_completions_once(
         use_native,
         Some(&permission_context),
     )?;
-    let mut messages = transcript_to_openai_chat_messages(state, input)?;
+    let system_prompt = render_runtime_system_prompt(
+        state,
+        resources,
+        &model_id,
+        &tools
+            .iter()
+            .map(|tool| tool.function.name.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+    )?;
+    let mut messages = transcript_to_openai_chat_messages(state, input, Some(&system_prompt))?;
     let mut invocations = Vec::new();
 
     for _ in 0..8 {
@@ -602,13 +629,23 @@ fn parse_openai_text(response: &Value) -> Result<String> {
     Ok(parts.join("\n"))
 }
 
-pub(super) fn transcript_to_openai_input(state: &AppState, input: &str) -> Result<Value> {
+pub(super) fn transcript_to_openai_input(
+    state: &AppState,
+    input: &str,
+    system_prompt: Option<&str>,
+) -> Result<Value> {
     let plan_mode_context = crate::command_helpers::prompt::plan_mode_context_message(state)?;
-    if state.transcript.is_empty() && plan_mode_context.is_none() {
+    if state.transcript.is_empty() && plan_mode_context.is_none() && system_prompt.is_none() {
         return Ok(Value::String(input.to_string()));
     }
 
     let mut items = Vec::new();
+    if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        items.push(json!({
+            "role": "system",
+            "content": system_prompt,
+        }));
+    }
     if let Some(plan_mode_context) = plan_mode_context {
         items.push(json!({
             "role": "system",
@@ -668,9 +705,18 @@ pub(super) fn transcript_to_openai_input(state: &AppState, input: &str) -> Resul
 pub(super) fn transcript_to_openai_chat_messages(
     state: &AppState,
     input: &str,
+    system_prompt: Option<&str>,
 ) -> Result<Vec<OpenAIChatMessage>> {
     let plan_mode_context = crate::command_helpers::prompt::plan_mode_context_message(state)?;
     let mut messages = Vec::new();
+    if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        messages.push(OpenAIChatMessage {
+            role: "system".to_string(),
+            content: Some(json!(system_prompt)),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        });
+    }
     if let Some(plan_mode_context) = plan_mode_context {
         messages.push(OpenAIChatMessage {
             role: "system".to_string(),
@@ -933,54 +979,4 @@ where
     let text = response.text()?;
     serde_json::from_str::<Value>(&text)
         .with_context(|| format!("response from {url} was not valid JSON"))
-}
-
-fn append_default_openai_headers(headers: &mut Vec<(String, String)>, provider_id: &str) {
-    if provider_id == "openai" && !has_header(headers, "version") {
-        headers.push(("version".to_string(), APP_VERSION.to_string()));
-    }
-    append_env_header(headers, "OpenAI-Organization", "OPENAI_ORGANIZATION");
-    append_env_header(headers, "OpenAI-Project", "OPENAI_PROJECT");
-}
-
-fn append_env_header(headers: &mut Vec<(String, String)>, header: &str, env_var: &str) {
-    if has_header(headers, header) {
-        return;
-    }
-    if let Ok(value) = std::env::var(env_var) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            headers.push((header.to_string(), trimmed.to_string()));
-        }
-    }
-}
-
-fn has_header(headers: &[(String, String)], name: &str) -> bool {
-    headers
-        .iter()
-        .any(|(header, _)| header.eq_ignore_ascii_case(name))
-}
-
-fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
-    provider.default_api == "openai-codex-responses"
-        || provider
-            .base_url
-            .trim_end_matches('/')
-            .contains("/backend-api")
-        || provider
-            .base_url
-            .trim_end_matches('/')
-            .contains("/api/codex")
-}
-
-fn openai_base_url_for_auth(provider: &ProviderDescriptor, oauth: bool) -> String {
-    if !oauth || provider.id != "openai" {
-        return provider.base_url.clone();
-    }
-    let trimmed = provider.base_url.trim_end_matches('/');
-    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
-        trimmed.to_string()
-    } else {
-        OPENAI_CHATGPT_BASE_URL.to_string()
-    }
 }

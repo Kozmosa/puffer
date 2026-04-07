@@ -3,6 +3,7 @@ use crate::AppState;
 use puffer_provider_openai::{OpenAIResponsesTextConfig, OpenAIResponsesTool};
 use puffer_provider_registry::{OAuthCredential, ProviderDescriptor};
 use serde_json::{json, Value};
+use super::super::{APP_VERSION, OPENAI_CHATGPT_BASE_URL};
 
 pub(super) const OPENAI_STRUCTURED_OUTPUT_FAMILY: &str = "openai";
 
@@ -123,6 +124,62 @@ pub(super) fn openai_model_supports_reasoning(
         .find(|model| model.id == model_id)
         .map(|model| model.supports_reasoning)
         .unwrap_or(false)
+}
+
+pub(super) fn append_default_openai_headers(
+    headers: &mut Vec<(String, String)>,
+    provider_id: &str,
+) {
+    if provider_id == "openai" && !has_header(headers, "version") {
+        headers.push(("version".to_string(), APP_VERSION.to_string()));
+    }
+    append_env_header(headers, "OpenAI-Organization", "OPENAI_ORGANIZATION");
+    append_env_header(headers, "OpenAI-Project", "OPENAI_PROJECT");
+}
+
+pub(super) fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
+    provider.default_api == "openai-codex-responses"
+        || provider
+            .base_url
+            .trim_end_matches('/')
+            .contains("/backend-api")
+        || provider
+            .base_url
+            .trim_end_matches('/')
+            .contains("/api/codex")
+}
+
+pub(super) fn openai_base_url_for_auth(
+    provider: &ProviderDescriptor,
+    oauth: bool,
+) -> String {
+    if !oauth || provider.id != "openai" {
+        return provider.base_url.clone();
+    }
+    let trimmed = provider.base_url.trim_end_matches('/');
+    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
+        trimmed.to_string()
+    } else {
+        OPENAI_CHATGPT_BASE_URL.to_string()
+    }
+}
+
+fn append_env_header(headers: &mut Vec<(String, String)>, header: &str, env_var: &str) {
+    if has_header(headers, header) {
+        return;
+    }
+    if let Ok(value) = std::env::var(env_var) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            headers.push((header.to_string(), trimmed.to_string()));
+        }
+    }
+}
+
+fn has_header(headers: &[(String, String)], name: &str) -> bool {
+    headers
+        .iter()
+        .any(|(header, _)| header.eq_ignore_ascii_case(name))
 }
 
 fn codex_input_items(input: Value) -> Value {

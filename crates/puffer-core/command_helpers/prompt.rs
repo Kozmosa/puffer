@@ -50,7 +50,7 @@ pub(crate) fn prepare_prompt_command_specialization(
             args,
         )?)),
         "pr-comments" => Ok(Some(prepare_pr_comments_prompt_command(args))),
-        "security-review" => Ok(Some(prepare_security_review_prompt_command(state)?)),
+        "security-review" => Ok(Some(prepare_security_review_prompt_command(state, args)?)),
         "statusline" => Ok(Some(prepare_statusline_prompt_command(args)?)),
         _ => Ok(None),
     }
@@ -157,9 +157,10 @@ pub(crate) fn prepare_pr_comments_prompt_command(args: &str) -> PromptCommandPre
 /// Computes git-aware context variables for `/security-review`.
 pub(crate) fn prepare_security_review_prompt_command(
     state: &AppState,
+    args: &str,
 ) -> Result<PromptCommandPreparation> {
     Ok(PromptCommandPreparation::VariableOverrides(
-        build_security_review_prompt_variables(&state.cwd),
+        build_security_review_prompt_variables(&state.cwd, args),
     ))
 }
 
@@ -387,7 +388,8 @@ fn build_statusline_prompt_override(args: &str) -> Result<String> {
     ))
 }
 
-fn build_security_review_prompt_variables(cwd: &PathBuf) -> BTreeMap<String, String> {
+fn build_security_review_prompt_variables(cwd: &PathBuf, args: &str) -> BTreeMap<String, String> {
+    let trimmed = args.trim();
     BTreeMap::from([
         (
             "GIT_STATUS".to_string(),
@@ -416,6 +418,14 @@ fn build_security_review_prompt_variables(cwd: &PathBuf) -> BTreeMap<String, Str
         (
             "DIFF_CONTENT".to_string(),
             run_git_with_fallbacks(cwd, &[&["diff", "origin/HEAD..."], &["diff"]]),
+        ),
+        (
+            "ADDITIONAL_USER_INPUT_BLOCK".to_string(),
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("Additional user input: {trimmed}")
+            },
         ),
     ])
 }
@@ -659,7 +669,7 @@ mod tests {
     fn security_review_specialization_collects_git_context() {
         let fixture = sample_state();
         let state = fixture.state;
-        let outcome = prepare_security_review_prompt_command(&state).unwrap();
+        let outcome = prepare_security_review_prompt_command(&state, "").unwrap();
 
         match outcome {
             PromptCommandPreparation::VariableOverrides(variables) => {

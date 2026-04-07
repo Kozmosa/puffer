@@ -26,6 +26,7 @@ mod openai_sse;
 mod permission_prompt;
 mod side_question;
 mod structured_output_support;
+mod system_prompt;
 mod tool_executor;
 
 #[cfg(test)]
@@ -45,6 +46,7 @@ use self::structured_output_support::{
     anthropic_tool_definitions, anthropic_tool_definitions_for_request,
     validate_structured_output_schema,
 };
+use self::system_prompt::render_runtime_system_prompt;
 use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -387,6 +389,24 @@ fn execute_anthropic(
             messages: transcript_to_anthropic_request_messages(state, input),
         },
     )?;
+    let tools = anthropic_tool_definitions_for_request(
+        &registry,
+        structured_output,
+        Some(&permission_context),
+    )?;
+    let system_prompt = render_runtime_system_prompt(
+        state,
+        resources,
+        &model_id,
+        &tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<std::collections::BTreeSet<_>>(),
+    )?;
 
     for _ in 0..8 {
         let mut body = json!({
@@ -395,17 +415,12 @@ fn execute_anthropic(
             "messages": messages,
             "system": anthropic_system_blocks(
                 &request.attribution_prefix_block,
+                Some(system_prompt.as_str()),
                 plan_mode_context.as_deref(),
             )
         });
-
-        let tools = anthropic_tool_definitions_for_request(
-            &registry,
-            structured_output,
-            Some(&permission_context),
-        )?;
         if !tools.is_empty() {
-            body["tools"] = Value::Array(tools);
+            body["tools"] = Value::Array(tools.clone());
         }
 
         let response = send_http_request(&request.url, &request.headers, &body.to_string(), true)?;
@@ -853,12 +868,19 @@ fn transcript_to_anthropic_request_messages(
 }
 fn anthropic_system_blocks(
     attribution_prefix_block: &str,
+    system_prompt: Option<&str>,
     plan_mode_context: Option<&str>,
 ) -> Vec<Value> {
     let mut blocks = vec![json!({
         "type": "text",
         "text": attribution_prefix_block,
     })];
+    if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        blocks.push(json!({
+            "type": "text",
+            "text": system_prompt,
+        }));
+    }
     if let Some(plan_mode_context) = plan_mode_context {
         blocks.push(json!({
             "type": "text",

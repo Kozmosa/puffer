@@ -9,6 +9,7 @@ use tempfile::tempdir;
 
 mod artifacts;
 mod basics;
+mod files;
 mod login_auth;
 mod mcp;
 mod model_scope;

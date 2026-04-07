@@ -117,6 +117,14 @@ pub(crate) fn describe_context(
     )
 }
 
+/// Lists the files currently tracked in Claude-style file context.
+pub(crate) fn describe_files_in_context(
+    state: &mut AppState,
+    session_store: &SessionStore,
+) -> Result<()> {
+    emit_system(state, session_store, render_files_in_context(state))
+}
+
 /// Shows the current git status summary for the workspace.
 pub(crate) fn describe_git_diff(state: &mut AppState, session_store: &SessionStore) -> Result<()> {
     emit_system(
@@ -124,6 +132,27 @@ pub(crate) fn describe_git_diff(state: &mut AppState, session_store: &SessionSto
         session_store,
         render_git_diff_summary(&state.cwd, session_store, state.session.id),
     )
+}
+
+/// Renders the current Claude-style file-context listing.
+pub(crate) fn render_files_in_context(state: &AppState) -> String {
+    let mut files = state
+        .claude_read_state
+        .keys()
+        .map(|path| {
+            path.strip_prefix(&state.cwd)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    if files.is_empty() {
+        "No files in context".to_string()
+    } else {
+        format!("Files in context:\n{}", files.join("\n"))
+    }
 }
 
 /// Opens or creates a text file in an external editor and returns a status line.

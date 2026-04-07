@@ -1,6 +1,78 @@
 use puffer_config::ConfigPaths;
 use puffer_core::{AppState, MessageRole};
 
+pub(crate) fn open_command_picker(
+    tui: &mut crate::TuiState,
+    title: &str,
+    entries: Vec<crate::ModelPickerEntry>,
+) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+    crate::flow::set_overlay_state(
+        tui,
+        Some(crate::OverlayState::CommandPicker {
+            title: title.to_string(),
+            entries,
+            selection: 0,
+        }),
+    );
+    true
+}
+
+pub(crate) fn open_tag_confirmation_picker(
+    state: &AppState,
+    tui: &mut crate::TuiState,
+    args: &str,
+) -> bool {
+    let tag = args.trim();
+    if tag.is_empty()
+        || matches!(
+            tag,
+            "help"
+                | "-h"
+                | "--help"
+                | "list"
+                | "show"
+                | "display"
+                | "current"
+                | "view"
+                | "get"
+                | "check"
+                | "describe"
+                | "print"
+                | "version"
+                | "about"
+                | "status"
+                | "?"
+        )
+        || !state.session.tags.iter().any(|existing| existing == tag)
+    {
+        return false;
+    }
+
+    crate::flow::set_overlay_state(
+        tui,
+        Some(crate::OverlayState::CommandPicker {
+            title: "Remove Tag?".to_string(),
+            entries: vec![
+                crate::ModelPickerEntry {
+                    selector: "Yes, remove tag".to_string(),
+                    description: format!("Current tag: #{tag}"),
+                    command: Some(format!("/tag --confirm-remove {tag}")),
+                },
+                crate::ModelPickerEntry {
+                    selector: "No, keep tag".to_string(),
+                    description: String::new(),
+                    command: Some(format!("/tag --keep {tag}")),
+                },
+            ],
+            selection: 0,
+        }),
+    );
+    true
+}
+
 pub(crate) fn rewind_picker_entries(state: &AppState) -> Vec<crate::ModelPickerEntry> {
     let mut entries = vec![crate::ModelPickerEntry {
         selector: "/rewind".to_string(),
