@@ -94,7 +94,7 @@ fn app_state_defaults_expose_command_state() {
         },
     );
     assert_eq!(state.prompt_color, "default");
-    assert_eq!(state.effort_level, "auto");
+    assert_eq!(state.effort_level, "medium");
     assert_eq!(state.sandbox_mode, "workspace-write");
     assert!(state.statusline_enabled);
 }
