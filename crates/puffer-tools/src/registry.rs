@@ -280,6 +280,10 @@ fn infer_schema_type(property: &serde_json::Value) -> ToolSchemaType {
 fn render_tool_description(description: &str) -> String {
     description
         .replace("{{CURRENT_MONTH_YEAR}}", &current_month_year())
+        .lines()
+        .map(|line| if line.trim().is_empty() { "" } else { line })
+        .collect::<Vec<_>>()
+        .join("\n")
         .trim_end()
         .to_string()
 }

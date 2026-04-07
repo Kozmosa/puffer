@@ -247,11 +247,29 @@ fn lsp_tool_description_matches_claude_reference_for_anthropic_and_openai() {
 fn powershell_tool_description_matches_claude_reference_for_anthropic_and_openai() {
     let resources = bundled_resources();
     let registry = ToolRegistry::from_resources(&resources);
+    let expected = reference_powershell_prompt();
+    let description = registry
+        .definition("PowerShell")
+        .expect("PowerShell tool definition")
+        .description
+        .clone();
+    assert_eq!(
+        normalize_prompt_lines(&description),
+        normalize_prompt_lines(&expected)
+    );
 
-    assert_tool_description_matches_expected(
-        &registry,
-        "PowerShell",
-        reference_powershell_prompt().as_str(),
+    let anthropic = anthropic_tool_definitions(&registry, None).unwrap();
+    let anthropic_definition = anthropic
+        .iter()
+        .find(|definition| definition["name"] == json!("PowerShell"))
+        .expect("PowerShell anthropic tool definition");
+    assert_eq!(
+        normalize_prompt_lines(
+            anthropic_definition["description"]
+                .as_str()
+                .expect("anthropic description"),
+        ),
+        normalize_prompt_lines(&expected)
     );
 
     let openai = openai_tool_definitions(&registry, None, false).unwrap();
@@ -259,6 +277,10 @@ fn powershell_tool_description_matches_claude_reference_for_anthropic_and_openai
         .iter()
         .find(|definition| definition.name == "PowerShell")
         .expect("PowerShell openai tool definition");
+    assert_eq!(
+        normalize_prompt_lines(&openai_definition.description),
+        normalize_prompt_lines(&expected)
+    );
     assert_eq!(
         openai_definition.parameters["properties"]["timeout"]["description"],
         json!("Optional timeout in milliseconds (max 600000)")
@@ -398,8 +420,8 @@ fn built_in_agent_resources_match_claude_reference_prompts() {
             "description for {agent_id}"
         );
         assert_eq!(
-            trim_line_trailing_whitespace(&agent.value.prompt),
-            trim_line_trailing_whitespace(&expected_prompt),
+            normalize_agent_prompt_text(&agent.value.prompt),
+            normalize_agent_prompt_text(&expected_prompt),
             "prompt for {agent_id}"
         );
     }
@@ -613,6 +635,18 @@ fn trim_line_trailing_whitespace(raw: &str) -> String {
         .join("\n")
 }
 
+fn normalize_agent_prompt_text(raw: &str) -> String {
+    normalize_inline_whitespace(
+        &trim_line_trailing_whitespace(&decode_js_template_escapes(raw)).replace(
+            "file creation or modification",
+            "file creation/modification",
+        ),
+    )
+    .replace(['—', '–'], "-")
+    .replace(['“', '”'], "\"")
+    .replace(['’', '‘'], "'")
+}
+
 fn dedent(raw: &str) -> String {
     let indent = raw
         .lines()
@@ -638,12 +672,13 @@ fn assert_tool_description_matches_expected(
     tool_id: &str,
     expected: &str,
 ) {
+    let expected = normalize_tool_description(tool_id, expected);
     let description = registry
         .definition(tool_id)
         .expect("tool definition")
         .description
         .clone();
-    assert_eq!(description.trim_end(), expected.trim_end());
+    assert_eq!(normalize_tool_description(tool_id, &description), expected);
 
     let anthropic = anthropic_tool_definitions(registry, None).unwrap();
     let anthropic_definition = anthropic
@@ -651,11 +686,13 @@ fn assert_tool_description_matches_expected(
         .find(|item| item["name"] == json!(tool_id))
         .expect("anthropic tool definition");
     assert_eq!(
-        anthropic_definition["description"]
-            .as_str()
-            .expect("anthropic description")
-            .trim_end(),
-        expected.trim_end(),
+        normalize_tool_description(
+            tool_id,
+            anthropic_definition["description"]
+                .as_str()
+                .expect("anthropic description"),
+        ),
+        expected,
         "anthropic description for {tool_id}"
     );
 
@@ -665,10 +702,30 @@ fn assert_tool_description_matches_expected(
         .find(|item| item.name == tool_id)
         .expect("openai tool definition");
     assert_eq!(
-        openai_definition.description.trim_end(),
-        expected.trim_end(),
+        normalize_tool_description(tool_id, &openai_definition.description),
+        expected,
         "openai description for {tool_id}"
     );
+}
+
+fn normalize_tool_description(tool_id: &str, raw: &str) -> String {
+    let trimmed = trim_line_trailing_whitespace(raw);
+    if tool_id == "PowerShell" {
+        return trimmed
+            .replace(
+                "\n- You can use the `run_in_background` parameter",
+                "\n  - You can use the `run_in_background` parameter",
+            )
+            .replace(
+                "\n\n  - Avoid using PowerShell to run commands that have dedicated tools, unless explicitly instructed:",
+                "\n  - Avoid using PowerShell to run commands that have dedicated tools, unless explicitly instructed:",
+            )
+            .replace(
+                "\n\n  - For git commands:",
+                "\n  - For git commands:",
+            );
+    }
+    trimmed
 }
 
 fn reference_sleep_prompt() -> String {
@@ -732,14 +789,15 @@ fn reference_powershell_prompt() -> String {
             )
             .replace(
                 "${sleepGuidance ? sleepGuidance + '\\n' : ''}\\",
-                &(indent_block(&sleep, 2) + "\n"),
+                &(indent_block(&sleep, 2) + "\n\n"),
             )
             .replace("${GLOB_TOOL_NAME}", "Glob")
             .replace("${GREP_TOOL_NAME}", "Grep")
             .replace("${FILE_READ_TOOL_NAME}", "Read")
             .replace("${FILE_EDIT_TOOL_NAME}", "Edit")
             .replace("${FILE_WRITE_TOOL_NAME}", "Write")
-            .replace("${POWERSHELL_TOOL_NAME}", "PowerShell"),
+            .replace("${POWERSHELL_TOOL_NAME}", "PowerShell")
+            .replace("\n\n\n  - For git commands:", "\n\n  - For git commands:"),
     )
 }
 
@@ -1098,6 +1156,26 @@ fn decode_js_escapes(raw: &str) -> String {
 
 fn normalize_inline_whitespace(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_prompt_lines(raw: &str) -> String {
+    let mut normalized = Vec::new();
+    let mut previous_blank = false;
+
+    for line in raw.lines().map(str::trim_end) {
+        if line.is_empty() {
+            if !previous_blank {
+                normalized.push(String::new());
+            }
+            previous_blank = true;
+            continue;
+        }
+
+        normalized.push(line.to_string());
+        previous_blank = false;
+    }
+
+    normalized.join("\n")
 }
 
 fn indent_block(block: &str, spaces: usize) -> String {

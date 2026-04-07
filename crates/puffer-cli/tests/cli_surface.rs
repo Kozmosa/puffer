@@ -211,11 +211,15 @@ fn mcp_round_trip_add_get_list_remove() {
     assert!(get_text.contains("\"id\": \"demo\""));
     assert!(get_text.contains("\"transport\": \"http\""));
 
-    let get_plugin = run_puffer(&workspace, &puffer_home, &["mcp", "get", "core:docs"]);
+    let get_plugin = run_puffer(
+        &workspace,
+        &puffer_home,
+        &["mcp", "get", "puffer-builtins:filesystem"],
+    );
     assert!(get_plugin.status.success(), "{get_plugin:?}");
     let get_plugin_text = String::from_utf8_lossy(&get_plugin.stdout);
-    assert!(get_plugin_text.contains("\"id\": \"core:docs\""));
-    assert!(get_plugin_text.contains("\"plugin_id\": \"core\""));
+    assert!(get_plugin_text.contains("\"id\": \"puffer-builtins:filesystem\""));
+    assert!(get_plugin_text.contains("\"plugin_id\": \"puffer-builtins\""));
 
     let list = run_puffer(&workspace, &puffer_home, &["mcp", "list"]);
     assert!(list.status.success(), "{list:?}");

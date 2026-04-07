@@ -26,9 +26,9 @@ description: |-
      - Pipe operator | works similarly to bash but passes objects, not text
      - Use Select-Object, Where-Object, ForEach-Object for filtering and transformation
      - String interpolation: "Hello $name" or "Hello $($obj.Property)"
-     - Registry access uses PSDrive prefixes: `HKLM:\\SOFTWARE\\...`, `HKCU:\\...` — NOT raw `HKEY_LOCAL_MACHINE\\...`
+     - Registry access uses PSDrive prefixes: `HKLM:\SOFTWARE\...`, `HKCU:\...` — NOT raw `HKEY_LOCAL_MACHINE\...`
      - Environment variables: read with `$env:NAME`, set with `$env:NAME = "value"` (NOT `Set-Variable` or bash `export`)
-     - Call native exe with spaces in path via call operator: `& "C:\\Program Files\\App\\app.exe" arg1 arg2`
+     - Call native exe with spaces in path via call operator: `& "C:\Program Files\App\app.exe" arg1 arg2`
 
   Interactive and blocking commands (will hang — this tool runs with -NonInteractive):
      - NEVER use `Read-Host`, `Get-Credential`, `Out-GridView`, `$Host.UI.PromptForChoice`, or `pause`
@@ -51,8 +51,7 @@ description: |-
     - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
     - It is very helpful if you write a clear, concise description of what this command does.
     - If the output exceeds 30000 characters, output will be truncated before being returned to you.
-  - You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes.
-
+    - You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes.
 
     - Avoid using PowerShell to run commands that have dedicated tools, unless explicitly instructed:
       - File search: Use Glob (NOT Get-ChildItem -Recurse)
@@ -67,14 +66,13 @@ description: |-
       - Use `;` only when you need to run commands sequentially but don't care if earlier commands fail.
       - DO NOT use newlines to separate commands (newlines are ok in quoted strings and here-strings)
     - Do NOT prefix commands with `cd` or `Set-Location` -- the working directory is already set to the correct project directory automatically.
-  - Avoid unnecessary `Start-Sleep` commands:
-    - Do not sleep between commands that can run immediately — just run them.
-    - If your command is long running and you would like to be notified when it finishes — simply run your command using `run_in_background`. There is no need to sleep in this case.
-    - Do not retry failing commands in a sleep loop — diagnose the root cause or consider an alternative approach.
-    - If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.
-    - If you must poll an external process, use a check command rather than sleeping first.
-    - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.
-
+    - Avoid unnecessary `Start-Sleep` commands:
+      - Do not sleep between commands that can run immediately — just run them.
+      - If your command is long running and you would like to be notified when it finishes — simply run your command using `run_in_background`. There is no need to sleep in this case.
+      - Do not retry failing commands in a sleep loop — diagnose the root cause or consider an alternative approach.
+      - If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.
+      - If you must poll an external process, use a check command rather than sleeping first.
+      - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.
 
     - For git commands:
       - Prefer to create a new commit rather than amending an existing commit.
