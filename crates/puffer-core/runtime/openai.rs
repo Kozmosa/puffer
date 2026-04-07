@@ -341,6 +341,7 @@ pub(super) fn execute_openai_completions(
 pub(super) fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResponsesTool> {
     registry
         .definitions()
+        .filter(|definition| definition.handler != "runtime:workflow:structured_output")
         .map(|definition| OpenAIResponsesTool {
             kind: "function".to_string(),
             name: definition.id.clone(),
@@ -356,6 +357,7 @@ pub(super) fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResp
 fn openai_chat_completion_tools(registry: &ToolRegistry) -> Vec<OpenAIChatCompletionTool> {
     registry
         .definitions()
+        .filter(|definition| definition.handler != "runtime:workflow:structured_output")
         .map(|definition| OpenAIChatCompletionTool {
             kind: "function".to_string(),
             function: OpenAIChatCompletionToolFunction {

@@ -419,6 +419,27 @@ fn tool_definitions_filter_disabled_tools() {
 }
 
 #[test]
+fn openai_tool_definitions_exclude_structured_output_workflow_helper() {
+    let mut structured_output =
+        loaded_tool("StructuredOutput", "Structured output helper", "runtime:workflow:structured_output");
+    structured_output.value.input_schema = Some(json!({
+        "type": "object",
+        "description": "Dynamic structured output payload.",
+        "additionalProperties": true
+    }));
+    let resources = LoadedResources {
+        tools: vec![structured_output, loaded_tool("bash", "Run shell", "bash")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+
+    let openai_tools = openai_tool_definitions(&registry);
+
+    assert!(!openai_tools.iter().any(|tool| tool.name == "StructuredOutput"));
+    assert!(openai_tools.iter().any(|tool| tool.name == "bash"));
+}
+
+#[test]
 fn resolve_openai_execution_config_uses_codex_chatgpt_route_for_builtin_oauth() {
     let mut auth_store = AuthStore::default();
     auth_store.set_oauth(
