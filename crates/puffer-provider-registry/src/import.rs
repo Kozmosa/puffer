@@ -4,8 +4,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
-use std::fs;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Distinguishes external credential sources that Puffer can import.
@@ -474,7 +474,9 @@ openai_base_url = "https://proxy.example/v1"
         assert!(candidates.iter().all(|candidate| {
             candidate.openai_base_url.as_deref() == Some("https://proxy.example/v1")
         }));
-        assert!(candidates.iter().all(|candidate| candidate.openai_headers.is_empty()));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.openai_headers.is_empty()));
         assert!(candidates
             .iter()
             .all(|candidate| candidate.openai_query_params.is_empty()));

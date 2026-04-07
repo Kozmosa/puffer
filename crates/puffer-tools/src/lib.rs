@@ -1,6 +1,8 @@
 mod builtins;
 mod external;
 mod model;
+#[cfg(test)]
+mod model_tests;
 mod registry;
 
 pub use builtins::builtin_tool_kind;

@@ -1,6 +1,6 @@
 id: TaskCreate
 name: TaskCreate
-description: Create a task in the task list.
+description: Create a task in the shared task list for coordinated work.
 handler: runtime:workflow:task_create
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -23,3 +23,4 @@ input_schema:
   required:
     - subject
     - description
+  additionalProperties: false

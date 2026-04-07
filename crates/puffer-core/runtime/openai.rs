@@ -512,36 +512,40 @@ pub(super) fn transcript_to_openai_input(state: &AppState, input: &str) -> Resul
         return Ok(Value::Array(items));
     }
 
-    items.extend(state.transcript.iter().enumerate().map(|(index, message)| {
-        match message.role {
-            crate::MessageRole::User => json!({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": message.text,
-                    }
-                ],
+    items.extend(
+        state
+            .transcript
+            .iter()
+            .enumerate()
+            .map(|(index, message)| match message.role {
+                crate::MessageRole::User => json!({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": message.text,
+                        }
+                    ],
+                }),
+                crate::MessageRole::Assistant => json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": message.text,
+                            "annotations": [],
+                        }
+                    ],
+                    "status": "completed",
+                    "id": format!("msg_{index}"),
+                }),
+                crate::MessageRole::System => json!({
+                    "role": "system",
+                    "content": message.text,
+                }),
             }),
-            crate::MessageRole::Assistant => json!({
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": message.text,
-                        "annotations": [],
-                    }
-                ],
-                "status": "completed",
-                "id": format!("msg_{index}"),
-            }),
-            crate::MessageRole::System => json!({
-                "role": "system",
-                "content": message.text,
-            }),
-        }
-    }));
+    );
     Ok(Value::Array(items))
 }
 

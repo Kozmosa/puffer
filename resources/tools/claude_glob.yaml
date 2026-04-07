@@ -24,3 +24,4 @@ input_schema:
         default behavior. Must be a valid directory path if provided.
   required:
     - pattern
+  additionalProperties: false

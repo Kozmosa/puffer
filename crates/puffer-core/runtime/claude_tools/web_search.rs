@@ -79,9 +79,6 @@ pub fn execute_claude_openai_web_search(
     raw_input: Value,
 ) -> Result<String> {
     let input = parse_input(raw_input)?;
-    if !input.blocked_domains.is_empty() {
-        bail!("blocked_domains is not supported by OpenAI web search");
-    }
 
     let request = build_tool_responses_request(
         request_config,
@@ -93,8 +90,7 @@ pub fn execute_claude_openai_web_search(
                 name: String::new(),
                 description: String::new(),
                 parameters: Value::Null,
-                filters: (!input.allowed_domains.is_empty())
-                    .then(|| json!({ "allowed_domains": input.allowed_domains })),
+                filters: build_openai_filters(&input),
                 user_location: None,
                 external_web_access: None,
             }],
@@ -175,6 +171,17 @@ fn parse_input(raw_input: Value) -> Result<ClaudeWebSearchInput> {
         bail!("cannot specify both allowed_domains and blocked_domains in one request");
     }
     Ok(input)
+}
+
+fn build_openai_filters(input: &ClaudeWebSearchInput) -> Option<Value> {
+    let mut filters = serde_json::Map::new();
+    if !input.allowed_domains.is_empty() {
+        filters.insert("allowed_domains".to_string(), json!(input.allowed_domains));
+    }
+    if !input.blocked_domains.is_empty() {
+        filters.insert("blocked_domains".to_string(), json!(input.blocked_domains));
+    }
+    (!filters.is_empty()).then(|| Value::Object(filters))
 }
 
 fn send_json_request(
@@ -348,6 +355,17 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("cannot specify both"));
+    }
+
+    #[test]
+    fn build_openai_filters_includes_blocked_domains() {
+        let filters = build_openai_filters(&ClaudeWebSearchInput {
+            query: "rust".to_string(),
+            allowed_domains: Vec::new(),
+            blocked_domains: vec!["example.com".to_string()],
+        })
+        .unwrap();
+        assert_eq!(filters["blocked_domains"], json!(["example.com"]));
     }
 
     #[test]

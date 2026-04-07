@@ -1,6 +1,11 @@
 id: ExitWorktree
 name: ExitWorktree
-description: Exit a worktree session and return to the original directory.
+description: |-
+  Exit a worktree session created by EnterWorktree and return to the original
+  directory.
+
+  Use `action: "keep"` to preserve the worktree on disk, or `action: "remove"`
+  to delete it.
 handler: runtime:workflow:exit_worktree
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -18,3 +23,4 @@ input_schema:
       description: Required true to remove when there are uncommitted or unmerged changes.
   required:
     - action
+  additionalProperties: false

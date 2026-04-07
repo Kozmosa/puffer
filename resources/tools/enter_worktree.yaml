@@ -1,6 +1,9 @@
 id: EnterWorktree
 name: EnterWorktree
-description: Create an isolated git worktree and switch into it.
+description: |-
+  Create an isolated git worktree and switch the current session into it.
+
+  Use this only when the user explicitly asks to work in a worktree.
 handler: runtime:workflow:enter_worktree
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -10,3 +13,4 @@ input_schema:
     name:
       type: string
       description: Optional name for the worktree.
+  additionalProperties: false

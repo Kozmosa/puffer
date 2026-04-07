@@ -2,8 +2,8 @@ use crate::command_helpers::{
     append_tool_invocations, copy_last_message, describe_context, describe_git_diff, emit_system,
     execute_skill_command, handle_agents_command, handle_config_command, handle_hooks_command,
     handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_permissions_command, handle_plugin_command, handle_sandbox_command,
-    handle_remote_control_command, handle_remote_env_command, handle_session_command, list_skills,
+    handle_permissions_command, handle_plugin_command, handle_remote_control_command,
+    handle_remote_env_command, handle_sandbox_command, handle_session_command, list_skills,
     persist_user_model_selection, record_command_checkpoint, render_login_guidance,
     rewind_transcript, run_doctor, terminal_setup_advice,
 };
@@ -329,7 +329,13 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             None,
             CommandKind::Ui,
         ),
-        cmd("skill:<name>", &[], "Run a loaded skill by slash-safe skill name", None, CommandKind::Ui),
+        cmd(
+            "skill:<name>",
+            &[],
+            "Run a loaded skill by slash-safe skill name",
+            None,
+            CommandKind::Ui,
+        ),
         cmd(
             "status",
             &[],
@@ -401,10 +407,13 @@ pub fn dispatch_command(
         .unwrap_or((without_slash, ""));
 
     if let Some(skill_name) = name.strip_prefix("skill:") {
-        session_store.append_event(state.session.id, TranscriptEvent::CommandInvoked {
-            name: format!("skill:{skill_name}"),
-            args: String::new(),
-        })?;
+        session_store.append_event(
+            state.session.id,
+            TranscriptEvent::CommandInvoked {
+                name: format!("skill:{skill_name}"),
+                args: String::new(),
+            },
+        )?;
         return execute_skill_command(state, resources, session_store, skill_name);
     }
 
@@ -528,7 +537,8 @@ fn execute_prompt_command(
         );
     }
 
-    if command.name == "plan" && !args.trim().is_empty() && !matches!(args.trim(), "show" | "open") {
+    if command.name == "plan" && !args.trim().is_empty() && !matches!(args.trim(), "show" | "open")
+    {
         return crate::command_helpers::prompt::execute_plan_prompt_command(
             state,
             resources,

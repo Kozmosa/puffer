@@ -12,3 +12,4 @@ input_schema:
       description: The ID of the task to retrieve.
   required:
     - taskId
+  additionalProperties: false

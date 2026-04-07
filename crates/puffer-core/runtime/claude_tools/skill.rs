@@ -57,7 +57,12 @@ pub fn execute_claude_skill_tool(resources: &LoadedResources, input: Value) -> R
     );
     let _ = writeln!(&mut output, "Skill {}", skill.value.name);
     let _ = writeln!(&mut output, "{}", skill.value.description);
-    if let Some(args) = parsed.args.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(args) = parsed
+        .args
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         let _ = writeln!(&mut output, "args: {args}");
     }
     let _ = writeln!(
@@ -121,9 +126,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_skill() {
-        let error = execute_claude_skill_tool(&sample_resources(), json!({"skill": "does-not-exist"}))
-            .unwrap_err()
-            .to_string();
+        let error =
+            execute_claude_skill_tool(&sample_resources(), json!({"skill": "does-not-exist"}))
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("unknown skill"));
     }
 

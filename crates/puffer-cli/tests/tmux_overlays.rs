@@ -69,7 +69,7 @@ fn tmux_login_overlay_lists_available_providers() {
     std::thread::sleep(Duration::from_secs(2));
     let capture = capture_tmux_pane(&session).unwrap();
     assert!(capture.contains("anthropic"));
-    assert!(capture.contains("openai"));
+    assert!(capture.contains("OpenAI"));
 }
 
 fn configured_workspace() -> (tempfile::TempDir, std::path::PathBuf) {

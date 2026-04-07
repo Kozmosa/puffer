@@ -1,5 +1,5 @@
-use crate::codex::codex_user_agent;
 use crate::auth::OpenAIAuth;
+use crate::codex::codex_user_agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -360,16 +360,18 @@ mod tests {
             .headers
             .iter()
             .any(|(key, value)| key == "session_id" && value == "session-123"));
-        assert!(request.headers.iter().any(
-            |(key, value)| key == "ChatGPT-Account-ID" && value == "account-123"
-        ));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "ChatGPT-Account-ID" && value == "account-123"));
         assert!(request
             .headers
             .iter()
             .any(|(key, value)| key == "version" && value == "0.1.0"));
-        assert!(request.headers.iter().any(|(key, value)| {
-            key == "Authorization" && value == "Bearer oauth-token"
-        }));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| { key == "Authorization" && value == "Bearer oauth-token" }));
     }
 
     #[test]
@@ -438,9 +440,10 @@ mod tests {
             request.url,
             "https://chatgpt.com/backend-api/codex/responses?api-version=2025-01-01"
         );
-        assert!(request.headers.iter().any(
-            |(key, value)| key == "ChatGPT-Account-ID" && value == "account-123"
-        ));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "ChatGPT-Account-ID" && value == "account-123"));
         assert!(request
             .headers
             .iter()

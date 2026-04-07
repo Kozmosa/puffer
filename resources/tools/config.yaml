@@ -1,6 +1,12 @@
 id: Config
 name: Config
-description: Get or set Claude Code settings.
+description: |-
+  Get or set Claude Code-style configuration settings.
+
+  Use this when the user asks about current settings, requests a configuration
+  change, or would benefit from adjusting a setting directly.
+
+  Omit `value` to read the current setting. Provide `value` to update it.
 handler: runtime:workflow:config
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -18,3 +24,4 @@ input_schema:
         - type: number
   required:
     - setting
+  additionalProperties: false

@@ -296,7 +296,11 @@ pub(crate) fn terminal_setup_advice(state: &AppState) -> String {
     )
 }
 
-fn render_git_diff_summary(cwd: &PathBuf, session_store: &SessionStore, session_id: uuid::Uuid) -> String {
+fn render_git_diff_summary(
+    cwd: &PathBuf,
+    session_store: &SessionStore,
+    session_id: uuid::Uuid,
+) -> String {
     let current = render_current_git_diff_summary(cwd);
     let history = render_git_diff_history(session_store, session_id);
     if history.is_empty() {

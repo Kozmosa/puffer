@@ -1,6 +1,11 @@
 id: CronCreate
 name: CronCreate
-description: Schedule a recurring or one-shot prompt using a cron expression.
+description: |-
+  Schedule a prompt to run in the future, either once or on a recurring cron
+  schedule.
+
+  Uses standard 5-field cron in the user's local timezone. Use `durable: true`
+  only when the user explicitly wants the schedule to persist across restarts.
 handler: runtime:workflow:cron_create
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -22,3 +27,4 @@ input_schema:
   required:
     - cron
     - prompt
+  additionalProperties: false

@@ -97,7 +97,10 @@ fn remote_control_command_persists_remote_session_metadata() {
     assert_eq!(state.remote_name.as_deref(), Some("dockyard"));
     assert_eq!(state.remote_environment.as_deref(), Some("staging"));
     let expected_remote_id = state.session.id.to_string();
-    assert_eq!(state.remote_session_id.as_deref(), Some(expected_remote_id.as_str()));
+    assert_eq!(
+        state.remote_session_id.as_deref(),
+        Some(expected_remote_id.as_str())
+    );
     assert!(state
         .remote_session_url
         .as_deref()
@@ -128,7 +131,8 @@ fn branch_clears_active_remote_session_connection() {
     state.remote_name = Some("dockyard".to_string());
     state.remote_environment = Some("staging".to_string());
     state.remote_session_id = Some("remote-1".to_string());
-    state.remote_session_url = Some("puffer://remote/remote-1?name=dockyard&env=staging".to_string());
+    state.remote_session_url =
+        Some("puffer://remote/remote-1?name=dockyard&env=staging".to_string());
     state.remote_session_status = Some("connected".to_string());
     let mut auth_store = AuthStore::default();
 

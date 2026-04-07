@@ -1,6 +1,6 @@
 id: TaskUpdate
 name: TaskUpdate
-description: Update task fields, status, ownership, and dependencies.
+description: Update task fields, status, ownership, metadata, and dependencies.
 handler: runtime:workflow:task_update
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -46,3 +46,4 @@ input_schema:
       additionalProperties: true
   required:
     - taskId
+  additionalProperties: false

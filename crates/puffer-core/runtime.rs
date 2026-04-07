@@ -1,7 +1,9 @@
 use crate::hooks::run_resource_hooks;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
-use puffer_provider_registry::{AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential};
+use puffer_provider_registry::{
+    AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
+};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
@@ -12,19 +14,23 @@ use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
-mod openai;
-mod openai_sse;
 mod agents;
 mod claude_tools;
 mod local_tools;
+mod openai;
+mod openai_sse;
 mod tool_executor;
+#[cfg(test)]
+mod agent_runtime_tests;
 
-use self::openai::{execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response};
 #[cfg(test)]
 use self::openai::{
     build_codex_openai_request_body, execute_openai_tool_calls, openai_tool_definitions,
-    parse_openai_sse_response_streaming, resolve_openai_execution_config, transcript_to_openai_chat_messages,
-    transcript_to_openai_input,
+    parse_openai_sse_response_streaming, resolve_openai_execution_config,
+    transcript_to_openai_chat_messages, transcript_to_openai_input,
+};
+use self::openai::{
+    execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response,
 };
 use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
 
@@ -70,31 +76,15 @@ pub fn execute_user_prompt(
 ) -> Result<TurnExecution> {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match resolve_model_api(state, providers, provider, &model_id).as_str() {
-        "anthropic-messages" => {
-            execute_anthropic(state, resources, providers, provider, model_id, auth_store, input)
-        }
-        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
-            execute_openai(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-            )
-        }
-        "openai-completions" => {
-            execute_openai_completions(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-            )
-        }
+        "anthropic-messages" => execute_anthropic(
+            state, resources, providers, provider, model_id, auth_store, input,
+        ),
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => execute_openai(
+            state, resources, providers, provider, model_id, auth_store, input,
+        ),
+        "openai-completions" => execute_openai_completions(
+            state, resources, providers, provider, model_id, auth_store, input,
+        ),
         other => bail!(
             "provider {} with api {other} is not executable yet",
             provider.id
@@ -337,7 +327,11 @@ fn send_http_request_raw(
     })
 }
 
-fn parse_http_json_response(url: &str, anthropic: bool, response: RawHttpResponse) -> Result<Value> {
+fn parse_http_json_response(
+    url: &str,
+    anthropic: bool,
+    response: RawHttpResponse,
+) -> Result<Value> {
     if !response.status.is_success() {
         bail!(
             "request failed with status {}: {}",
@@ -645,7 +639,10 @@ fn transcript_to_anthropic_request_messages(
     }
     messages
 }
-fn anthropic_system_blocks(attribution_prefix_block: &str, plan_mode_context: Option<&str>) -> Vec<Value> {
+fn anthropic_system_blocks(
+    attribution_prefix_block: &str,
+    plan_mode_context: Option<&str>,
+) -> Vec<Value> {
     let mut blocks = vec![json!({
         "type": "text",
         "text": attribution_prefix_block,

@@ -10,16 +10,7 @@ use ratatui::Frame;
 const HOME_WIDE_BREAKPOINT: u16 = 84;
 const HELP_WIDE_BREAKPOINT: u16 = 120;
 const FEATURED_HELP_COMMANDS: [&str; 10] = [
-    "help",
-    "review",
-    "resume",
-    "login",
-    "model",
-    "agents",
-    "usage",
-    "doctor",
-    "config",
-    "skills",
+    "help", "review", "resume", "login", "model", "agents", "usage", "doctor", "config", "skills",
 ];
 
 /// Renders the empty-session welcome body with width-aware cards.
@@ -112,8 +103,7 @@ pub(super) fn render_help_pane(
             columns[1],
         );
         frame.render_widget(
-            Paragraph::new(Text::from(help_side_lines(resources)))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(Text::from(help_side_lines(resources))).wrap(Wrap { trim: false }),
             columns[2],
         );
     } else {
@@ -169,7 +159,10 @@ fn welcome_right_lines(state: &AppState) -> Vec<Line<'static>> {
             "Recent activity",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(recent, Style::default().add_modifier(Modifier::DIM))),
+        Line::from(Span::styled(
+            recent,
+            Style::default().add_modifier(Modifier::DIM),
+        )),
     ]
 }
 
@@ -279,7 +272,10 @@ fn help_compact_lines(
     let entry_width = usize::from(width);
     let reserve_footer = if height >= 9 { 2 } else { 1 };
     let max_entries = usize::from(height.saturating_sub(reserve_footer + 1)).max(1);
-    for command in featured_help_commands(commands).into_iter().take(max_entries) {
+    for command in featured_help_commands(commands)
+        .into_iter()
+        .take(max_entries)
+    {
         lines.push(Line::from(format_help_entry(command, entry_width)));
     }
     if height >= 9 {
@@ -334,14 +330,20 @@ fn mascot_status(state: &AppState) -> String {
 }
 
 fn current_model_label(state: &AppState) -> String {
-    state.current_model
+    state
+        .current_model
         .clone()
         .unwrap_or_else(|| "/model to choose a model".to_string())
 }
 
 fn vertical_separator(height: u16) -> Vec<Line<'static>> {
     (0..height)
-        .map(|_| Line::from(Span::styled("│", Style::default().add_modifier(Modifier::DIM))))
+        .map(|_| {
+            Line::from(Span::styled(
+                "│",
+                Style::default().add_modifier(Modifier::DIM),
+            ))
+        })
         .collect()
 }
 

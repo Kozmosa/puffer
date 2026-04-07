@@ -1,9 +1,10 @@
 id: TaskList
 name: TaskList
-description: List all tasks.
+description: List tasks in the shared task list.
 handler: runtime:workflow:task_list
 approval_policy: auto
 sandbox_policy: read-only
 input_schema:
   type: object
   properties: {}
+  additionalProperties: false

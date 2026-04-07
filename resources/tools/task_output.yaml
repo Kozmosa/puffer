@@ -1,6 +1,10 @@
 id: TaskOutput
 name: TaskOutput
-description: Retrieve output from a running or completed background task.
+description: |-
+  Retrieve output from a running or completed background task.
+
+  Use `block: true` to wait for completion up to `timeout` milliseconds, or
+  `block: false` to check the current state without waiting.
 handler: runtime:workflow:task_output
 approval_policy: auto
 sandbox_policy: read-only
@@ -22,3 +26,4 @@ input_schema:
       description: Maximum wait time in milliseconds.
   required:
     - task_id
+  additionalProperties: false

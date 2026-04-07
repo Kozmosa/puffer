@@ -284,15 +284,9 @@ fn execute_notebook_edit(cwd: &Path, input: Value) -> Result<String> {
 
 fn execute_list_mcp_resources(resources: &LoadedResources, input: Value) -> Result<String> {
     let input: ListMcpInput = serde_json::from_value(input)?;
-    let records = collect_mcp_resource_records(resources);
-    let filtered = records
+    let mut filtered = collect_mcp_resource_records(resources)
         .into_iter()
-        .filter(|record| {
-            input
-                .server
-                .as_deref()
-                .is_none_or(|server| record.server == server)
-        })
+        .filter(|record| matches_server_filter(record, input.server.as_deref()))
         .map(|record| {
             json!({
                 "uri": record.uri,
@@ -303,6 +297,12 @@ fn execute_list_mcp_resources(resources: &LoadedResources, input: Value) -> Resu
             })
         })
         .collect::<Vec<_>>();
+    filtered.sort_by(|left, right| {
+        left["server"]
+            .as_str()
+            .cmp(&right["server"].as_str())
+            .then_with(|| left["uri"].as_str().cmp(&right["uri"].as_str()))
+    });
     Ok(serde_json::to_string_pretty(&filtered)?)
 }
 
@@ -310,7 +310,9 @@ fn execute_read_mcp_resource(resources: &LoadedResources, input: Value) -> Resul
     let input: ReadMcpInput = serde_json::from_value(input)?;
     let record = collect_mcp_resource_records(resources)
         .into_iter()
-        .find(|record| record.server == input.server && record.uri == input.uri)
+        .find(|record| {
+            record.uri == input.uri && record.server.eq_ignore_ascii_case(input.server.trim())
+        })
         .ok_or_else(|| {
             anyhow!(
                 "MCP resource `{}` for server `{}` not found",
@@ -323,10 +325,20 @@ fn execute_read_mcp_resource(resources: &LoadedResources, input: Value) -> Resul
             {
                 "uri": record.uri,
                 "mimeType": record.mime_type,
+                "name": record.name,
+                "description": record.description,
+                "server": record.server,
                 "text": record.text,
             }
         ]
     }))?)
+}
+
+fn matches_server_filter(record: &McpResourceRecord, server: Option<&str>) -> bool {
+    server
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| record.server.eq_ignore_ascii_case(value))
 }
 
 fn collect_mcp_resource_records(resources: &LoadedResources) -> Vec<McpResourceRecord> {
@@ -610,6 +622,29 @@ mod tests {
     }
 
     #[test]
+    fn list_mcp_resources_filters_server_case_insensitively() {
+        let resources = LoadedResources {
+            mcp_servers: vec![LoadedItem {
+                value: McpServerSpec {
+                    id: "docs".to_string(),
+                    display_name: "Docs".to_string(),
+                    transport: "stdio".to_string(),
+                    endpoint: String::new(),
+                    target: "docs-server".to_string(),
+                    description: "Docs server".to_string(),
+                },
+                source_info: SourceInfo {
+                    path: "resources/mcp_servers/docs.yaml".into(),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let output = execute_list_mcp_resources(&resources, json!({"server": "DOCS"})).unwrap();
+        assert!(output.contains("mcp://manifest/docs"));
+    }
+
+    #[test]
     fn read_mcp_resource_returns_contents() {
         let resources = LoadedResources {
             mcp_servers: vec![LoadedItem {
@@ -635,6 +670,8 @@ mod tests {
         .unwrap();
         assert!(output.contains("\"contents\""));
         assert!(output.contains("mcp://manifest/docs"));
+        assert!(output.contains("\"server\": \"docs\""));
+        assert!(output.contains("\"name\": \"Docs\""));
     }
 
     #[test]

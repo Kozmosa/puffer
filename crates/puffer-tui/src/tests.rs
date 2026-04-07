@@ -510,7 +510,9 @@ fn codex_import_without_base_url_clears_previous_openai_override() {
     assert!(saved.openai_headers.is_empty());
     assert!(saved.openai_query_params.is_empty());
     assert_eq!(
-        providers.provider("openai").map(|provider| provider.base_url.as_str()),
+        providers
+            .provider("openai")
+            .map(|provider| provider.base_url.as_str()),
         Some("https://api.openai.com")
     );
     assert!(providers

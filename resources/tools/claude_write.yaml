@@ -24,3 +24,4 @@ input_schema:
   required:
     - file_path
     - content
+  additionalProperties: false

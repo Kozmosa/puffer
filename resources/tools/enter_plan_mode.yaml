@@ -1,9 +1,15 @@
 id: EnterPlanMode
 name: EnterPlanMode
-description: Enter plan mode to design an approach before coding.
+description: |-
+  Enter plan mode to explore the codebase and design an implementation approach
+  before writing code.
+
+  Prefer this for non-trivial implementation tasks with meaningful ambiguity,
+  architectural choices, or multi-file changes.
 handler: runtime:workflow:enter_plan_mode
 approval_policy: auto
 sandbox_policy: read-only
 input_schema:
   type: object
   properties: {}
+  additionalProperties: false

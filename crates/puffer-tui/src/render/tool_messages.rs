@@ -109,10 +109,7 @@ fn extract_string<'a>(value: Option<&'a Value>, keys: &[&str]) -> Option<&'a str
 }
 
 fn extract_first_string(value: Option<&Value>) -> Option<&str> {
-    value?
-        .as_object()?
-        .values()
-        .find_map(Value::as_str)
+    value?.as_object()?.values().find_map(Value::as_str)
 }
 
 fn output_preview(output: Option<&str>) -> Option<String> {
@@ -128,7 +125,10 @@ fn truncate(text: &str, max_chars: usize) -> String {
     if chars.len() <= max_chars {
         return text.to_string();
     }
-    let retained = chars.into_iter().take(max_chars.saturating_sub(1)).collect::<String>();
+    let retained = chars
+        .into_iter()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
     format!("{retained}…")
 }
 

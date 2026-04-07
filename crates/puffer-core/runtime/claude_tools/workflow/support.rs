@@ -1,24 +1,30 @@
+use super::store::{
+    agents_path, append_agent_message, detect_powershell_binary, document_symbols,
+    ensure_plan_file, get_config_value, git_ahead_count, git_dirty, git_head_commit, git_toplevel,
+    identifier_at_position, is_git_repo, line_text, load_store, messages_path, next_task_id,
+    now_ms, process_is_running, resolve_path, resolve_recipients, save_store,
+    search_workspace_identifier, set_config_value, task_output_path, tasks_path, teams_path,
+    terminate_process, todos_path, validate_ask_user_questions, wait_for_process_exit,
+    workflow_root, workspace_symbols, worktrees_path, AgentInput, AgentStore, AskUserQuestionInput,
+    ConfigInput, EnterWorktreeInput, ExitPlanModeInput, ExitWorktreeInput, LspInput, MessageStore,
+    PowerShellInput, SendMessageInput, StoredAgent, StoredMessage, StoredTask, StoredTeam,
+    StoredTodo, StoredWorktree, TaskCreateInput, TaskIdInput, TaskOutputInput, TaskStopInput,
+    TaskStore, TaskUpdateInput, TeamCreateInput, TeamStore, TodoStore, TodoWriteInput,
+    WorktreeStore,
+};
+use super::task_runtime::{
+    read_task_output, refresh_stored_task, terminal_task_status, wait_for_child_output,
+    wait_for_stored_task,
+};
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_config::{ensure_workspace_dirs, save_workspace_config, ConfigPaths};
 use serde_json::{json, Value};
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use uuid::Uuid;
-use super::store::{
-    agents_path, append_agent_message, crons_path, detect_powershell_binary, document_symbols,
-    ensure_plan_file, get_config_value, git_dirty, git_toplevel, identifier_at_position,
-    is_git_repo, line_text, load_store, messages_path, now_ms, resolve_path, resolve_recipients,
-    save_store, search_workspace_identifier, set_config_value, tasks_path, teams_path,
-    todos_path, workflow_root, workspace_symbols, worktrees_path, AgentInput, AgentStore,
-    AskUserQuestionInput, ConfigInput, CronCreateInput, CronDeleteInput, CronStore,
-    EnterWorktreeInput, ExitPlanModeInput, ExitWorktreeInput, LspInput, MessageStore,
-    PowerShellInput, SendMessageInput, SendUserMessageInput, StoredAgent, StoredCronJob,
-    StoredMessage, StoredTask, StoredTeam, StoredTodo, StoredWorktree, TaskCreateInput,
-    TaskIdInput, TaskOutputInput, TaskStopInput, TaskStore, TaskUpdateInput, TeamCreateInput,
-    TeamStore, TodoStore, TodoWriteInput, WorktreeStore,
-};
 
 /// Executes the live `Agent` workflow tool.
 pub(super) fn execute_agent(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
@@ -59,7 +65,11 @@ pub(super) fn execute_agent(state: &mut AppState, cwd: &Path, input: Value) -> R
 
     if let Some(team_name) = parsed.team_name.as_deref() {
         let mut teams = load_store::<TeamStore>(&teams_path(store_cwd))?;
-        if let Some(team) = teams.teams.iter_mut().find(|team| team.team_name == team_name) {
+        if let Some(team) = teams
+            .teams
+            .iter_mut()
+            .find(|team| team.team_name == team_name)
+        {
             if !team.members.iter().any(|member| member == &agent_id) {
                 team.members.push(agent_id.clone());
             }
@@ -131,9 +141,14 @@ pub(super) fn execute_team_create(
     cwd: &Path,
     input: Value,
 ) -> Result<String> {
-    let parsed: TeamCreateInput = serde_json::from_value(input).context("invalid TeamCreate input")?;
+    let parsed: TeamCreateInput =
+        serde_json::from_value(input).context("invalid TeamCreate input")?;
     let mut teams = load_store::<TeamStore>(&teams_path(state.session.cwd.as_path()))?;
-    if teams.teams.iter().any(|team| team.team_name == parsed.team_name) {
+    if teams
+        .teams
+        .iter()
+        .any(|team| team.team_name == parsed.team_name)
+    {
         bail!("team `{}` already exists", parsed.team_name);
     }
     teams.teams.push(StoredTeam {
@@ -158,7 +173,32 @@ pub(super) fn execute_team_delete(
     _input: Value,
 ) -> Result<String> {
     let mut teams = load_store::<TeamStore>(&teams_path(state.session.cwd.as_path()))?;
-    let deleted = teams.teams.drain(..).map(|team| team.team_name).collect::<Vec<_>>();
+    let agents = load_store::<AgentStore>(&agents_path(state.session.cwd.as_path()))?;
+    let teams_with_active_members = teams
+        .teams
+        .iter()
+        .filter(|team| {
+            team.members.iter().any(|member| {
+                agents
+                    .agents
+                    .iter()
+                    .find(|agent| &agent.agent_id == member)
+                    .is_some_and(|agent| !terminal_task_status(&agent.status))
+            })
+        })
+        .map(|team| team.team_name.clone())
+        .collect::<Vec<_>>();
+    if !teams_with_active_members.is_empty() {
+        bail!(
+            "cannot delete teams with active members: {}",
+            teams_with_active_members.join(", ")
+        );
+    }
+    let deleted = teams
+        .teams
+        .drain(..)
+        .map(|team| team.team_name)
+        .collect::<Vec<_>>();
     save_store(&teams_path(state.session.cwd.as_path()), &teams)?;
     Ok(serde_json::to_string_pretty(&json!({
         "deleted": deleted
@@ -166,12 +206,9 @@ pub(super) fn execute_team_delete(
 }
 
 /// Executes the live `TodoWrite` workflow tool.
-pub(super) fn execute_todo_write(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
-    let parsed: TodoWriteInput = serde_json::from_value(input).context("invalid TodoWrite input")?;
+pub(super) fn execute_todo_write(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+    let parsed: TodoWriteInput =
+        serde_json::from_value(input).context("invalid TodoWrite input")?;
     let mut store = load_store::<TodoStore>(&todos_path(state.session.cwd.as_path()))?;
     let old = store.todos.clone();
     store.todos = parsed
@@ -196,10 +233,11 @@ pub(super) fn execute_task_create(
     cwd: &Path,
     input: Value,
 ) -> Result<String> {
-    let parsed: TaskCreateInput = serde_json::from_value(input).context("invalid TaskCreate input")?;
+    let parsed: TaskCreateInput =
+        serde_json::from_value(input).context("invalid TaskCreate input")?;
     let mut store = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
     let task = StoredTask {
-        task_id: format!("task-{}", Uuid::new_v4().simple()),
+        task_id: next_task_id(&store.tasks),
         subject: parsed.subject,
         description: parsed.description,
         active_form: parsed.active_form.unwrap_or_else(|| "Working".to_string()),
@@ -209,6 +247,13 @@ pub(super) fn execute_task_create(
         blocked_by: Vec::new(),
         metadata: parsed.metadata.unwrap_or_default(),
         output: None,
+        task_type: Some("task".to_string()),
+        command: None,
+        process_id: None,
+        output_file: None,
+        started_at_ms: Some(now_ms()),
+        updated_at_ms: Some(now_ms()),
+        exit_code: None,
     };
     store.tasks.push(task.clone());
     save_store(&tasks_path(state.session.cwd.as_path()), &store)?;
@@ -216,28 +261,28 @@ pub(super) fn execute_task_create(
 }
 
 /// Executes the live `TaskGet` workflow tool.
-pub(super) fn execute_task_get(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_task_get(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
     let parsed: TaskIdInput = serde_json::from_value(input).context("invalid TaskGet input")?;
-    let store = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
-    let task = store
-        .tasks
-        .into_iter()
-        .find(|task| task.task_id == parsed.task_id)
+    let task = refresh_stored_task(state.session.cwd.as_path(), &parsed.task_id)?
         .ok_or_else(|| anyhow!("unknown task `{}`", parsed.task_id))?;
     Ok(serde_json::to_string_pretty(&task)?)
 }
 
 /// Executes the live `TaskList` workflow tool.
-pub(super) fn execute_task_list(
-    state: &mut AppState,
-    cwd: &Path,
-    _input: Value,
-) -> Result<String> {
-    let store = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
+pub(super) fn execute_task_list(state: &mut AppState, cwd: &Path, _input: Value) -> Result<String> {
+    let store_cwd = state.session.cwd.as_path();
+    let mut store = load_store::<TaskStore>(&tasks_path(store_cwd))?;
+    let mut changed = false;
+    for task in &mut store.tasks {
+        let previous = task.clone();
+        if let Some(updated) = refresh_stored_task(store_cwd, &task.task_id)? {
+            *task = updated;
+            changed |= *task != previous;
+        }
+    }
+    if changed {
+        save_store(&tasks_path(store_cwd), &store)?;
+    }
     Ok(serde_json::to_string_pretty(&store.tasks)?)
 }
 
@@ -247,7 +292,8 @@ pub(super) fn execute_task_update(
     cwd: &Path,
     input: Value,
 ) -> Result<String> {
-    let parsed: TaskUpdateInput = serde_json::from_value(input).context("invalid TaskUpdate input")?;
+    let parsed: TaskUpdateInput =
+        serde_json::from_value(input).context("invalid TaskUpdate input")?;
     let mut store = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
     let task = store
         .tasks
@@ -275,7 +321,11 @@ pub(super) fn execute_task_update(
         }
     }
     for blocked_by in parsed.add_blocked_by {
-        if !task.blocked_by.iter().any(|existing| existing == &blocked_by) {
+        if !task
+            .blocked_by
+            .iter()
+            .any(|existing| existing == &blocked_by)
+        {
             task.blocked_by.push(blocked_by);
         }
     }
@@ -294,11 +344,7 @@ pub(super) fn execute_task_update(
 }
 
 /// Executes the live `TaskStop` workflow tool.
-pub(super) fn execute_task_stop(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_task_stop(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
     let parsed: TaskStopInput = serde_json::from_value(input).context("invalid TaskStop input")?;
     let target = parsed
         .task_id
@@ -308,17 +354,41 @@ pub(super) fn execute_task_stop(
     let store_cwd = state.session.cwd.as_path();
     let mut tasks = load_store::<TaskStore>(&tasks_path(store_cwd))?;
     if let Some(task) = tasks.tasks.iter_mut().find(|task| task.task_id == target) {
-        task.status = "completed".to_string();
-        task.output = Some("Stopped by TaskStop.".to_string());
-        let output = task.clone();
+        if let Some(process_id) = task.process_id {
+            terminate_process(process_id)?;
+            let _ = wait_for_process_exit(process_id, 1_000);
+            task.process_id = None;
+        }
+        if let Some(output) = read_task_output(task) {
+            task.output = Some(output);
+        }
+        task.status = "stopped".to_string();
+        if task.output.as_deref().unwrap_or_default().trim().is_empty() {
+            task.output = Some("Stopped by TaskStop.".to_string());
+        }
+        let task_id = task.task_id.clone();
+        let task_type = task.task_type.clone().unwrap_or_else(|| "task".to_string());
+        let command = task.command.clone();
         save_store(&tasks_path(store_cwd), &tasks)?;
-        return Ok(serde_json::to_string_pretty(&output)?);
+        return Ok(serde_json::to_string_pretty(&json!({
+            "message": format!("Successfully stopped task: {task_id}"),
+            "task_id": task_id,
+            "task_type": task_type,
+            "command": command,
+        }))?);
     }
 
     let mut agents = load_store::<AgentStore>(&agents_path(store_cwd))?;
-    if let Some(agent) = agents.agents.iter_mut().find(|agent| agent.agent_id == target) {
+    if let Some(agent) = agents
+        .agents
+        .iter_mut()
+        .find(|agent| agent.agent_id == target)
+    {
         agent.status = "stopped".to_string();
-        append_agent_message(Path::new(&agent.output_file), &json!("Stopped by TaskStop."))?;
+        append_agent_message(
+            Path::new(&agent.output_file),
+            &json!("Stopped by TaskStop."),
+        )?;
         let output = json!({
             "task_id": target,
             "status": agent.status,
@@ -326,6 +396,19 @@ pub(super) fn execute_task_stop(
         });
         save_store(&agents_path(store_cwd), &agents)?;
         return Ok(serde_json::to_string_pretty(&output)?);
+    }
+
+    if let Some(process_id) = super::store::parse_shell_task_pid(&target) {
+        terminate_process(process_id)?;
+        let _ = wait_for_process_exit(process_id, 1_000);
+        let output_file = super::store::shell_output_path(store_cwd, &target)?;
+        return Ok(serde_json::to_string_pretty(&json!({
+            "message": format!("Successfully stopped task: {target}"),
+            "task_id": target,
+            "task_type": "shell",
+            "command": Value::Null,
+            "outputFile": output_file.display().to_string()
+        }))?);
     }
 
     bail!("unknown task `{}`", target)
@@ -337,30 +420,66 @@ pub(super) fn execute_task_output(
     cwd: &Path,
     input: Value,
 ) -> Result<String> {
-    let parsed: TaskOutputInput = serde_json::from_value(input).context("invalid TaskOutput input")?;
+    let parsed: TaskOutputInput =
+        serde_json::from_value(input).context("invalid TaskOutput input")?;
     let store_cwd = state.session.cwd.as_path();
-    let tasks = load_store::<TaskStore>(&tasks_path(store_cwd))?;
-    if let Some(task) = tasks.tasks.iter().find(|task| task.task_id == parsed.task_id) {
+    let block = parsed.block.unwrap_or(true);
+    let timeout = parsed.timeout.unwrap_or(30_000);
+    let (task, timed_out) = if block {
+        wait_for_stored_task(store_cwd, &parsed.task_id, timeout)?
+    } else {
+        (refresh_stored_task(store_cwd, &parsed.task_id)?, false)
+    };
+    if let Some(task) = task {
         return Ok(serde_json::to_string_pretty(&json!({
+            "retrieval_status": if timed_out { "timeout" } else if terminal_task_status(&task.status) { "success" } else { "not_ready" },
             "task_id": task.task_id,
+            "task_type": task.task_type,
             "status": task.status,
-            "output": task.output,
-            "block": parsed.block.unwrap_or(true),
-            "timeout": parsed.timeout.unwrap_or(30_000)
+            "output": read_task_output(&task),
+            "outputFile": task.output_file,
+            "block": block,
+            "timeout": timeout
         }))?);
     }
     let agents = load_store::<AgentStore>(&agents_path(store_cwd))?;
-    if let Some(agent) = agents.agents.iter().find(|agent| agent.agent_id == parsed.task_id) {
+    if let Some(agent) = agents
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == parsed.task_id)
+    {
         let output = fs::read_to_string(&agent.output_file).unwrap_or_default();
         return Ok(serde_json::to_string_pretty(&json!({
+            "retrieval_status": "success",
             "task_id": agent.agent_id,
             "status": agent.status,
             "output": output,
             "outputFile": agent.output_file,
-            "block": parsed.block.unwrap_or(true),
-            "timeout": parsed.timeout.unwrap_or(30_000)
+            "block": block,
+            "timeout": timeout
         }))?);
     }
+
+    if let Some(process_id) = super::store::parse_shell_task_pid(&parsed.task_id) {
+        let exited = if block {
+            wait_for_process_exit(process_id, timeout)
+        } else {
+            !process_is_running(process_id)
+        };
+        let output_file = super::store::shell_output_path(store_cwd, &parsed.task_id)?;
+        let output = fs::read_to_string(&output_file).unwrap_or_default();
+        return Ok(serde_json::to_string_pretty(&json!({
+            "retrieval_status": if exited { "success" } else { "timeout" },
+            "task_id": parsed.task_id,
+            "task_type": "shell",
+            "status": if process_is_running(process_id) { "running" } else { "completed" },
+            "output": output,
+            "outputFile": output_file.display().to_string(),
+            "block": block,
+            "timeout": timeout
+        }))?);
+    }
+
     bail!("unknown task `{}`", parsed.task_id)
 }
 
@@ -370,11 +489,22 @@ pub(super) fn execute_enter_plan_mode(
     _cwd: &Path,
     _input: Value,
 ) -> Result<String> {
+    if state.plan_mode {
+        let plan_path = ensure_plan_file(state)?;
+        return Ok(serde_json::to_string_pretty(&json!({
+            "status": "already_in_plan_mode",
+            "planMode": true,
+            "permissionMode": "plan",
+            "planFile": plan_path.display().to_string(),
+            "plan": fs::read_to_string(plan_path).unwrap_or_default()
+        }))?);
+    }
     state.plan_mode = true;
     let plan_path = ensure_plan_file(state)?;
     Ok(serde_json::to_string_pretty(&json!({
         "status": "entered",
         "planMode": true,
+        "permissionMode": "plan",
         "planFile": plan_path.display().to_string(),
         "plan": fs::read_to_string(plan_path).unwrap_or_default()
     }))?)
@@ -388,12 +518,17 @@ pub(super) fn execute_exit_plan_mode(
 ) -> Result<String> {
     let parsed: ExitPlanModeInput =
         serde_json::from_value(input).context("invalid ExitPlanMode input")?;
+    if !state.plan_mode {
+        bail!("ExitPlanMode can only be used while plan mode is active");
+    }
     state.plan_mode = false;
     let plan_path = ensure_plan_file(state)?;
+    let plan = fs::read_to_string(&plan_path).unwrap_or_default();
     Ok(serde_json::to_string_pretty(&json!({
         "status": "exited",
         "planMode": false,
         "planFile": plan_path.display().to_string(),
+        "plan": plan,
         "allowedPrompts": parsed.allowed_prompts
     }))?)
 }
@@ -406,8 +541,12 @@ pub(super) fn execute_ask_user_question(
 ) -> Result<String> {
     let parsed: AskUserQuestionInput =
         serde_json::from_value(input).context("invalid AskUserQuestion input")?;
+    validate_ask_user_questions(&parsed.questions)?;
     let pending_path = workflow_root(state.session.cwd.as_path())?.join("pending_questions.json");
-    fs::write(&pending_path, serde_json::to_string_pretty(&parsed.questions)?)?;
+    fs::write(
+        &pending_path,
+        serde_json::to_string_pretty(&parsed.questions)?,
+    )?;
     Ok(serde_json::to_string_pretty(&json!({
         "questions": parsed.questions,
         "answers": parsed.answers,
@@ -426,15 +565,33 @@ pub(super) fn execute_enter_worktree(
 ) -> Result<String> {
     let parsed: EnterWorktreeInput =
         serde_json::from_value(input).context("invalid EnterWorktree input")?;
+    let mut store = load_store::<WorktreeStore>(&worktrees_path(state.session.cwd.as_path()))?;
+    if store
+        .worktrees
+        .iter()
+        .any(|worktree| Path::new(&worktree.path) == cwd)
+    {
+        bail!("already in a managed worktree session");
+    }
     let worktree_name = parsed
         .name
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("worktree-{}", Uuid::new_v4().simple()));
+    if store
+        .worktrees
+        .iter()
+        .any(|worktree| worktree.name == worktree_name)
+    {
+        bail!("worktree `{worktree_name}` already exists in this session");
+    }
     let base_cwd = cwd.to_path_buf();
     let repo_root = git_toplevel(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let worktree_root = repo_root.join(".worktree");
     fs::create_dir_all(&worktree_root)?;
     let worktree_path = worktree_root.join(&worktree_name);
+    if worktree_path.exists() {
+        bail!("worktree path {} already exists", worktree_path.display());
+    }
     let mut branch = None;
     if is_git_repo(&repo_root) {
         let branch_name = format!("puffer-{}", Uuid::new_v4().simple());
@@ -457,13 +614,12 @@ pub(super) fn execute_enter_worktree(
     } else {
         fs::create_dir_all(&worktree_path)?;
     }
-
-    let mut store = load_store::<WorktreeStore>(&worktrees_path(state.session.cwd.as_path()))?;
     store.worktrees.push(StoredWorktree {
         name: worktree_name.clone(),
         path: worktree_path.display().to_string(),
         base_cwd: base_cwd.display().to_string(),
         branch: branch.clone(),
+        original_head_commit: git_head_commit(&repo_root)?,
     });
     save_store(&worktrees_path(state.session.cwd.as_path()), &store)?;
 
@@ -487,12 +643,14 @@ pub(super) fn execute_exit_worktree(
 ) -> Result<String> {
     let parsed: ExitWorktreeInput =
         serde_json::from_value(input).context("invalid ExitWorktree input")?;
+    if !matches!(parsed.action.as_str(), "keep" | "remove") {
+        bail!("ExitWorktree action must be `keep` or `remove`");
+    }
     let mut store = load_store::<WorktreeStore>(&worktrees_path(state.session.cwd.as_path()))?;
     let index = store
         .worktrees
         .iter()
         .position(|worktree| Path::new(&worktree.path) == cwd)
-        .or_else(|| store.worktrees.len().checked_sub(1))
         .ok_or_else(|| anyhow!("no active worktree session found"))?;
     let entry = store.worktrees[index].clone();
     let worktree_path = PathBuf::from(&entry.path);
@@ -501,7 +659,13 @@ pub(super) fn execute_exit_worktree(
     if parsed.action == "remove" {
         if is_git_repo(&base_cwd) {
             let dirty = git_dirty(&worktree_path).unwrap_or(false);
-            if dirty && !parsed.discard_changes {
+            let ahead = entry
+                .original_head_commit
+                .as_deref()
+                .map(|head| git_ahead_count(&worktree_path, head))
+                .transpose()?
+                .unwrap_or(0);
+            if (dirty || ahead > 0) && !parsed.discard_changes {
                 bail!("worktree has uncommitted changes; set discard_changes=true to remove it");
             }
             let mut args = vec![
@@ -525,8 +689,8 @@ pub(super) fn execute_exit_worktree(
             fs::remove_dir_all(&worktree_path)
                 .with_context(|| format!("failed to remove {}", worktree_path.display()))?;
         }
-        store.worktrees.remove(index);
     }
+    store.worktrees.remove(index);
     save_store(&worktrees_path(state.session.cwd.as_path()), &store)?;
     state.cwd = base_cwd.clone();
     state.working_dirs.retain(|path| path != &worktree_path);
@@ -538,32 +702,29 @@ pub(super) fn execute_exit_worktree(
 }
 
 /// Executes the live `Config` workflow tool.
-pub(super) fn execute_config(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_config(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
     let parsed: ConfigInput = serde_json::from_value(input).context("invalid Config input")?;
     let paths = ConfigPaths::discover(cwd);
     ensure_workspace_dirs(&paths)?;
+    let previous = get_config_value(state, &parsed.setting)?;
+    let operation = if parsed.value.is_some() { "set" } else { "get" };
     if let Some(value) = parsed.value {
         set_config_value(state, &parsed.setting, value)?;
         save_workspace_config(&paths, &state.config)?;
     }
     let current = get_config_value(state, &parsed.setting)?;
     Ok(serde_json::to_string_pretty(&json!({
+        "success": true,
+        "operation": operation,
         "setting": parsed.setting,
         "value": current,
+        "previousValue": previous,
         "path": paths.workspace_config_file().display().to_string()
     }))?)
 }
 
 /// Executes the live `LSP` workflow tool.
-pub(super) fn execute_lsp(
-    _state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_lsp(_state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
     let parsed: LspInput = serde_json::from_value(input).context("invalid LSP input")?;
     let file_path = resolve_path(cwd, &parsed.file_path);
     let content = fs::read_to_string(&file_path)
@@ -592,8 +753,12 @@ pub(super) fn execute_lsp(
             "operation": parsed.operation,
             "symbols": workspace_symbols(cwd)?,
         }),
-        "goToDefinition" | "findReferences" | "goToImplementation" | "prepareCallHierarchy"
-        | "incomingCalls" | "outgoingCalls" => json!({
+        "goToDefinition"
+        | "findReferences"
+        | "goToImplementation"
+        | "prepareCallHierarchy"
+        | "incomingCalls"
+        | "outgoingCalls" => json!({
             "operation": parsed.operation,
             "filePath": file_path.display().to_string(),
             "identifier": identifier,
@@ -609,38 +774,73 @@ pub(super) fn execute_lsp(
 }
 
 /// Executes the live `PowerShell` workflow tool.
-pub(super) fn execute_powershell(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_powershell(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
     let parsed: PowerShellInput =
         serde_json::from_value(input).context("invalid PowerShell input")?;
     let shell = detect_powershell_binary()?;
     if parsed.run_in_background {
+        let mut tasks = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
+        let task_id = next_task_id(&tasks.tasks);
+        let output_file = task_output_path(state.session.cwd.as_path(), &task_id)?;
+        let stdout = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&output_file)
+            .with_context(|| format!("failed to create {}", output_file.display()))?;
+        let stderr = stdout
+            .try_clone()
+            .with_context(|| format!("failed to clone {}", output_file.display()))?;
         let child = Command::new(&shell)
             .args(["-NoLogo", "-Command", &parsed.command])
             .current_dir(cwd)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .with_context(|| format!("failed to start {}", shell))?;
-        let task_id = format!("shell-{}", child.id());
-        state.record_task("PowerShell", parsed.command.clone(), true);
+        tasks.tasks.push(StoredTask {
+            task_id: task_id.clone(),
+            subject: parsed
+                .description
+                .clone()
+                .unwrap_or_else(|| "PowerShell".to_string()),
+            description: parsed.command.clone(),
+            active_form: "Running PowerShell command".to_string(),
+            status: "running".to_string(),
+            owner: None,
+            blocks: Vec::new(),
+            blocked_by: Vec::new(),
+            metadata: Default::default(),
+            output: None,
+            task_type: Some("powershell".to_string()),
+            command: Some(parsed.command.clone()),
+            process_id: Some(child.id()),
+            output_file: Some(output_file.display().to_string()),
+            started_at_ms: Some(now_ms()),
+            updated_at_ms: Some(now_ms()),
+            exit_code: None,
+        });
+        save_store(&tasks_path(state.session.cwd.as_path()), &tasks)?;
         return Ok(serde_json::to_string_pretty(&json!({
             "stdout": "",
             "stderr": "",
             "interrupted": false,
             "backgroundTaskId": task_id,
+            "outputFile": output_file.display().to_string(),
+            "processId": child.id(),
             "dangerouslyDisableSandbox": parsed.dangerously_disable_sandbox
         }))?);
     }
 
     let timeout_ms = parsed.timeout.unwrap_or(120_000).clamp(1, 600_000);
-    let output = Command::new(&shell)
+    let child = Command::new(&shell)
         .args(["-NoLogo", "-Command", &parsed.command])
         .current_dir(cwd)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to execute {}", shell))?;
+    let timed = wait_for_child_output(child, timeout_ms)
         .with_context(|| format!("failed to execute {}", shell))?;
     state.record_task(
         parsed
@@ -648,95 +848,13 @@ pub(super) fn execute_powershell(
             .clone()
             .unwrap_or_else(|| "PowerShell".to_string()),
         parsed.command.clone(),
-        output.status.success(),
+        !timed.timed_out,
     );
     Ok(serde_json::to_string_pretty(&json!({
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
-        "interrupted": false,
+        "stdout": timed.stdout,
+        "stderr": timed.stderr,
+        "interrupted": timed.timed_out,
         "dangerouslyDisableSandbox": parsed.dangerously_disable_sandbox,
         "timeoutMs": timeout_ms
     }))?)
-}
-
-/// Executes the live `CronCreate` workflow tool.
-pub(super) fn execute_cron_create(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
-    let parsed: CronCreateInput =
-        serde_json::from_value(input).context("invalid CronCreate input")?;
-    let mut store = load_store::<CronStore>(&crons_path(state.session.cwd.as_path()))?;
-    let job = StoredCronJob {
-        id: format!("cron-{}", Uuid::new_v4().simple()),
-        cron: parsed.cron,
-        prompt: parsed.prompt,
-        recurring: parsed.recurring,
-        durable: parsed.durable,
-    };
-    store.jobs.push(job.clone());
-    save_store(&crons_path(state.session.cwd.as_path()), &store)?;
-    Ok(serde_json::to_string_pretty(&job)?)
-}
-
-/// Executes the live `CronList` workflow tool.
-pub(super) fn execute_cron_list(
-    state: &mut AppState,
-    cwd: &Path,
-    _input: Value,
-) -> Result<String> {
-    let store = load_store::<CronStore>(&crons_path(state.session.cwd.as_path()))?;
-    Ok(serde_json::to_string_pretty(&store.jobs)?)
-}
-
-/// Executes the live `CronDelete` workflow tool.
-pub(super) fn execute_cron_delete(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
-    let parsed: CronDeleteInput =
-        serde_json::from_value(input).context("invalid CronDelete input")?;
-    let mut store = load_store::<CronStore>(&crons_path(state.session.cwd.as_path()))?;
-    let before = store.jobs.len();
-    store.jobs.retain(|job| job.id != parsed.id);
-    save_store(&crons_path(state.session.cwd.as_path()), &store)?;
-    Ok(serde_json::to_string_pretty(&json!({
-        "deleted": before != store.jobs.len(),
-        "id": parsed.id
-    }))?)
-}
-
-/// Executes the live `SendUserMessage` or `Brief` workflow tool.
-pub(super) fn execute_send_user_message(
-    state: &mut AppState,
-    cwd: &Path,
-    input: Value,
-) -> Result<String> {
-    let parsed: SendUserMessageInput =
-        serde_json::from_value(input).context("invalid SendUserMessage input")?;
-    let mut messages = load_store::<MessageStore>(&messages_path(state.session.cwd.as_path()))?;
-    messages.messages.push(StoredMessage {
-        id: format!("user-msg-{}", Uuid::new_v4().simple()),
-        to: "user".to_string(),
-        summary: Some(parsed.status.clone()),
-        message: json!({
-            "message": parsed.message,
-            "attachments": parsed.attachments,
-            "status": parsed.status,
-        }),
-        created_at_ms: now_ms(),
-    });
-    save_store(&messages_path(state.session.cwd.as_path()), &messages)?;
-    Ok(serde_json::to_string_pretty(&messages.messages.last().cloned())?)
-}
-
-/// Executes the live `StructuredOutput` workflow tool.
-pub(super) fn execute_structured_output(
-    _state: &mut AppState,
-    _cwd: &Path,
-    input: Value,
-) -> Result<String> {
-    Ok(serde_json::to_string_pretty(&input)?)
 }

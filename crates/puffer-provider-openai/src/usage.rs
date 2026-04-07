@@ -234,8 +234,8 @@ mod tests {
             requests
         });
 
-        let summary =
-            fetch_usage_summary(&format!("http://{address}"), "admin-or-oauth-token").expect("usage");
+        let summary = fetch_usage_summary(&format!("http://{address}"), "admin-or-oauth-token")
+            .expect("usage");
         assert_eq!(summary.input_tokens, 1200);
         assert_eq!(summary.output_tokens, 340);
         assert_eq!(summary.input_cached_tokens, 56);

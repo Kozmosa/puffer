@@ -1,6 +1,24 @@
 id: Agent
 name: Agent
-description: Delegate a focused task to a specialized subagent and return its result.
+description: |-
+  Delegate work to a subagent.
+
+  Use this when a focused task is better handled in parallel or by a specialized
+  agent. Write the prompt like a briefing for a smart colleague who has not seen
+  the current conversation.
+
+  Usage notes:
+  - `description` should be a short 3-5 word summary of the task.
+  - `prompt` should include the goal, relevant context, what has already been
+    tried, and any important constraints.
+  - `subagent_type` selects a specialized agent. If omitted, the general-purpose
+    agent is used.
+  - `run_in_background` is for longer work where you do not need the result
+    immediately.
+  - `name` makes a running agent easier to reference via SendMessage.
+  - `team_name` and `mode` are for teammate and multi-agent coordination flows.
+  - `cwd` overrides the working directory for the subagent.
+  - `isolation` may request an isolated worktree session when supported.
 handler: runtime:agent
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -31,6 +49,13 @@ input_schema:
     name:
       type: string
       description: Optional label for the subagent invocation.
+    team_name:
+      type: string
+      description: Optional team name for spawning or attaching to coordinated work.
+    mode:
+      type: string
+      description: Optional permission mode override for the spawned agent.
   required:
     - description
     - prompt
+  additionalProperties: false

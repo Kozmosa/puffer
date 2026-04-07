@@ -1,4 +1,5 @@
 use super::*;
+use crate::usage::UsageOverlay;
 use insta::assert_snapshot;
 use puffer_config::PufferConfig;
 use puffer_core::CommandKind;
@@ -6,15 +7,14 @@ use puffer_provider_openai::OpenAIUsageSummary;
 use puffer_provider_registry::{
     AuthMode, ModelDescriptor, OAuthCredential, ProviderDescriptor, ProviderRegistry,
 };
-use puffer_transport_anthropic::{AnthropicExtraUsage, AnthropicRateLimit, AnthropicUtilization};
 use puffer_resources::{LoadedItem, SourceInfo, SourceKind, ToolSpec};
 use puffer_session_store::SessionMetadata;
 use puffer_test_support::{assert_normalized_snapshot, read_normalized_snapshot};
+use puffer_transport_anthropic::{AnthropicExtraUsage, AnthropicRateLimit, AnthropicUtilization};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::usage::UsageOverlay;
 
 #[test]
 fn session_lines_include_lineage_tags_and_note() {
@@ -38,8 +38,8 @@ fn header_snapshot_reports_compact_status() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-        snapshot,
-        @r"
+                    snapshot,
+                    @r"
 Puffer Code
 Mascot    Clawd on duty
 User      anthropic via API key
@@ -51,7 +51,7 @@ Model      anthropic/claude-sonn... · tools 3/4
 Directory  puffer
 Activity   2 messages · 2 workdirs · dockyard@staging
 "
-    );
+                );
 }
 
 #[test]
@@ -60,19 +60,26 @@ fn footer_snapshot_reports_compact_prompt_rail() {
     let resources = sample_resources();
     let auth_store = sample_auth_store();
     let registry = ToolRegistry::from_resources(&resources);
-    let snapshot = footer_lines(&state, &resources, &auth_store, &registry, "/re", &sample_commands())
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let snapshot = footer_lines(
+        &state,
+        &resources,
+        &auth_store,
+        &registry,
+        "/re",
+        &sample_commands(),
+    )
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
     assert_snapshot!(
-        snapshot,
-        @r"
+                    snapshot,
+                    @r"
 anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 3/4
 puffer · shell 1 · prompts 2 · 2 workdirs · dockyard@staging · sandbox workspace-write
 slash /re · 2 matches · best /review · Enter submits · Esc clears
 "
-    );
+                );
 }
 
 #[test]
@@ -89,8 +96,8 @@ fn header_snapshot_includes_oauth_identity_when_available() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-        snapshot,
-        @r"
+                    snapshot,
+                    @r"
 Puffer Code
 Mascot    Clawd on duty
 User      dev@example.com · plan Pro · acct acct-1
@@ -102,7 +109,7 @@ Model      openai/gpt-5 · tools 3/4
 Directory  puffer
 Activity   2 messages · 2 workdirs · dockyard@staging
 "
-    );
+                );
 }
 
 #[test]
@@ -167,7 +174,9 @@ fn render_layout_includes_header_body_and_composer() {
 
     let rendered = terminal_view(&terminal);
     let lines: Vec<&str> = rendered.lines().collect();
-    assert!(lines.first().map_or(false, |line| line.contains("Puffer Code")));
+    assert!(lines
+        .first()
+        .map_or(false, |line| line.contains("Puffer Code")));
     assert!(lines.iter().any(|line| line.contains("Clawd")));
     assert!(lines.iter().any(|line| line.contains("Session")));
     assert!(lines.iter().any(|line| line.contains("working tree clean")));
@@ -275,10 +284,9 @@ fn render_pending_submit_shows_queued_prompts() {
 #[test]
 fn render_post_send_compared_with_claude_reference_matches_snapshot() {
     let puffer = render_post_send_terminal();
-    let claude = read_normalized_snapshot(&snapshot_path(
-        "claude_post_send_reference_snapshot.txt",
-    ))
-    .unwrap();
+    let claude =
+        read_normalized_snapshot(&snapshot_path("claude_post_send_reference_snapshot.txt"))
+            .unwrap();
     assert_normalized_snapshot(
         &post_send_comparison_report(&claude, &puffer),
         &snapshot_path("render_post_send_vs_claude_reference_snapshot.txt"),

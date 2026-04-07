@@ -571,9 +571,7 @@ impl OverlayState {
                 }
             }
             Self::AuthPicker {
-                entries,
-                selection,
-                ..
+                entries, selection, ..
             } => {
                 if let Some(index) = entries.iter().position(|entry| {
                     entry.label.to_ascii_lowercase().contains(&query)

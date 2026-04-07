@@ -1,6 +1,17 @@
 id: SendMessage
 name: SendMessage
-description: Send a message to a teammate, team, or compatible peer endpoint.
+description: |-
+  Send a message to another agent, teammate, team, or compatible peer endpoint.
+
+  Plain text outside this tool is not visible to other agents. If you need to
+  communicate with them, you must call this tool.
+
+  Usage notes:
+  - `to` may be a teammate name, `*` for broadcast, a team name, or another
+    supported endpoint identifier.
+  - `summary` should be a short preview when useful.
+  - `message` may be plain text or a structured control payload such as a
+    shutdown or plan-approval response.
 handler: runtime:workflow:send_message
 approval_policy: auto
 sandbox_policy: read-only
@@ -62,3 +73,4 @@ input_schema:
   required:
     - to
     - message
+  additionalProperties: false

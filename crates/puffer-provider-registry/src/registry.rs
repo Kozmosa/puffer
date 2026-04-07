@@ -49,10 +49,7 @@ impl ProviderRegistry {
 
     /// Applies an optional base URL override to the built-in `openai` provider.
     pub fn apply_openai_base_url_override(&mut self, base_url: Option<&str>) {
-        let Some(base_url) = base_url
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) else {
             return;
         };
         self.set_openai_base_url(base_url);
@@ -66,10 +63,7 @@ impl ProviderRegistry {
     }
 
     /// Replaces the built-in `openai` provider's static header map.
-    pub fn set_openai_headers(
-        &mut self,
-        headers: impl Into<indexmap::IndexMap<String, String>>,
-    ) {
+    pub fn set_openai_headers(&mut self, headers: impl Into<indexmap::IndexMap<String, String>>) {
         if let Some(provider) = self.providers.get_mut("openai") {
             provider.descriptor.headers = headers.into();
         }
@@ -312,7 +306,9 @@ mod tests {
         registry.apply_openai_base_url_override(Some("https://proxy.example/v1"));
 
         assert_eq!(
-            registry.provider("openai").map(|provider| provider.base_url.as_str()),
+            registry
+                .provider("openai")
+                .map(|provider| provider.base_url.as_str()),
             Some("https://proxy.example/v1")
         );
     }

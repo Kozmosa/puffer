@@ -1,6 +1,13 @@
 id: Brief
 name: Brief
-description: Send a message to the user.
+description: |-
+  Send a message the user will actually read.
+
+  `message` supports markdown. `attachments` accepts file paths for images,
+  diffs, logs, and similar artifacts. `status` distinguishes a normal reply
+  from a proactive update you are initiating yourself.
+
+  Use this tool for the real user-facing reply, especially after longer work.
 handler: runtime:workflow:send_user_message
 approval_policy: auto
 sandbox_policy: read-only
@@ -24,3 +31,4 @@ input_schema:
   required:
     - message
     - status
+  additionalProperties: false

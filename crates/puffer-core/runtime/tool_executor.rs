@@ -42,12 +42,10 @@ pub(super) fn execute_tool_call(
         return Ok(successful_runtime_tool(tool_id, output));
     }
     let provider_context = match backend {
-        ToolExecutionBackend::Anthropic { request_config } => {
-            ProviderToolContext::Anthropic {
-                request_config,
-                model_id,
-            }
-        }
+        ToolExecutionBackend::Anthropic { request_config } => ProviderToolContext::Anthropic {
+            request_config,
+            model_id,
+        },
         ToolExecutionBackend::OpenAi { request_config } => ProviderToolContext::OpenAI {
             request_config,
             model_id,

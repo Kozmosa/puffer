@@ -1,5 +1,5 @@
-mod markdown;
 mod flow;
+mod markdown;
 #[path = "onboarding/mod.rs"]
 mod onboarding;
 mod popup;
@@ -27,8 +27,6 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
 
-use state::TuiState;
-pub(crate) use state::{AuthPickerAction, ModelPickerEntry, OverlayState};
 use crate::flow::{
     allow_prompt_before_onboarding, apply_selected_provider, builtin_openai_base_url,
     builtin_openai_headers, builtin_openai_query_params, cancel_pending_submit,
@@ -36,6 +34,8 @@ use crate::flow::{
     poll_pending_submit, run_embedded_auth_login, set_overlay_state, submit_next_queued_prompt,
     submit_queued_prompt_if_ready, try_open_overlay,
 };
+use state::TuiState;
+pub(crate) use state::{AuthPickerAction, ModelPickerEntry, OverlayState};
 
 /// Runs the interactive Puffer TUI until the user exits.
 pub fn run_app(
@@ -262,7 +262,10 @@ fn handle_key(
             if tui.input.starts_with('/') {
                 tui.select_next(commands)
             } else {
-                tui.scroll_down(1, render::transcript_line_count(state, tui.has_pending_submit()));
+                tui.scroll_down(
+                    1,
+                    render::transcript_line_count(state, tui.has_pending_submit()),
+                );
             }
         }
         KeyCode::PageUp => {
@@ -389,11 +392,16 @@ fn handle_overlay_key(
                 }
             }
             KeyCode::Enter => {
-                let Some(provider_id) = active_overlay.selected_provider().map(str::to_string) else {
+                let Some(provider_id) = active_overlay.selected_provider().map(str::to_string)
+                else {
                     set_overlay_state(tui, None);
                     return Ok(false);
                 };
-                let key_value = active_overlay.api_key_value().unwrap_or("").trim().to_string();
+                let key_value = active_overlay
+                    .api_key_value()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if key_value.is_empty() {
                     let next = onboarding::back_overlay(active_overlay, providers, auth_store)?;
                     set_overlay_state(tui, next);
@@ -406,8 +414,7 @@ fn handle_overlay_key(
                 }
                 auth_store.set_api_key(provider_id.clone(), key_value);
                 auth_store.save(auth_path)?;
-                let next =
-                    onboarding::provider_setup_overlay(providers, auth_store, &provider_id)?;
+                let next = onboarding::provider_setup_overlay(providers, auth_store, &provider_id)?;
                 set_overlay_state(tui, next);
                 submit_queued_prompt_if_ready(
                     state,
@@ -511,8 +518,11 @@ fn handle_overlay_key(
                 match &overlay_snapshot {
                     OverlayState::ProviderPicker { .. } | OverlayState::LoginPicker { .. } => {
                         apply_selected_provider(state, &provider_id)?;
-                        let next =
-                            onboarding::provider_setup_overlay(providers, auth_store, &provider_id)?;
+                        let next = onboarding::provider_setup_overlay(
+                            providers,
+                            auth_store,
+                            &provider_id,
+                        )?;
                         set_overlay_state(tui, next);
                     }
                     OverlayState::AuthPicker { .. } => {
@@ -600,17 +610,17 @@ fn handle_overlay_key(
                                             .collect::<indexmap::IndexMap<_, _>>()
                                     };
                                     providers.set_openai_headers(headers);
-                                    let query_params = if state.config.openai_query_params.is_empty()
-                                    {
-                                        builtin_openai_query_params(resources)
-                                    } else {
-                                        state
-                                            .config
-                                            .openai_query_params
-                                            .clone()
-                                            .into_iter()
-                                            .collect::<indexmap::IndexMap<_, _>>()
-                                    };
+                                    let query_params =
+                                        if state.config.openai_query_params.is_empty() {
+                                            builtin_openai_query_params(resources)
+                                        } else {
+                                            state
+                                                .config
+                                                .openai_query_params
+                                                .clone()
+                                                .into_iter()
+                                                .collect::<indexmap::IndexMap<_, _>>()
+                                        };
                                     providers.set_openai_query_params(query_params);
                                 }
                                 auth_store.save(auth_path)?;
@@ -634,7 +644,8 @@ fn handle_overlay_key(
                     OverlayState::ModelPicker {
                         onboarding: true, ..
                     } => {
-                        let Some(model_id) = overlay_snapshot.selected_model().map(str::to_string) else {
+                        let Some(model_id) = overlay_snapshot.selected_model().map(str::to_string)
+                        else {
                             set_overlay_state(tui, None);
                             return Ok(false);
                         };

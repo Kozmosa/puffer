@@ -1,6 +1,13 @@
 id: SendUserMessage
 name: SendUserMessage
-description: Send a message to the user.
+description: |-
+  Send a message the user will read.
+
+  `message` supports markdown. `attachments` accepts file paths for images,
+  diffs, logs, and similar artifacts. `status` is `normal` for a direct reply
+  and `proactive` when you are initiating the update.
+
+  Use this tool for the primary user-visible response channel.
 handler: runtime:workflow:send_user_message
 approval_policy: auto
 sandbox_policy: read-only
@@ -24,3 +31,4 @@ input_schema:
   required:
     - message
     - status
+  additionalProperties: false

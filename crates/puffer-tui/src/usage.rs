@@ -1,9 +1,7 @@
 use crate::OverlayState;
 use puffer_core::AppState;
 use puffer_provider_openai::{fetch_usage_summary, OpenAIUsageError, OpenAIUsageSummary};
-use puffer_provider_registry::{
-    AuthStore, ProviderDescriptor, ProviderRegistry, StoredCredential,
-};
+use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry, StoredCredential};
 use puffer_transport_anthropic::{
     fetch_oauth_usage, AnthropicExtraUsage, AnthropicRateLimit, AnthropicUtilization,
 };
@@ -254,10 +252,7 @@ impl UsageOverlay {
     }
 
     #[cfg(test)]
-    pub(crate) fn ready_openai_for_test(
-        details: Vec<String>,
-        summary: OpenAIUsageSummary,
-    ) -> Self {
+    pub(crate) fn ready_openai_for_test(details: Vec<String>, summary: OpenAIUsageSummary) -> Self {
         UsageOverlay::with_view(UsageReadyState::OpenAi {
             title: "OpenAI/Codex account usage".to_string(),
             details,
@@ -276,7 +271,9 @@ impl Eq for UsageOverlay {}
 
 impl fmt::Debug for UsageOverlay {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("UsageOverlay").finish_non_exhaustive()
+        formatter
+            .debug_struct("UsageOverlay")
+            .finish_non_exhaustive()
     }
 }
 
@@ -286,11 +283,7 @@ enum UsageOverlayInit {
 }
 
 /// Renders the provider-specific usage overlay with live account state when available.
-pub(crate) fn render_usage_overlay(
-    frame: &mut Frame<'_>,
-    viewport: Rect,
-    overlay: &UsageOverlay,
-) {
+pub(crate) fn render_usage_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &UsageOverlay) {
     let snapshot = overlay.snapshot();
     let width = viewport
         .width
@@ -365,11 +358,13 @@ fn build_anthropic_overlay(
     credential: Option<&StoredCredential>,
 ) -> UsageOverlayInit {
     match credential {
-        Some(StoredCredential::OAuth(credential)) => UsageOverlayInit::Load(UsageLoadRequest::Anthropic {
-            base_url: provider.base_url.clone(),
-            access_token: credential.access_token.clone(),
-            plan_type: credential.plan_type.clone(),
-        }),
+        Some(StoredCredential::OAuth(credential)) => {
+            UsageOverlayInit::Load(UsageLoadRequest::Anthropic {
+                base_url: provider.base_url.clone(),
+                access_token: credential.access_token.clone(),
+                plan_type: credential.plan_type.clone(),
+            })
+        }
         Some(StoredCredential::ApiKey { .. }) => UsageOverlayInit::Ready(static_usage(
             "Claude subscription usage",
             provider_details(provider, credential, UsageProviderFamily::Anthropic),
@@ -439,9 +434,9 @@ fn fetch_usage_view(request: UsageLoadRequest) -> UsageOverlayView {
                 details,
                 summary,
             }),
-            Err(OpenAIUsageError::UnsupportedCredential | OpenAIUsageError::UnsupportedProvider) => {
-                UsageOverlayView::Ready(static_usage(title, details, unsupported_message))
-            }
+            Err(
+                OpenAIUsageError::UnsupportedCredential | OpenAIUsageError::UnsupportedProvider,
+            ) => UsageOverlayView::Ready(static_usage(title, details, unsupported_message)),
             Err(error) => UsageOverlayView::Error(format!("Failed to load usage data: {error}")),
         },
     }
@@ -623,7 +618,9 @@ fn anthropic_lines(
             Style::default().add_modifier(Modifier::DIM),
         )));
     }
-    if let Some(extra_lines) = extra_usage_lines(plan_type, utilization.extra_usage.as_ref(), max_width) {
+    if let Some(extra_lines) =
+        extra_usage_lines(plan_type, utilization.extra_usage.as_ref(), max_width)
+    {
         if !body.is_empty() {
             body.push(Line::default());
         }
@@ -844,7 +841,10 @@ fn progress_bar(ratio: f64, width: usize) -> Vec<Span<'static>> {
     let empty = width.saturating_sub(filled);
     let mut spans = vec![Span::raw("[")];
     if filled > 0 {
-        spans.push(Span::styled("#".repeat(filled), Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            "#".repeat(filled),
+            Style::default().fg(Color::Cyan),
+        ));
     }
     if empty > 0 {
         spans.push(Span::styled(

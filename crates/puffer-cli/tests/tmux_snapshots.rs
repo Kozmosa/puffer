@@ -17,10 +17,7 @@ const MEDIUM_TMUX_SIZE: TerminalSize = TerminalSize {
     rows: 24,
     cols: 100,
 };
-const COMPACT_WIDE_TMUX_SIZE: TerminalSize = TerminalSize {
-    rows: 22,
-    cols: 84,
-};
+const COMPACT_WIDE_TMUX_SIZE: TerminalSize = TerminalSize { rows: 22, cols: 84 };
 const NARROW_TMUX_SIZE: TerminalSize = TerminalSize { rows: 20, cols: 72 };
 
 #[test]
@@ -168,12 +165,16 @@ fn capture_tmux_turn(size: TerminalSize) -> String {
         .unwrap();
     let session_id = session.id.to_string();
     let session = start_tmux_with_home_args(&workspace, size, &["resume", &session_id]);
-    wait_for_tmux_text(&session, "The working tree is clean.", Duration::from_secs(10))
-        .unwrap_or_else(|error| {
-            let capture =
-                capture_tmux_pane(&session).unwrap_or_else(|_| "<capture failed>".to_string());
-            panic!("{error}\n\n{capture}");
-        });
+    wait_for_tmux_text(
+        &session,
+        "The working tree is clean.",
+        Duration::from_secs(10),
+    )
+    .unwrap_or_else(|error| {
+        let capture =
+            capture_tmux_pane(&session).unwrap_or_else(|_| "<capture failed>".to_string());
+        panic!("{error}\n\n{capture}");
+    });
     let capture = capture_tmux_visible_pane(&session).unwrap();
     normalize_tmux_capture(&trim_blank_rows(&capture))
 }
@@ -343,8 +344,17 @@ fn focused_tmux_capture(capture: &str, anchor: &str, before: usize, after: usize
 }
 
 fn focused_help_capture(capture: &str, size: TerminalSize) -> String {
-    let after = if size.cols >= WIDE_TMUX_SIZE.cols { 12 } else { 10 };
-    trim_common_padding(&focused_tmux_capture(capture, "Supported commands", 0, after))
+    let after = if size.cols >= WIDE_TMUX_SIZE.cols {
+        12
+    } else {
+        10
+    };
+    trim_common_padding(&focused_tmux_capture(
+        capture,
+        "Supported commands",
+        0,
+        after,
+    ))
 }
 
 fn trim_common_padding(capture: &str) -> String {
@@ -355,7 +365,8 @@ fn trim_common_padding(capture: &str) -> String {
         .map(|line| line.chars().take_while(|ch| *ch == ' ').count())
         .min()
         .unwrap_or(0);
-    lines.into_iter()
+    lines
+        .into_iter()
         .map(|line| line.chars().skip(padding).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
@@ -363,7 +374,10 @@ fn trim_common_padding(capture: &str) -> String {
 
 fn trim_blank_rows(capture: &str) -> String {
     let lines = capture.lines().collect::<Vec<_>>();
-    let start = lines.iter().position(|line| !line.trim().is_empty()).unwrap_or(0);
+    let start = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(0);
     let end = lines
         .iter()
         .rposition(|line| !line.trim().is_empty())

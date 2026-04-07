@@ -159,25 +159,43 @@ fn read_text(
     let end_index = start_index
         .saturating_add(effective_limit)
         .min(all_lines.len());
-    let selected = if start_index >= all_lines.len() {
-        String::new()
+    let num_lines = if contents.is_empty() || start_index >= all_lines.len() {
+        0
+    } else {
+        end_index.saturating_sub(start_index)
+    };
+    let selected = if contents.is_empty() {
+        "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>"
+            .to_string()
+    } else if start_index >= all_lines.len() {
+        format!(
+            "<system-reminder>Warning: the file exists but is shorter than the provided offset ({start_line}). The file has {total_lines} lines.</system-reminder>"
+        )
     } else {
         let mut text = all_lines[start_index..end_index].join("\n");
         if contents.ends_with('\n') && !text.is_empty() {
             text.push('\n');
         }
-        text
+        format_with_line_numbers(&text, start_line)
     };
 
     Ok(ClaudeReadOutput::Text {
         file: TextFilePayload {
             file_path: original_file_path.to_string(),
-            num_lines: selected.lines().count(),
+            num_lines,
             content: selected,
             start_line,
             total_lines,
         },
     })
+}
+
+fn format_with_line_numbers(content: &str, start_line: usize) -> String {
+    let mut formatted = String::new();
+    for (index, line) in content.lines().enumerate() {
+        formatted.push_str(&format!("{:>6}\t{line}\n", start_line + index));
+    }
+    formatted
 }
 
 fn read_notebook(path: &Path, original_file_path: &str) -> Result<ClaudeReadOutput> {
@@ -359,7 +377,7 @@ mod tests {
         let output = execute_claude_read_tool(temp.path(), payload).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["type"], "text");
-        assert_eq!(parsed["file"]["content"], "two\nthree\n");
+        assert_eq!(parsed["file"]["content"], "     2\ttwo\n     3\tthree\n");
         assert_eq!(parsed["file"]["startLine"], 2);
         assert_eq!(parsed["file"]["numLines"], 2);
         assert_eq!(parsed["file"]["totalLines"], 4);
@@ -383,6 +401,9 @@ mod tests {
         assert_eq!(parsed["file"]["startLine"], 1);
         assert_eq!(parsed["file"]["numLines"], 2000);
         assert_eq!(parsed["file"]["totalLines"], 2500);
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|content| content.starts_with("     1\tline-0\n")));
     }
 
     #[test]
@@ -447,5 +468,40 @@ mod tests {
         });
         let error = execute_claude_read_tool(temp.path(), payload).unwrap_err();
         assert!(error.to_string().contains("exceeds maximum of 20 pages"));
+    }
+
+    #[test]
+    fn empty_file_read_returns_warning_stub() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("empty.txt");
+        fs::write(&path, "").unwrap();
+        let output = execute_claude_read_tool(
+            temp.path(),
+            json!({ "file_path": path.display().to_string() }),
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("contents are empty")));
+    }
+
+    #[test]
+    fn offset_beyond_end_returns_warning_stub() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("short.txt");
+        fs::write(&path, "one\ntwo\n").unwrap();
+        let output = execute_claude_read_tool(
+            temp.path(),
+            json!({
+                "file_path": path.display().to_string(),
+                "offset": 5,
+            }),
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("shorter than the provided offset (5)")));
     }
 }

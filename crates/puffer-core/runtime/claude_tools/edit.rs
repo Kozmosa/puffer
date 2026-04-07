@@ -55,35 +55,48 @@ pub fn execute_claude_edit(_cwd: &Path, input: Value) -> Result<String> {
     if !path.is_absolute() {
         bail!("Edit expects `file_path` to be an absolute path");
     }
-    if input.old_string.is_empty() {
-        bail!("Edit requires `old_string` to be non-empty");
-    }
     if input.old_string == input.new_string {
         bail!("No changes to make: old_string and new_string are exactly the same.");
     }
 
-    let original = fs::read_to_string(path)
-        .with_context(|| format!("failed to read file {}", path.display()))?;
-    let occurrences = occurrence_count(&original, &input.old_string);
-
-    if occurrences == 0 {
-        bail!(
-            "Edit failed: old_string was not found in {}",
-            path.display()
-        );
-    }
-    if occurrences > 1 && !input.replace_all {
-        bail!(
-            "Edit failed: old_string is not unique in {}. Use replace_all or provide more context.",
-            path.display()
-        );
-    }
-
-    let updated = if input.replace_all {
-        original.replace(&input.old_string, &input.new_string)
+    let original = if path.exists() {
+        fs::read_to_string(path)
+            .with_context(|| format!("failed to read file {}", path.display()))?
     } else {
-        original.replacen(&input.old_string, &input.new_string, 1)
+        String::new()
     };
+    let (updated, original_file) = if !path.exists() && input.old_string.is_empty() {
+        (input.new_string.clone(), String::new())
+    } else if input.old_string.is_empty() {
+        if !original.is_empty() {
+            bail!("Edit with empty old_string requires the target file to be empty or missing.");
+        }
+        (input.new_string.clone(), original.clone())
+    } else {
+        let occurrences = occurrence_count(&original, &input.old_string);
+        if occurrences == 0 {
+            bail!(
+                "Edit failed: old_string was not found in {}",
+                path.display()
+            );
+        }
+        if occurrences > 1 && !input.replace_all {
+            bail!(
+                "Edit failed: old_string is not unique in {}. Use replace_all or provide more context.",
+                path.display()
+            );
+        }
+        let updated = if input.replace_all {
+            original.replace(&input.old_string, &input.new_string)
+        } else {
+            original.replacen(&input.old_string, &input.new_string, 1)
+        };
+        (updated, original.clone())
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent directory {}", parent.display()))?;
+    }
     fs::write(path, &updated)
         .with_context(|| format!("failed to write file {}", path.display()))?;
 
@@ -91,29 +104,52 @@ pub fn execute_claude_edit(_cwd: &Path, input: Value) -> Result<String> {
         "filePath": input.file_path,
         "oldString": input.old_string,
         "newString": input.new_string,
-        "originalFile": original,
-        "structuredPatch": [{
-            "oldStart": 1,
-            "oldLines": line_count(&original),
-            "newStart": 1,
-            "newLines": line_count(&updated),
-            "lines": []
-        }],
+        "originalFile": original_file,
+        "structuredPatch": build_structured_patch(&original, &updated),
         "userModified": false,
         "replaceAll": input.replace_all
     });
     Ok(serde_json::to_string_pretty(&output)?)
 }
 
+/// Returns true when an Edit request targets an existing file mutation that
+/// should require a prior full-file Read in the runtime dispatcher.
+pub(crate) fn requires_prior_read(input: &Value) -> bool {
+    let Some(file_path) = input.get("file_path").and_then(Value::as_str) else {
+        return true;
+    };
+    let old_string = input
+        .get("old_string")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    !(old_string.is_empty() && !Path::new(file_path).exists())
+}
+
 fn occurrence_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
-fn line_count(content: &str) -> usize {
+fn build_structured_patch(original: &str, updated: &str) -> Vec<Value> {
+    let old_lines = split_lines(original);
+    let new_lines = split_lines(updated);
+    vec![json!({
+        "oldStart": if old_lines.is_empty() { 0 } else { 1 },
+        "oldLines": old_lines.len(),
+        "newStart": if new_lines.is_empty() { 0 } else { 1 },
+        "newLines": new_lines.len(),
+        "lines": old_lines
+            .iter()
+            .map(|line| format!("-{line}"))
+            .chain(new_lines.iter().map(|line| format!("+{line}")))
+            .collect::<Vec<_>>(),
+    })]
+}
+
+fn split_lines(content: &str) -> Vec<String> {
     if content.is_empty() {
-        0
+        Vec::new()
     } else {
-        content.lines().count()
+        content.lines().map(str::to_string).collect()
     }
 }
 
@@ -194,5 +230,31 @@ mod tests {
 
         let error = execute_claude_edit(temp.path(), input).unwrap_err();
         assert!(error.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn edit_can_create_missing_file_with_empty_old_string() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("new.txt");
+        let input = json!({
+            "file_path": file.display().to_string(),
+            "old_string": "",
+            "new_string": "hello"
+        });
+
+        let output = execute_claude_edit(temp.path(), input).unwrap();
+        assert!(output.contains("\"originalFile\": \"\""));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
+    }
+
+    #[test]
+    fn missing_file_creation_edit_does_not_require_prior_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("new.txt");
+        assert!(!requires_prior_read(&json!({
+            "file_path": file.display().to_string(),
+            "old_string": "",
+            "new_string": "hello"
+        })));
     }
 }

@@ -81,7 +81,9 @@ enum DiscoveryMode {
 
 fn discovery_mode(provider: &ProviderDescriptor, auth_store: &AuthStore) -> DiscoveryMode {
     match auth_store.get(provider.id.as_str()) {
-        Some(StoredCredential::OAuth(_)) if provider.id == "openai" => DiscoveryMode::OpenAiOAuthCodex,
+        Some(StoredCredential::OAuth(_)) if provider.id == "openai" => {
+            DiscoveryMode::OpenAiOAuthCodex
+        }
         _ => DiscoveryMode::Standard,
     }
 }
@@ -168,7 +170,10 @@ fn apply_discovery_auth(
             request.header("Authorization", format!("Bearer {key}"))
         }
         Some(StoredCredential::OAuth(credential)) => {
-            request = request.header("Authorization", format!("Bearer {}", credential.access_token));
+            request = request.header(
+                "Authorization",
+                format!("Bearer {}", credential.access_token),
+            );
             if matches!(mode, DiscoveryMode::OpenAiOAuthCodex) {
                 if let Some(account_id) = credential.account_id.as_deref() {
                     request = request.header("ChatGPT-Account-ID", account_id);
@@ -280,7 +285,12 @@ fn parse_codex_discovered_models(
     let items = payload
         .get("models")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("discovery response for {} missing models array", provider.id))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "discovery response for {} missing models array",
+                provider.id
+            )
+        })?;
     let mut models = Vec::new();
     for item in items {
         if item.get("visibility").and_then(Value::as_str) == Some("hide") {
@@ -541,7 +551,9 @@ mod tests {
                 body.len(),
                 body
             );
-            stream.write_all(response.as_bytes()).expect("response write");
+            stream
+                .write_all(response.as_bytes())
+                .expect("response write");
             request
         });
         let mut auth = AuthStore::default();
@@ -630,7 +642,9 @@ mod tests {
                 body.len(),
                 body
             );
-            stream.write_all(response.as_bytes()).expect("response write");
+            stream
+                .write_all(response.as_bytes())
+                .expect("response write");
             request
         });
         let provider = ProviderDescriptor {

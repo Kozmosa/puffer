@@ -2,8 +2,7 @@ use anyhow::Result;
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
     dispatch_command, execute_user_turn, execute_user_turn_streaming, reload_runtime_resources,
-    run_resource_hooks, supported_commands, AppState, MessageRole, ToolInvocation,
-    TurnStreamEvent,
+    run_resource_hooks, supported_commands, AppState, MessageRole, ToolInvocation, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -529,6 +528,9 @@ pub(crate) fn handle_auth_command(
         .map(|(name, args)| (name, args.trim()))
         .unwrap_or((without_slash, ""));
     if name == "login" {
+        if args.is_empty() {
+            return Ok(false);
+        }
         let provider = if args.is_empty() {
             state.current_provider.as_deref().unwrap_or("anthropic")
         } else {
@@ -588,7 +590,8 @@ pub(crate) fn active_selection_uses_provider(state: &AppState, provider_id: &str
     if state.current_provider.as_deref() == Some(provider_id) {
         return true;
     }
-    state.current_model
+    state
+        .current_model
         .as_deref()
         .and_then(|selector| selector.split_once('/'))
         .map(|(provider, _)| provider == provider_id)
@@ -779,7 +782,9 @@ mod tests {
         let paths = ConfigPaths::discover(tempdir.path());
         ensure_workspace_dirs(&paths).unwrap();
         let session_store = SessionStore::from_paths(&paths).unwrap();
-        let session = session_store.create_session(tempdir.path().to_path_buf()).unwrap();
+        let session = session_store
+            .create_session(tempdir.path().to_path_buf())
+            .unwrap();
         let mut state = sample_state(session, tempdir.path());
         let mut resources = LoadedResources::default();
         let mut providers = ProviderRegistry::new();
@@ -834,7 +839,9 @@ mod tests {
         let paths = ConfigPaths::discover(tempdir.path());
         ensure_workspace_dirs(&paths).unwrap();
         let session_store = SessionStore::from_paths(&paths).unwrap();
-        let session = session_store.create_session(tempdir.path().to_path_buf()).unwrap();
+        let session = session_store
+            .create_session(tempdir.path().to_path_buf())
+            .unwrap();
         let mut state = sample_state(session, tempdir.path());
         let mut resources = LoadedResources::default();
         let mut providers = ProviderRegistry::new();
@@ -869,7 +876,10 @@ mod tests {
 
         assert!(tui.has_pending_submit());
         assert_eq!(tui.queued_prompts.len(), 1);
-        assert_eq!(tui.queued_prompts.front().map(String::as_str), Some("second"));
+        assert_eq!(
+            tui.queued_prompts.front().map(String::as_str),
+            Some("second")
+        );
         assert!(matches!(state.transcript.first(), Some(message) if message.text == "first"));
     }
 
@@ -879,7 +889,9 @@ mod tests {
         let paths = ConfigPaths::discover(tempdir.path());
         ensure_workspace_dirs(&paths).unwrap();
         let session_store = SessionStore::from_paths(&paths).unwrap();
-        let session = session_store.create_session(tempdir.path().to_path_buf()).unwrap();
+        let session = session_store
+            .create_session(tempdir.path().to_path_buf())
+            .unwrap();
         let mut state = sample_state(session, tempdir.path());
         let mut resources = LoadedResources::default();
         let mut providers = ProviderRegistry::new();
@@ -918,23 +930,22 @@ mod tests {
             message.role == MessageRole::System && message.text == "Interrupted by user."
         }));
 
-        assert!(
-            submit_next_queued_prompt(
-                &mut state,
-                &mut resources,
-                &mut providers,
-                &mut auth_store,
-                &auth_path,
-                &session_store,
-                &mut tui,
-                true,
+        assert!(submit_next_queued_prompt(
+            &mut state,
+            &mut resources,
+            &mut providers,
+            &mut auth_store,
+            &auth_path,
+            &session_store,
+            &mut tui,
+            true,
         )
-        .unwrap()
-        );
+        .unwrap());
         assert!(tui.has_pending_submit());
         assert!(tui.queued_prompts.is_empty());
-        assert!(state.transcript.iter().any(|message| {
-            message.role == MessageRole::User && message.text == "second"
-        }));
+        assert!(state
+            .transcript
+            .iter()
+            .any(|message| { message.role == MessageRole::User && message.text == "second" }));
     }
 }

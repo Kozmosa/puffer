@@ -1,10 +1,10 @@
+use super::append_tool_invocations;
 use super::common::open_text_file_in_editor;
 use super::emit_system;
-use super::append_tool_invocations;
 use crate::{AppState, MessageRole};
 use anyhow::Result;
-use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
+use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use std::fmt::Write as _;

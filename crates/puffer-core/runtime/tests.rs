@@ -34,7 +34,7 @@ fn provider() -> ProviderDescriptor {
     }
 }
 
-fn state() -> AppState {
+pub(super) fn state() -> AppState {
     AppState::new(
         PufferConfig::default(),
         std::env::current_dir().unwrap(),
@@ -52,7 +52,7 @@ fn state() -> AppState {
     )
 }
 
-fn plan_mode_state() -> AppState {
+pub(super) fn plan_mode_state() -> AppState {
     let cwd = std::env::temp_dir().join(format!("puffer-runtime-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&cwd).unwrap();
     let paths = ConfigPaths::discover(&cwd);
@@ -279,7 +279,6 @@ fn execute_user_prompt_accepts_openai_family_aliases() {
     assert!(!error
         .to_string()
         .contains("provider openrouter with api openai-completions is not executable yet"));
-
 }
 
 #[test]
@@ -478,10 +477,7 @@ fn build_codex_openai_request_body_matches_codex_shape() {
 
     assert_eq!(body["model"], json!("gpt-5"));
     assert_eq!(body["stream"], json!(true));
-    assert_eq!(
-        body["include"][0],
-        json!("reasoning.encrypted_content")
-    );
+    assert_eq!(body["include"][0], json!("reasoning.encrypted_content"));
     assert_eq!(body["prompt_cache_key"], json!(Uuid::nil().to_string()));
     assert_eq!(body["input"][0]["type"], json!("message"));
     assert_eq!(body["input"][0]["content"][0]["text"], json!("hello"));
@@ -532,7 +528,10 @@ fn parse_openai_sse_response_streaming_emits_text_deltas() {
     .unwrap();
     assert_eq!(deltas, vec!["Hey ".to_string(), "there".to_string()]);
     assert_eq!(parsed["id"], json!("resp1"));
-    assert_eq!(parsed["output"][0]["content"][0]["text"], json!("Hey there"));
+    assert_eq!(
+        parsed["output"][0]["content"][0]["text"],
+        json!("Hey there")
+    );
 }
 
 #[test]
@@ -689,306 +688,6 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
     assert_eq!(openai_tools[0].name, "read_file");
 }
 
-#[test]
-fn execute_openai_tool_calls_serializes_outputs() {
-    let resources = LoadedResources {
-        tools: vec![loaded_tool("bash", "Run shell", "bash")],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let mut providers = ProviderRegistry::new();
-    let provider = openai_provider("http://127.0.0.1".to_string());
-    providers.register(provider);
-    let tool_calls = vec![OpenAIResponseToolCall {
-        item_id: Some("fc_1".to_string()),
-        status: Some("completed".to_string()),
-        call_id: "call_1".to_string(),
-        name: "bash".to_string(),
-        arguments: json!({ "command": "printf hi" }),
-    }];
-    let mut state = state();
-    let request_config = test_openai_request_config();
-    let result = execute_openai_tool_calls(
-        &mut state,
-        &resources,
-        &providers,
-        &mut AuthStore::default(),
-        &tool_calls,
-        &registry,
-        std::env::current_dir().unwrap().as_path(),
-        &request_config,
-        "gpt-5",
-    )
-    .unwrap();
-    assert_eq!(result.outputs[0].kind, "function_call_output");
-    assert_eq!(result.outputs[0].call_id, "call_1");
-    assert!(result.outputs[0].output.contains("hi"));
-    assert_eq!(result.invocations[0].tool_id, "bash");
-}
 
-#[test]
-fn tool_hooks_run_for_completed_tool_calls() {
-    let temp = tempfile::tempdir().unwrap();
-    let hook_output = temp.path().join("hook.txt");
-    let resources = LoadedResources {
-        hooks: vec![LoadedItem {
-            value: puffer_resources::HookSpec {
-                id: "tool-end".to_string(),
-                event: "tool_end".to_string(),
-                command: format!("printf \"$PUFFER_TOOL_ID\" > {}", hook_output.display()),
-            },
-            source_info: SourceInfo {
-                path: "hook.yaml".into(),
-                kind: SourceKind::Builtin,
-            },
-        }],
-        tools: vec![loaded_tool("bash", "Run shell", "bash")],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let mut providers = ProviderRegistry::new();
-    let provider = provider();
-    providers.register(provider.clone());
-    let response = json!({
-        "content": [
-            {
-                "type": "tool_use",
-                "id": "toolu_1",
-                "name": "bash",
-                "input": {
-                    "command": "printf hi"
-                }
-            }
-        ]
-    });
-    let mut state = state();
-    let request_config = test_anthropic_request_config();
-    let _ = execute_anthropic_tool_calls(
-        &mut state,
-        &resources,
-        &providers,
-        &mut AuthStore::default(),
-        &response,
-        &registry,
-        temp.path(),
-        &request_config,
-        "claude-sonnet-4-5",
-    )
-    .unwrap();
-    assert_eq!(std::fs::read_to_string(hook_output).unwrap(), "bash");
-}
-
-#[test]
-fn execute_anthropic_tool_calls_runs_agent_runtime_tool() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let request_log = Arc::clone(&requests);
-    let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buffer = [0_u8; 8192];
-        let bytes = stream.read(&mut buffer).unwrap();
-        let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
-        request_log.lock().unwrap().push(request);
-        let body = json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": "nested ok"
-                }
-            ]
-        })
-        .to_string();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes()).unwrap();
-    });
-
-    let mut provider = provider();
-    provider.id = "local-anthropic".to_string();
-    provider.base_url = format!("http://{address}");
-    provider.auth_modes.clear();
-    provider.models[0].provider = "local-anthropic".to_string();
-
-    let mut providers = ProviderRegistry::new();
-    providers.register(provider.clone());
-    let mut state = state();
-    state.current_provider = Some("local-anthropic".to_string());
-    state.current_model = Some("local-anthropic/claude-sonnet-4-5".to_string());
-
-    let resources = LoadedResources {
-        agents: vec![loaded_agent("Explore", "Read-only agent", "You are a read-only subagent.", &["read_file"])],
-        tools: vec![
-            loaded_tool("Agent", "Delegate work", "runtime:agent"),
-            loaded_tool("read_file", "Read files", "read_file"),
-            loaded_tool("write_file", "Write files", "write_file"),
-        ],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let response = json!({
-        "content": [
-            {
-                "type": "tool_use",
-                "id": "toolu_agent",
-                "name": "Agent",
-                "input": {
-                    "description": "Inspect one file",
-                    "prompt": "Read Cargo.toml and summarize it.",
-                    "subagent_type": "Explore"
-                }
-            }
-        ]
-    });
-
-    let request_config = AnthropicRequestConfig {
-        base_url: provider.base_url.clone(),
-        session_id: state.session.id.to_string(),
-        custom_headers: Default::default(),
-        remote_container_id: None,
-        remote_session_id: None,
-        client_app: None,
-        entrypoint: "cli".to_string(),
-        user_type: "external".to_string(),
-        version: APP_VERSION.to_string(),
-        workload: None,
-        additional_protection: false,
-        cch_enabled: true,
-        auth: AnthropicAuth::None,
-        beta_header: None,
-        client_request_id: None,
-    };
-    let result = execute_anthropic_tool_calls(
-        &mut state,
-        &resources,
-        &providers,
-        &mut AuthStore::default(),
-        &response,
-        &registry,
-        std::env::current_dir().unwrap().as_path(),
-        &request_config,
-        "claude-sonnet-4-5",
-    )
-    .unwrap()
-    .unwrap();
-    server.join().unwrap();
-
-    assert_eq!(result.invocations.len(), 1);
-    assert_eq!(result.invocations[0].tool_id, "Agent");
-    assert!(result.invocations[0].output.contains("nested ok"));
-
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].contains("\"name\":\"read_file\""));
-    assert!(!requests[0].contains("\"name\":\"write_file\""));
-}
-
-#[test]
-fn execute_agent_tool_rejects_background_requests() {
-    let resources = LoadedResources {
-        agents: vec![loaded_agent(
-            "general-purpose",
-            "Default agent",
-            "You are a coding subagent.",
-            &["read_file"],
-        )],
-        ..LoadedResources::default()
-    };
-    let error = super::agents::execute_agent_tool(
-        &state(),
-        &resources,
-        &ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        std::env::current_dir().unwrap().as_path(),
-        json!({ "description": "Background request", "prompt": "Do the thing", "run_in_background": true }),
-    ).unwrap_err();
-    assert!(error.to_string().contains("background agent execution is not implemented"));
-}
-
-#[test]
-fn transcript_to_anthropic_messages_replays_all_roles() {
-    let mut state = state();
-    state.push_message(crate::MessageRole::User, "hello");
-    state.push_message(crate::MessageRole::Assistant, "hi");
-    state.push_message(crate::MessageRole::System, "note");
-
-    let messages = transcript_to_anthropic_messages(&state, "fallback");
-    assert_eq!(messages.len(), 3);
-    assert_eq!(messages[0]["role"], "user");
-    assert_eq!(messages[1]["role"], "assistant");
-    assert_eq!(messages[2]["content"], "[system]\nnote");
-}
-
-#[test]
-fn transcript_to_openai_input_replays_transcript_items() {
-    let mut state = state();
-    state.push_message(crate::MessageRole::User, "hello");
-    state.push_message(crate::MessageRole::Assistant, "hi");
-
-    let input = transcript_to_openai_input(&state, "fallback").unwrap();
-    let items = input.as_array().unwrap();
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0]["role"], "user");
-    assert_eq!(items[1]["type"], "message");
-    assert_eq!(items[1]["role"], "assistant");
-}
-
-#[test]
-fn transcript_to_openai_chat_messages_replays_transcript_items() {
-    let mut state = state();
-    state.push_message(crate::MessageRole::User, "hello");
-    state.push_message(crate::MessageRole::Assistant, "hi");
-
-    let messages = transcript_to_openai_chat_messages(&state, "fallback").unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].role, "user");
-    assert_eq!(messages[1].role, "assistant");
-    assert_eq!(messages[0].content, Some(json!("hello")));
-}
-
-#[test]
-fn transcript_to_openai_chat_messages_preserves_system_role() {
-    let mut state = state();
-    state.push_message(crate::MessageRole::System, "rules");
-    state.push_message(crate::MessageRole::User, "hello");
-    state.push_message(crate::MessageRole::Assistant, "hi");
-
-    let messages = transcript_to_openai_chat_messages(&state, "fallback").unwrap();
-    assert_eq!(messages.len(), 3);
-    assert_eq!(messages[0].role, "system");
-    assert_eq!(messages[1].role, "user");
-    assert_eq!(messages[2].role, "assistant");
-}
-
-#[test]
-fn openai_input_includes_plan_mode_system_context() {
-    let state = plan_mode_state();
-    let input = transcript_to_openai_input(&state, "hello").unwrap();
-    let items = input.as_array().unwrap();
-    assert_eq!(items[0]["role"], "system");
-    assert!(items[0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Plan mode is active"));
-    assert!(items[0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Current plan contents:"));
-}
-
-#[test]
-fn openai_chat_messages_include_plan_mode_system_context() {
-    let state = plan_mode_state();
-    let messages = transcript_to_openai_chat_messages(&state, "hello").unwrap();
-    assert_eq!(messages[0].role, "system");
-    assert!(messages[0]
-        .content
-        .as_ref()
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .contains("Plan mode is active"));
-}
+#[path = "tests/tool_execution.rs"]
+mod tool_execution;

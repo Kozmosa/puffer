@@ -39,10 +39,7 @@ impl Drop for ScopedPufferHome {
     }
 }
 
-fn provider(
-    id: &str,
-    models: &[&str],
-) -> puffer_provider_registry::ProviderDescriptor {
+fn provider(id: &str, models: &[&str]) -> puffer_provider_registry::ProviderDescriptor {
     puffer_provider_registry::ProviderDescriptor {
         id: id.to_string(),
         display_name: id.to_string(),
@@ -126,9 +123,7 @@ fn model_command_lists_only_models_for_selected_provider() {
     let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(workspace.clone())
-        .unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
     let mut config = PufferConfig::default();
     config.default_provider = Some("openai".to_string());
     config.default_model = Some("openai/gpt-5".to_string());
@@ -219,9 +214,7 @@ fn model_command_rejects_cross_provider_selection() {
     let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(workspace.clone())
-        .unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
     let mut config = PufferConfig::default();
     config.default_provider = Some("openai".to_string());
     config.default_model = Some("openai/gpt-5".to_string());
@@ -262,9 +255,7 @@ fn model_command_persists_selected_model_to_user_config() {
     let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(workspace.clone())
-        .unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
     let mut config = PufferConfig::default();
     config.default_provider = Some("openai".to_string());
     config.default_model = Some("openai/gpt-5".to_string());

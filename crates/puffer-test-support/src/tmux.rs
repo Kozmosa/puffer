@@ -231,7 +231,13 @@ mod tests {
         let target = format!("{}:0.0", session.name);
         let output = run_tmux_command(
             &session,
-            &["display-message", "-p", "-t", &target, "#{pane_width}x#{pane_height}"],
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                "#{pane_width}x#{pane_height}",
+            ],
         )
         .unwrap();
         assert_eq!(output.stdout.trim(), "80x24");

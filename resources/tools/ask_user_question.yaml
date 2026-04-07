@@ -1,6 +1,18 @@
 id: AskUserQuestion
 name: AskUserQuestion
-description: Ask the user multiple-choice questions to clarify requirements and preferences.
+description: |-
+  Ask the user multiple-choice questions to gather information, clarify
+  ambiguity, understand preferences, make decisions, or offer choices.
+
+  Usage notes:
+  - Users will always be able to select "Other" and provide custom text input.
+  - Use `multiSelect: true` to allow multiple selections.
+  - If you recommend a specific option, make it the first option and append
+    "(Recommended)" to the label.
+  - In plan mode, use this to clarify requirements or choose between approaches
+    before finalizing the plan.
+  - Do not use this tool to ask whether the user approves the finished plan;
+    use ExitPlanMode for plan approval instead.
 handler: runtime:workflow:ask_user_question
 approval_policy: auto
 sandbox_policy: read-only
@@ -46,11 +58,16 @@ input_schema:
           - question
           - header
           - options
+        additionalProperties: false
     answers:
       type: object
       description: Optional user answers collected by the permission component.
       additionalProperties:
-        type: string
+        oneOf:
+          - type: string
+          - type: array
+            items:
+              type: string
     annotations:
       type: object
       description: Optional per-question annotations from the user.
@@ -69,3 +86,4 @@ input_schema:
       description: Optional metadata for tracking and analytics purposes.
   required:
     - questions
+  additionalProperties: false

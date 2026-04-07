@@ -28,6 +28,10 @@ input_schema:
       description: Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}") - maps to rg --glob
     output_mode:
       type: string
+      enum:
+        - content
+        - files_with_matches
+        - count
       description: |-
         Output mode: "content" shows matching lines (supports -A/-B/-C
         context, -n line numbers, head_limit), "files_with_matches" shows file
@@ -35,33 +39,53 @@ input_schema:
         head_limit). Defaults to "files_with_matches".
     "-B":
       type: integer
-      description: Number of lines to show before each match (rg -B). Requires output_mode "content", ignored otherwise.
+      description: |-
+        Number of lines to show before each match (rg -B). Requires
+        output_mode: "content", ignored otherwise.
     "-A":
       type: integer
-      description: Number of lines to show after each match (rg -A). Requires output_mode "content", ignored otherwise.
+      description: |-
+        Number of lines to show after each match (rg -A). Requires
+        output_mode: "content", ignored otherwise.
     "-C":
       type: integer
       description: Alias for context.
     context:
       type: integer
-      description: Number of lines to show before and after each match (rg -C). Requires output_mode "content", ignored otherwise.
+      description: |-
+        Number of lines to show before and after each match (rg -C). Requires
+        output_mode: "content", ignored otherwise.
     "-n":
       type: boolean
-      description: Show line numbers in output (rg -n). Requires output_mode "content", ignored otherwise. Defaults to true.
+      description: |-
+        Show line numbers in output (rg -n). Requires output_mode: "content",
+        ignored otherwise. Defaults to true.
     "-i":
       type: boolean
       description: Case insensitive search (rg -i).
     type:
       type: string
-      description: File type to search (rg --type). Common types include js, py, rust, go, java.
+      description: |-
+        File type to search (rg --type). Common types: js, py, rust, go, java,
+        etc. More efficient than include for standard file types.
     head_limit:
       type: integer
-      description: Limit output to first N lines or entries. Works across all output modes. Defaults to 250 when unspecified. Pass 0 for unlimited.
+      description: |-
+        Limit output to first N lines/entries, equivalent to "| head -N".
+        Works across all output modes: content (limits output lines),
+        files_with_matches (limits file paths), count (limits count entries).
+        Defaults to 250 when unspecified. Pass 0 for unlimited (use sparingly
+        - large result sets waste context).
     offset:
       type: integer
-      description: Skip first N lines or entries before applying head_limit. Works across all output modes. Defaults to 0.
+      description: |-
+        Skip first N lines/entries before applying head_limit, equivalent to
+        "| tail -n +N | head -N". Works across all output modes. Defaults to 0.
     multiline:
       type: boolean
-      description: Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default false.
+      description: |-
+        Enable multiline mode where . matches newlines and patterns can span
+        lines (rg -U --multiline-dotall). Default: false.
   required:
     - pattern
+  additionalProperties: false

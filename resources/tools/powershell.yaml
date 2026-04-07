@@ -1,6 +1,14 @@
 id: PowerShell
 name: PowerShell
-description: Run a PowerShell command.
+description: |-
+  Executes a PowerShell command and returns its output.
+
+  Prefer dedicated tools for file search, file reads, and file edits when they
+  are a better fit. Use `run_in_background` for longer-running work when you do
+  not need the result immediately.
+
+  Commands run in a sandbox by default. Use `dangerouslyDisableSandbox: true`
+  only when you explicitly need to bypass sandbox restrictions.
 handler: runtime:workflow:powershell
 approval_policy: on-request
 sandbox_policy: workspace-write
@@ -15,7 +23,7 @@ input_schema:
       type: string
       description: The PowerShell command to execute.
     timeout:
-      type: number
+      type: integer
       description: Optional timeout in milliseconds.
     description:
       type: string
@@ -28,3 +36,4 @@ input_schema:
       description: Set true to override sandboxing and run unsandboxed.
   required:
     - command
+  additionalProperties: false

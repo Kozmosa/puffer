@@ -857,7 +857,6 @@ fn session_command_lists_saved_sessions() {
     ));
 }
 
-
 #[test]
 fn cost_command_reports_runtime_summary() {
     let tempdir = tempdir().unwrap();

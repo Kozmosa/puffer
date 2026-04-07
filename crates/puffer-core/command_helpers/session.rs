@@ -318,7 +318,11 @@ pub(crate) fn handle_remote_env_command(
         } else {
             ensure_remote_session_metadata(state);
         }
-        return emit_system(state, session_store, "Cleared remote environment.".to_string());
+        return emit_system(
+            state,
+            session_store,
+            "Cleared remote environment.".to_string(),
+        );
     }
 
     state.remote_environment = Some(trimmed.to_string());
@@ -524,7 +528,10 @@ fn render_remote_session_block(state: &AppState) -> String {
 }
 
 fn effective_remote_session_url(state: &AppState) -> Option<String> {
-    state.remote_session_url.clone().or_else(|| remote_session_url(state))
+    state
+        .remote_session_url
+        .clone()
+        .or_else(|| remote_session_url(state))
 }
 
 fn remote_session_url(state: &AppState) -> Option<String> {

@@ -13,3 +13,4 @@ input_schema:
     shell_id:
       type: string
       description: Deprecated alias for task_id.
+  additionalProperties: false

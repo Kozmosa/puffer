@@ -1,6 +1,11 @@
 id: TodoWrite
 name: TodoWrite
-description: Replace the current todo list with an updated list.
+description: |-
+  Create or replace the structured todo list for the current coding session.
+
+  Use this proactively for complex, multi-step implementation work so progress
+  stays visible and organized. Mark one item as `in_progress` before starting
+  it, then mark it `completed` when done.
 handler: runtime:workflow:todo_write
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -31,3 +36,4 @@ input_schema:
           - activeForm
   required:
     - todos
+  additionalProperties: false

@@ -1,6 +1,11 @@
 id: LSP
 name: LSP
-description: Run language-server code intelligence operations.
+description: |-
+  Interact with Language Server Protocol (LSP) servers to get code-intelligence
+  features such as definitions, references, hover information, symbols, and
+  call hierarchy data.
+
+  All operations require `filePath`, `line`, and `character`.
 handler: runtime:workflow:lsp
 approval_policy: auto
 sandbox_policy: read-only
@@ -37,3 +42,4 @@ input_schema:
     - filePath
     - line
     - character
+  additionalProperties: false

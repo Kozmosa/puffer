@@ -202,7 +202,10 @@ pub(crate) fn refresh_oauth_token(refresh_token: &str) -> Result<OpenAIOAuthCred
 
 fn codex_oauth_client() -> Result<Client> {
     Client::builder()
-        .default_headers(default_headers(env!("CARGO_PKG_VERSION"), &default_originator()))
+        .default_headers(default_headers(
+            env!("CARGO_PKG_VERSION"),
+            &default_originator(),
+        ))
         .build()
         .context("failed to build OpenAI OAuth client")
 }

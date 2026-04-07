@@ -174,10 +174,10 @@ fn definition_from_spec(spec: &ToolSpec) -> Option<ToolDefinition> {
 }
 
 fn parse_input_schema(input_schema: &serde_json::Value) -> Result<ToolInputSchema> {
+    let raw_json_schema = serde_json::to_string(input_schema)?;
     let properties = input_schema
         .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| anyhow!("input_schema is missing properties"))?;
+        .and_then(serde_json::Value::as_object);
     let required = input_schema
         .get("required")
         .and_then(serde_json::Value::as_array)
@@ -190,14 +190,16 @@ fn parse_input_schema(input_schema: &serde_json::Value) -> Result<ToolInputSchem
         })
         .unwrap_or_default();
     let mut parsed = BTreeMap::new();
-    for (name, property) in properties {
+    for (name, property) in properties.into_iter().flatten() {
         let value_type = match property.get("type").and_then(serde_json::Value::as_str) {
-            Some("string") | None => ToolSchemaType::String,
+            Some("string") => ToolSchemaType::String,
             Some("object") => ToolSchemaType::Object,
             Some("boolean") => ToolSchemaType::Boolean,
+            Some("number") => ToolSchemaType::Number,
             Some("integer") => ToolSchemaType::Integer,
             Some("array") => ToolSchemaType::Array,
             Some(other) => return Err(anyhow!("unsupported input schema type {other}")),
+            None => infer_schema_type(property),
         };
         let description = property
             .get("description")
@@ -213,7 +215,37 @@ fn parse_input_schema(input_schema: &serde_json::Value) -> Result<ToolInputSchem
             },
         );
     }
-    Ok(ToolInputSchema { properties: parsed })
+    Ok(ToolInputSchema {
+        properties: parsed,
+        raw_json_schema: Some(raw_json_schema),
+    })
+}
+
+fn infer_schema_type(property: &serde_json::Value) -> ToolSchemaType {
+    if property.get("properties").is_some() || property.get("additionalProperties").is_some() {
+        return ToolSchemaType::Object;
+    }
+    if property.get("items").is_some() {
+        return ToolSchemaType::Array;
+    }
+    property
+        .get("oneOf")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| property.get("anyOf").and_then(serde_json::Value::as_array))
+        .into_iter()
+        .flatten()
+        .find_map(
+            |schema| match schema.get("type").and_then(serde_json::Value::as_str) {
+                Some("string") => Some(ToolSchemaType::String),
+                Some("object") => Some(ToolSchemaType::Object),
+                Some("boolean") => Some(ToolSchemaType::Boolean),
+                Some("number") => Some(ToolSchemaType::Number),
+                Some("integer") => Some(ToolSchemaType::Integer),
+                Some("array") => Some(ToolSchemaType::Array),
+                _ => None,
+            },
+        )
+        .unwrap_or(ToolSchemaType::String)
 }
 
 fn policy_value_disables_tool(value: &str) -> bool {
@@ -404,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_schema_override_supports_boolean_integer_and_array_types() {
+    fn registry_schema_override_supports_boolean_number_integer_and_array_types() {
         let resources = LoadedResources {
             tools: vec![LoadedItem {
                 value: ToolSpec {
@@ -414,6 +446,10 @@ mod tests {
                             "flag": {
                                 "type": "boolean",
                                 "description": "Boolean flag"
+                            },
+                            "timeout": {
+                                "type": "number",
+                                "description": "Fractional timeout"
                             },
                             "count": {
                                 "type": "integer",
@@ -441,6 +477,10 @@ mod tests {
             crate::ToolSchemaType::Boolean
         );
         assert_eq!(
+            definition.input_schema.properties["timeout"].value_type,
+            crate::ToolSchemaType::Number
+        );
+        assert_eq!(
             definition.input_schema.properties["count"].value_type,
             crate::ToolSchemaType::Integer
         );
@@ -448,6 +488,87 @@ mod tests {
             definition.input_schema.properties["paths"].value_type,
             crate::ToolSchemaType::Array
         );
+        assert_eq!(
+            definition.input_schema.as_json_schema()["properties"]["timeout"]["type"].as_str(),
+            Some("number")
+        );
+    }
+
+    #[test]
+    fn registry_schema_override_preserves_nested_json_schema() {
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    handler: "builtin:bash".to_string(),
+                    input_schema: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "description": "Structured message content",
+                                "anyOf": [
+                                    { "type": "string" },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {
+                                                "type": "string",
+                                                "enum": ["shutdown_request"]
+                                            }
+                                        },
+                                        "required": ["type"]
+                                    }
+                                ]
+                            }
+                        },
+                        "required": ["message"],
+                        "additionalProperties": false
+                    })),
+                    ..bash_tool_spec()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("bash.yaml"),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let definition = registry.definition("bash").expect("tool definition");
+        let schema = definition.input_schema.as_json_schema();
+        assert_eq!(schema["required"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            schema["properties"]["message"]["anyOf"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn registry_schema_override_allows_object_schemas_without_properties() {
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    handler: "builtin:bash".to_string(),
+                    input_schema: Some(serde_json::json!({
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Dynamic payload"
+                    })),
+                    ..bash_tool_spec()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("bash.yaml"),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let definition = registry.definition("bash").expect("tool definition");
+        let schema = definition.input_schema.as_json_schema();
+        assert_eq!(schema["type"].as_str(), Some("object"));
+        assert_eq!(schema["additionalProperties"].as_bool(), Some(true));
     }
 
     #[test]

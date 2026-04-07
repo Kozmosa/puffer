@@ -8,10 +8,17 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
-pub(super) const DEFAULT_PLAN_TEXT: &str = "# Current Plan\n\n- Add concrete implementation steps here.\n";
+pub(super) const DEFAULT_PLAN_TEXT: &str =
+    "# Current Plan\n\n- Add concrete implementation steps here.\n";
 const WORKFLOW_DIR_NAME: &str = "runtime/claude_workflow";
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct StoredTask {
@@ -25,6 +32,20 @@ pub(super) struct StoredTask {
     pub(super) blocked_by: Vec<String>,
     pub(super) metadata: Map<String, Value>,
     pub(super) output: Option<String>,
+    #[serde(default)]
+    pub(super) task_type: Option<String>,
+    #[serde(default)]
+    pub(super) command: Option<String>,
+    #[serde(default)]
+    pub(super) process_id: Option<u32>,
+    #[serde(default)]
+    pub(super) output_file: Option<String>,
+    #[serde(default)]
+    pub(super) started_at_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) updated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,6 +103,8 @@ pub(super) struct StoredWorktree {
     pub(super) path: String,
     pub(super) base_cwd: String,
     pub(super) branch: Option<String>,
+    #[serde(default)]
+    pub(super) original_head_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -234,13 +257,30 @@ pub(super) struct ExitPlanModeInput {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AskUserQuestionInput {
-    pub(super) questions: Vec<Value>,
+    pub(super) questions: Vec<AskUserQuestionItem>,
     #[serde(default)]
     pub(super) answers: Map<String, Value>,
     #[serde(default)]
     pub(super) annotations: Map<String, Value>,
     #[serde(default)]
     pub(super) metadata: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct AskUserQuestionItem {
+    pub(super) question: String,
+    pub(super) header: String,
+    pub(super) options: Vec<AskUserQuestionOption>,
+    #[serde(default, rename = "multiSelect")]
+    pub(super) multi_select: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct AskUserQuestionOption {
+    pub(super) label: String,
+    pub(super) description: String,
+    #[serde(default)]
+    pub(super) preview: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,7 +329,7 @@ pub(super) struct PowerShellInput {
 pub(super) struct CronCreateInput {
     pub(super) cron: String,
     pub(super) prompt: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub(super) recurring: bool,
     #[serde(default)]
     pub(super) durable: bool,
@@ -322,7 +362,11 @@ pub(super) fn append_agent_message(output_file: &Path, message: &Value) -> Resul
 pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>> {
     if target == "*" {
         let agents = load_store::<AgentStore>(&agents_path(cwd))?;
-        return Ok(agents.agents.into_iter().map(|agent| agent.agent_id).collect());
+        return Ok(agents
+            .agents
+            .into_iter()
+            .map(|agent| agent.agent_id)
+            .collect());
     }
 
     let teams = load_store::<TeamStore>(&teams_path(cwd))?;
@@ -331,12 +375,12 @@ pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>
     }
 
     let agents = load_store::<AgentStore>(&agents_path(cwd))?;
-    if agents
+    if let Some(agent) = agents
         .agents
         .iter()
-        .any(|agent| agent.agent_id == target || agent.name.as_deref() == Some(target))
+        .find(|agent| agent.agent_id == target || agent.name.as_deref() == Some(target))
     {
-        return Ok(vec![target.to_string()]);
+        return Ok(vec![agent.agent_id.clone()]);
     }
 
     Ok(Vec::new())
@@ -345,6 +389,7 @@ pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>
 pub(super) fn get_config_value(state: &AppState, setting: &str) -> Result<Value> {
     match setting {
         "theme" => Ok(json!(state.config.theme)),
+        "model" => Ok(json!(state.current_model)),
         "default_provider" => Ok(json!(state.config.default_provider)),
         "default_model" => Ok(json!(state.config.default_model)),
         "openai_base_url" => Ok(json!(state.config.openai_base_url)),
@@ -361,6 +406,18 @@ pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value
                 .as_str()
                 .ok_or_else(|| anyhow!("theme must be a string"))?
                 .to_string()
+        }
+        "model" => {
+            let model = value
+                .as_str()
+                .ok_or_else(|| anyhow!("model must be a string"))?
+                .to_string();
+            state.current_model = Some(model.clone());
+            state.current_provider = model
+                .split_once('/')
+                .map(|(provider, _)| provider.to_string())
+                .or_else(|| state.current_provider.clone());
+            state.config.default_model = Some(model);
         }
         "default_provider" => {
             state.config.default_provider = match value {
@@ -415,13 +472,19 @@ pub(super) fn detect_powershell_binary() -> Result<String> {
     bail!("PowerShell is not installed on this system")
 }
 
-pub(super) fn identifier_at_position(content: &str, line: usize, character: usize) -> Option<String> {
+pub(super) fn identifier_at_position(
+    content: &str,
+    line: usize,
+    character: usize,
+) -> Option<String> {
     let line_text = content.lines().nth(line.saturating_sub(1))?;
     if line_text.is_empty() {
         return None;
     }
     let chars = line_text.chars().collect::<Vec<_>>();
-    let mut index = character.saturating_sub(1).min(chars.len().saturating_sub(1));
+    let mut index = character
+        .saturating_sub(1)
+        .min(chars.len().saturating_sub(1));
     if !is_identifier_char(chars[index]) && index > 0 {
         index -= 1;
     }
@@ -566,6 +629,30 @@ pub(super) fn worktrees_path(cwd: &Path) -> PathBuf {
     workflow_root(cwd).unwrap().join("worktrees.json")
 }
 
+/// Returns the directory used to persist background shell task output.
+pub(super) fn shell_output_dir(cwd: &Path) -> Result<PathBuf> {
+    let dir = workflow_root(cwd)?.join("shell_outputs");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Returns the log path used to persist one background shell task's output.
+pub(super) fn shell_output_path(cwd: &Path, task_id: &str) -> Result<PathBuf> {
+    Ok(shell_output_dir(cwd)?.join(format!("{task_id}.log")))
+}
+
+/// Returns the directory used to persist background workflow task output.
+pub(super) fn task_output_dir(cwd: &Path) -> Result<PathBuf> {
+    let dir = workflow_root(cwd)?.join("task_outputs");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Returns the log path used to persist one background workflow task's output.
+pub(super) fn task_output_path(cwd: &Path, task_id: &str) -> Result<PathBuf> {
+    Ok(task_output_dir(cwd)?.join(format!("{task_id}.log")))
+}
+
 pub(super) fn ensure_plan_file(state: &AppState) -> Result<PathBuf> {
     let paths = ConfigPaths::discover(&state.cwd);
     ensure_workspace_dirs(&paths)?;
@@ -580,7 +667,12 @@ pub(super) fn ensure_plan_file(state: &AppState) -> Result<PathBuf> {
 
 pub(super) fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
     let output = Command::new("git")
-        .args(["-C", cwd.to_string_lossy().as_ref(), "rev-parse", "--show-toplevel"])
+        .args([
+            "-C",
+            cwd.to_string_lossy().as_ref(),
+            "rev-parse",
+            "--show-toplevel",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -592,7 +684,12 @@ pub(super) fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
 
 pub(super) fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
-        .args(["-C", path.to_string_lossy().as_ref(), "rev-parse", "--git-dir"])
+        .args([
+            "-C",
+            path.to_string_lossy().as_ref(),
+            "rev-parse",
+            "--git-dir",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -601,10 +698,50 @@ pub(super) fn is_git_repo(path: &Path) -> bool {
 
 pub(super) fn git_dirty(path: &Path) -> Result<bool> {
     let output = Command::new("git")
-        .args(["-C", path.to_string_lossy().as_ref(), "status", "--porcelain"])
+        .args([
+            "-C",
+            path.to_string_lossy().as_ref(),
+            "status",
+            "--porcelain",
+        ])
         .output()
         .with_context(|| format!("failed to inspect {}", path.display()))?;
     Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+/// Returns the current HEAD commit for the git repository at the given path.
+pub(super) fn git_head_commit(path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["-C", path.to_string_lossy().as_ref(), "rev-parse", "HEAD"])
+        .output()
+        .with_context(|| format!("failed to read HEAD for {}", path.display()))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!commit.is_empty()).then_some(commit))
+}
+
+/// Returns the number of commits present in `path` after the provided base commit.
+pub(super) fn git_ahead_count(path: &Path, base_commit: &str) -> Result<u64> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            path.to_string_lossy().as_ref(),
+            "rev-list",
+            "--count",
+            &format!("{base_commit}..HEAD"),
+        ])
+        .output()
+        .with_context(|| format!("failed to inspect commit divergence for {}", path.display()))?;
+    if !output.status.success() {
+        bail!("failed to inspect commit divergence for {}", path.display());
+    }
+    let count = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("failed to parse commit count for {}", path.display()))?;
+    Ok(count)
 }
 
 pub(super) fn resolve_path(cwd: &Path, path: &str) -> PathBuf {
@@ -621,6 +758,126 @@ pub(super) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Parses the operating-system process id from a shell task identifier.
+pub(super) fn parse_shell_task_pid(task_id: &str) -> Option<u32> {
+    task_id.strip_prefix("shell-")?.parse::<u32>().ok()
+}
+
+/// Returns the next sequential workflow task id.
+pub(super) fn next_task_id(tasks: &[StoredTask]) -> String {
+    let next = tasks
+        .iter()
+        .filter_map(|task| task.task_id.strip_prefix("task-"))
+        .filter_map(|suffix| suffix.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    format!("task-{next}")
+}
+
+/// Returns true when the operating-system process is still running.
+pub(super) fn process_is_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+    #[cfg(windows)]
+    {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}")])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .any(|line| line.contains(&pid.to_string()))
+            })
+    }
+}
+
+/// Waits for the process to exit, returning true when it stops within the timeout.
+pub(super) fn wait_for_process_exit(pid: u32, timeout_ms: u64) -> bool {
+    let deadline = now_ms().saturating_add(timeout_ms);
+    while now_ms() < deadline {
+        if !process_is_running(pid) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    !process_is_running(pid)
+}
+
+/// Attempts to terminate a background shell process by pid.
+pub(super) fn terminate_process(pid: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .with_context(|| format!("failed to send SIGTERM to process {pid}"))?;
+        if !status.success() {
+            bail!("failed to stop process {pid}");
+        }
+    }
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .with_context(|| format!("failed to terminate process {pid}"))?;
+        if !status.success() {
+            bail!("failed to stop process {pid}");
+        }
+    }
+    Ok(())
+}
+
+/// Validates the minimal five-field cron expression shape used by workflow tools.
+pub(super) fn validate_cron_expression(cron: &str) -> Result<()> {
+    let fields = cron.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 5 || fields.iter().any(|field| field.trim().is_empty()) {
+        bail!("cron expression must contain exactly 5 non-empty fields");
+    }
+    Ok(())
+}
+
+/// Validates the bounded multiple-choice shape used by `AskUserQuestion`.
+pub(super) fn validate_ask_user_questions(items: &[AskUserQuestionItem]) -> Result<()> {
+    if items.is_empty() || items.len() > 4 {
+        bail!("AskUserQuestion requires between 1 and 4 questions");
+    }
+    for item in items {
+        if item.options.len() < 2 || item.options.len() > 4 {
+            bail!(
+                "AskUserQuestion question `{}` must provide between 2 and 4 options",
+                item.header
+            );
+        }
+        if item.multi_select && item.options.iter().any(|option| option.preview.is_some()) {
+            bail!(
+                "AskUserQuestion question `{}` cannot use previews with multiSelect",
+                item.header
+            );
+        }
+        for option in &item.options {
+            if option.label.trim().is_empty() || option.description.trim().is_empty() {
+                bail!(
+                    "AskUserQuestion question `{}` has an option with empty label or description",
+                    item.header
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_workspace_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<()> {

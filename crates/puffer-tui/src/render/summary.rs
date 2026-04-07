@@ -62,8 +62,7 @@ pub(super) fn top_panel_columns(
                 "Mascot",
                 vec![Span::styled(
                     truncate(&mascot, 32),
-                    ratatui::style::Style::default()
-                        .add_modifier(ratatui::style::Modifier::BOLD),
+                    ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
                 )],
             ),
             left.line("User", vec![Span::raw(truncate(&user, 40))]),
@@ -165,10 +164,7 @@ pub(super) fn status_secondary_line(
         line.push_str(&format!(" · {}", truncate(&remote, 18)));
     }
     if state.statusline_enabled {
-        line.push_str(&format!(
-            " · sandbox {}",
-            truncate(&state.sandbox_mode, 18)
-        ));
+        line.push_str(&format!(" · sandbox {}", truncate(&state.sandbox_mode, 18)));
     }
     if tool_status(tool_registry).executable == 0 {
         line.push_str(" · no tools");

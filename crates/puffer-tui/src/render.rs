@@ -5,13 +5,13 @@ mod tool_messages;
 
 use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
 use self::panes::{render_empty_state, render_help_pane};
-use self::summary::{
-    hint_line, status_compact_line, status_primary_line, status_secondary_line,
-    top_panel_columns, top_panel_compact_lines, top_panel_height, use_compact_top_panel,
-};
-use self::tool_messages::render_tool_message;
 #[cfg(test)]
 use self::summary::{footer_lines, header_lines, session_lines};
+use self::summary::{
+    hint_line, status_compact_line, status_primary_line, status_secondary_line, top_panel_columns,
+    top_panel_compact_lines, top_panel_height, use_compact_top_panel,
+};
+use self::tool_messages::render_tool_message;
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use crate::state::AuthPickerEntry;
@@ -22,8 +22,8 @@ use puffer_provider_registry::AuthStore;
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::symbols::border;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::border;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
@@ -128,7 +128,14 @@ pub(crate) fn render(
         .split(frame.area());
 
     if header_height > 0 && !simplified_surface {
-        render_top_panel(frame, layout[0], state, resources, auth_store, &tool_registry);
+        render_top_panel(
+            frame,
+            layout[0],
+            state,
+            resources,
+            auth_store,
+            &tool_registry,
+        );
     }
 
     if help_active {
@@ -300,7 +307,14 @@ pub(crate) fn render(
     }
 
     if input.starts_with('/') && !onboarding_active {
-        render_command_popup(frame, layout[1], prompt_row, input, slash_selection, commands);
+        render_command_popup(
+            frame,
+            layout[1],
+            prompt_row,
+            input,
+            slash_selection,
+            commands,
+        );
     }
     if let Some(overlay) = active_overlay.as_ref() {
         if let OverlayState::Usage(usage) = overlay {
@@ -492,10 +506,7 @@ fn overlay_prompt_line(input: &str) -> Line<'static> {
     if input.is_empty() {
         Line::from(vec![
             Span::raw("❯ "),
-            Span::styled(
-                "Type to jump",
-                Style::default().add_modifier(Modifier::DIM),
-            ),
+            Span::styled("Type to jump", Style::default().add_modifier(Modifier::DIM)),
         ])
     } else {
         Line::from(format!("❯ {input}"))
@@ -724,7 +735,9 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
                 text: render_model_entry(entry),
             })
             .collect(),
-        OverlayState::AuthPicker { entries, selection, .. } => entries
+        OverlayState::AuthPicker {
+            entries, selection, ..
+        } => entries
             .iter()
             .enumerate()
             .map(|(index, entry)| OverlayRow {
@@ -760,7 +773,10 @@ fn render_model_entry(entry: &ModelPickerEntry) -> String {
     if entry.description.trim().is_empty() {
         return entry.selector.clone();
     }
-    if entry.selector.eq_ignore_ascii_case(entry.description.trim()) {
+    if entry
+        .selector
+        .eq_ignore_ascii_case(entry.description.trim())
+    {
         return entry.description.clone();
     }
     format!("{}  {}", entry.selector, entry.description)
@@ -806,10 +822,9 @@ fn is_onboarding_overlay(overlay: &OverlayState) -> bool {
 
 fn render_onboarding_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState) {
     let max_height = viewport.height.saturating_sub(2).max(8);
-    let max_rows = usize::from(
-        max_height.saturating_sub((onboarding_fixed_line_count(overlay) + 2) as u16),
-    )
-    .max(1);
+    let max_rows =
+        usize::from(max_height.saturating_sub((onboarding_fixed_line_count(overlay) + 2) as u16))
+            .max(1);
     let body_lines = onboarding_body_lines(overlay, max_rows);
     let width = viewport.width.saturating_sub(12).min(76).max(34);
     let height = (body_lines.len() as u16 + 2).min(max_height);
@@ -884,7 +899,9 @@ fn onboarding_body_lines(overlay: &OverlayState, max_rows: usize) -> Vec<Line<'s
             overlay_rows(overlay),
             "Enter to confirm · Esc to go back",
         ),
-        OverlayState::ApiKeyPrompt { provider_id, value, .. } => {
+        OverlayState::ApiKeyPrompt {
+            provider_id, value, ..
+        } => {
             let key_line = format!("> {}", masked_secret(value));
             return vec![
                 Line::from(Span::styled(
@@ -963,6 +980,6 @@ fn onboarding_body_lines(overlay: &OverlayState, max_rows: usize) -> Vec<Line<'s
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod overlay_tests;
+#[cfg(test)]
+mod tests;

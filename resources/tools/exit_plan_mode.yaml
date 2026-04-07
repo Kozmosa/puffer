@@ -1,6 +1,10 @@
 id: ExitPlanMode
 name: ExitPlanMode
-description: Present plan for approval and exit plan mode.
+description: |-
+  Exit plan mode and request user approval for the finished plan.
+
+  The plan content should already be written to the plan file before calling
+  this tool.
 handler: runtime:workflow:exit_plan_mode
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -24,3 +28,5 @@ input_schema:
         required:
           - tool
           - prompt
+        additionalProperties: false
+  additionalProperties: false

@@ -409,7 +409,9 @@ fn provider_rank(provider_id: &str) -> (u8, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puffer_provider_registry::{AuthMode, ModelDescriptor, ModelDiscoveryConfig, ModelDiscoveryFormat};
+    use puffer_provider_registry::{
+        AuthMode, ModelDescriptor, ModelDiscoveryConfig, ModelDiscoveryFormat,
+    };
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -515,8 +517,8 @@ mod tests {
             },
         );
 
-        let overlay = provider_setup_overlay(&mut providers, &auth_store, "openai")
-            .expect("overlay result");
+        let overlay =
+            provider_setup_overlay(&mut providers, &auth_store, "openai").expect("overlay result");
 
         match overlay {
             Some(OverlayState::ModelPicker { entries, .. }) => {

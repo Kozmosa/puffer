@@ -75,7 +75,9 @@ pub(crate) fn execute_tool(
             Ok(tool_result(definition, true, output))
         }
         "Edit" => {
-            enforce_read_precondition(state, input_file_path(&input, "file_path")?.as_deref())?;
+            if edit::requires_prior_read(&input) {
+                enforce_read_precondition(state, input_file_path(&input, "file_path")?.as_deref())?;
+            }
             let output = edit::execute_claude_edit(cwd, input.clone())?;
             if let Some(path) = input_file_path(&input, "file_path")? {
                 mark_fully_read(state, &path)?;
@@ -113,7 +115,9 @@ pub(crate) fn execute_tool(
         "ListMcpResourcesTool" | "ReadMcpResourceTool" => Ok(tool_result(
             definition,
             true,
-            super::local_tools::execute_runtime_local_tool(resources, registry, definition, cwd, input)?,
+            super::local_tools::execute_runtime_local_tool(
+                resources, registry, definition, cwd, input,
+            )?,
         )),
         "WebFetch" => {
             let output = serde_json::to_string_pretty(&web_fetch::execute_claude_web_fetch(input)?)
@@ -129,9 +133,11 @@ pub(crate) fn execute_tool(
                 ProviderToolContext::Anthropic {
                     request_config,
                     model_id,
-                } => {
-                    web_search::execute_claude_anthropic_web_search(request_config, model_id, input)?
-                }
+                } => web_search::execute_claude_anthropic_web_search(
+                    request_config,
+                    model_id,
+                    input,
+                )?,
                 ProviderToolContext::None => {
                     bail!("WebSearch requires provider execution context")
                 }
@@ -146,7 +152,9 @@ pub(crate) fn execute_tool(
         _ if super::local_tools::is_runtime_local_tool(definition) => Ok(tool_result(
             definition,
             true,
-            super::local_tools::execute_runtime_local_tool(resources, registry, definition, cwd, input)?,
+            super::local_tools::execute_runtime_local_tool(
+                resources, registry, definition, cwd, input,
+            )?,
         )),
         _ => registry.execute_json(&definition.id, cwd, input),
     }
@@ -165,10 +173,7 @@ fn tool_result(definition: &ToolDefinition, success: bool, stdout: String) -> To
 }
 
 fn input_file_path(input: &Value, field: &str) -> Result<Option<PathBuf>> {
-    Ok(input
-        .get(field)
-        .and_then(Value::as_str)
-        .map(PathBuf::from))
+    Ok(input.get(field).and_then(Value::as_str).map(PathBuf::from))
 }
 
 fn clone_read_state(state: &AppState) -> HashMap<PathBuf, write::ClaudeReadSnapshot> {
@@ -271,7 +276,9 @@ fn execute_workflow_tool(
 ) -> Result<String> {
     match tool_id {
         "Agent" => workflow::agent::execute_agent(state, cwd, input),
-        "AskUserQuestion" => workflow::ask_user_question::execute_ask_user_question(state, cwd, input),
+        "AskUserQuestion" => {
+            workflow::ask_user_question::execute_ask_user_question(state, cwd, input)
+        }
         "Config" => workflow::config::execute_config(state, cwd, input),
         "CronCreate" => workflow::cron_create::execute_cron_create(state, cwd, input),
         "CronDelete" => workflow::cron_delete::execute_cron_delete(state, cwd, input),
@@ -286,7 +293,9 @@ fn execute_workflow_tool(
         "SendUserMessage" | "Brief" => {
             workflow::send_user_message::execute_send_user_message(state, cwd, input)
         }
-        "StructuredOutput" => workflow::structured_output::execute_structured_output(state, cwd, input),
+        "StructuredOutput" => {
+            workflow::structured_output::execute_structured_output(state, cwd, input)
+        }
         "TaskCreate" => workflow::task_create::execute_task_create(state, cwd, input),
         "TaskGet" => workflow::task_get::execute_task_get(state, cwd, input),
         "TaskList" => workflow::task_list::execute_task_list(state, cwd, input),

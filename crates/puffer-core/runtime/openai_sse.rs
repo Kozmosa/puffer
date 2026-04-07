@@ -76,7 +76,11 @@ where
     }
     let event: Value =
         serde_json::from_str(&data).with_context(|| format!("invalid SSE payload: {data}"))?;
-    match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+    match event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
         "response.created" | "response.completed" => {
             if let Some(id) = event.pointer("/response/id").and_then(Value::as_str) {
                 *response_id = Some(id.to_string());

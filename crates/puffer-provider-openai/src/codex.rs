@@ -128,7 +128,9 @@ mod tests {
     fn default_headers_include_originator_and_user_agent() {
         let headers = default_headers("0.1.0", "codex_cli_rs");
         assert_eq!(
-            headers.get("originator").and_then(|value| value.to_str().ok()),
+            headers
+                .get("originator")
+                .and_then(|value| value.to_str().ok()),
             Some("codex_cli_rs")
         );
         assert!(headers.contains_key(reqwest::header::USER_AGENT));

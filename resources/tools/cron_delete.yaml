@@ -12,3 +12,4 @@ input_schema:
       description: Job ID returned by CronCreate.
   required:
     - id
+  additionalProperties: false

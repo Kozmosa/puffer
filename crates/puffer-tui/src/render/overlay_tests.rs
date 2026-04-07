@@ -30,7 +30,10 @@ fn visible_overlay_rows_scrolls_with_selection() {
     let visible = visible_overlay_rows(rows, Some(5), 4);
     let texts = visible.into_iter().map(|row| row.text).collect::<Vec<_>>();
 
-    assert_eq!(texts, vec!["... 3 above", "model-4", "model-5", "... 1 more"]);
+    assert_eq!(
+        texts,
+        vec!["... 3 above", "model-4", "model-5", "... 1 more"]
+    );
 }
 
 #[test]
@@ -55,7 +58,13 @@ fn render_model_overlay_shows_overflow_indicator() {
         })
         .unwrap();
 
-    let rendered = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
     assert!(rendered.contains("model-0  Model 0"));
     assert!(rendered.contains("..."));
     assert!(rendered.contains("more"));

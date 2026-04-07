@@ -1,6 +1,43 @@
 id: Bash
 name: Bash
-description: Run shell command
+description: |-
+  Executes a given bash command and returns its output.
+
+  The working directory persists between commands, but shell state does not.
+  The shell environment is initialized from the user's profile.
+
+  IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`,
+  `tail`, `sed`, `awk`, or `echo` commands unless explicitly instructed or
+  after you have verified that a dedicated tool cannot accomplish your task.
+  Instead, use the appropriate dedicated tool:
+  - File search: Use Glob
+  - Content search: Use Grep
+  - Read files: Use Read
+  - Edit files: Use Edit
+  - Write files: Use Write
+  - Communication: Output text directly
+
+  Instructions:
+  - If your command will create new directories or files, first run `ls` to
+    verify the parent directory exists and is the correct location.
+  - Always quote file paths that contain spaces with double quotes.
+  - Prefer absolute paths and avoid `cd` unless the User explicitly requests
+    it.
+  - You may specify an optional timeout in milliseconds up to 600000. By
+    default, commands time out after 120000 milliseconds.
+  - Use `run_in_background` when you do not need the result immediately and
+    are okay being notified later. Do not add `&` when using this parameter.
+  - If multiple independent commands can run in parallel, make multiple Bash
+    tool calls in a single message.
+  - If commands depend on each other, use a single Bash call with `&&`.
+  - For git commands, prefer new commits over amend, avoid destructive
+    operations unless clearly justified, and never skip hooks or signing
+    unless the User explicitly requests it.
+  - Do not use unnecessary `sleep` commands. If you started a background task,
+    do not poll it immediately.
+  - Commands run in a sandbox by default. Use
+    `dangerouslyDisableSandbox: true` only when you explicitly need to bypass
+    sandbox restrictions.
 handler: runtime:claude_bash
 approval_policy: on-request
 sandbox_policy: workspace-write
@@ -12,13 +49,30 @@ input_schema:
       description: The command to execute
     timeout:
       type: integer
-      description: Optional timeout in milliseconds
+      description: Optional timeout in milliseconds (max 600000)
+      minimum: 1
+      maximum: 600000
     description:
       type: string
       description: |-
         Clear, concise description of what this command does in active voice.
         Never use words like "complex" or "risk" in the description - just
         describe what it does.
+
+        For simple commands (git, npm, standard CLI tools), keep it brief
+        (5-10 words):
+        - ls -> "List files in current directory"
+        - git status -> "Show working tree status"
+        - npm install -> "Install package dependencies"
+
+        For commands that are harder to parse at a glance (piped commands,
+        obscure flags, etc.), add enough context to clarify what it does:
+        - find . -name "*.tmp" -exec rm {} \\; -> "Find and delete all .tmp
+          files recursively"
+        - git reset --hard origin/main -> "Discard all local changes and match
+          remote main"
+        - curl -s url | jq '.data[]' -> "Fetch JSON from URL and extract data
+          array elements"
     run_in_background:
       type: boolean
       description: Set to true to run this command in the background. Use Read to read the output later.
@@ -27,6 +81,7 @@ input_schema:
       description: Set this to true to dangerously override sandbox mode and run commands without sandboxing.
   required:
     - command
+  additionalProperties: false
 display:
   group: shell
   title: Bash

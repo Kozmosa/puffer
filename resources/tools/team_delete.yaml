@@ -1,9 +1,10 @@
 id: TeamDelete
 name: TeamDelete
-description: Clean up team and task directories when swarm work is complete.
+description: Remove team resources after coordinated work is complete.
 handler: runtime:workflow:team_delete
 approval_policy: auto
 sandbox_policy: workspace-write
 input_schema:
   type: object
   properties: {}
+  additionalProperties: false

@@ -1,9 +1,12 @@
 use anyhow::{bail, Context, Result};
+use html2text::from_read;
 use reqwest::blocking::Client;
 use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const CLAUDE_WEB_FETCH_TOOL_DESCRIPTION: &str = r#"- Fetches content from a specified URL and processes it using an AI model
 - Takes a URL and a prompt as input
@@ -24,6 +27,21 @@ Usage notes:
   - For GitHub URLs, prefer using `gh` via Bash (for example `gh pr view`, `gh issue view`, `gh api`)."#;
 
 const MAX_RESULT_CHARS: usize = 100_000;
+const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Debug, Clone)]
+struct CachedFetch {
+    body: String,
+    bytes: usize,
+    code: u16,
+    code_text: String,
+    inserted_at: Instant,
+}
+
+fn web_fetch_cache() -> &'static Mutex<HashMap<String, CachedFetch>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedFetch>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Deserialize)]
 struct ClaudeWebFetchInput {
@@ -66,6 +84,18 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
     let start = Instant::now();
     let request_url = normalize_url(&input.url)?;
 
+    if let Some(cached) = cached_fetch(&request_url) {
+        let result = apply_prompt_to_content(&input.prompt, &cached.body);
+        return Ok(json!({
+            "bytes": cached.bytes,
+            "code": cached.code,
+            "codeText": cached.code_text,
+            "result": result?,
+            "durationMs": start.elapsed().as_millis(),
+            "url": request_url.to_string(),
+        }));
+    }
+
     let response = client
         .get(request_url.clone())
         .send()
@@ -83,14 +113,24 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
             "codeText": status_text,
             "result": redirect_message,
             "durationMs": start.elapsed().as_millis(),
-            "url": request_url.to_string(),
+            "url": final_url.to_string(),
         }));
     }
 
     let bytes = response
         .bytes()
         .context("failed to read web fetch response body")?;
-    let content = String::from_utf8_lossy(&bytes).to_string();
+    let content = normalize_web_content(&bytes);
+    store_cached_fetch(
+        &request_url,
+        CachedFetch {
+            body: content.clone(),
+            bytes: bytes.len(),
+            code: status.as_u16(),
+            code_text: status_text.clone(),
+            inserted_at: Instant::now(),
+        },
+    );
     let result = apply_prompt_to_content(&input.prompt, &content)?;
     Ok(json!({
         "bytes": bytes.len(),
@@ -98,7 +138,7 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
         "codeText": status_text,
         "result": result,
         "durationMs": start.elapsed().as_millis(),
-        "url": request_url.to_string(),
+        "url": final_url.to_string(),
     }))
 }
 
@@ -138,6 +178,65 @@ fn build_redirect_message(
     )
 }
 
+fn cached_fetch(url: &Url) -> Option<CachedFetch> {
+    let mut cache = web_fetch_cache().lock().ok()?;
+    let entry = cache.get(url.as_str())?.clone();
+    if entry.inserted_at.elapsed() > CACHE_TTL {
+        cache.remove(url.as_str());
+        return None;
+    }
+    Some(entry)
+}
+
+fn store_cached_fetch(url: &Url, entry: CachedFetch) {
+    if let Ok(mut cache) = web_fetch_cache().lock() {
+        cache.insert(url.to_string(), entry);
+    }
+}
+
+fn normalize_web_content(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes).to_string();
+    if !looks_like_html(&text) {
+        return text;
+    }
+    html_to_text(&text)
+}
+
+fn looks_like_html(text: &str) -> bool {
+    let lower = text.trim_start().to_ascii_lowercase();
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.contains("<body")
+        || lower.contains("<p>")
+}
+
+fn html_to_text(html: &str) -> String {
+    let stripped = strip_tag_block(&strip_tag_block(html, "script"), "style");
+    from_read(stripped.as_bytes(), 80)
+        .unwrap_or_else(|_| stripped)
+        .trim()
+        .to_string()
+}
+
+fn strip_tag_block(html: &str, tag: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut result = String::new();
+    let mut index = 0usize;
+    while let Some(relative_start) = lower[index..].find(&open) {
+        let start = index + relative_start;
+        result.push_str(&html[index..start]);
+        let Some(relative_end) = lower[start..].find(&close) else {
+            return result;
+        };
+        let end = start + relative_end + close.len();
+        index = end;
+    }
+    result.push_str(&html[index..]);
+    result
+}
+
 fn apply_prompt_to_content(prompt: &str, content: &str) -> Result<String> {
     let trimmed_prompt = prompt.trim();
     if trimmed_prompt.is_empty() {
@@ -147,13 +246,17 @@ fn apply_prompt_to_content(prompt: &str, content: &str) -> Result<String> {
         "Prompt:\n{prompt}\n\nFetched Content:\n",
         prompt = trimmed_prompt
     );
-    if content.len() > MAX_RESULT_CHARS {
-        result.push_str(&content[..MAX_RESULT_CHARS]);
+    if content.chars().count() > MAX_RESULT_CHARS {
+        result.push_str(&truncate_for_result(content, MAX_RESULT_CHARS));
         result.push_str("\n\n[Result truncated due to size]");
     } else {
         result.push_str(content);
     }
     Ok(result)
+}
+
+fn truncate_for_result(content: &str, max_chars: usize) -> String {
+    content.chars().take(max_chars).collect()
 }
 
 #[cfg(test)]
@@ -191,5 +294,21 @@ mod tests {
         let output = apply_prompt_to_content("summarize", "hello world").unwrap();
         assert!(output.contains("Prompt:\nsummarize"));
         assert!(output.contains("Fetched Content:\nhello world"));
+    }
+
+    #[test]
+    fn html_content_is_normalized_before_prompting() {
+        let normalized =
+            normalize_web_content(b"<html><body><h1>Title</h1><p>Hello<br>world</p></body></html>");
+        assert!(normalized.contains("Title"));
+        assert!(normalized.contains("Hello"));
+        assert!(normalized.contains("world"));
+        assert!(!normalized.contains("<h1>"));
+    }
+
+    #[test]
+    fn truncate_for_result_uses_char_boundary() {
+        let truncated = truncate_for_result("aé漢字", 3);
+        assert_eq!(truncated, "aé漢");
     }
 }

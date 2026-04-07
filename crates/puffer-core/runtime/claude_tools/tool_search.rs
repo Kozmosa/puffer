@@ -180,9 +180,7 @@ fn resolve_keyword_matches<'a>(
         })
         .collect::<Vec<_>>();
 
-    scored.sort_by_key(|(score, definition)| {
-        (Reverse(*score), definition.id.to_ascii_lowercase())
-    });
+    scored.sort_by_key(|(score, definition)| (Reverse(*score), definition.id.to_ascii_lowercase()));
     scored
         .into_iter()
         .take(max_results)
@@ -230,12 +228,7 @@ fn split_identifier(value: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-fn score_term(
-    definition: &ToolDefinition,
-    parts: &[String],
-    description: &str,
-    term: &str,
-) -> u32 {
+fn score_term(definition: &ToolDefinition, parts: &[String], description: &str, term: &str) -> u32 {
     let mut score = 0;
     if definition.id.eq_ignore_ascii_case(term) || definition.name.eq_ignore_ascii_case(term) {
         score += 10;

@@ -78,8 +78,8 @@ pub fn fetch_oauth_usage(base_url: &str, access_token: &str) -> Result<Anthropic
     let body = response
         .text()
         .context("failed to read Anthropic OAuth usage response body")?;
-    let usage: AnthropicUtilization = serde_json::from_str(&body)
-        .context("failed to parse Anthropic OAuth usage response")?;
+    let usage: AnthropicUtilization =
+        serde_json::from_str(&body).context("failed to parse Anthropic OAuth usage response")?;
     Ok(usage)
 }
 
