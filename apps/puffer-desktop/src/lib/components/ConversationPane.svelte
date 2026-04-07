@@ -89,6 +89,17 @@
     draft = "";
   }
 
+  function handleComposerKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter") {
+      return;
+    }
+    if (!(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+    event.preventDefault();
+    submitDraft();
+  }
+
   function permissionIcon(choice: string): "allow_once" | "allow_session" | "deny" {
     const normalized = choice.toLowerCase();
     if (normalized.includes("session")) {
@@ -225,6 +236,7 @@
       rows={3}
       placeholder="Send a message to continue this session"
       spellcheck={false}
+      on:keydown={handleComposerKeydown}
     ></textarea>
     <button disabled={!draft.trim()} type="submit">
       <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -483,6 +495,14 @@
     background: rgba(255, 255, 255, 0.92);
     color: var(--text);
     padding-inline: 1.05rem;
+  }
+
+  .composer::after {
+    content: "Ctrl/Command + Enter to send";
+    grid-column: 1 / -1;
+    color: var(--text-soft);
+    font-size: 0.72rem;
+    line-height: 1;
   }
 
   .composer button:disabled {

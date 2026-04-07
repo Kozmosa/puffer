@@ -124,6 +124,14 @@ a {
     var(--canvas-muted);
 }
 
+.workspace-split.has-diff {
+  grid-template-columns: minmax(0, 0.92fr) minmax(520px, 1.08fr);
+}
+
+.workspace-split.no-diff {
+  grid-template-columns: minmax(0, 1.22fr) minmax(320px, 0.78fr);
+}
+
 .workspace-split {
   box-shadow: 1px 0 0 rgba(120, 99, 72, 0.08) inset;
 }

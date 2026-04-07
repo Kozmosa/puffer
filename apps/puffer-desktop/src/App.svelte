@@ -414,7 +414,12 @@
 
   <main class="workspace">
     {#if view === "workspace"}
-      <div class:loading={sessionLoading} class="content workspace-split">
+      <div
+        class:loading={sessionLoading}
+        class:has-diff={Boolean(sessionDetail?.latestDiff)}
+        class:no-diff={!sessionDetail?.latestDiff}
+        class="content workspace-split"
+      >
         <ConversationPane
           session={selectedSession}
           timeline={conversationTimeline}
