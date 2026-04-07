@@ -17,6 +17,7 @@ pub(crate) struct TuiState {
     pub(crate) cursor: usize,
     pub(crate) slash_selection: usize,
     pub(crate) scroll_offset: u16,
+    pub(crate) follow_output: bool,
     pub(crate) tool_details_expanded: bool,
     pub(crate) overlay: Option<OverlayState>,
     pub(crate) deferred_prompt: Option<String>,
@@ -51,6 +52,7 @@ impl Default for TuiState {
             cursor: 0,
             slash_selection: 0,
             scroll_offset: 0,
+            follow_output: true,
             tool_details_expanded: false,
             overlay: None,
             deferred_prompt: None,
@@ -204,14 +206,26 @@ impl TuiState {
     }
 
     /// Scrolls the transcript upward by the requested number of lines.
-    pub(crate) fn scroll_up(&mut self, amount: u16) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+    pub(crate) fn scroll_up(&mut self, amount: u16, line_count: u16, viewport_height: u16) {
+        self.scroll_offset = self
+            .effective_bottom_offset(line_count, viewport_height)
+            .saturating_sub(amount);
+        self.follow_output = false;
     }
 
     /// Scrolls the transcript downward by the requested number of lines.
-    pub(crate) fn scroll_down(&mut self, amount: u16, line_count: u16) {
-        let max_offset = line_count.saturating_sub(1);
+    pub(crate) fn scroll_down(&mut self, amount: u16, line_count: u16, viewport_height: u16) {
+        let max_offset = max_scroll_offset(line_count, viewport_height);
         self.scroll_offset = (self.scroll_offset + amount).min(max_offset);
+        self.follow_output = self.scroll_offset >= max_offset;
+    }
+
+    fn effective_bottom_offset(&self, line_count: u16, viewport_height: u16) -> u16 {
+        if self.follow_output {
+            max_scroll_offset(line_count, viewport_height)
+        } else {
+            self.scroll_offset
+        }
     }
 
     fn matching_rows<'a>(&self, commands: &'a [CommandSpec]) -> Vec<&'a CommandSpec> {
@@ -810,4 +824,31 @@ fn next_boundary(input: &str, cursor: usize) -> usize {
         index += 1;
     }
     index.min(input.len())
+}
+
+fn max_scroll_offset(line_count: u16, viewport_height: u16) -> u16 {
+    line_count.saturating_sub(viewport_height.max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TuiState;
+
+    #[test]
+    fn scroll_up_detaches_from_follow_output() {
+        let mut tui = TuiState::default();
+        tui.scroll_up(1, 20, 5);
+        assert!(!tui.follow_output);
+        assert_eq!(tui.scroll_offset, 14);
+    }
+
+    #[test]
+    fn scroll_down_reattaches_when_reaching_bottom() {
+        let mut tui = TuiState::default();
+        tui.follow_output = false;
+        tui.scroll_offset = 14;
+        tui.scroll_down(1, 20, 5);
+        assert!(tui.follow_output);
+        assert_eq!(tui.scroll_offset, 15);
+    }
 }

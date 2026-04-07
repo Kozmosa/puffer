@@ -1,6 +1,7 @@
 mod overlay_list;
 mod panes;
 mod summary;
+mod top_panel;
 mod tool_messages;
 
 use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
@@ -8,9 +9,9 @@ use self::panes::{render_empty_state, render_help_pane};
 #[cfg(test)]
 use self::summary::{footer_lines, header_lines, session_lines};
 use self::summary::{
-    hint_line, status_compact_line, status_primary_line, status_secondary_line, top_panel_columns,
-    top_panel_compact_lines, top_panel_height, use_compact_top_panel,
+    hint_line, status_compact_line, status_primary_line, status_secondary_line, top_panel_height,
 };
+use self::top_panel::{render_fixed_top_panel, scrollable_top_panel_lines};
 use self::tool_messages::render_tool_message;
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
@@ -36,19 +37,17 @@ struct PendingSubmitRenderState {
     loading_prompt: Option<String>,
     queued_prompts: Vec<String>,
 }
-
 thread_local! {
     static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
-    static ACTIVE_PENDING_SUBMIT: RefCell<PendingSubmitRenderState> =
-        RefCell::new(PendingSubmitRenderState::default());
+    static ACTIVE_PENDING_SUBMIT: RefCell<PendingSubmitRenderState> = RefCell::new(PendingSubmitRenderState::default());
     static ACTIVE_TOOL_DETAILS_EXPANDED: RefCell<bool> = const { RefCell::new(false) };
+    static ACTIVE_FOLLOW_OUTPUT: RefCell<bool> = const { RefCell::new(true) };
+    static ACTIVE_TRANSCRIPT_VIEWPORT: RefCell<Option<Rect>> = const { RefCell::new(None) };
 }
 
 /// Sets the active overlay rendered by the TUI on the next draw.
 pub(crate) fn set_active_overlay(overlay: Option<OverlayState>) {
-    ACTIVE_OVERLAY.with(|value| {
-        *value.borrow_mut() = overlay;
-    });
+    ACTIVE_OVERLAY.with(|value| *value.borrow_mut() = overlay);
 }
 
 /// Sets the pending submit render state for the current frame.
@@ -66,11 +65,18 @@ pub(crate) fn set_pending_submit_state(
 
 /// Sets whether transcript tool messages should render their raw details.
 pub(crate) fn set_tool_details_expanded(expanded: bool) {
-    ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| {
-        *value.borrow_mut() = expanded;
-    });
+    ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| *value.borrow_mut() = expanded);
 }
 
+/// Sets whether the transcript should stay pinned to the latest output.
+pub(crate) fn set_follow_output(follow_output: bool) {
+    ACTIVE_FOLLOW_OUTPUT.with(|value| *value.borrow_mut() = follow_output);
+}
+
+/// Returns the current transcript viewport measured during the last draw.
+pub(crate) fn current_transcript_viewport() -> Rect {
+    ACTIVE_TRANSCRIPT_VIEWPORT.with(|value| value.borrow().unwrap_or_default())
+}
 /// Renders the current application frame.
 pub(crate) fn render(
     frame: &mut Frame<'_>,
@@ -94,6 +100,7 @@ pub(crate) fn render(
     let help_active = help_pane_active(state, &active_overlay);
     let home_active = state.transcript.is_empty() && active_overlay.is_none() && !onboarding_active;
     let simplified_surface = help_active;
+    let scrollable_top_panel = !simplified_surface && !home_active && !onboarding_active;
     let compact_composer = frame.area().width < COMPACT_COMPOSER_BREAKPOINT;
     let footer_height = if onboarding_active {
         4
@@ -106,7 +113,7 @@ pub(crate) fn render(
     } else {
         4
     };
-    let header_height = if simplified_surface {
+    let header_height = if simplified_surface || scrollable_top_panel {
         0
     } else {
         top_panel_height(
@@ -126,9 +133,12 @@ pub(crate) fn render(
             Constraint::Length(footer_height),
         ])
         .split(frame.area());
+    ACTIVE_TRANSCRIPT_VIEWPORT.with(|value| {
+        *value.borrow_mut() = Some(layout[1]);
+    });
 
     if header_height > 0 && !simplified_surface {
-        render_top_panel(
+        render_fixed_top_panel(
             frame,
             layout[0],
             state,
@@ -143,9 +153,29 @@ pub(crate) fn render(
     } else if home_active {
         render_empty_state(frame, layout[1], state);
     } else {
+        let follow_output = ACTIVE_FOLLOW_OUTPUT.with(|value| *value.borrow());
+        let pending_submit = pending_submit_state();
+        let body_scroll_offset = if follow_output {
+            transcript_line_count(
+                state,
+                resources,
+                auth_store,
+                pending_submit.loading_prompt.is_some() || !pending_submit.queued_prompts.is_empty(),
+            )
+                .saturating_sub(layout[1].height.max(1))
+        } else {
+            scroll_offset
+        };
         frame.render_widget(
-            Paragraph::new(transcript_text(state, pending_submit_state()))
-                .scroll((scroll_offset, 0))
+            Paragraph::new(transcript_text(
+                layout[1].width.max(1),
+                state,
+                resources,
+                auth_store,
+                &tool_registry,
+                pending_submit,
+            ))
+                .scroll((body_scroll_offset, 0))
                 .wrap(Wrap { trim: false }),
             layout[1],
         );
@@ -329,80 +359,28 @@ fn separator_line(width: u16) -> Line<'static> {
     Line::from("─".repeat(usize::from(width)))
 }
 
-fn render_top_panel(
-    frame: &mut Frame<'_>,
-    area: Rect,
+fn help_pane_active(state: &AppState, active_overlay: &Option<OverlayState>) -> bool {
+    active_overlay.is_none()
+        && state.transcript.last().is_some_and(|message| {
+            message.role == MessageRole::System && message.text.starts_with("Supported commands:")
+        })
+}
+
+fn transcript_text(
+    width: u16,
     state: &AppState,
     resources: &LoadedResources,
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
-) {
-    let block = Block::default()
-        .title(" Puffer Code ")
-        .borders(Borders::ALL)
-        .border_set(border::ROUNDED)
-        .border_style(prompt_border_style(state));
-    frame.render_widget(&block, area);
-    let inner = block.inner(area);
-    if use_compact_top_panel(area.width) {
-        frame.render_widget(
-            Paragraph::new(Text::from(top_panel_compact_lines(
-                state,
-                resources,
-                auth_store,
-                tool_registry,
-            )))
-            .wrap(Wrap { trim: false }),
-            inner,
-        );
-        return;
-    }
-
-    let [left, right] = top_panel_columns(state, resources, auth_store, tool_registry);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(44),
-            Constraint::Length(1),
-            Constraint::Percentage(56),
-        ])
-        .split(inner);
-    frame.render_widget(
-        Paragraph::new(Text::from(left)).wrap(Wrap { trim: false }),
-        columns[0],
-    );
-    if columns[1].width > 0 {
-        let separator = (0..columns[1].height)
-            .map(|_| {
-                Line::from(Span::styled(
-                    "│",
-                    Style::default().add_modifier(Modifier::DIM),
-                ))
-            })
-            .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(Text::from(separator)), columns[1]);
-    }
-    frame.render_widget(
-        Paragraph::new(Text::from(right)).wrap(Wrap { trim: false }),
-        columns[2],
-    );
-}
-
-fn help_pane_active(state: &AppState, active_overlay: &Option<OverlayState>) -> bool {
-    if active_overlay.is_some() {
-        return false;
-    }
-    state.transcript.last().is_some_and(|message| {
-        message.role == MessageRole::System && message.text.starts_with("Supported commands:")
-    })
-}
-
-fn transcript_text(state: &AppState, pending_submit: PendingSubmitRenderState) -> Text<'static> {
+    pending_submit: PendingSubmitRenderState,
+) -> Text<'static> {
     if state.transcript.is_empty() {
         return Text::default();
     }
-
-    let mut lines = Vec::new();
+    let mut lines = scrollable_top_panel_lines(width, state, resources, auth_store, tool_registry);
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
     for (index, message) in state.transcript.iter().enumerate() {
         if index > 0 {
             lines.push(Line::default());
@@ -416,15 +394,29 @@ fn transcript_text(state: &AppState, pending_submit: PendingSubmitRenderState) -
     Text::from(lines)
 }
 
-pub(crate) fn transcript_line_count(state: &AppState, pending_submit: bool) -> u16 {
+pub(crate) fn transcript_line_count(
+    state: &AppState,
+    resources: &LoadedResources,
+    auth_store: &AuthStore,
+    pending_submit: bool,
+) -> u16 {
     let pending = if pending_submit {
         pending_submit_state()
     } else {
         PendingSubmitRenderState::default()
     };
-    transcript_text(state, pending)
-        .lines
-        .len()
+    let width = current_transcript_viewport().width.max(1);
+    let tool_registry = ToolRegistry::from_resources(resources);
+    Paragraph::new(transcript_text(
+        width,
+        state,
+        resources,
+        auth_store,
+        &tool_registry,
+        pending,
+    ))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
         .min(u16::MAX as usize) as u16
 }
 
@@ -981,5 +973,7 @@ fn onboarding_body_lines(overlay: &OverlayState, max_rows: usize) -> Vec<Line<'s
 
 #[cfg(test)]
 mod overlay_tests;
+#[cfg(test)]
+mod scroll_tests;
 #[cfg(test)]
 mod tests;

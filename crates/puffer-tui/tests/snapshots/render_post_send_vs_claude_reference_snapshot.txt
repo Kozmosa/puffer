@@ -20,13 +20,13 @@ Puffer current:
 │Provider  anthropic · auth api-key        │Directory  puffer                                      │
 │Mode      effort high · fast · vim        │Activity   2 messages · 2 workdirs · dockyard@staging  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 › Review the current worktree and call out any risks.
 
 The working tree is clean.
 
 
   No pending changes are waiting for review.
-
 
 
 

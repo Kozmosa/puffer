@@ -583,7 +583,7 @@ fn render_usage_overlay_shows_openai_summary() {
     assert!(rendered.contains("Cost: $4.25"));
 }
 
-fn sample_state() -> AppState {
+pub(super) fn sample_state() -> AppState {
     let mut config = PufferConfig::default();
     config.theme = "harbor".to_string();
     config.default_provider = Some("anthropic".to_string());
@@ -626,7 +626,7 @@ fn sample_state() -> AppState {
     state
 }
 
-fn sample_resources() -> LoadedResources {
+pub(super) fn sample_resources() -> LoadedResources {
     LoadedResources {
         tools: vec![
             tool_spec("bash", "bash", Some("on-request"), Some("workspace-write")),
@@ -654,7 +654,7 @@ fn sample_resources() -> LoadedResources {
     }
 }
 
-fn sample_providers() -> ProviderRegistry {
+pub(super) fn sample_providers() -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
     registry.register(ProviderDescriptor {
         id: "anthropic".to_string(),
@@ -697,7 +697,7 @@ fn sample_providers() -> ProviderRegistry {
     registry
 }
 
-fn sample_auth_store() -> AuthStore {
+pub(super) fn sample_auth_store() -> AuthStore {
     let mut store = AuthStore::default();
     store.set_api_key("anthropic", "sk-ant");
     store.set_oauth(
@@ -720,7 +720,7 @@ fn sample_auth_store() -> AuthStore {
     store
 }
 
-fn sample_commands() -> Vec<CommandSpec> {
+pub(super) fn sample_commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
             name: "review",
@@ -857,7 +857,7 @@ fn loaded_ide(id: &str, display_name: &str) -> LoadedItem<puffer_resources::IdeS
     }
 }
 
-fn terminal_view(terminal: &Terminal<TestBackend>) -> String {
+pub(super) fn terminal_view(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer();
     let width = buffer.area.width as usize;
     buffer

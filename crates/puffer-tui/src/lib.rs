@@ -151,6 +151,7 @@ pub fn run_app(
                 tui.queued_prompts.iter().cloned().collect(),
             );
             render::set_tool_details_expanded(tui.tool_details_expanded);
+            render::set_follow_output(tui.follow_output);
             render::render(
                 frame,
                 state,
@@ -257,16 +258,33 @@ fn handle_key(
             if tui.input.starts_with('/') {
                 tui.select_previous(commands)
             } else {
-                tui.scroll_up(1);
+                let viewport = render::current_transcript_viewport();
+                tui.scroll_up(
+                    1,
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
+                    viewport.height,
+                );
             }
         }
         KeyCode::Down => {
             if tui.input.starts_with('/') {
                 tui.select_next(commands)
             } else {
+                let viewport = render::current_transcript_viewport();
                 tui.scroll_down(
                     1,
-                    render::transcript_line_count(state, tui.has_pending_submit()),
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
+                    viewport.height,
                 );
             }
         }
@@ -276,7 +294,17 @@ fn handle_key(
                     tui.select_previous(commands);
                 }
             } else {
-                tui.scroll_up(10);
+                let viewport = render::current_transcript_viewport();
+                tui.scroll_up(
+                    10,
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
+                    viewport.height,
+                );
             }
         }
         KeyCode::PageDown => {
@@ -285,9 +313,16 @@ fn handle_key(
                     tui.select_next(commands);
                 }
             } else {
+                let viewport = render::current_transcript_viewport();
                 tui.scroll_down(
                     10,
-                    render::transcript_line_count(state, tui.has_pending_submit()),
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
+                    viewport.height,
                 );
             }
         }

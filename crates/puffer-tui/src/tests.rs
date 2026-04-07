@@ -88,9 +88,10 @@ fn enter_completion_prefers_selected_slash_command() {
 #[test]
 fn transcript_scroll_clamps_to_available_lines() {
     let mut tui = TuiState::default();
-    tui.scroll_down(5, 3);
+    tui.follow_output = false;
+    tui.scroll_down(5, 3, 1);
     assert_eq!(tui.scroll_offset, 2);
-    tui.scroll_up(1);
+    tui.scroll_up(1, 3, 1);
     assert_eq!(tui.scroll_offset, 1);
 }
 

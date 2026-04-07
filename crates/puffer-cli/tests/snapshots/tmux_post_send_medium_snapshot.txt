@@ -4,13 +4,13 @@
 │Provider  anthropic · auth api-key        │Directory  dockyard                                    │
 │Mode      effort medium                   │Activity   2 messages · 0 workdirs · sandbox           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 › Review the current worktree and call out any risks.
 
 The working tree is clean.
 
 
   No pending changes are waiting for review.
-
 
 
 
