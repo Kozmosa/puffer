@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type {
+    DiffTimelineItem,
     PermissionTimelineItem,
     SessionListItem,
     TimelineItem,
@@ -120,11 +121,35 @@
     return item.kind === "tool";
   }
 
+  function isDiffItem(item: TimelineItem): item is DiffTimelineItem {
+    return item.kind === "diff";
+  }
+
   function commandLabel(text: string): string {
     return text.startsWith("/") ? text.slice(1) : text;
   }
 
-  $: transcriptItems = timeline.filter((item) => item.kind !== "permission" && item.kind !== "diff");
+  function diffStats(text: string) {
+    const lines = text.split("\n");
+    let additions = 0;
+    let removals = 0;
+
+    for (const line of lines) {
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        additions += 1;
+      } else if (line.startsWith("-") && !line.startsWith("---")) {
+        removals += 1;
+      }
+    }
+
+    return { additions, removals };
+  }
+
+  function diffPreview(text: string, maxLines = 8): string {
+    return text.split("\n").slice(0, maxLines).join("\n");
+  }
+
+  $: transcriptItems = timeline.filter((item) => item.kind !== "permission");
   $: {
     const next = new Set(collapsedIds);
     for (const id of Array.from(next)) {
@@ -210,6 +235,21 @@
           {:else if item.kind === "command"}
             <div class="command-log">
               <code>/{commandLabel(item.body)}</code>
+            </div>
+          {:else if isDiffItem(item)}
+            <div class="entry-meta">
+              <span>Diff snapshot</span>
+            </div>
+
+            <div class="diff-log">
+              <p class="diff-title">{item.diff.title}</p>
+              <p class="diff-status">{item.diff.status}</p>
+              <div class="diff-stats">
+                <span>+{diffStats(item.diff.patch).additions}</span>
+                <span>-{diffStats(item.diff.patch).removals}</span>
+                <span>{item.diff.command}</span>
+              </div>
+              <pre>{diffPreview(item.diff.patch)}</pre>
             </div>
           {:else}
             <div class="entry-meta">
@@ -396,6 +436,10 @@
     border-left-color: rgba(118, 97, 72, 0.2);
   }
 
+  .entry.diff {
+    border-left-color: rgba(36, 105, 81, 0.12);
+  }
+
   .entry.command,
   .entry.system {
     border-left-color: rgba(118, 97, 72, 0.12);
@@ -432,6 +476,52 @@
   .tool-log {
     display: grid;
     gap: 0.7rem;
+  }
+
+  .diff-log {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.72rem 0.85rem;
+    background: rgba(255, 255, 255, 0.46);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.45) inset,
+      0 0 0 1px rgba(36, 105, 81, 0.08);
+  }
+
+  .diff-title,
+  .diff-status {
+    margin: 0;
+  }
+
+  .diff-title {
+    font-weight: 700;
+  }
+
+  .diff-status {
+    color: var(--text-soft);
+    font-size: 0.8rem;
+  }
+
+  .diff-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    color: var(--text-soft);
+    font-size: 0.72rem;
+  }
+
+  .diff-log pre {
+    margin: 0;
+    padding: 0.72rem 0.85rem;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.55) inset,
+      0 0 0 1px rgba(118, 97, 72, 0.1);
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.58;
+    overflow: auto;
   }
 
   .tool-summary {
