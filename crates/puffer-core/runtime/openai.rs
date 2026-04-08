@@ -10,7 +10,7 @@ use self::support::{
     append_default_openai_headers, extend_input_with_continuation, is_codex_openai_provider,
     is_openai_structured_output_error, openai_base_url_for_auth, openai_model_supports_reasoning,
     openai_registry_credential, openai_responses_path, prefer_native_structured_output,
-    structured_output_endpoint_id, OPENAI_STRUCTURED_OUTPUT_FAMILY,
+    retry_openai_transport, structured_output_endpoint_id, OPENAI_STRUCTURED_OUTPUT_FAMILY,
 };
 use super::structured_output_support::{
     openai_chat_completion_tools_for_request, openai_chat_response_format,
@@ -144,6 +144,7 @@ fn execute_openai_once(
                     &tools,
                     supports_reasoning,
                     text.clone(),
+                    false,
                 );
                 build_json_post_request(
                     request_config,
@@ -290,6 +291,7 @@ where
                     &tools,
                     supports_reasoning,
                     text.clone(),
+                    true,
                 );
                 build_json_post_request(
                     request_config,
@@ -861,6 +863,19 @@ pub(super) fn send_openai_request_with_refresh<F>(
     auth_store: &mut AuthStore,
     execution: &mut OpenAIExecutionConfig,
     build_request: F,
+) -> Result<Value>
+where
+    F: Fn(&OpenAIRequestConfig) -> Result<puffer_provider_openai::BuiltOpenAIRequest>,
+{
+    retry_openai_transport(|| {
+        send_openai_request_with_refresh_once(auth_store, execution, &build_request)
+    })
+}
+
+fn send_openai_request_with_refresh_once<F>(
+    auth_store: &mut AuthStore,
+    execution: &mut OpenAIExecutionConfig,
+    build_request: &F,
 ) -> Result<Value>
 where
     F: Fn(&OpenAIRequestConfig) -> Result<puffer_provider_openai::BuiltOpenAIRequest>,

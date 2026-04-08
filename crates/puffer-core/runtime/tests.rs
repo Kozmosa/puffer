@@ -543,6 +543,7 @@ fn build_codex_openai_request_body_matches_codex_shape() {
         &Vec::new(),
         true,
         None,
+        true,
     );
 
     assert_eq!(body["model"], json!("gpt-5"));
@@ -567,6 +568,7 @@ fn build_codex_openai_request_body_supports_xhigh_effort() {
         &Vec::new(),
         true,
         None,
+        true,
     );
 
     assert_eq!(body["reasoning"]["effort"], json!("xhigh"));
@@ -595,10 +597,12 @@ fn build_codex_openai_request_body_includes_native_structured_output_config() {
                 strict: true,
             },
         }),
+        false,
     );
 
     assert_eq!(body["text"]["format"]["type"], json!("json_schema"));
     assert_eq!(body["text"]["format"]["name"], json!("answer_shape"));
+    assert_eq!(body["stream"], json!(false));
 }
 
 #[test]

@@ -1,9 +1,12 @@
 use super::super::{APP_VERSION, OPENAI_CHATGPT_BASE_URL};
 use super::StructuredOutputConfig;
 use crate::AppState;
+use anyhow::{Error, Result};
 use puffer_provider_openai::{OpenAIResponsesTextConfig, OpenAIResponsesTool};
 use puffer_provider_registry::{OAuthCredential, ProviderDescriptor};
 use serde_json::{json, Value};
+use std::io;
+use std::time::Duration;
 
 pub(super) const OPENAI_STRUCTURED_OUTPUT_FAMILY: &str = "openai";
 
@@ -14,6 +17,7 @@ pub(crate) fn build_codex_openai_request_body(
     tools: &[OpenAIResponsesTool],
     supports_reasoning: bool,
     text: Option<OpenAIResponsesTextConfig>,
+    stream: bool,
 ) -> Value {
     let reasoning = codex_reasoning_config(state, supports_reasoning);
     let include = if reasoning.is_some() {
@@ -32,7 +36,7 @@ pub(crate) fn build_codex_openai_request_body(
         "tool_choice": "auto",
         "parallel_tool_calls": !tools.is_empty(),
         "store": store,
-        "stream": true,
+        "stream": stream,
         "include": include,
         "prompt_cache_key": state.session.id.to_string(),
     });
@@ -78,6 +82,65 @@ pub(super) fn is_openai_structured_output_error(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|pattern| text.contains(pattern))
+}
+
+pub(super) fn retry_openai_transport<F, T>(mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    let attempts = openai_transport_max_attempts();
+    let delay = openai_transport_retry_delay();
+    for attempt in 1..=attempts {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < attempts && is_retryable_openai_transport_error(&error) => {
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("retry loop always returns or errors")
+}
+
+fn openai_transport_max_attempts() -> usize {
+    std::env::var("PUFFER_OPENAI_HTTP_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(3)
+        .clamp(1, 5)
+}
+
+fn openai_transport_retry_delay() -> Duration {
+    let delay_ms = std::env::var("PUFFER_OPENAI_HTTP_RETRY_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000)
+        .min(10_000);
+    Duration::from_millis(delay_ms)
+}
+
+fn is_retryable_openai_transport_error(error: &Error) -> bool {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|value| value.is_timeout() || value.is_connect() || value.is_body())
+    }) {
+        return true;
+    }
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|value| value.kind() == io::ErrorKind::TimedOut)
+    }) {
+        return true;
+    }
+    let text = error.to_string().to_ascii_lowercase();
+    text.contains("operation timed out")
+        || text.contains("error decoding response body")
+        || text.contains("connection reset")
+        || text.contains("unexpected eof")
 }
 
 pub(super) fn openai_registry_credential(

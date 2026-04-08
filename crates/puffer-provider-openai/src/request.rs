@@ -3,6 +3,10 @@ use crate::codex::codex_user_agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// A minimal OpenAI Responses API request payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAIResponsesRequest {
@@ -67,6 +71,7 @@ pub struct OpenAIChatCompletionToolFunction {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub strict: bool,
 }
 
@@ -102,6 +107,7 @@ pub struct OpenAIResponsesTextFormat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub schema: Value,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub strict: bool,
 }
 
@@ -121,6 +127,7 @@ pub struct OpenAIChatResponseJsonSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub schema: Value,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub strict: bool,
 }
 
@@ -133,6 +140,7 @@ pub struct OpenAIResponsesTool {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub strict: bool,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub parameters: Value,
@@ -221,7 +229,7 @@ pub(crate) fn build_chat_completions_request(
     config: &OpenAIRequestConfig,
     request: &OpenAIChatCompletionsRequest,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
-    build_request_to_path(config, request, "/v1/chat/completions")
+    build_request_to_path(config, request, "/v1/chat/completions", false)
 }
 
 /// Builds an ordered JSON POST request for OpenAI-compatible endpoints.
@@ -230,20 +238,21 @@ pub(crate) fn build_json_post_request(
     path: &str,
     body: &Value,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
-    build_request_to_path(config, body, path)
+    build_request_to_path(config, body, path, wants_event_stream(body))
 }
 
 fn build_request<T: Serialize>(
     config: &OpenAIRequestConfig,
     request: &T,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
-    build_request_to_path(config, request, "/v1/responses")
+    build_request_to_path(config, request, "/v1/responses", false)
 }
 
 fn build_request_to_path<T: Serialize>(
     config: &OpenAIRequestConfig,
     request: &T,
     path: &str,
+    accept_event_stream: bool,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
     let normalized_path = normalized_path(&config.base_url, path);
     let mut headers = vec![
@@ -254,7 +263,7 @@ fn build_request_to_path<T: Serialize>(
         ),
         ("originator".to_string(), config.originator.clone()),
     ];
-    if normalized_path.ends_with("/responses") {
+    if normalized_path.ends_with("/responses") && accept_event_stream {
         headers.push(("Accept".to_string(), "text/event-stream".to_string()));
     }
     if let Some(session_id) = config.session_id.as_deref() {
@@ -294,6 +303,10 @@ fn build_request_to_path<T: Serialize>(
         headers,
         body: serde_json::to_string(request)?,
     })
+}
+
+fn wants_event_stream(body: &Value) -> bool {
+    body.get("stream").and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn normalized_path(base_url: &str, path: &str) -> String {
@@ -599,5 +612,78 @@ mod tests {
             .headers
             .iter()
             .any(|(key, value)| key == "originator" && value == "codex_cli_rs"));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "Accept" && value == "text/event-stream"));
+    }
+
+    #[test]
+    fn json_post_request_omits_sse_accept_for_non_streaming_body() {
+        let request = build_json_post_request(
+            &OpenAIRequestConfig {
+                base_url: "https://api.openai.com".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
+            },
+            "/v1/responses",
+            &json!({
+                "model": "gpt-5",
+                "stream": false,
+            }),
+        )
+        .unwrap();
+
+        assert!(!request.headers.iter().any(|(key, _)| key == "Accept"));
+    }
+
+    #[test]
+    fn tool_request_omits_false_strict_fields() {
+        let request = build_tool_responses_request(
+            &OpenAIRequestConfig {
+                base_url: "http://84.32.32.146:8317/v1".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
+            },
+            &OpenAIResponsesToolRequest {
+                model: "gpt-5.4".to_string(),
+                input: Value::String("hello".to_string()),
+                tools: vec![OpenAIResponsesTool {
+                    kind: "function".to_string(),
+                    name: "read_file".to_string(),
+                    description: "Reads a file.".to_string(),
+                    strict: false,
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        }
+                    }),
+                    filters: None,
+                    user_location: None,
+                    external_web_access: None,
+                }],
+                include: Vec::new(),
+                tool_choice: Some(OpenAIResponsesToolChoice::Mode(
+                    OpenAIResponsesToolChoiceMode::Auto,
+                )),
+                previous_response_id: None,
+                text: None,
+            },
+        )
+        .unwrap();
+
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        assert!(body["tools"][0].get("strict").is_none());
     }
 }
