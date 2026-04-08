@@ -159,6 +159,25 @@
     return text.split("\n").slice(0, maxLines).join("\n");
   }
 
+  function toolPreview(item: ToolTimelineItem): string {
+    const outputLines = item.output.split("\n").filter(Boolean);
+    return [
+      item.summary,
+      "",
+      `input: ${item.input}`,
+      outputLines.length > 0 ? `output: ${outputLines[0]}` : "output: <empty>"
+    ].join("\n");
+  }
+
+  function diffCardPreview(item: DiffTimelineItem): string {
+    const stats = diffStats(item.diff.patch);
+    return [
+      item.diff.title,
+      `${item.diff.command}  +${stats.additions}  -${stats.removals}`,
+      diffPreview(item.diff.patch, 2)
+    ].join("\n");
+  }
+
   $: transcriptItems = timeline.filter((item) => item.kind !== "permission");
   $: {
     const next = new Set(collapsedIds);
@@ -231,7 +250,7 @@
             </div>
 
             {#if isCollapsed(item)}
-              <pre class="collapsed-preview">{previewText(item)}</pre>
+              <pre class="collapsed-preview">{toolPreview(item)}</pre>
             {:else}
               <div class="tool-log">
                 <p class="tool-summary">{item.summary}</p>
@@ -257,19 +276,38 @@
           {:else if isDiffItem(item)}
             <div class="entry-meta">
               <span>Diff snapshot</span>
+              {#if shouldCollapse(item)}
+                <button class="collapse-toggle" on:click={() => toggleCollapsed(item)}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path
+                      d={isCollapsed(item) ? "M6 4l4 4-4 4" : "M4 6l4 4 4-4"}
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.4"
+                    />
+                  </svg>
+                  <span>{isCollapsed(item) ? "Expand" : "Collapse"}</span>
+                </button>
+              {/if}
             </div>
 
-            <div class="diff-log">
-              <p class="diff-title">{item.diff.title}</p>
-              <p class="diff-status">{item.diff.status}</p>
-              <div class="diff-stats">
-                <span>+{diffStats(item.diff.patch).additions}</span>
-                <span>-{diffStats(item.diff.patch).removals}</span>
-                <span>{item.diff.command}</span>
+            {#if isCollapsed(item)}
+              <pre class="collapsed-preview">{diffCardPreview(item)}</pre>
+            {:else}
+              <div class="diff-log">
+                <p class="diff-title">{item.diff.title}</p>
+                <p class="diff-status">{item.diff.status}</p>
+                <div class="diff-stats">
+                  <span>+{diffStats(item.diff.patch).additions}</span>
+                  <span>-{diffStats(item.diff.patch).removals}</span>
+                  <span>{item.diff.command}</span>
+                </div>
+                <p class="diff-note">Full patch stays in the right review rail.</p>
+                <pre>{diffPreview(item.diff.patch)}</pre>
               </div>
-              <p class="diff-note">Full patch stays in the right review rail.</p>
-              <pre>{diffPreview(item.diff.patch)}</pre>
-            </div>
+            {/if}
           {:else}
             {#if item.kind === "system" || shouldCollapse(item)}
               <div class="entry-meta">
