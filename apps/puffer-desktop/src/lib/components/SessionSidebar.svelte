@@ -139,7 +139,7 @@
   .sidebar {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
-    padding: 1.3rem 1rem 1.4rem;
+    padding: 1rem 0.85rem 1rem;
     border-radius: 0;
     background:
       linear-gradient(180deg, rgba(32, 46, 54, 0.98), rgba(24, 36, 43, 0.98)),
@@ -148,35 +148,35 @@
   }
 
   .sidebar-header {
-    padding: 0.1rem 0.15rem 1.15rem;
+    padding: 0.05rem 0.1rem 0.9rem;
   }
 
   h2 {
     margin: 0;
     font-family: var(--font-display);
-    font-size: 1.6rem;
-    line-height: 1.04;
-    letter-spacing: -0.03em;
+    font-size: 1.22rem;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
     color: #f6f0e6;
   }
 
   .summary {
-    margin: 0.35rem 0 0;
+    margin: 0.22rem 0 0;
     color: var(--sidebar-muted);
-    font-size: 0.82rem;
+    font-size: 0.72rem;
   }
 
   .tree {
     min-height: 0;
     overflow: auto;
     display: grid;
-    gap: 1.3rem;
+    gap: 0.9rem;
     padding-right: 0.15rem;
   }
 
   .group {
     display: grid;
-    gap: 0.24rem;
+    gap: 0.16rem;
   }
 
   .group-toggle {
@@ -206,34 +206,34 @@
   }
 
   .group-name {
-    font-size: 0.98rem;
+    font-size: 0.84rem;
     font-weight: 600;
     letter-spacing: 0.01em;
   }
 
   .group-count {
     color: var(--sidebar-muted);
-    font-size: 0.78rem;
+    font-size: 0.68rem;
   }
 
   .session-list {
     display: grid;
-    gap: 0.24rem;
-    padding-top: 0.35rem;
-    padding-left: 0.8rem;
+    gap: 0.12rem;
+    padding-top: 0.18rem;
+    padding-left: 0.72rem;
   }
 
   .session-link {
     display: grid;
-    gap: 0.18rem;
-    padding: 0.6rem 0 0.6rem 0.9rem;
+    gap: 0.12rem;
+    padding: 0.45rem 0 0.45rem 0.7rem;
     border: 0;
     border-left: 2px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 0 0 1px transparent inset;
     background: transparent;
     text-align: left;
     cursor: pointer;
-    color: #d9d3ca;
+    color: #b7c0c6;
     transition: border-color 120ms ease, color 120ms ease, transform 120ms ease,
       background 120ms ease, box-shadow 120ms ease;
   }
@@ -255,17 +255,17 @@
   }
 
   .session-name {
-    font-size: 0.92rem;
+    font-size: 0.82rem;
     font-weight: 600;
-    line-height: 1.32;
+    line-height: 1.28;
   }
 
   .session-meta,
   .session-note,
   .state {
     color: var(--sidebar-muted);
-    font-size: 0.76rem;
-    line-height: 1.45;
+    font-size: 0.68rem;
+    line-height: 1.4;
   }
 
   .session-link.selected .session-meta {
