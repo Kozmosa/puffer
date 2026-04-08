@@ -95,7 +95,11 @@ pub fn execute_claude_grep(cwd: &Path, working_dirs: &[PathBuf], input: Value) -
     args.push("--".to_string());
     args.push(absolute_target.to_string_lossy().to_string());
 
-    let raw_lines = run_ripgrep(cwd, &args)?;
+    let raw_lines = if rg_available() {
+        run_ripgrep(cwd, &args)?
+    } else {
+        run_grep_fallback(cwd, &absolute_target, &input, mode)?
+    };
     let offset = input.offset.unwrap_or(0);
     let (limit_applied, entries) = match mode {
         GrepMode::FilesWithMatches => {
@@ -221,6 +225,154 @@ fn run_ripgrep(cwd: &Path, args: &[String]) -> Result<Vec<String>> {
         .map(str::to_string)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>())
+}
+
+fn run_grep_fallback(
+    cwd: &Path,
+    absolute_target: &Path,
+    input: &ClaudeGrepInput,
+    mode: GrepMode,
+) -> Result<Vec<String>> {
+    if input.multiline.unwrap_or(false) {
+        bail!("multiline Grep requires `rg` to be installed");
+    }
+
+    let mut command = Command::new("grep");
+    command
+        .arg("-r")
+        .arg("--binary-files=without-match")
+        .arg("--devices=skip");
+    if input.case_insensitive.unwrap_or(false) {
+        command.arg("-i");
+    }
+    command.arg("-E");
+    append_grep_mode_flags(&mut command, mode, input);
+    append_grep_exclusions(&mut command);
+    append_grep_file_filters(
+        &mut command,
+        input.glob.as_deref(),
+        input.file_type.as_deref(),
+    );
+    command
+        .arg("--")
+        .arg(&input.pattern)
+        .arg(absolute_target)
+        .current_dir(cwd);
+
+    let output = command
+        .output()
+        .context("failed to execute `grep` fallback for Grep tool")?;
+    let status = output.status.code().unwrap_or_default();
+    if !output.status.success() && status != 1 {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("grep exited with status code {status}");
+        }
+        bail!("grep exited with status code {status}: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>())
+}
+
+fn append_grep_mode_flags(command: &mut Command, mode: GrepMode, input: &ClaudeGrepInput) {
+    match mode {
+        GrepMode::FilesWithMatches => {
+            command.arg("-l");
+        }
+        GrepMode::Count => {
+            command.arg("-c");
+        }
+        GrepMode::Content => {
+            if input.show_line_numbers.unwrap_or(true) {
+                command.arg("-n");
+            }
+            if let Some(value) = input.context.or(input.context_short) {
+                command.arg("-C").arg(value.to_string());
+                return;
+            }
+            if let Some(value) = input.before_context {
+                command.arg("-B").arg(value.to_string());
+            }
+            if let Some(value) = input.after_context {
+                command.arg("-A").arg(value.to_string());
+            }
+        }
+    }
+}
+
+fn append_grep_exclusions(command: &mut Command) {
+    for dir in VCS_DIRECTORIES_TO_EXCLUDE {
+        command.arg(format!("--exclude-dir={dir}"));
+    }
+}
+
+fn append_grep_file_filters(
+    command: &mut Command,
+    glob_value: Option<&str>,
+    file_type: Option<&str>,
+) {
+    if let Some(file_type) = file_type.filter(|value| !value.trim().is_empty()) {
+        for pattern in file_type_patterns(file_type) {
+            command.arg(format!("--include={pattern}"));
+        }
+    }
+
+    let Some(glob_value) = glob_value.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    for token in glob_value.split_whitespace() {
+        for part in token
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            if let Some(excluded) = part.strip_prefix('!') {
+                command.arg(format!("--exclude={excluded}"));
+            } else {
+                command.arg(format!("--include={part}"));
+            }
+        }
+    }
+}
+
+fn file_type_patterns(file_type: &str) -> &'static [&'static str] {
+    match file_type {
+        "c" => &["*.c", "*.h"],
+        "cc" | "cpp" | "cxx" => &["*.cc", "*.cpp", "*.cxx", "*.h", "*.hh", "*.hpp", "*.hxx"],
+        "cs" => &["*.cs"],
+        "css" => &["*.css", "*.scss", "*.sass", "*.less"],
+        "go" => &["*.go"],
+        "h" => &["*.h", "*.hh", "*.hpp", "*.hxx"],
+        "html" => &["*.html", "*.htm"],
+        "java" => &["*.java"],
+        "js" => &["*.js", "*.cjs", "*.mjs"],
+        "json" => &["*.json"],
+        "jsx" => &["*.jsx"],
+        "kt" | "kotlin" => &["*.kt", "*.kts"],
+        "md" | "markdown" => &["*.md", "*.markdown"],
+        "php" => &["*.php"],
+        "proto" => &["*.proto"],
+        "py" | "python" => &["*.py"],
+        "rb" | "ruby" => &["*.rb"],
+        "rs" | "rust" => &["*.rs"],
+        "sh" | "shell" => &["*.sh", "*.bash", "*.zsh"],
+        "sql" => &["*.sql"],
+        "swift" => &["*.swift"],
+        "toml" => &["*.toml"],
+        "ts" => &["*.ts", "*.cts", "*.mts"],
+        "tsx" => &["*.tsx"],
+        "txt" | "text" => &["*.txt"],
+        "xml" => &["*.xml"],
+        "yaml" | "yml" => &["*.yaml", "*.yml"],
+        _ => &[],
+    }
+}
+
+fn rg_available() -> bool {
+    Command::new("rg").arg("--version").output().is_ok()
 }
 
 fn sort_paths_by_mtime_desc(cwd: &Path, paths: Vec<String>) -> Vec<String> {
@@ -504,7 +656,35 @@ mod tests {
         assert_eq!(sliced, vec!["2".to_string(), "3".to_string()]);
     }
 
-    fn rg_available() -> bool {
-        Command::new("rg").arg("--version").output().is_ok()
+    #[test]
+    fn grep_fallback_supports_count_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let note = temp.path().join("note.txt");
+        fs::write(&note, "abc\nabc\n").unwrap();
+
+        let output = run_grep_fallback(
+            temp.path(),
+            temp.path(),
+            &ClaudeGrepInput {
+                pattern: "abc".to_string(),
+                path: None,
+                glob: None,
+                output_mode: Some("count".to_string()),
+                before_context: None,
+                after_context: None,
+                context_short: None,
+                context: None,
+                show_line_numbers: None,
+                case_insensitive: None,
+                file_type: None,
+                head_limit: None,
+                offset: None,
+                multiline: None,
+            },
+            GrepMode::Count,
+        )
+        .unwrap();
+
+        assert_eq!(output, vec![format!("{}:2", note.display())]);
     }
 }
