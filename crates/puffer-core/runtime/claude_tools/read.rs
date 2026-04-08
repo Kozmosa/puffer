@@ -9,6 +9,7 @@ use std::process::Command;
 
 const MAX_LINES_TO_READ: usize = 2000;
 const MAX_PDF_PAGES_PER_READ: u32 = 20;
+const MAX_BINARY_PREVIEW_BYTES: usize = 512;
 
 #[derive(Debug, Deserialize)]
 struct ClaudeReadInput {
@@ -143,8 +144,27 @@ fn read_text(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<ClaudeReadOutput> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read text file {}", path.display()))?;
+    let bytes = fs::read(path).with_context(|| format!("failed to read text file {}", path.display()))?;
+    let contents = match std::str::from_utf8(&bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => {
+            let preview = format_binary_preview(&bytes);
+            let selected = format!(
+                "<system-reminder>Warning: the file is not valid UTF-8. Returning a binary preview instead. Use Bash or another binary-aware tool if you need the raw bytes.</system-reminder>\n{}",
+                preview
+            );
+            let num_lines = selected.lines().count();
+            return Ok(ClaudeReadOutput::Text {
+                file: TextFilePayload {
+                    file_path: original_file_path.to_string(),
+                    content: selected,
+                    num_lines,
+                    start_line: 1,
+                    total_lines: num_lines,
+                },
+            });
+        }
+    };
     let total_lines = contents.lines().count();
     let start_line = offset.unwrap_or(1);
     let effective_limit = limit.unwrap_or(MAX_LINES_TO_READ);
@@ -195,6 +215,37 @@ fn format_with_line_numbers(content: &str, start_line: usize) -> String {
         formatted.push_str(&format!("{:>6}\t{line}\n", start_line + index));
     }
     formatted
+}
+
+fn format_binary_preview(bytes: &[u8]) -> String {
+    let preview_len = bytes.len().min(MAX_BINARY_PREVIEW_BYTES);
+    let mut lines = Vec::new();
+    for (line_index, chunk) in bytes[..preview_len].chunks(16).enumerate() {
+        let offset = line_index * 16;
+        let hex = chunk
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ascii = chunk
+            .iter()
+            .map(|byte| {
+                if byte.is_ascii_graphic() || *byte == b' ' {
+                    *byte as char
+                } else {
+                    '.'
+                }
+            })
+            .collect::<String>();
+        lines.push(format!("{offset:08x}  {hex:<47}  |{ascii}|"));
+    }
+    if preview_len < bytes.len() {
+        lines.push(format!(
+            "... truncated binary preview; {} additional bytes omitted ...",
+            bytes.len() - preview_len
+        ));
+    }
+    lines.join("\n")
 }
 
 fn read_notebook(path: &Path, original_file_path: &str) -> Result<ClaudeReadOutput> {
@@ -518,6 +569,27 @@ mod tests {
         assert_eq!(parsed["type"], "image");
         assert_eq!(parsed["file"]["type"], "image/png");
         assert_eq!(parsed["file"]["base64"], "AAECAw==");
+    }
+
+    #[test]
+    fn binary_file_read_returns_preview_instead_of_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("blob.bin");
+        fs::write(&path, [0xff, 0x00, 0x41, 0x42, 0x7f]).unwrap();
+        let payload = serde_json::json!({
+            "file_path": path.display().to_string(),
+        });
+
+        let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["type"], "text");
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("not valid UTF-8")));
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("00000000  ff 00 41 42 7f")));
     }
 
     #[test]
