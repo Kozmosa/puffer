@@ -250,13 +250,17 @@ fn has_converged_detects_plateau() {
 #[test]
 fn build_optimization_prompt_includes_context() {
     let prompt = build_optimization_prompt("fix tests", "accuracy", true, 3, &[0.5, 0.7]);
-    assert!(prompt.contains("MAXIMIZE"));
+    assert!(prompt.contains("maximize"));
     assert!(prompt.contains("accuracy"));
     assert!(prompt.contains("iteration 3/"));
     assert!(prompt.contains("0.5000"));
     assert!(prompt.contains("0.7000"));
     assert!(prompt.contains("fix tests"));
     assert!(prompt.contains("[[METRIC:accuracy="));
+    // User prompt should come before optimization context
+    let user_pos = prompt.find("fix tests").unwrap();
+    let ctx_pos = prompt.find("Optimization context").unwrap();
+    assert!(user_pos < ctx_pos, "user prompt should precede optimization context");
 }
 
 #[test]
@@ -308,7 +312,7 @@ fn try_handle_loop_command_creates_maximize_state() {
     assert_eq!(ls.prompt, "run bench");
     assert_eq!(tui.queued_prompts.len(), 1);
     let enqueued = &tui.queued_prompts[0];
-    assert!(enqueued.contains("MAXIMIZE"));
+    assert!(enqueued.contains("maximize"));
     assert!(enqueued.contains("[[METRIC:accuracy="));
 }
 

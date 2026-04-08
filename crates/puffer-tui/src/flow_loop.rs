@@ -295,9 +295,9 @@ pub(super) fn build_optimization_prompt(
     iteration: usize,
     history: &[f64],
 ) -> String {
-    let direction = if maximize { "MAXIMIZE" } else { "MINIMIZE" };
+    let direction = if maximize { "maximize" } else { "minimize" };
     let history_str = if history.is_empty() {
-        "none yet".to_string()
+        "no measurements yet".to_string()
     } else {
         history
             .iter()
@@ -305,14 +305,27 @@ pub(super) fn build_optimization_prompt(
             .collect::<Vec<_>>()
             .join(" → ")
     };
+    let trend_hint = if history.len() >= 2 {
+        let last = history[history.len() - 1];
+        let prev = history[history.len() - 2];
+        let delta = last - prev;
+        if delta.abs() < f64::EPSILON {
+            " (stalled — try a different approach)".to_string()
+        } else {
+            let arrow = if delta > 0.0 { "↑" } else { "↓" };
+            format!(" (last delta: {arrow}{delta:+.4})")
+        }
+    } else {
+        String::new()
+    };
     format!(
-        "[Optimization iteration {iteration}/{DEFAULT_MAX_ITERATIONS} — goal: {direction} \"{metric_name}\"]\n\
-         Previous values: {history_str}\n\
+        "{base_prompt}\n\
          \n\
-         {base_prompt}\n\
-         \n\
-         IMPORTANT: After completing your work, report the current metric value using exactly this format on its own line:\n\
-         [[METRIC:{metric_name}=<numeric_value>]]"
+         ---\n\
+         Optimization context: iteration {iteration}/{DEFAULT_MAX_ITERATIONS}, goal is to {direction} the metric \"{metric_name}\".\n\
+         Previous \"{metric_name}\" values: {history_str}{trend_hint}\n\
+         When you are done, output the measured value on its own line in this exact format:\n\
+         [[METRIC:{metric_name}=<number>]]"
     )
 }
 
