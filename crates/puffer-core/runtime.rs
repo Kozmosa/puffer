@@ -13,6 +13,7 @@ use puffer_transport_anthropic::{
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 #[cfg(test)]
 mod agent_runtime_tests;
@@ -58,6 +59,8 @@ use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const HTTP_RETRY_ATTEMPTS_ENV: &str = "PUFFER_HTTP_RETRY_ATTEMPTS";
+const HTTP_RETRY_DELAY_MS_ENV: &str = "PUFFER_HTTP_RETRY_DELAY_MS";
 
 #[derive(Debug, Clone, Copy, Default)]
 struct TurnRequestOptions<'a> {
@@ -70,6 +73,12 @@ struct RawHttpResponse {
     status: StatusCode,
     content_type: Option<String>,
     text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HttpRetryConfig {
+    retries: usize,
+    delay_ms: u64,
 }
 
 /// Describes one tool call executed during a model turn.
@@ -524,6 +533,33 @@ fn send_http_request_raw(
     anthropic: bool,
 ) -> Result<RawHttpResponse> {
     trace_http_exchange("request", url, headers, body);
+    let retry_config = http_retry_config();
+    let total_attempts = retry_config.retries.saturating_add(1);
+    for attempt in 1..=total_attempts {
+        match send_http_request_raw_once(url, headers, body, anthropic) {
+            Ok(response) => {
+                trace_http_response(url, response.status.as_u16(), &response.text);
+                return Ok(response);
+            }
+            Err(error) if attempt < total_attempts && is_retryable_http_error(&error) => {
+                trace_http_retry(url, attempt, &error);
+                let delay = retry_delay(retry_config, attempt);
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("http retry loop exited without returning")
+}
+
+fn send_http_request_raw_once(
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+    anthropic: bool,
+) -> Result<RawHttpResponse> {
     let client = Client::new();
     let mut request = client.post(url);
     for (key, value) in headers {
@@ -552,13 +588,65 @@ fn send_http_request_raw(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string);
-    let text = response.text()?;
-    trace_http_response(url, status.as_u16(), &text);
+    let text = response
+        .text()
+        .with_context(|| format!("failed to read response body from {url}"))?;
     Ok(RawHttpResponse {
         status,
         content_type,
         text,
     })
+}
+
+fn http_retry_config() -> HttpRetryConfig {
+    HttpRetryConfig {
+        retries: parsed_env_usize(HTTP_RETRY_ATTEMPTS_ENV)
+            .unwrap_or(0)
+            .min(10),
+        delay_ms: parsed_env_u64(HTTP_RETRY_DELAY_MS_ENV)
+            .unwrap_or(1_000)
+            .min(30_000),
+    }
+}
+
+fn parsed_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+fn parsed_env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+fn retry_delay(config: HttpRetryConfig, attempt: usize) -> Duration {
+    if config.delay_ms == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_millis(config.delay_ms.saturating_mul(attempt as u64))
+}
+
+fn is_retryable_http_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|value| value.is_timeout() || value.is_connect())
+            || cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(is_retryable_io_error)
+    })
+}
+
+fn is_retryable_io_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+    )
 }
 
 fn trace_http_exchange(kind: &str, url: &str, headers: &[(String, String)], body: &str) {
@@ -604,6 +692,20 @@ fn trace_http_response(url: &str, status: u16, body: &str) {
         .and_then(|mut file| {
             use std::io::Write as _;
             writeln!(file, "--- RESPONSE {} {} ---\n{}\n", status, url, body)
+        });
+}
+
+fn trace_http_retry(url: &str, attempt: usize, error: &anyhow::Error) {
+    let Ok(path) = std::env::var("PUFFER_HTTP_TRACE_PATH") else {
+        return;
+    };
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            writeln!(file, "--- RETRY {} {} ---\n{}\n", attempt, url, error)
         });
 }
 

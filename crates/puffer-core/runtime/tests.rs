@@ -980,6 +980,8 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
     assert_eq!(openai_tools[0].name, "read_file");
 }
 
+#[path = "tests/http_retries.rs"]
+mod http_retries;
 #[path = "tests/permissions.rs"]
 mod permissions;
 #[path = "tests/tool_execution.rs"]
