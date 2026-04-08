@@ -113,8 +113,8 @@
 <style>
   .diff-view {
     display: grid;
-    gap: 1rem;
-    padding: 1.35rem 1.45rem 1.5rem;
+    gap: 0.85rem;
+    padding: 1rem 1.1rem 1.2rem;
     min-height: 100%;
     align-content: start;
     background:
@@ -123,7 +123,7 @@
   }
 
   .diff-view.compact {
-    padding: 0.95rem 1rem;
+    padding: 0.8rem 0.9rem;
     min-height: auto;
   }
 
@@ -135,7 +135,7 @@
     position: sticky;
     top: 0;
     z-index: 2;
-    padding-bottom: 0.65rem;
+    padding-bottom: 0.45rem;
     background:
       linear-gradient(180deg, rgba(250, 246, 240, 0.98), rgba(250, 246, 240, 0.92));
   }
@@ -143,15 +143,15 @@
   h3 {
     margin: 0;
     font-family: var(--font-display);
-    font-size: 1.6rem;
-    line-height: 1.02;
+    font-size: 1.26rem;
+    line-height: 1.06;
     letter-spacing: -0.03em;
   }
 
   .diff-status {
-    margin: 0.4rem 0 0;
+    margin: 0.24rem 0 0;
     color: var(--text-soft);
-    font-size: 0.88rem;
+    font-size: 0.8rem;
   }
 
   .diff-summary {
@@ -164,11 +164,11 @@
   .summary-pill {
     display: grid;
     gap: 0.04rem;
-    padding: 0.45rem 0.7rem;
+    padding: 0.36rem 0.56rem;
     border-radius: 0;
     background: rgba(46, 160, 67, 0.1);
     color: #1a7f37;
-    min-width: 5.2rem;
+    min-width: 4.5rem;
     text-align: center;
   }
 
@@ -178,12 +178,12 @@
   }
 
   .summary-pill strong {
-    font-size: 0.96rem;
+    font-size: 0.84rem;
     line-height: 1;
   }
 
   .summary-pill span {
-    font-size: 0.7rem;
+    font-size: 0.62rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
@@ -193,14 +193,14 @@
     justify-content: space-between;
     gap: 1rem;
     align-items: center;
-    padding: 0.78rem 0.95rem;
+    padding: 0.58rem 0.8rem;
     border-radius: 0;
     background: #f6f8fa;
     box-shadow: 0 0 0 1px #d0d7de inset;
     color: #57606a;
-    font-size: 0.84rem;
+    font-size: 0.76rem;
     position: sticky;
-    top: 3.9rem;
+    top: 2.9rem;
     z-index: 2;
   }
 
@@ -224,8 +224,8 @@
     display: grid;
     grid-template-columns: 3rem 3rem minmax(0, 1fr);
     font-family: var(--font-mono);
-    font-size: 0.88rem;
-    line-height: 1.6;
+    font-size: 0.8rem;
+    line-height: 1.5;
   }
 
   .patch-line + .patch-line {
@@ -255,7 +255,7 @@
   .gutter {
     display: grid;
     place-items: center end;
-    padding: 0.18rem 0.55rem 0.18rem 0.2rem;
+    padding: 0.12rem 0.48rem 0.12rem 0.2rem;
     color: #8c959f;
     user-select: none;
     box-shadow: 1px 0 0 rgba(208, 215, 222, 0.7) inset;
@@ -263,7 +263,7 @@
 
   code {
     display: block;
-    padding: 0.18rem 0.9rem;
+    padding: 0.12rem 0.75rem;
     overflow-x: auto;
     white-space: pre;
   }
