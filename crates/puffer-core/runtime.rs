@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 mod agent_runtime_tests;
 mod agents;
 pub(crate) mod claude_tools;
+pub(crate) mod teammate_loop;
 mod context_usage;
 mod hook_support;
 mod local_mcp_resources;

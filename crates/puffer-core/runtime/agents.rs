@@ -496,77 +496,99 @@ fn launch_background_agent(
         can_read_output_file: true,
     };
 
-    thread::spawn(move || {
-        let mut nested_state = prepared.nested_state;
-        let nested_resources = prepared.nested_resources;
-        let prompt = prepared.prompt.clone();
-        let result = {
-            let mut nested_auth_store = auth_store;
-            super::execute_user_prompt(
-                &mut nested_state,
-                &nested_resources,
-                &providers,
-                &mut nested_auth_store,
-                &prompt,
-            )
+    // If this agent belongs to a team, spawn as a multi-turn teammate loop.
+    // Otherwise, spawn as a one-shot background agent.
+    if prepared.team_name.is_some() {
+        use super::teammate_loop::{spawn_teammate, teammate_registry, TeammateLoopConfig};
+        let config = TeammateLoopConfig {
+            agent_id: prepared.agent_id.clone(),
+            agent_name: prepared
+                .name
+                .clone()
+                .unwrap_or_else(|| prepared.agent_id.clone()),
+            team_name: prepared.team_name.clone().unwrap_or_default(),
+            prompt: prepared.prompt.clone(),
+            max_turns: prepared.max_turns,
+            state: prepared.nested_state,
+            resources: prepared.nested_resources,
+            providers,
+            auth_store,
+            output_file: output_file.clone(),
         };
-        let final_payload = match result {
-            Ok(turn) => json!(AgentCompletedOutput {
-                status: "completed",
-                agent_id: prepared.agent_id,
-                agent_type: prepared.agent_type,
-                description: prepared.description,
-                prompt: prepared.prompt,
-                name: prepared.name,
-                cwd: prepared.nested_cwd.display().to_string(),
-                model: prepared.resolved_model,
-                effort: prepared.resolved_effort,
-                team_name: prepared.team_name,
-                mode: prepared.mode,
-                max_turns: prepared.max_turns,
-                isolation: prepared.isolation,
-                worktree_path: prepared
-                    .worktree
-                    .as_ref()
-                    .map(|worktree| worktree.path.display().to_string()),
-                worktree_branch: prepared
-                    .worktree
-                    .as_ref()
-                    .map(|worktree| worktree.branch.clone()),
-                tool_uses: turn.tool_invocations.len(),
-                result: turn.assistant_text.trim().to_string(),
-            }),
-            Err(error) => json!({
-                "status": "failed",
-                "agentId": prepared.agent_id,
-                "agentType": prepared.agent_type,
-                "description": prepared.description,
-                "prompt": prepared.prompt,
-                "name": prepared.name,
-                "cwd": prepared.nested_cwd.display().to_string(),
-                "model": prepared.resolved_model,
-                "effort": prepared.resolved_effort,
-                "teamName": prepared.team_name,
-                "mode": prepared.mode,
-                "maxTurns": prepared.max_turns,
-                "isolation": prepared.isolation,
-                "worktreePath": prepared
-                    .worktree
-                    .as_ref()
-                    .map(|worktree| worktree.path.display().to_string()),
-                "worktreeBranch": prepared
-                    .worktree
-                    .as_ref()
-                    .map(|worktree| worktree.branch.clone()),
-                "error": error.to_string(),
-            }),
-        };
-        let _ = fs::write(
-            &output_file,
-            serde_json::to_string_pretty(&final_payload)
-                .unwrap_or_else(|_| "{\"status\":\"failed\"}".to_string()),
-        );
-    });
+        spawn_teammate(config, teammate_registry());
+    } else {
+        thread::spawn(move || {
+            let mut nested_state = prepared.nested_state;
+            let nested_resources = prepared.nested_resources;
+            let prompt = prepared.prompt.clone();
+            let result = {
+                let mut nested_auth_store = auth_store;
+                super::execute_user_prompt(
+                    &mut nested_state,
+                    &nested_resources,
+                    &providers,
+                    &mut nested_auth_store,
+                    &prompt,
+                )
+            };
+            let final_payload = match result {
+                Ok(turn) => json!(AgentCompletedOutput {
+                    status: "completed",
+                    agent_id: prepared.agent_id,
+                    agent_type: prepared.agent_type,
+                    description: prepared.description,
+                    prompt: prepared.prompt,
+                    name: prepared.name,
+                    cwd: prepared.nested_cwd.display().to_string(),
+                    model: prepared.resolved_model,
+                    effort: prepared.resolved_effort,
+                    team_name: prepared.team_name,
+                    mode: prepared.mode,
+                    max_turns: prepared.max_turns,
+                    isolation: prepared.isolation,
+                    worktree_path: prepared
+                        .worktree
+                        .as_ref()
+                        .map(|worktree| worktree.path.display().to_string()),
+                    worktree_branch: prepared
+                        .worktree
+                        .as_ref()
+                        .map(|worktree| worktree.branch.clone()),
+                    tool_uses: turn.tool_invocations.len(),
+                    result: turn.assistant_text.trim().to_string(),
+                }),
+                Err(error) => json!({
+                    "status": "failed",
+                    "agentId": prepared.agent_id,
+                    "agentType": prepared.agent_type,
+                    "description": prepared.description,
+                    "prompt": prepared.prompt,
+                    "name": prepared.name,
+                    "cwd": prepared.nested_cwd.display().to_string(),
+                    "model": prepared.resolved_model,
+                    "effort": prepared.resolved_effort,
+                    "teamName": prepared.team_name,
+                    "mode": prepared.mode,
+                    "maxTurns": prepared.max_turns,
+                    "isolation": prepared.isolation,
+                    "worktreePath": prepared
+                        .worktree
+                        .as_ref()
+                        .map(|worktree| worktree.path.display().to_string()),
+                    "worktreeBranch": prepared
+                        .worktree
+                        .as_ref()
+                        .map(|worktree| worktree.branch.clone()),
+                    "error": error.to_string(),
+                }),
+            };
+            let _ = fs::write(
+                &output_file,
+                serde_json::to_string_pretty(&final_payload)
+                    .unwrap_or_else(|_| "{\"status\":\"failed\"}".to_string()),
+            );
+        });
+    }
 
     Ok(serde_json::to_string_pretty(&response)?)
 }

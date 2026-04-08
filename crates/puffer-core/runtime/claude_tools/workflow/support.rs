@@ -206,7 +206,7 @@ pub(super) fn execute_send_message(
     for recipient in &recipients {
         let msg_id = format!("msg-{}", Uuid::new_v4().simple());
         message_ids.push(msg_id.clone());
-        messages.messages.push(StoredMessage {
+        let stored_msg = StoredMessage {
             id: msg_id,
             to: recipient.clone(),
             from: from.clone(),
@@ -214,7 +214,26 @@ pub(super) fn execute_send_message(
             summary: parsed.summary.clone(),
             message: parsed.message.clone(),
             created_at_ms: now_ms(),
-        });
+        };
+        // Try in-process delivery via teammate registry.
+        {
+            use crate::runtime::teammate_loop::{
+                teammate_registry, IncomingMessage, TeammateMessage,
+            };
+            let registry = teammate_registry().lock().unwrap();
+            if let Some(tx) = registry.get(recipient) {
+                let text = stored_msg
+                    .message
+                    .as_str()
+                    .unwrap_or(&stored_msg.message.to_string())
+                    .to_string();
+                let _ = tx.send(TeammateMessage::Incoming(IncomingMessage {
+                    from: from.clone(),
+                    text,
+                }));
+            }
+        }
+        messages.messages.push(stored_msg);
         if let Some(agent) = agents.agents.iter_mut().find(|agent| {
             agent.agent_id == *recipient || agent.name.as_deref() == Some(recipient.as_str())
         }) {
