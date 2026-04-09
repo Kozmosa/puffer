@@ -1032,9 +1032,19 @@ const MAX_TOOL_RESULT_CHARS: usize = 50_000;
 fn prepend_system_reminder(messages: &mut Vec<Value>) {
     let now = time::OffsetDateTime::now_utc();
     let date_str = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
+    let git_status = git_status_context();
+    let mut sections = format!(
+        "# currentDate\nToday's date is {date_str}."
+    );
+    if !git_status.is_empty() {
+        sections.push_str(&format!("\n# gitStatus\n{git_status}"));
+    }
     let reminder = format!(
         "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n\
-         # currentDate\nToday's date is {date_str}.\n</system-reminder>"
+         {sections}\n\n\
+         IMPORTANT: this context may or may not be relevant to your tasks. \
+         You should not respond to this context unless it is highly relevant to your task.\n\
+         </system-reminder>"
     );
     // Merge into first user message if possible to avoid breaking alternation.
     if let Some(first) = messages.first_mut() {
@@ -1045,6 +1055,42 @@ fn prepend_system_reminder(messages: &mut Vec<Value>) {
         }
     }
     messages.insert(0, json!({"role": "user", "content": reminder}));
+}
+
+/// Returns a short git status summary for system-reminder injection (CC parity).
+fn git_status_context() -> String {
+    let branch = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if branch.is_empty() {
+        return String::new();
+    }
+    let status = std::process::Command::new("git")
+        .args(["status", "--short", "--no-ahead-behind"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let log = std::process::Command::new("git")
+        .args(["log", "--oneline", "-3", "--no-decorate"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let mut result = format!("Current branch: {branch}");
+    if !status.is_empty() {
+        result.push_str(&format!("\nStatus:\n{status}"));
+    }
+    if !log.is_empty() {
+        result.push_str(&format!("\nRecent commits:\n{log}"));
+    }
+    result
 }
 
 /// Number of recent messages whose tool outputs are preserved in full.
