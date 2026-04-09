@@ -961,13 +961,16 @@ fn execute_anthropic_tool_calls(
             tool_id,
             input.clone(),
         )?;
-        let output_text = if execution.output.stderr.is_empty() {
+        let raw_output = if execution.output.stderr.is_empty() {
             execution.output.stdout
         } else if execution.output.stdout.is_empty() {
             execution.output.stderr
         } else {
             format!("{}\n{}", execution.output.stdout, execution.output.stderr)
         };
+        // Truncate oversized tool results to prevent context overflow
+        // (CC limits: 50K chars per tool, 200K chars per message).
+        let output_text = truncate_tool_result(&raw_output, MAX_TOOL_RESULT_CHARS);
         results.push(json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
@@ -977,7 +980,7 @@ fn execute_anthropic_tool_calls(
         invocations.push(ToolInvocation {
             tool_id: tool_id.to_string(),
             input: serde_json::to_string(input)?,
-            output: output_text,
+            output: output_text.clone(),
             success: execution.success,
         });
     }
@@ -999,6 +1002,17 @@ struct AnthropicToolResults {
 /// Trims older messages from the front when the estimated token count exceeds
 /// the threshold, keeping the most recent messages to stay within budget.
 /// This matches CC's auto-compact behavior (triggered at ~80% context usage).
+/// Maximum characters per individual tool result (matches CC's DEFAULT_MAX_RESULT_SIZE_CHARS).
+const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+fn truncate_tool_result(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    format!("{truncated}\n\n[Output truncated — {max_chars} char limit reached]")
+}
+
 fn auto_compact_messages(messages: &mut Vec<Value>, threshold_tokens: u32) {
     let estimate = |msgs: &[Value]| -> u32 {
         msgs.iter()
