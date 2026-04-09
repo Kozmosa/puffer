@@ -521,6 +521,15 @@ fn execute_anthropic(
             // Temperature is only sent when thinking is disabled (CC behavior).
             body["temperature"] = json!(1);
         }
+        // Context management: clear old thinking blocks server-side (CC parity).
+        if model_supports_thinking && provider_supports_thinking_api {
+            body["context_management"] = json!({
+                "edits": [{
+                    "type": "clear_thinking_20251015",
+                    "keep": "all"
+                }]
+            });
+        }
         // Fast mode: send speed='fast' when the user has toggled /fast on.
         if state.fast_mode {
             body["speed"] = json!("fast");
@@ -1252,6 +1261,7 @@ fn anthropic_system_blocks(
         blocks.push(json!({
             "type": "text",
             "text": system_prompt,
+            "cache_control": { "type": "ephemeral" }
         }));
     }
     if let Some(plan_mode_context) = plan_mode_context {
