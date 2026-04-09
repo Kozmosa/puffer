@@ -437,7 +437,7 @@ fn execute_anthropic(
         &request_config,
         &AnthropicModelRequest {
             model: model_id.clone(),
-            max_tokens: 1024,
+            max_tokens: resolve_max_output_tokens(provider, &model_id),
             messages: transcript_to_anthropic_request_messages(state, input),
         },
     )?;
@@ -475,7 +475,7 @@ fn execute_anthropic(
     for _ in 0..8 {
         let mut body = json!({
             "model": model_id,
-            "max_tokens": 1024,
+            "max_tokens": resolve_max_output_tokens(provider, &model_id),
             "messages": messages,
             "system": anthropic_system_blocks(
                 &request.attribution_prefix_block,
@@ -972,6 +972,18 @@ fn auto_compact_messages(messages: &mut Vec<Value>, threshold_tokens: u32) {
             "content": "[Earlier conversation messages were automatically compacted to fit context window]"
         }),
     );
+}
+
+/// Resolves the max output tokens for the given model, falling back to a
+/// sensible default when the provider catalog doesn't specify one.
+fn resolve_max_output_tokens(provider: &ProviderDescriptor, model_id: &str) -> u32 {
+    provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.max_output_tokens)
+        .filter(|&v| v > 0)
+        .unwrap_or(16_384)
 }
 
 fn transcript_to_anthropic_messages(state: &AppState, input: &str) -> Vec<Value> {
