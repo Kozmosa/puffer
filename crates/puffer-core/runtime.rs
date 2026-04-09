@@ -461,6 +461,17 @@ fn execute_anthropic(
             .collect::<std::collections::BTreeSet<_>>(),
     )?;
 
+    // Auto-compact: if estimated token usage exceeds 80% of context window,
+    // truncate older messages to stay within budget (matching CC's threshold).
+    let context_window = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.context_window as u32)
+        .unwrap_or(200_000);
+    let auto_compact_threshold = context_window.saturating_mul(80) / 100;
+    auto_compact_messages(&mut messages, auto_compact_threshold);
+
     for _ in 0..8 {
         let mut body = json!({
             "model": model_id,
@@ -476,7 +487,31 @@ fn execute_anthropic(
             body["tools"] = Value::Array(tools.clone());
         }
 
-        let response = send_http_request(&request.url, &request.headers, &body.to_string(), true)?;
+        let response = match send_http_request(&request.url, &request.headers, &body.to_string(), true) {
+            Ok(response) => response,
+            Err(error) => {
+                let err_msg = error.to_string();
+                // 413 / prompt_too_long recovery: drop oldest messages and retry.
+                if err_msg.contains("413")
+                    || err_msg.contains("prompt_too_long")
+                    || err_msg.contains("too long")
+                {
+                    if messages.len() > 3 {
+                        let drop_count = messages.len() / 3;
+                        messages.drain(..drop_count);
+                        messages.insert(
+                            0,
+                            json!({
+                                "role": "user",
+                                "content": "[Context truncated to fit within model limits]"
+                            }),
+                        );
+                        continue;
+                    }
+                }
+                return Err(error);
+            }
+        };
         let cwd = state.cwd.clone();
         if let Some(tool_results) = execute_anthropic_tool_calls(
             state,
@@ -909,6 +944,36 @@ struct AnthropicToolResults {
     results: Value,
     invocations: Vec<ToolInvocation>,
 }
+/// Trims older messages from the front when the estimated token count exceeds
+/// the threshold, keeping the most recent messages to stay within budget.
+/// This matches CC's auto-compact behavior (triggered at ~80% context usage).
+fn auto_compact_messages(messages: &mut Vec<Value>, threshold_tokens: u32) {
+    let estimate = |msgs: &[Value]| -> u32 {
+        msgs.iter()
+            .map(|m| {
+                let text = m["content"].as_str().unwrap_or("");
+                (text.chars().count() as u32 + 3) / 4
+            })
+            .sum()
+    };
+    let total = estimate(messages);
+    if total <= threshold_tokens || messages.len() <= 2 {
+        return;
+    }
+    // Drop oldest messages (keeping at least the last 2) until we're under budget.
+    // Insert a compaction marker at the front so the model knows context was trimmed.
+    while messages.len() > 2 && estimate(messages) > threshold_tokens {
+        messages.remove(0);
+    }
+    messages.insert(
+        0,
+        json!({
+            "role": "user",
+            "content": "[Earlier conversation messages were automatically compacted to fit context window]"
+        }),
+    );
+}
+
 fn transcript_to_anthropic_messages(state: &AppState, input: &str) -> Vec<Value> {
     let mut messages = state
         .transcript
