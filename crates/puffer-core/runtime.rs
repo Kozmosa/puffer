@@ -535,15 +535,29 @@ fn execute_anthropic(
                     || err_msg.contains("too long")
                 {
                     if messages.len() > 3 {
-                        let drop_count = messages.len() / 3;
+                        let drop_count = (messages.len() / 3).max(1);
                         messages.drain(..drop_count);
-                        messages.insert(
-                            0,
-                            json!({
-                                "role": "user",
-                                "content": "[Context truncated to fit within model limits]"
-                            }),
-                        );
+                        // Ensure first message is user role for valid alternation.
+                        if messages
+                            .first()
+                            .and_then(|m| m["role"].as_str())
+                            == Some("user")
+                        {
+                            if let Some(first) = messages.first_mut() {
+                                let existing = first["content"].as_str().unwrap_or("").to_string();
+                                first["content"] = json!(format!(
+                                    "[Context truncated]\n\n{existing}"
+                                ));
+                            }
+                        } else {
+                            messages.insert(
+                                0,
+                                json!({
+                                    "role": "user",
+                                    "content": "[Context truncated to fit within model limits]"
+                                }),
+                            );
+                        }
                         continue;
                     }
                 }
@@ -998,18 +1012,40 @@ fn auto_compact_messages(messages: &mut Vec<Value>, threshold_tokens: u32) {
     if total <= threshold_tokens || messages.len() <= 2 {
         return;
     }
-    // Drop oldest messages (keeping at least the last 2) until we're under budget.
-    // Insert a compaction marker at the front so the model knows context was trimmed.
+    // Drop oldest messages (keeping at least the last 2) until under budget.
     while messages.len() > 2 && estimate(messages) > threshold_tokens {
         messages.remove(0);
     }
-    messages.insert(
-        0,
-        json!({
-            "role": "user",
-            "content": "[Earlier conversation messages were automatically compacted to fit context window]"
-        }),
-    );
+    // Ensure valid alternating structure: first message must be "user".
+    // If compaction left an assistant message at the front, insert a marker.
+    let needs_marker = messages
+        .first()
+        .and_then(|m| m["role"].as_str())
+        .is_some_and(|role| role != "user");
+    if needs_marker || messages.first().and_then(|m| m["role"].as_str()) == Some("user") {
+        // Always insert a user marker; if the first message is already user,
+        // merge the note into it to avoid consecutive user messages.
+        if messages
+            .first()
+            .and_then(|m| m["role"].as_str())
+            == Some("user")
+        {
+            if let Some(first) = messages.first_mut() {
+                let existing = first["content"].as_str().unwrap_or("").to_string();
+                first["content"] = json!(format!(
+                    "[Earlier messages compacted]\n\n{existing}"
+                ));
+            }
+        } else {
+            messages.insert(
+                0,
+                json!({
+                    "role": "user",
+                    "content": "[Earlier conversation messages were automatically compacted to fit context window]"
+                }),
+            );
+        }
+    }
 }
 
 /// Resolves the max output tokens for the given model, falling back to a
