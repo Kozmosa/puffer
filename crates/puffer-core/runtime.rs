@@ -472,10 +472,19 @@ fn execute_anthropic(
     let auto_compact_threshold = context_window.saturating_mul(80) / 100;
     auto_compact_messages(&mut messages, auto_compact_threshold);
 
+    // Resolve thinking/reasoning support from model capabilities + effort level.
+    let model_supports_thinking = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.supports_reasoning)
+        .unwrap_or(false);
+    let max_output = resolve_max_output_tokens(provider, &model_id);
+
     for _ in 0..8 {
         let mut body = json!({
             "model": model_id,
-            "max_tokens": resolve_max_output_tokens(provider, &model_id),
+            "max_tokens": max_output,
             "messages": messages,
             "system": anthropic_system_blocks(
                 &request.attribution_prefix_block,
@@ -485,6 +494,17 @@ fn execute_anthropic(
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.clone());
+        }
+        // Add thinking/reasoning when the model supports it and effort is not "low".
+        if model_supports_thinking && state.effort_level != "low" {
+            let thinking_budget = match state.effort_level.as_str() {
+                "high" | "max" => max_output.saturating_sub(1).min(16_384),
+                _ => max_output.saturating_sub(1).min(8_192), // medium default
+            };
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": thinking_budget
+            });
         }
 
         let response = match send_http_request(&request.url, &request.headers, &body.to_string(), true) {
