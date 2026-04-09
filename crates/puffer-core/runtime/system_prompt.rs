@@ -66,6 +66,9 @@ If you can say it in one sentence, don't use three. Prefer short, direct sentenc
 
 $SESSION_GUIDANCE
 
+# Important context behavior
+When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later to free context space.
+
 $ENVIRONMENT"#;
 
 /// Renders the shared Claude-style system prompt used for provider-backed turns.
