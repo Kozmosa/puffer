@@ -35,7 +35,7 @@ pub(crate) fn build_codex_openai_request_body(
         "input": codex_input_items(input),
         "tools": tools,
         "tool_choice": "auto",
-        "parallel_tool_calls": false,
+        "parallel_tool_calls": !tools.is_empty(),
         "store": store,
         "stream": stream,
         "include": include,
