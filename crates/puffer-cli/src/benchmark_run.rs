@@ -102,6 +102,13 @@ pub(crate) fn run_benchmark_command(
         .ok_or_else(|| anyhow!("invalid model selector {model_selector}"))?;
 
     hydrate_openai_auth(providers, auth_store, &selected_provider)?;
+    // Honor OPENAI_BASE_URL for proxy/custom endpoints.
+    if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
+        let trimmed = base_url.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            providers.apply_openai_base_url_override(Some(trimmed));
+        }
+    }
     let _ = providers.discover_and_merge_all(auth_store);
     ensure_model_registered(providers, &selected_provider, &model_id)?;
 
