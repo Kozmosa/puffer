@@ -297,7 +297,7 @@ pub(crate) fn render(
             let hint_text = ACTIVE_STATUS_HINT.with(|h| {
                 h.borrow()
                     .as_ref()
-                    .filter(|(_, t)| t.elapsed().as_secs() < 3)
+                    .filter(|(_, t)| t.elapsed().as_secs() < 2)
                     .map(|(text, _)| text.clone())
             });
             if let Some(text) = hint_text {

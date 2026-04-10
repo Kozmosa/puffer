@@ -1396,22 +1396,24 @@ fn auto_compact_messages(
     model_id: &str,
     max_output: u32,
 ) {
-    // Circuit breaker: track consecutive compactions per turn.
+    // Circuit breaker: track consecutive compactions.
+    // Resets when messages are under threshold (no compact needed).
     thread_local! {
         static COMPACT_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
+
+    if estimate_message_tokens(messages) <= threshold_tokens || messages.len() <= 2 {
+        COMPACT_COUNT.with(|c| c.set(0)); // Under threshold → reset counter.
+        return;
+    }
+
     let count = COMPACT_COUNT.with(|c| {
         let v = c.get();
         c.set(v + 1);
         v
     });
     if count >= MAX_AUTO_COMPACT_CYCLES {
-        return; // Stop compacting to prevent infinite loops.
-    }
-
-    if estimate_message_tokens(messages) <= threshold_tokens || messages.len() <= 2 {
-        COMPACT_COUNT.with(|c| c.set(0)); // Reset on no-op.
-        return;
+        return; // Exhausted — stop to prevent infinite loops.
     }
 
     // Build a compact prompt from the messages we're about to drop.
