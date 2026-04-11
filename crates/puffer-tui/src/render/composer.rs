@@ -151,7 +151,10 @@ fn command_dropdown_lines(
                 .map(|value| format!("  {value}"))
                 .unwrap_or_default();
             selection_line(
-                format!("/{}  {}{}", command.name, command.description, argument_hint),
+                format!(
+                    "/{}  {}{}",
+                    command.name, command.description, argument_hint
+                ),
                 index == slash_selection,
             )
         })
@@ -184,7 +187,10 @@ fn generic_overlay_dropdown_lines(overlay: &OverlayState) -> Vec<Line<'static>> 
     );
     if !rows.is_empty() {
         lines.push(Line::default());
-        lines.extend(rows.into_iter().map(|row| selection_line(row.text, row.selected)));
+        lines.extend(
+            rows.into_iter()
+                .map(|row| selection_line(row.text, row.selected)),
+        );
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(

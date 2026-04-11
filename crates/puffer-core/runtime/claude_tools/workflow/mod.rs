@@ -44,3 +44,37 @@ pub(crate) fn register_background_shell_task(
 ) -> Result<()> {
     support::register_background_shell_task(cwd, task_id, subject, command, process_id, output_file)
 }
+
+/// Marks a background shell task as completed after its process exits.
+/// Called from the reaper thread in bash.rs.
+pub(crate) fn mark_shell_task_completed(
+    cwd: &Path,
+    task_id: &str,
+    exit_code: Option<i32>,
+) -> Result<()> {
+    support::mark_shell_task_completed(cwd, task_id, exit_code)
+}
+
+/// Returns descriptions of background shell tasks that finished since last check.
+/// Each call returns newly completed tasks and clears their "pending notification" flag.
+pub(crate) fn drain_completed_shell_tasks(cwd: &Path) -> Vec<String> {
+    support::drain_completed_shell_tasks(cwd)
+}
+
+/// Returns the number of background shell tasks currently running.
+pub(crate) fn running_shell_task_count(cwd: &Path) -> usize {
+    // Best-effort: if the workflow directory doesn't exist or isn't writable
+    // (e.g. in test environments), return 0.
+    let tasks_path = match store::workflow_root_opt(cwd) {
+        Some(root) => root.join("tasks.json"),
+        None => return 0,
+    };
+    store::load_store::<store::TaskStore>(&tasks_path)
+        .map(|s| {
+            s.tasks
+                .iter()
+                .filter(|t| t.status == "running" || t.status == "in_progress")
+                .count()
+        })
+        .unwrap_or(0)
+}

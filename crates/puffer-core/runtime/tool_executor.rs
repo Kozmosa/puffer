@@ -69,34 +69,41 @@ pub(super) fn execute_tool_call(
             ));
         }
     }
-    let permission_context = load_runtime_permission_context(cwd, resources, state)?;
-    let permission_decision = permission_context.decision_for_tool_call(&definition, &input);
-    match permission_decision.behavior {
-        ToolPermissionBehavior::Allow => {}
-        ToolPermissionBehavior::Deny => {
-            return Ok(blocked_runtime_tool(
-                tool_id,
-                ToolPermissionBehavior::Deny,
-                permission_decision.reason,
-            ));
-        }
-        ToolPermissionBehavior::Ask => match prompt_for_permission(build_permission_prompt_request(
-            &definition,
-            &input,
-            permission_decision.reason.as_deref(),
-        )) {
-            PermissionPromptAction::AllowOnce => {}
-            PermissionPromptAction::AllowSession => {
-                state.allow_tool_for_session(&definition.id);
-            }
-            PermissionPromptAction::Deny => {
+    if !state.session_allow_all {
+        let permission_context = load_runtime_permission_context(cwd, resources, state)?;
+        let permission_decision = permission_context.decision_for_tool_call(&definition, &input);
+        match permission_decision.behavior {
+            ToolPermissionBehavior::Allow => {}
+            ToolPermissionBehavior::Deny => {
                 return Ok(blocked_runtime_tool(
                     tool_id,
                     ToolPermissionBehavior::Deny,
-                    Some("permission denied by user".to_string()),
+                    permission_decision.reason,
                 ));
             }
-        },
+            ToolPermissionBehavior::Ask => {
+                match prompt_for_permission(build_permission_prompt_request(
+                    &definition,
+                    &input,
+                    permission_decision.reason.as_deref(),
+                )) {
+                    PermissionPromptAction::AllowOnce => {}
+                    PermissionPromptAction::AllowSession => {
+                        state.allow_tool_for_session(&definition.id);
+                    }
+                    PermissionPromptAction::AllowAllSession => {
+                        state.session_allow_all = true;
+                    }
+                    PermissionPromptAction::Deny => {
+                        return Ok(blocked_runtime_tool(
+                            tool_id,
+                            ToolPermissionBehavior::Deny,
+                            Some("permission denied by user".to_string()),
+                        ));
+                    }
+                }
+            }
+        }
     }
     let provider_context = match backend {
         ToolExecutionBackend::Anthropic {
@@ -153,6 +160,98 @@ fn successful_runtime_tool(tool_id: &str, stdout: String) -> ToolExecutionResult
             stderr: String::new(),
             metadata: Value::Null,
         },
+    }
+}
+
+/// Returns `true` when a tool can be executed without `&mut AppState`.
+///
+/// These tools perform pure IO (filesystem reads, HTTP requests, process spawning)
+/// and don't read or write any mutable application state. This classification
+/// enables parallel execution when the model requests multiple tool calls.
+pub(super) fn is_parallel_safe_tool(tool_id: &str) -> bool {
+    matches!(
+        tool_id,
+        "Glob" | "Grep" | "WebFetch" | "WebSearch" | "ToolSearch" | "Skill" | "Bash"
+    )
+}
+
+/// The result of pre-resolving permission for a tool call.
+pub(super) enum PermissionOutcome {
+    /// Tool execution is permitted.
+    Allowed,
+    /// Tool execution was denied; carry the pre-built denial result.
+    Denied(ToolExecutionResult),
+}
+
+/// Pre-resolves permission for one tool call.
+///
+/// This is separated from `execute_tool_call` so that permissions can be
+/// resolved serially (may prompt the user) before tools are dispatched in
+/// parallel.
+pub(super) fn resolve_tool_permission(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    registry: &ToolRegistry,
+    cwd: &Path,
+    tool_id: &str,
+    input: &Value,
+    tool_filter: Option<&super::RequestToolFilter>,
+) -> Result<PermissionOutcome> {
+    let definition = match registry.definition(tool_id) {
+        Some(d) => d.clone(),
+        None => {
+            return Ok(PermissionOutcome::Denied(blocked_runtime_tool(
+                tool_id,
+                ToolPermissionBehavior::Deny,
+                Some(format!("unknown tool {tool_id}")),
+            )));
+        }
+    };
+    if let Some(filter) = tool_filter {
+        if !filter.allows_call(&definition, cwd, input)? {
+            return Ok(PermissionOutcome::Denied(blocked_runtime_tool(
+                tool_id,
+                ToolPermissionBehavior::Deny,
+                Some("slash command tool scope denied this tool call".to_string()),
+            )));
+        }
+    }
+    if state.session_allow_all {
+        return Ok(PermissionOutcome::Allowed);
+    }
+    let permission_context = load_runtime_permission_context(cwd, resources, state)?;
+    let permission_decision = permission_context.decision_for_tool_call(&definition, input);
+    match permission_decision.behavior {
+        ToolPermissionBehavior::Allow => Ok(PermissionOutcome::Allowed),
+        ToolPermissionBehavior::Deny => Ok(PermissionOutcome::Denied(blocked_runtime_tool(
+            tool_id,
+            ToolPermissionBehavior::Deny,
+            permission_decision.reason,
+        ))),
+        ToolPermissionBehavior::Ask => {
+            match prompt_for_permission(build_permission_prompt_request(
+                &definition,
+                input,
+                permission_decision.reason.as_deref(),
+            )) {
+                PermissionPromptAction::AllowOnce => Ok(PermissionOutcome::Allowed),
+                PermissionPromptAction::AllowSession => {
+                    state.allow_tool_for_session(&definition.id);
+                    Ok(PermissionOutcome::Allowed)
+                }
+                PermissionPromptAction::AllowAllSession => {
+                    state.session_allow_all = true;
+                    Ok(PermissionOutcome::Allowed)
+                }
+                PermissionPromptAction::Deny => {
+                    Ok(PermissionOutcome::Denied(blocked_runtime_tool(
+                        tool_id,
+                        ToolPermissionBehavior::Deny,
+                        Some("permission denied by user".to_string()),
+                    )))
+                }
+            }
+        }
     }
 }
 

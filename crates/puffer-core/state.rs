@@ -76,10 +76,15 @@ pub struct AppState {
     pub should_exit: bool,
     pub reload_resources_requested: bool,
     pub(crate) claude_read_state: HashMap<PathBuf, ClaudeReadState>,
-    pub(crate) session_tool_permissions: HashMap<String, String>,
+    pub session_tool_permissions: HashMap<String, String>,
+    /// When true, all tool permission prompts are auto-allowed for the session.
+    pub session_allow_all: bool,
     pub(crate) native_structured_output_unsupported: HashSet<String>,
     pub(crate) status_line_signature: Option<String>,
     pending_query_prompt: Option<String>,
+    /// Last API-reported input token count (from `usage.input_tokens`).
+    /// Updated after each Responses API call for accurate context-window display.
+    pub last_input_tokens: Option<u32>,
     tasks: Vec<TaskRecord>,
     next_task_id: u64,
 }
@@ -126,9 +131,11 @@ impl AppState {
             reload_resources_requested: false,
             claude_read_state: HashMap::new(),
             session_tool_permissions: HashMap::new(),
+            session_allow_all: false,
             native_structured_output_unsupported: HashSet::new(),
             status_line_signature: None,
             pending_query_prompt: None,
+            last_input_tokens: None,
             tasks: Vec::new(),
             next_task_id: 1,
         }

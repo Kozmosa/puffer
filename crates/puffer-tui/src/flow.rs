@@ -306,6 +306,8 @@ pub(crate) fn handle_prompt_submit(
         let _ = sender.send(PendingSubmitEvent::Finished(PendingSubmitResult {
             outcome,
             auth_store: worker_auth_store,
+            session_tool_permissions: worker_state.session_tool_permissions.clone(),
+            session_allow_all: worker_state.session_allow_all,
         }));
     });
     tui.pending_submit = Some(PendingSubmit {
@@ -313,6 +315,7 @@ pub(crate) fn handle_prompt_submit(
         receiver,
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        started_at: std::time::Instant::now(),
     });
     Ok(())
 }
@@ -382,6 +385,8 @@ pub(crate) fn poll_pending_submit(
             Err(TryRecvError::Disconnected) => PendingSubmitEvent::Finished(PendingSubmitResult {
                 outcome: Err("background request disconnected".to_string()),
                 auth_store: auth_store.clone(),
+                session_tool_permissions: std::collections::HashMap::new(),
+                session_allow_all: false,
             }),
         };
         match event {
@@ -408,6 +413,13 @@ pub(crate) fn poll_pending_submit(
                 let rendered_tool_invocations = pending.rendered_tool_invocations;
                 let previous_auth_store = auth_store.clone();
                 *auth_store = result.auth_store;
+                // Sync session permissions from worker clone back to main state.
+                state
+                    .session_tool_permissions
+                    .extend(result.session_tool_permissions);
+                if result.session_allow_all {
+                    state.session_allow_all = true;
+                }
                 match result.outcome {
                     Ok(turn) => {
                         if rendered_tool_invocations < turn.tool_invocations.len() {

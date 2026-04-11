@@ -24,6 +24,36 @@ pub(crate) mod skill;
 pub(crate) mod tool_search;
 mod web_fetch;
 mod web_search;
+
+/// Retries a blocking HTTP send operation up to `max_attempts` times with 1s delay
+/// on transient connection/timeout errors.
+fn retry_http_send<F>(
+    max_attempts: usize,
+    mut operation: F,
+) -> anyhow::Result<reqwest::blocking::Response>
+where
+    F: FnMut() -> anyhow::Result<reqwest::blocking::Response>,
+{
+    let max_attempts = max_attempts.max(1);
+    for attempt in 1..=max_attempts {
+        match operation() {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt < max_attempts && is_retryable_send_error(&error) => {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
+}
+
+fn is_retryable_send_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.is_timeout() || e.is_connect() || e.is_request())
+    })
+}
 pub(crate) mod workflow;
 mod write;
 
@@ -210,6 +240,80 @@ pub(crate) fn execute_tool(
             )?,
         )),
         _ => registry.execute_json(&definition.id, cwd, input),
+    }
+}
+
+/// Executes a parallel-safe tool without `&mut AppState`.
+///
+/// This handles only tools identified by `is_parallel_safe_tool()` and
+/// replicates the corresponding match arms from `execute_tool`. All data
+/// needed is passed by value/reference; no mutable application state is
+/// touched, enabling concurrent execution via `std::thread::scope`.
+pub(crate) fn execute_parallel_tool(
+    definition: &ToolDefinition,
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    allow_all_paths: bool,
+    input: Value,
+    resources: &LoadedResources,
+    registry: &ToolRegistry,
+    provider_context: &ProviderToolContext<'_>,
+) -> Result<ToolExecutionResult> {
+    match definition.id.as_str() {
+        "Bash" => {
+            let execution = bash::execute_from_value(cwd, input)?;
+            let output = serde_json::to_string_pretty(&execution.output)
+                .context("failed to serialize Bash output")?;
+            Ok(tool_result(definition, execution.success, output))
+        }
+        "Glob" => Ok(tool_result(
+            definition,
+            true,
+            glob::execute_claude_glob(cwd, working_dirs, allow_all_paths, input)?,
+        )),
+        "Grep" => Ok(tool_result(
+            definition,
+            true,
+            grep::execute_claude_grep(cwd, working_dirs, allow_all_paths, input)?,
+        )),
+        "WebFetch" => {
+            let output = serde_json::to_string_pretty(&web_fetch::execute_claude_web_fetch(input)?)
+                .context("failed to serialize WebFetch output")?;
+            Ok(tool_result(definition, true, output))
+        }
+        "WebSearch" => {
+            let output = match provider_context {
+                ProviderToolContext::OpenAI {
+                    request_config,
+                    model_id,
+                    ..
+                } => web_search::execute_claude_openai_web_search(request_config, model_id, input)?,
+                ProviderToolContext::Anthropic {
+                    request_config,
+                    model_id,
+                    ..
+                } => web_search::execute_claude_anthropic_web_search(
+                    request_config,
+                    model_id,
+                    input,
+                )?,
+                ProviderToolContext::None => {
+                    bail!("WebSearch requires provider execution context")
+                }
+            };
+            Ok(tool_result(definition, true, output))
+        }
+        "ToolSearch" => Ok(tool_result(
+            definition,
+            true,
+            tool_search::execute_claude_tool_search_tool(registry, input)?,
+        )),
+        "Skill" => Ok(tool_result(
+            definition,
+            true,
+            skill::execute_claude_skill_tool(resources, input)?,
+        )),
+        other => bail!("tool {other} is not parallel-safe"),
     }
 }
 

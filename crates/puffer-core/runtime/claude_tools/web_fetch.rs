@@ -1,3 +1,4 @@
+use super::retry_http_send;
 use anyhow::{bail, Context, Result};
 use html2text::from_read;
 use reqwest::blocking::Client;
@@ -98,10 +99,12 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
         }));
     }
 
-    let response = client
-        .get(request_url.clone())
-        .send()
-        .with_context(|| format!("failed to fetch {}", request_url))?;
+    let response = retry_http_send(3, || {
+        client
+            .get(request_url.clone())
+            .send()
+            .with_context(|| format!("failed to fetch {}", request_url))
+    })?;
     let status = response.status();
     let final_url = response.url().clone();
     let status_text = status_text(status).to_string();

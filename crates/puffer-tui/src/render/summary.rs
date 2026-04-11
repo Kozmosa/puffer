@@ -1,5 +1,5 @@
 use super::top_panel::{should_show_puffer, TOP_PANEL_IMAGE_HEIGHT};
-use puffer_core::{estimate_remaining_context_percent, AppState};
+use puffer_core::{estimate_remaining_context_percent, running_background_task_count, AppState};
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
@@ -12,6 +12,7 @@ pub(super) fn top_panel_compact_lines(
     resources: &LoadedResources,
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
+    providers: &ProviderRegistry,
 ) -> Vec<Line<'static>> {
     let account = account_header_line(state, auth_store).unwrap_or_else(|| {
         let provider = current_provider(state);
@@ -31,21 +32,29 @@ pub(super) fn top_panel_compact_lines(
     }
     let tools = tool_status(tool_registry).executable;
     let remote = remote_label(state);
+    let remaining = estimate_remaining_context_percent(state, providers);
+    let ctx_pct = if remaining > 0 {
+        format!(" · {remaining}% left")
+    } else {
+        String::new()
+    };
     let context = if remote == "local" {
         format!(
-            "{} · {} msgs · {} wds · sandbox {}",
+            "{} · {} msgs · {} wds · sandbox {}{}",
             path_tail(&state.cwd),
             state.transcript.len(),
             state.working_dirs.len(),
             state.sandbox_mode,
+            ctx_pct,
         )
     } else {
         format!(
-            "{} · {} msgs · {} wds · {}",
+            "{} · {} msgs · {} wds · {}{}",
             path_tail(&state.cwd),
             state.transcript.len(),
             state.working_dirs.len(),
             remote,
+            ctx_pct,
         )
     };
 
@@ -66,11 +75,7 @@ pub(super) fn top_panel_compact_lines(
             false,
         ),
         top_panel_line("Mode", mode.join(" · "), false),
-        top_panel_line(
-            "Context",
-            context,
-            false,
-        ),
+        top_panel_line("Context", context, false),
     ]
 }
 
@@ -80,10 +85,11 @@ pub(super) fn top_panel_height(
     resources: &LoadedResources,
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
+    providers: &ProviderRegistry,
     width: u16,
 ) -> u16 {
-    let box_height = top_panel_compact_lines(state, resources, auth_store, tool_registry).len()
-        as u16
+    let box_height = top_panel_compact_lines(state, resources, auth_store, tool_registry, providers)
+        .len() as u16
         + 2;
     if should_show_puffer(width) {
         (TOP_PANEL_IMAGE_HEIGHT as u16).max(box_height)
@@ -95,12 +101,22 @@ pub(super) fn top_panel_height(
 /// Builds the condensed footer status line shown below the composer.
 pub(super) fn footer_status_line(state: &AppState, providers: &ProviderRegistry) -> String {
     let remaining = estimate_remaining_context_percent(state, providers);
+    let bg_count = running_background_task_count(state);
+    let bg_label = if bg_count > 0 {
+        format!(
+            " · {bg_count} bg task{}",
+            if bg_count == 1 { "" } else { "s" }
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{} · {}% left · {} · sandbox {}",
+        "{} · {}% left · {} · sandbox {}{}",
         current_model(state),
         remaining,
         footer_path(&state.cwd),
         state.sandbox_mode,
+        bg_label,
     )
 }
 
@@ -111,6 +127,7 @@ pub(super) fn header_lines(
     resources: &LoadedResources,
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
+    providers: &ProviderRegistry,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("Puffer Code")];
     lines.extend(top_panel_compact_lines(
@@ -118,6 +135,7 @@ pub(super) fn header_lines(
         resources,
         auth_store,
         tool_registry,
+        providers,
     ));
     lines
 }

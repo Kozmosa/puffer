@@ -31,7 +31,8 @@ pub fn supported_effort_levels(family: ModelPreferenceFamily) -> &'static [&'sta
 /// Returns the default effort level used when a provider switch invalidates the current one.
 pub fn default_effort_level(family: ModelPreferenceFamily) -> &'static str {
     match family {
-        ModelPreferenceFamily::Anthropic | ModelPreferenceFamily::OpenAi => "high",
+        ModelPreferenceFamily::Anthropic => "high",
+        ModelPreferenceFamily::OpenAi => "low",
         ModelPreferenceFamily::Other => "medium",
     }
 }
@@ -51,6 +52,12 @@ pub fn normalized_effort_level(family: ModelPreferenceFamily, effort_level: &str
     let normalized = effort_level.trim().to_ascii_lowercase();
     if normalized == "auto" || normalized == "unset" {
         return "auto".to_string();
+    }
+    if family == ModelPreferenceFamily::OpenAi && normalized == "max" {
+        return "high".to_string();
+    }
+    if family == ModelPreferenceFamily::Anthropic && normalized == "xhigh" {
+        return "high".to_string();
     }
     if effort_level_is_supported(family, &normalized) {
         normalized
@@ -93,7 +100,7 @@ mod tests {
             normalized_effort_level(ModelPreferenceFamily::OpenAi, "max"),
             "high"
         );
-        assert_eq!(default_effort_level(ModelPreferenceFamily::OpenAi), "high");
+        assert_eq!(default_effort_level(ModelPreferenceFamily::OpenAi), "low");
     }
 
     #[test]

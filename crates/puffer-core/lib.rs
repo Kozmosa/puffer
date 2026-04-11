@@ -32,6 +32,7 @@ pub use model_preferences::{
     default_effort_level, effort_level_is_supported, normalized_effort_level,
     provider_preference_family, supported_effort_levels, ModelPreferenceFamily,
 };
+pub use runtime::background_tasks;
 pub use runtime::claude_tools::execute_workflow_tool;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::teammate_loop;
@@ -86,7 +87,21 @@ pub fn render_context_panel(
     runtime::render_context_usage_summary(state, resources, providers)
 }
 
+/// Returns the number of background shell tasks currently running.
+pub fn running_background_task_count(state: &AppState) -> usize {
+    runtime::claude_tools::workflow::running_shell_task_count(&state.cwd)
+}
+
+/// Drains background task completion notifications (clears after reading).
+pub fn drain_background_task_completions(state: &AppState) -> Vec<String> {
+    runtime::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd)
+}
+
 /// Estimates the remaining context-window percentage for the active model.
+///
+/// When `state.last_input_tokens` is available (populated from `usage.input_tokens`
+/// in API responses), uses that for an accurate calculation. Falls back to a
+/// heuristic estimation from rendered transcript text.
 pub fn estimate_remaining_context_percent(state: &AppState, providers: &ProviderRegistry) -> u32 {
     let context_window = state
         .current_model
@@ -98,11 +113,17 @@ pub fn estimate_remaining_context_percent(state: &AppState, providers: &Provider
         return 0;
     }
 
-    let used_tokens = state
-        .transcript
-        .iter()
-        .map(|message| estimate_footer_tokens(&message.text).saturating_add(4))
-        .sum::<u32>();
+    let used_tokens = if let Some(api_tokens) = state.last_input_tokens {
+        api_tokens
+    } else {
+        // Fallback: estimate from rendered transcript (inaccurate — misses system
+        // prompt, tool definitions, function call/output items).
+        state
+            .transcript
+            .iter()
+            .map(|message| estimate_footer_tokens(&message.text).saturating_add(4))
+            .sum::<u32>()
+    };
     let remaining_tokens = context_window.saturating_sub(used_tokens);
     remaining_tokens.saturating_mul(100) / context_window
 }
@@ -200,12 +221,16 @@ pub fn render_session_overlay(state: &AppState) -> SessionOverlayView {
 }
 
 fn estimate_footer_tokens(text: &str) -> u32 {
-    let chars = text.chars().count() as u32;
-    if chars == 0 {
-        0
-    } else {
-        (chars + 3) / 4
+    // CJK-aware: ASCII ~0.25 tokens/char, non-ASCII ~1.5 tokens/char.
+    let mut units = 0u32;
+    for ch in text.chars() {
+        if ch.is_ascii() {
+            units += 1;
+        } else {
+            units += 6;
+        }
     }
+    (units + 3) / 4
 }
 
 /// Applies a provider/model/effort/fast-mode selection and persists it to user config.

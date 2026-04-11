@@ -2,7 +2,7 @@ use super::prompt_border_style;
 use super::summary::top_panel_compact_lines;
 use image::{imageops::FilterType, DynamicImage, ImageReader, Rgba, RgbaImage};
 use puffer_core::AppState;
-use puffer_provider_registry::AuthStore;
+use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use ratatui::layout::Rect;
@@ -11,8 +11,8 @@ use ratatui::symbols::border;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Frame;
-use std::env;
 use std::collections::VecDeque;
+use std::env;
 use std::sync::OnceLock;
 
 pub(super) const TOP_PANEL_IMAGE_WIDTH: u32 = 16;
@@ -34,9 +34,11 @@ pub(super) fn render_fixed_top_panel(
     resources: &LoadedResources,
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
+    providers: &ProviderRegistry,
 ) {
     let art_lines = puffer_art_lines();
-    let summary_lines = top_panel_compact_lines(state, resources, auth_store, tool_registry);
+    let summary_lines =
+        top_panel_compact_lines(state, resources, auth_store, tool_registry, providers);
     let plan = panel_render_plan(area, &art_lines, &summary_lines);
 
     if plan.show_puffer {
@@ -153,7 +155,8 @@ fn should_show_puffer_with_art_width(total_width: u16, art_width: u16) -> bool {
 }
 
 fn truncate_lines(lines: &[Line<'static>], max_width: usize) -> Vec<Line<'static>> {
-    lines.iter()
+    lines
+        .iter()
         .map(|line| truncate_line(line, max_width))
         .collect()
 }
@@ -188,7 +191,10 @@ fn truncate_line(line: &Line<'static>, max_width: usize) -> Line<'static> {
         }
     }
 
-    let ellipsis_style = spans.last().map(|span| span.style).unwrap_or(Style::reset());
+    let ellipsis_style = spans
+        .last()
+        .map(|span| span.style)
+        .unwrap_or(Style::reset());
     spans.push(Span::styled("...".to_string(), ellipsis_style));
     Line::from(spans).patch_style(Style::reset())
 }
@@ -239,9 +245,7 @@ fn pixel_span(pixel: Rgba<u8>) -> Span<'static> {
 
 fn color_style(pixel: Rgba<u8>) -> Style {
     let color = resolved_color(pixel);
-    Style::reset()
-        .fg(color)
-        .bg(color)
+    Style::reset().fg(color).bg(color)
 }
 
 fn resolved_color(pixel: Rgba<u8>) -> Color {
@@ -255,7 +259,9 @@ fn resolved_color(pixel: Rgba<u8>) -> Color {
 fn supports_truecolor() -> bool {
     static SUPPORTS_TRUECOLOR: OnceLock<bool> = OnceLock::new();
     *SUPPORTS_TRUECOLOR.get_or_init(|| {
-        let color_term = env::var("COLORTERM").unwrap_or_default().to_ascii_lowercase();
+        let color_term = env::var("COLORTERM")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let term = env::var("TERM").unwrap_or_default().to_ascii_lowercase();
         color_term.contains("truecolor")
             || color_term.contains("24bit")
@@ -423,12 +429,7 @@ fn crop_to_alpha_bounds(image: &RgbaImage) -> Option<RgbaImage> {
 fn puffer_image() -> Option<DynamicImage> {
     static IMAGE: OnceLock<Option<DynamicImage>> = OnceLock::new();
     IMAGE
-        .get_or_init(|| {
-            ImageReader::open(PUFFER_IMAGE_PATH)
-                .ok()?
-                .decode()
-                .ok()
-        })
+        .get_or_init(|| ImageReader::open(PUFFER_IMAGE_PATH).ok()?.decode().ok())
         .clone()
 }
 
@@ -455,7 +456,10 @@ mod tests {
 
     #[test]
     fn indexed_palette_keeps_eye_green() {
-        assert_eq!(indexed_palette_color(Rgba([14, 71, 54, 255])), Color::Indexed(28));
+        assert_eq!(
+            indexed_palette_color(Rgba([14, 71, 54, 255])),
+            Color::Indexed(28)
+        );
     }
 
     #[test]

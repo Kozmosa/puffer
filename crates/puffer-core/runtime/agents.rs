@@ -478,10 +478,22 @@ fn launch_background_agent(
     providers: ProviderRegistry,
     auth_store: AuthStore,
 ) -> Result<String> {
+    use super::background_tasks::task_manager;
+
     if let Some(worktree) = prepared.worktree.as_mut() {
         worktree.preserve_on_completion = true;
     }
     let output_file = agent_output_path(&prepared.nested_state.session.cwd, &prepared.agent_id)?;
+
+    // Check concurrent task limit before proceeding.
+    if !task_manager().has_capacity() {
+        bail!(
+            "concurrent background task limit reached ({}). \
+             Wait for existing tasks to complete before launching new agents.",
+            task_manager().active_count()
+        );
+    }
+
     fs::write(
         &output_file,
         serde_json::to_string_pretty(&json!({
@@ -497,6 +509,17 @@ fn launch_background_agent(
         }))?,
     )
     .with_context(|| format!("failed to initialize {}", output_file.display()))?;
+
+    // Register with the centralized task manager for tracking and limit enforcement.
+    let task_output_buf = task_manager()
+        .register(
+            &prepared.agent_id,
+            &prepared.description,
+            Some(&prepared.agent_id),
+            Some(&output_file.display().to_string()),
+            false, // not auto-backgrounded
+        )
+        .map_err(|err| anyhow!(err))?;
 
     let response = AgentAsyncOutput {
         status: "async_launched",
@@ -577,17 +600,36 @@ fn launch_background_agent(
                     Ok(turn) => {
                         total_tool_uses += turn.tool_invocations.len();
                         last_text = turn.assistant_text.trim().to_string();
+                        // Stream turn output into the HeadTailBuffer for
+                        // efficient capture (Codex-style head+tail preservation).
+                        if let Ok(mut buf) = task_output_buf.lock() {
+                            buf.write_str(&format!(
+                                "--- Turn {} ---\n{}\nTool calls: {}\n\n",
+                                outer + 1,
+                                last_text,
+                                turn.tool_invocations.len()
+                            ));
+                        }
                         if turn.tool_invocations.is_empty() {
                             break;
                         }
                     }
                     Err(error) => {
                         last_text = error.to_string();
+                        if let Ok(mut buf) = task_output_buf.lock() {
+                            buf.write_str(&format!(
+                                "--- Turn {} ---\nError: {last_text}\n",
+                                outer + 1
+                            ));
+                        }
                         failed = true;
                         break;
                     }
                 }
             }
+
+            // Mark task as completed/failed in the centralized manager.
+            task_manager().complete(&prepared.agent_id, !failed);
 
             let final_payload = if failed {
                 json!({
@@ -656,6 +698,9 @@ fn launch_background_agent(
                 if failed { "failed" } else { "completed" },
                 &last_text,
             );
+
+            // Periodic cleanup of old completed tasks to prevent unbounded growth.
+            task_manager().cleanup_older_than(std::time::Duration::from_secs(3600));
         });
     }
 

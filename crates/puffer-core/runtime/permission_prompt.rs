@@ -15,6 +15,7 @@ pub struct PermissionPromptRequest {
 pub enum PermissionPromptAction {
     AllowOnce,
     AllowSession,
+    AllowAllSession,
     Deny,
 }
 

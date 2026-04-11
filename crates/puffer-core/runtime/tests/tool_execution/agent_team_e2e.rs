@@ -11,12 +11,7 @@ fn run_tool(state: &mut AppState, tool_id: &str, input: Value) -> Result<String,
     let resources = LoadedResources::default();
     let cwd = state.session.cwd.clone();
     crate::runtime::claude_tools::execute_workflow_tool(
-        state,
-        &resources,
-        &cwd,
-        tool_id,
-        input,
-        None,
+        state, &resources, &cwd, tool_id, input, None,
     )
 }
 
@@ -38,12 +33,10 @@ fn agent_team_e2e_full_lifecycle() {
     .unwrap();
     let parsed: Value = serde_json::from_str(&result).unwrap();
     assert_eq!(parsed["team_name"], "alpha-team");
-    assert!(
-        parsed["lead_agent_id"]
-            .as_str()
-            .unwrap()
-            .contains("team-lead")
-    );
+    assert!(parsed["lead_agent_id"]
+        .as_str()
+        .unwrap()
+        .contains("team-lead"));
     assert_eq!(state.active_team_name.as_deref(), Some("alpha-team"));
 
     // Team directory created
@@ -53,8 +46,7 @@ fn agent_team_e2e_full_lifecycle() {
     // Task list was reset
     let task_file = cwd.join(".puffer/runtime/claude_workflow/team_tasks/alpha-team/tasks.json");
     assert!(task_file.exists());
-    let task_store: Value =
-        serde_json::from_str(&fs::read_to_string(&task_file).unwrap()).unwrap();
+    let task_store: Value = serde_json::from_str(&fs::read_to_string(&task_file).unwrap()).unwrap();
     assert_eq!(task_store["tasks"].as_array().unwrap().len(), 0);
 
     // ── Step 2: SendMessage validation ──────────────────────────
@@ -68,10 +60,7 @@ fn agent_team_e2e_full_lifecycle() {
             "message": "hello"
         }),
     );
-    assert!(err
-        .unwrap_err()
-        .to_string()
-        .contains("do not include @"));
+    assert!(err.unwrap_err().to_string().contains("do not include @"));
 
     // Empty summary for string message
     let err = run_tool(
@@ -82,10 +71,7 @@ fn agent_team_e2e_full_lifecycle() {
             "message": "hello"
         }),
     );
-    assert!(err
-        .unwrap_err()
-        .to_string()
-        .contains("summary is required"));
+    assert!(err.unwrap_err().to_string().contains("summary is required"));
 
     // Structured broadcast rejection
     let err = run_tool(
@@ -165,8 +151,7 @@ fn agent_team_e2e_full_lifecycle() {
     // Shutdown request stored
     let sr_path = cwd.join(".puffer/runtime/claude_workflow/shutdown_requests.json");
     assert!(sr_path.exists());
-    let sr: Value =
-        serde_json::from_str(&fs::read_to_string(&sr_path).unwrap()).unwrap();
+    let sr: Value = serde_json::from_str(&fs::read_to_string(&sr_path).unwrap()).unwrap();
     assert_eq!(sr["requests"][0]["request_id"], request_id);
 
     // Messages have from/read fields

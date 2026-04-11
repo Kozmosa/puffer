@@ -7,11 +7,11 @@ mod panes;
 mod summary;
 mod tool_messages;
 mod top_panel;
-use self::helpers::{help_pane_active, separator_line};
 use self::composer::{
     composer_area_height, inline_dropdown_height, overlay_prompt_cursor, overlay_prompt_input,
     overlay_prompt_placeholder, overlay_renders_inline_dropdown, render_inline_dropdown,
 };
+use self::helpers::{help_pane_active, separator_line};
 #[cfg(test)]
 use self::overlay_content::render_model_entry;
 use self::overlay_content::{masked_secret, overlay_rows, overlay_title, OverlayRow};
@@ -21,8 +21,8 @@ use self::panes::render_help_pane;
 use self::summary::{footer_lines, header_lines, session_lines};
 use self::summary::{footer_status_line, top_panel_height};
 use self::tool_messages::render_tool_message;
-use self::top_panel::render_fixed_top_panel;
 pub(crate) use self::top_panel::initialize_top_panel_image_state;
+use self::top_panel::render_fixed_top_panel;
 use crate::approval_overlay::render_permission_overlay;
 use crate::btw_overlay::render_btw_overlay;
 use crate::markdown::render_markdown;
@@ -51,6 +51,7 @@ struct PendingSubmitRenderState {
     loading_prompt: Option<String>,
     pending_tool_calls: Vec<ToolCallRequest>,
     queued_prompts: Vec<String>,
+    started_at: Option<std::time::Instant>,
 }
 thread_local! {
     static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
@@ -72,12 +73,14 @@ pub(crate) fn set_pending_submit_state(
     loading_prompt: Option<String>,
     pending_tool_calls: Vec<ToolCallRequest>,
     queued_prompts: Vec<String>,
+    started_at: Option<std::time::Instant>,
 ) {
     ACTIVE_PENDING_SUBMIT.with(|value| {
         *value.borrow_mut() = PendingSubmitRenderState {
             loading_prompt,
             pending_tool_calls,
             queued_prompts,
+            started_at,
         };
     });
 }
@@ -129,14 +132,23 @@ pub(crate) fn desired_height(
     let full_panel_overlay = active_overlay
         .as_ref()
         .is_some_and(|overlay| !overlay_renders_inline_dropdown(overlay));
-    let dropdown_height = inline_dropdown_height(active_overlay.as_ref(), input, 0, commands, width);
+    let dropdown_height =
+        inline_dropdown_height(active_overlay.as_ref(), input, 0, commands, width);
     let footer_height = composer_area_height(help_active, dropdown_height);
     let loop_box_height =
         ACTIVE_LOOP_STATE.with(|value| loop_status::loop_status_height(&value.borrow()));
     let fixed_top_panel =
         !help_active && !onboarding_active && ACTIVE_FOLLOW_OUTPUT.with(|value| *value.borrow());
     let header_height = if fixed_top_panel {
-        top_panel_height(state, resources, auth_store, &tool_registry, width).min(
+        top_panel_height(
+            state,
+            resources,
+            auth_store,
+            &tool_registry,
+            providers,
+            width,
+        )
+        .min(
             height
                 .saturating_sub(loop_box_height)
                 .saturating_sub(footer_height)
@@ -192,8 +204,13 @@ pub(crate) fn render(
         .unwrap_or(false);
     let help_active = help_pane_active(state, &active_overlay);
     let overlay_active = active_overlay.is_some();
-    let dropdown_height =
-        inline_dropdown_height(active_overlay.as_ref(), input, slash_selection, commands, frame.area().width);
+    let dropdown_height = inline_dropdown_height(
+        active_overlay.as_ref(),
+        input,
+        slash_selection,
+        commands,
+        frame.area().width,
+    );
     let simplified_surface = help_active;
     let fixed_top_panel = !simplified_surface
         && !onboarding_active
@@ -212,9 +229,15 @@ pub(crate) fn render(
             resources,
             auth_store,
             &tool_registry,
+            providers,
             frame.area().width,
         )
-        .min(frame.area().height.saturating_sub(footer_height + body_min_height))
+        .min(
+            frame
+                .area()
+                .height
+                .saturating_sub(footer_height + body_min_height),
+        )
     } else {
         0
     };
@@ -241,6 +264,7 @@ pub(crate) fn render(
             resources,
             auth_store,
             &tool_registry,
+            providers,
         );
     }
 
@@ -329,10 +353,12 @@ pub(crate) fn render(
             .get(..overlay_cursor)
             .map_or(0, UnicodeWidthStr::width);
         let max_cursor = usize::from(prompt_row.width.saturating_sub(3));
-        frame.set_cursor_position((
-            prompt_row.x + 2 + display_cursor.min(max_cursor) as u16,
-            prompt_row.y,
-        ));
+        let cursor_x = prompt_row.x + 2 + display_cursor.min(max_cursor) as u16;
+        let cursor_y = prompt_row.y;
+        let buf = frame.area();
+        if cursor_x < buf.width && cursor_y < buf.height {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
         if let Some(dropdown_row) = dropdown_row {
             render_inline_dropdown(
                 frame,
@@ -358,10 +384,12 @@ pub(crate) fn render(
         frame.render_widget(Paragraph::new(prompt), prompt_row);
         let display_cursor = input.get(..cursor).map_or(0, UnicodeWidthStr::width);
         let max_cursor = usize::from(prompt_row.width.saturating_sub(3));
-        frame.set_cursor_position((
-            prompt_row.x + 2 + display_cursor.min(max_cursor) as u16,
-            prompt_row.y,
-        ));
+        let cursor_x = prompt_row.x + 2 + display_cursor.min(max_cursor) as u16;
+        let cursor_y = prompt_row.y;
+        let buf = frame.area();
+        if cursor_x < buf.width && cursor_y < buf.height {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
 
         if let Some(dropdown_row) = dropdown_row {
             render_inline_dropdown(frame, dropdown_row, None, input, slash_selection, commands);
@@ -374,8 +402,7 @@ pub(crate) fn render(
             });
             if let Some(text) = hint_text {
                 frame.render_widget(
-                    Paragraph::new(Line::from(text))
-                        .style(Style::default().fg(Color::Yellow)),
+                    Paragraph::new(Line::from(text)).style(Style::default().fg(Color::Yellow)),
                     hint_row,
                 );
             } else {
@@ -383,8 +410,7 @@ pub(crate) fn render(
                     .clone()
                     .unwrap_or_else(|| footer_status_line(state, providers));
                 frame.render_widget(
-                    Paragraph::new(footer_line)
-                        .style(Style::default().add_modifier(Modifier::DIM)),
+                    Paragraph::new(footer_line).style(Style::default().add_modifier(Modifier::DIM)),
                     hint_row,
                 );
             }
@@ -507,6 +533,7 @@ fn pending_submit_state() -> PendingSubmitRenderState {
         loading_prompt: value.borrow().loading_prompt.clone(),
         pending_tool_calls: value.borrow().pending_tool_calls.clone(),
         queued_prompts: value.borrow().queued_prompts.clone(),
+        started_at: value.borrow().started_at,
     })
 }
 
@@ -526,9 +553,15 @@ fn pending_submit_lines(pending_submit: &PendingSubmitRenderState) -> Vec<Line<'
         }
     }
     if pending_submit.loading_prompt.is_some() {
+        let label = if let Some(started) = pending_submit.started_at {
+            let elapsed = started.elapsed().as_secs_f64();
+            format!("Loading... ({elapsed:.1}s)")
+        } else {
+            "Loading...".to_string()
+        };
         lines.push(Line::from(vec![
             Span::styled("  ⎿ ", Style::default().add_modifier(Modifier::DIM)),
-            Span::styled("Loading...", Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(label, Style::default().add_modifier(Modifier::DIM)),
         ]));
     }
     for prompt in &pending_submit.queued_prompts {

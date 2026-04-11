@@ -109,9 +109,30 @@ where
         "response.created" => {
             state.update_response(event.get("response"));
         }
-        "response.output_item.added" | "response.output_item.done" => {
+        "response.output_item.added" => {
             if let Some(item) = event.get("item") {
                 upsert_output_item(&mut state.output, item.clone());
+            }
+        }
+        "response.output_item.done" => {
+            if let Some(item) = event.get("item") {
+                upsert_output_item(&mut state.output, item.clone());
+                // Eagerly emit tool call as soon as each function_call item completes,
+                // so the TUI can display pending tool calls without waiting for the
+                // full response to finish.
+                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    if let (Some(name), Some(arguments)) = (
+                        item.get("name").and_then(Value::as_str),
+                        item.get("arguments").and_then(Value::as_str),
+                    ) {
+                        on_event(TurnStreamEvent::ToolCallsRequested(vec![
+                            super::ToolCallRequest {
+                                tool_id: name.to_string(),
+                                input: arguments.to_string(),
+                            },
+                        ]));
+                    }
+                }
             }
         }
         "response.output_text.delta" => {

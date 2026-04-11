@@ -19,9 +19,9 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// Creates a session store rooted under the workspace configuration directory.
+    /// Creates a session store rooted under the user configuration directory.
     pub fn from_paths(paths: &ConfigPaths) -> Result<Self> {
-        let root = paths.workspace_config_dir.join("sessions");
+        let root = paths.user_config_dir.join("sessions");
         fs::create_dir_all(&root)
             .with_context(|| format!("failed to create session dir {}", root.display()))?;
         Ok(Self { root })
@@ -316,10 +316,21 @@ mod tests {
     use puffer_config::ConfigPaths;
     use tempfile::tempdir;
 
+    /// Build ConfigPaths with both workspace and user dirs inside the tempdir
+    /// so tests never touch the real home directory.
+    fn test_paths(base: &Path) -> ConfigPaths {
+        ConfigPaths {
+            workspace_root: base.to_path_buf(),
+            workspace_config_dir: base.join(".puffer"),
+            user_config_dir: base.join(".puffer-user"),
+            builtin_resources_dir: base.join("resources"),
+        }
+    }
+
     #[test]
     fn list_and_fork_sessions_work() {
         let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
+        let paths = test_paths(tempdir.path());
         fs::create_dir_all(&paths.workspace_config_dir).unwrap();
         let store = SessionStore::from_paths(&paths).unwrap();
 
@@ -350,7 +361,7 @@ mod tests {
     #[test]
     fn session_tags_and_slug_can_be_updated() {
         let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
+        let paths = test_paths(tempdir.path());
         fs::create_dir_all(&paths.workspace_config_dir).unwrap();
         let store = SessionStore::from_paths(&paths).unwrap();
 
@@ -378,7 +389,7 @@ mod tests {
     #[test]
     fn session_note_can_be_set_and_cleared() {
         let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
+        let paths = test_paths(tempdir.path());
         fs::create_dir_all(&paths.workspace_config_dir).unwrap();
         let store = SessionStore::from_paths(&paths).unwrap();
 
@@ -406,7 +417,7 @@ mod tests {
     #[test]
     fn find_session_matches_uuid_prefix_and_name() {
         let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
+        let paths = test_paths(tempdir.path());
         fs::create_dir_all(&paths.workspace_config_dir).unwrap();
         let store = SessionStore::from_paths(&paths).unwrap();
 
@@ -426,7 +437,7 @@ mod tests {
     #[test]
     fn transcript_rewrite_events_are_appended() {
         let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
+        let paths = test_paths(tempdir.path());
         fs::create_dir_all(&paths.workspace_config_dir).unwrap();
         let store = SessionStore::from_paths(&paths).unwrap();
 

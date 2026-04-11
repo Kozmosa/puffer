@@ -8,6 +8,7 @@ mod model_tests;
 mod registry;
 
 pub use builtins::builtin_tool_kind;
+pub use builtins::detected_shell;
 pub use builtins::execute_bash_tool;
 pub use builtins::execute_builtin_tool;
 pub use builtins::execute_read_file_tool;

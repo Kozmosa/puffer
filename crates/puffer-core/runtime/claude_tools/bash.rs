@@ -101,7 +101,7 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
     let stderr = stdout
         .try_clone()
         .with_context(|| format!("failed to clone {}", pending_output_file.display()))?;
-    let child = Command::new("bash")
+    let mut child = Command::new(puffer_tools::detected_shell())
         .arg("-lc")
         .arg(&input.command)
         .current_dir(cwd)
@@ -115,18 +115,34 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
                 cwd.display()
             )
         })?;
-    let task_id = format!("shell-{}", child.id());
+    let pid = child.id();
+    let task_id = format!("shell-{}", pid);
     let subject = tool_description(&input);
-    let output_file = shell_output_path(cwd, child.id())?;
+    let output_file = shell_output_path(cwd, pid)?;
     let _ = fs::rename(&pending_output_file, &output_file);
     super::workflow::register_background_shell_task(
         cwd,
         &task_id,
         &subject,
         &input.command,
-        child.id(),
+        pid,
         &output_file,
     )?;
+
+    // Spawn a reaper thread that calls wait() on the child process.
+    // Without this, the child becomes a zombie after exit because nobody
+    // collects its exit status.  The reaper also marks the task as completed
+    // in the persistent store so that status queries see accurate state
+    // instead of relying on `kill -0` (which returns true for zombies).
+    let reaper_cwd = cwd.to_path_buf();
+    let reaper_task_id = task_id.clone();
+    thread::spawn(move || {
+        let exit_status = child.wait();
+        let exit_code = exit_status.ok().and_then(|s| s.code());
+        // Best-effort: mark the stored task as completed.
+        let _ = super::workflow::mark_shell_task_completed(&reaper_cwd, &reaper_task_id, exit_code);
+    });
+
     Ok(ClaudeBashExecution {
         success: true,
         output: ClaudeBashOutput {
@@ -213,7 +229,7 @@ fn shell_output_path(cwd: &Path, pid: u32) -> Result<std::path::PathBuf> {
 }
 
 fn run_bash_command(cwd: &Path, command: &str, timeout_ms: u64) -> Result<TimedCommandOutput> {
-    let mut child = Command::new("bash")
+    let mut child = Command::new(puffer_tools::detected_shell())
         .arg("-lc")
         .arg(command)
         .current_dir(cwd)

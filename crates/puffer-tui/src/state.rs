@@ -76,6 +76,10 @@ pub(crate) struct TuiState {
 pub(crate) struct PendingSubmitResult {
     pub(crate) outcome: std::result::Result<TurnExecution, String>,
     pub(crate) auth_store: AuthStore,
+    /// Session-level tool permissions accumulated on the worker clone.
+    pub(crate) session_tool_permissions: std::collections::HashMap<String, String>,
+    /// Whether the user chose "allow all" during this turn.
+    pub(crate) session_allow_all: bool,
 }
 
 /// Carries one event emitted while a provider-backed turn is in flight.
@@ -93,6 +97,7 @@ pub(crate) struct PendingSubmit {
     pub(crate) receiver: Receiver<PendingSubmitEvent>,
     pub(crate) pending_tool_calls: Vec<ToolCallRequest>,
     pub(crate) rendered_tool_invocations: usize,
+    pub(crate) started_at: std::time::Instant,
 }
 
 /// Stores the response channel for the currently visible permission prompt.

@@ -15,10 +15,16 @@ fn tmux_resume_overlay_lists_workspace_sessions() {
         return;
     }
 
-    let (_tempdir, workspace) = configured_workspace();
-    let paths = ConfigPaths::discover(&workspace);
+    let (_tempdir, workspace, puffer_home) = configured_workspace();
+    let paths = ConfigPaths {
+        workspace_root: workspace.clone(),
+        workspace_config_dir: workspace.join(".puffer"),
+        user_config_dir: puffer_home.join(".puffer"),
+        builtin_resources_dir: workspace.join("resources"),
+    };
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
+    fs::create_dir_all(workspace.join("dockyard")).unwrap();
     let session = session_store
         .create_session(workspace.join("dockyard"))
         .unwrap();
@@ -31,7 +37,8 @@ fn tmux_resume_overlay_lists_workspace_sessions() {
         &[
             "-lc",
             &format!(
-                "HOME='{}' '{}'",
+                "PUFFER_HOME='{}' HOME='{}' '{}'",
+                puffer_home.display(),
                 workspace.display(),
                 env!("CARGO_BIN_EXE_puffer")
             ),
@@ -52,13 +59,14 @@ fn tmux_login_overlay_lists_available_providers() {
         return;
     }
 
-    let (_tempdir, workspace) = configured_workspace();
+    let (_tempdir, workspace, puffer_home) = configured_workspace();
     let session = start_tmux_command(
         "sh",
         &[
             "-lc",
             &format!(
-                "HOME='{}' '{}'",
+                "PUFFER_HOME='{}' HOME='{}' '{}'",
+                puffer_home.display(),
                 workspace.display(),
                 env!("CARGO_BIN_EXE_puffer")
             ),
@@ -74,8 +82,9 @@ fn tmux_login_overlay_lists_available_providers() {
     assert!(capture.contains("OpenAI"));
 }
 
-fn configured_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+fn configured_workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let (tempdir, workspace) = temp_workspace().unwrap();
+    let puffer_home = workspace.clone();
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -101,5 +110,5 @@ tmux_golden_mode = true
 "#,
     )
     .unwrap();
-    (tempdir, workspace)
+    (tempdir, workspace, puffer_home)
 }

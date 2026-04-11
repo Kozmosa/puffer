@@ -19,6 +19,7 @@ use std::time::Duration;
 mod agent_runtime_tests;
 mod agents;
 mod anthropic_sse;
+pub mod background_tasks;
 pub mod claude_tools;
 mod context_usage;
 mod hook_support;
@@ -56,7 +57,10 @@ use self::structured_output_support::{
 #[cfg(test)]
 use self::structured_output_support::anthropic_tool_definitions;
 use self::system_prompt::render_runtime_system_prompt;
-use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
+use self::tool_executor::{
+    execute_tool_call, is_parallel_safe_tool, resolve_tool_permission, PermissionOutcome,
+    ToolExecutionBackend,
+};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
@@ -474,20 +478,23 @@ fn execute_anthropic(
     snip_old_tool_outputs(&mut messages);
 
     // Auto-compact before turn: generate summary if over threshold.
+    // Effective window = context_window - max_output_tokens (reserve space for output).
+    // Threshold at 90% of effective window (Codex uses 90%, CC ~87%).
+    let max_output = resolve_max_output_tokens(provider, &model_id);
     let context_window = provider
         .models
         .iter()
         .find(|m| m.id == model_id)
         .map(|m| m.context_window as u32)
         .unwrap_or(200_000);
-    let auto_compact_threshold = context_window.saturating_mul(80) / 100;
+    let effective_window = context_window.saturating_sub(max_output);
+    let auto_compact_threshold = effective_window.saturating_mul(90) / 100;
     auto_compact_messages(
         &mut messages,
         auto_compact_threshold,
         &request.url,
         &request.headers,
         &model_id,
-        resolve_max_output_tokens(provider, &model_id),
     );
 
     // Resolve thinking/reasoning support from model capabilities + effort level.
@@ -623,7 +630,6 @@ fn execute_anthropic(
                 &request.url,
                 &request.headers,
                 &model_id,
-                max_output,
             );
             continue;
         }
@@ -794,21 +800,19 @@ where
             }));
             // Context management between tool iterations (CC parity).
             snip_old_tool_outputs(&mut messages);
-            let ctx_threshold = provider
+            let ctx_window = provider
                 .models
                 .iter()
                 .find(|m| m.id == model_id)
                 .map(|m| m.context_window as u32)
-                .unwrap_or(200_000)
-                .saturating_mul(80)
-                / 100;
+                .unwrap_or(200_000);
+            let ctx_threshold = ctx_window.saturating_sub(max_output).saturating_mul(90) / 100;
             auto_compact_messages(
                 &mut messages,
                 ctx_threshold,
                 &request.url,
                 &request.headers,
                 &model_id,
-                max_output,
             );
             continue;
         }
@@ -1225,9 +1229,11 @@ fn execute_anthropic_tool_calls(
         } else {
             format!("{}\n{}", execution.output.stdout, execution.output.stderr)
         };
-        // Truncate oversized tool results to prevent context overflow
+        // Persist oversized tool results to disk, returning a preview message.
+        // Falls back to head truncation if disk write fails.
         // (CC limits: 50K chars per tool, 200K chars per message).
-        let output_text = truncate_tool_result(&raw_output, MAX_TOOL_RESULT_CHARS);
+        let output_text =
+            process_tool_result(&raw_output, MAX_TOOL_RESULT_CHARS, &state.session.id);
         results.push(json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
@@ -1243,13 +1249,24 @@ fn execute_anthropic_tool_calls(
     }
 
     if results.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(AnthropicToolResults {
-            results: Value::Array(results),
-            invocations,
-        }))
+        return Ok(None);
     }
+
+    // Enforce per-message aggregate budget (CC: 200K).
+    let mut output_strings: Vec<String> = invocations.iter().map(|i| i.output.clone()).collect();
+    enforce_tool_result_budget(&mut output_strings, &state.session.id);
+    // Apply budget changes back to results and invocations.
+    for (i, new_output) in output_strings.into_iter().enumerate() {
+        if new_output != invocations[i].output {
+            results[i]["content"] = json!(new_output);
+            invocations[i].output = new_output;
+        }
+    }
+
+    Ok(Some(AnthropicToolResults {
+        results: Value::Array(results),
+        invocations,
+    }))
 }
 
 struct AnthropicToolResults {
@@ -1258,9 +1275,19 @@ struct AnthropicToolResults {
 }
 /// Trims older messages from the front when the estimated token count exceeds
 /// the threshold, keeping the most recent messages to stay within budget.
-/// This matches CC's auto-compact behavior (triggered at ~80% context usage).
+/// This matches CC/Codex auto-compact behavior (triggered at ~90% of effective context).
 /// Maximum characters per individual tool result (matches CC's DEFAULT_MAX_RESULT_SIZE_CHARS).
-const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+pub(super) const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+/// Maximum aggregate characters for all tool results in a single turn.
+/// CC: MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000.
+pub(super) const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS: usize = 200_000;
+
+/// Preview size for persisted tool outputs (matches CC's PREVIEW_SIZE_BYTES).
+const PREVIEW_SIZE_CHARS: usize = 2_000;
+
+const PERSISTED_OUTPUT_TAG: &str = "<persisted-output>";
+const PERSISTED_OUTPUT_CLOSING_TAG: &str = "</persisted-output>";
 
 /// Prepends a system-reminder user message with current date and context.
 /// Matches CC's `prependUserContext()` which injects `<system-reminder>` tags.
@@ -1291,7 +1318,7 @@ fn prepend_system_reminder(messages: &mut Vec<Value>) {
 }
 
 /// Returns a short git status summary for system-reminder injection (CC parity).
-fn git_status_context() -> String {
+pub(super) fn git_status_context() -> String {
     let branch = std::process::Command::new("git")
         .args(["branch", "--show-current"])
         .output()
@@ -1358,12 +1385,106 @@ fn snip_old_tool_outputs(messages: &mut [Value]) {
     }
 }
 
-fn truncate_tool_result(text: &str, max_chars: usize) -> String {
+/// Process a tool result: if oversized, persist to disk and return a preview
+/// message (CC pattern). Falls back to head truncation if persistence fails.
+pub(super) fn process_tool_result(text: &str, max_chars: usize, session_id: &uuid::Uuid) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    // Try to persist to disk and return a preview (CC pattern).
+    if let Some(message) = persist_and_preview(text, session_id) {
+        return message;
+    }
+    // Fallback: head truncation.
+    truncate_tool_result(text, max_chars)
+}
+
+pub(super) fn truncate_tool_result(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
     }
     let truncated: String = text.chars().take(max_chars).collect();
     format!("{truncated}\n\n[Output truncated — {max_chars} char limit reached]")
+}
+
+/// Persist text to a temp file and return a `<persisted-output>` preview message.
+fn persist_and_preview(text: &str, session_id: &uuid::Uuid) -> Option<String> {
+    let dir = std::env::temp_dir()
+        .join(format!("puffer-{session_id}"))
+        .join("tool-results");
+    std::fs::create_dir_all(&dir).ok()?;
+    let filename = format!("{}.txt", uuid::Uuid::new_v4());
+    let filepath = dir.join(&filename);
+    std::fs::write(&filepath, text).ok()?;
+    Some(build_persisted_output_message(
+        &filepath.to_string_lossy(),
+        text,
+    ))
+}
+
+fn build_persisted_output_message(filepath: &str, text: &str) -> String {
+    let (preview, has_more) = generate_preview(text, PREVIEW_SIZE_CHARS);
+    let size_str = format_byte_size(text.len());
+    let preview_size_str = format_byte_size(PREVIEW_SIZE_CHARS);
+    format!(
+        "{PERSISTED_OUTPUT_TAG}\n\
+         Output too large ({size_str}). Full output saved to: {filepath}\n\n\
+         Preview (first {preview_size_str}):\n\
+         {preview}{}\
+         {PERSISTED_OUTPUT_CLOSING_TAG}",
+        if has_more { "\n...\n" } else { "\n" },
+    )
+}
+
+/// Generate a preview of text, trying to cut at a newline boundary.
+fn generate_preview(text: &str, max_chars: usize) -> (String, bool) {
+    if text.chars().count() <= max_chars {
+        return (text.to_string(), false);
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    // Cut at last newline within the back half, to avoid mid-line breaks.
+    let cut = truncated
+        .rfind('\n')
+        .filter(|&pos| pos > truncated.len() / 2)
+        .unwrap_or(truncated.len());
+    (truncated[..cut].to_string(), true)
+}
+
+fn format_byte_size(bytes: usize) -> String {
+    if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1} KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// Enforce per-message aggregate budget on tool result outputs.
+/// When total output exceeds MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, persist the
+/// largest results to disk and replace with previews (CC pattern).
+pub(super) fn enforce_tool_result_budget(outputs: &mut [String], session_id: &uuid::Uuid) {
+    let total: usize = outputs.iter().map(|o| o.len()).sum();
+    if total <= MAX_TOOL_RESULTS_PER_MESSAGE_CHARS {
+        return;
+    }
+    // Sort indices by size (largest first), persist until under budget.
+    let mut indices: Vec<usize> = (0..outputs.len()).collect();
+    indices.sort_by(|&a, &b| outputs[b].len().cmp(&outputs[a].len()));
+    let mut remaining = total;
+    for idx in indices {
+        if remaining <= MAX_TOOL_RESULTS_PER_MESSAGE_CHARS {
+            break;
+        }
+        let output = &outputs[idx];
+        if output.contains(PERSISTED_OUTPUT_TAG) {
+            continue; // Already persisted in per-tool step.
+        }
+        if let Some(msg) = persist_and_preview(output, session_id) {
+            remaining = remaining.saturating_sub(output.len()) + msg.len();
+            outputs[idx] = msg;
+        }
+    }
 }
 
 /// Estimates token count for a message array (~4 chars per token).
@@ -1385,13 +1506,17 @@ fn estimate_message_tokens(messages: &[Value]) -> u32 {
 /// Maximum auto-compact cycles per turn to prevent infinite loops.
 const MAX_AUTO_COMPACT_CYCLES: u32 = 10;
 
+/// Max output tokens for compact summary requests.
+/// CC uses 20K (P99.99 of actual summary output is 17,387 tokens).
+/// We use 16K — enough for complex sessions while avoiding excessive token spend.
+const COMPACT_SUMMARY_MAX_TOKENS: u32 = 16_384;
+
 fn auto_compact_messages(
     messages: &mut Vec<Value>,
     threshold_tokens: u32,
     url: &str,
     headers: &[(String, String)],
     model_id: &str,
-    max_output: u32,
 ) {
     // Circuit breaker: track consecutive compactions.
     // Resets when messages are under threshold (no compact needed).
@@ -1439,7 +1564,7 @@ fn auto_compact_messages(
 
     let body = json!({
         "model": model_id,
-        "max_tokens": max_output.min(4096),
+        "max_tokens": COMPACT_SUMMARY_MAX_TOKENS,
         "messages": [
             {"role": "user", "content": compact_prompt}
         ],

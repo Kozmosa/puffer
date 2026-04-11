@@ -53,13 +53,20 @@ impl ListSelectionView {
 
     /// Selects the first item that advertises the provided shortcut.
     pub(crate) fn select_shortcut(&mut self, key: char) -> Option<usize> {
-        let key = key.to_ascii_lowercase();
-        let index = self.items.iter().position(|item| {
-            item.shortcuts
-                .iter()
-                .copied()
-                .any(|shortcut| shortcut.to_ascii_lowercase() == key)
-        })?;
+        // Try exact (case-sensitive) match first, then fall back to case-insensitive.
+        let index = self
+            .items
+            .iter()
+            .position(|item| item.shortcuts.iter().copied().any(|s| s == key))
+            .or_else(|| {
+                let lower = key.to_ascii_lowercase();
+                self.items.iter().position(|item| {
+                    item.shortcuts
+                        .iter()
+                        .copied()
+                        .any(|s| s.to_ascii_lowercase() == lower)
+                })
+            })?;
         self.selection = index;
         Some(index)
     }

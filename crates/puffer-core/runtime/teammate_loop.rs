@@ -68,10 +68,7 @@ pub struct TeammateLoopConfig {
 }
 
 /// Spawns a teammate in a background thread with an mpsc channel for messages.
-pub fn spawn_teammate(
-    config: TeammateLoopConfig,
-    registry: &TeammateRegistry,
-) -> TeammateHandle {
+pub fn spawn_teammate(config: TeammateLoopConfig, registry: &TeammateRegistry) -> TeammateHandle {
     let (tx, rx) = mpsc::channel();
     let agent_id = config.agent_id.clone();
 
@@ -96,7 +93,13 @@ pub fn spawn_teammate(
 fn teammate_loop(mut config: TeammateLoopConfig, rx: mpsc::Receiver<TeammateMessage>) {
     let mut turn_count = 0u32;
 
-    write_status(&config.output_file, &config.agent_id, "running", turn_count, None);
+    write_status(
+        &config.output_file,
+        &config.agent_id,
+        "running",
+        turn_count,
+        None,
+    );
 
     // First turn: execute the initial prompt.
     turn_count += 1;
@@ -110,7 +113,13 @@ fn teammate_loop(mut config: TeammateLoopConfig, rx: mpsc::Receiver<TeammateMess
     append_turn_result(&config.output_file, turn_count, &first_result);
 
     if reached_max(config.max_turns, turn_count) {
-        write_status(&config.output_file, &config.agent_id, "completed", turn_count, None);
+        write_status(
+            &config.output_file,
+            &config.agent_id,
+            "completed",
+            turn_count,
+            None,
+        );
         return;
     }
 

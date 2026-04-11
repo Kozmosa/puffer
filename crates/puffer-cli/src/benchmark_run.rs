@@ -35,14 +35,7 @@ When the task already names both the verifier file and the required output file,
 $USING_YOUR_TOOLS
 
 $ENVIRONMENT"#;
-const BENCHMARK_ALLOWED_TOOL_IDS: &[&str] = &[
-    "Bash",
-    "Edit",
-    "Glob",
-    "Grep",
-    "Read",
-    "Write",
-];
+const BENCHMARK_ALLOWED_TOOL_IDS: &[&str] = &["Bash", "Edit", "Glob", "Grep", "Read", "Write"];
 
 /// Carries CLI inputs for one unattended benchmark execution.
 #[derive(Debug, Clone)]
@@ -118,12 +111,8 @@ pub(crate) fn run_benchmark_command(
     prepare_unattended_workspace(&paths, &benchmark_resources, &args.deny_tools)?;
 
     let now_ms = unix_time_ms();
-    let session_id = benchmark_session_id(
-        &selected_provider,
-        &model_selector,
-        &args.effort,
-        args.fast,
-    );
+    let session_id =
+        benchmark_session_id(&selected_provider, &model_selector, &args.effort, args.fast);
     let mut state = AppState::new(
         config.clone(),
         cwd.to_path_buf(),
@@ -156,8 +145,8 @@ pub(crate) fn run_benchmark_command(
         user_config_dir: home_puffer,
         builtin_resources_dir: paths.builtin_resources_dir.clone(),
     };
-    let session_store = SessionStore::from_paths(&session_paths)
-        .expect("failed to create session store");
+    let session_store =
+        SessionStore::from_paths(&session_paths).expect("failed to create session store");
     let _ = session_store.append_event(
         session_id,
         TranscriptEvent::UserMessage {
@@ -197,7 +186,10 @@ pub(crate) fn run_benchmark_command(
                         let rendered = if inv.output.is_empty() {
                             format!("Tool {} [{}]\ninput: {}", inv.tool_id, status, inv.input)
                         } else {
-                            format!("Tool {} [{}]\ninput: {}\n{}", inv.tool_id, status, inv.input, inv.output)
+                            format!(
+                                "Tool {} [{}]\ninput: {}\n{}",
+                                inv.tool_id, status, inv.input, inv.output
+                            )
                         };
                         let _ = session_store.append_event(
                             session_id,
@@ -208,7 +200,8 @@ pub(crate) fn run_benchmark_command(
                     if let Some(lock) = incremental_ref {
                         if let Ok(mut f) = lock.lock() {
                             for inv in invocations {
-                                let output_preview: String = inv.output.chars().take(2000).collect();
+                                let output_preview: String =
+                                    inv.output.chars().take(2000).collect();
                                 let truncated = inv.output.chars().count() > 2000;
                                 let line = serde_json::json!({
                                     "type": "tool_invocation",
@@ -590,16 +583,9 @@ fn parse_tool_arguments(raw: &str) -> Value {
     json!({ "value": raw })
 }
 
-fn benchmark_session_id(
-    provider: &str,
-    model: &str,
-    effort: &str,
-    fast_mode: bool,
-) -> Uuid {
+fn benchmark_session_id(provider: &str, model: &str, effort: &str, fast_mode: bool) -> Uuid {
     let tool_fingerprint = BENCHMARK_ALLOWED_TOOL_IDS.join(",");
-    let key = format!(
-        "benchmark-run:{provider}:{model}:{effort}:{fast_mode}:{tool_fingerprint}"
-    );
+    let key = format!("benchmark-run:{provider}:{model}:{effort}:{fast_mode}:{tool_fingerprint}");
     let primary = stable_hash64(&key) as u128;
     let secondary = stable_hash64(&(key.as_str(), "prompt-cache")) as u128;
     Uuid::from_u128((primary << 64) | secondary)
@@ -778,7 +764,10 @@ mod tests {
         let benchmark = benchmark_resources(&resources);
         assert_eq!(benchmark.prompts.len(), 1);
         assert_eq!(benchmark.prompts[0].value.id, BENCHMARK_SYSTEM_PROMPT_ID);
-        assert!(benchmark.prompts[0].value.template.contains("autonomous coding agent"));
+        assert!(benchmark.prompts[0]
+            .value
+            .template
+            .contains("autonomous coding agent"));
     }
 
     #[test]

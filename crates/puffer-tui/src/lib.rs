@@ -1,5 +1,5 @@
-mod approval_overlay;
 mod app_helpers;
+mod approval_overlay;
 mod btw_overlay;
 mod flow;
 mod list_selection_view;
@@ -29,11 +29,11 @@ use crate::flow::{
 use crate::permission_prompt_flow::handle_permission_prompt_key;
 use crate::render::initialize_top_panel_image_state;
 use crate::statusline::refresh_status_line;
+use anyhow::Result;
 use app_helpers::{
     apply_model_selection_preferences, apply_selected_model, help_pane_active_without_overlay,
     should_use_inline_viewport,
 };
-use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -137,14 +137,7 @@ pub fn run_app(
     let mut viewport_height = if use_content_viewport {
         let (width, height) = terminal_size()?;
         render::desired_height(
-            width,
-            height,
-            state,
-            resources,
-            providers,
-            auth_store,
-            &tui.input,
-            &commands,
+            width, height, state, resources, providers, auth_store, &tui.input, &commands,
         )
         .max(1)
     } else {
@@ -186,6 +179,18 @@ pub fn run_app(
             )?;
         }
         check_loop_interval(&mut tui);
+        // Auto-wake: when the agent is idle and background tasks have completed,
+        // enqueue a synthetic notification so the agent sees the completion.
+        if !tui.has_pending_submit() && tui.queued_prompts.is_empty() {
+            let completed = puffer_core::drain_background_task_completions(state);
+            if !completed.is_empty() {
+                let notice = format!(
+                    "<task-notification>\n{}\nUse TaskOutput to retrieve the full output if needed.\n</task-notification>",
+                    completed.join("\n")
+                );
+                tui.enqueue_prompt(notice);
+            }
+        }
         if !tui.has_pending_submit() && !tui.queued_prompts.is_empty() {
             submit_next_queued_prompt(
                 state,
@@ -198,7 +203,7 @@ pub fn run_app(
                 no_alt_screen,
             )?;
         }
-        refresh_status_line(state)?;
+        refresh_status_line(state, providers)?;
         sync_render_state(&tui);
         if use_content_viewport {
             let size = terminal.size()?;
@@ -243,7 +248,7 @@ pub fn run_app(
         if state.should_exit {
             break;
         }
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(
@@ -286,6 +291,9 @@ fn sync_render_state(tui: &TuiState) {
             .map(|pending| pending.pending_tool_calls.clone())
             .unwrap_or_default(),
         tui.queued_prompts.iter().cloned().collect(),
+        tui.pending_submit
+            .as_ref()
+            .map(|pending| pending.started_at),
     );
     render::set_tool_details_expanded(tui.tool_details_expanded);
     render::set_follow_output(tui.follow_output);

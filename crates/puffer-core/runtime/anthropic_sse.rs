@@ -77,25 +77,21 @@ where
             }
         }
         "content_block_start" => {
-            let index = event
-                .get("index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
+            let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
             let block = event
                 .get("content_block")
                 .cloned()
                 .unwrap_or_else(|| json!({"type": "text", "text": ""}));
             // Ensure content array is large enough
             while state.content_blocks.len() <= index {
-                state.content_blocks.push(json!({"type": "text", "text": ""}));
+                state
+                    .content_blocks
+                    .push(json!({"type": "text", "text": ""}));
             }
             state.content_blocks[index] = block;
         }
         "content_block_delta" => {
-            let index = event
-                .get("index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
+            let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
             if let Some(delta) = event.get("delta") {
                 let delta_type = delta.get("type").and_then(Value::as_str).unwrap_or("");
                 match delta_type {
@@ -143,10 +139,7 @@ where
             }
         }
         "content_block_stop" => {
-            let index = event
-                .get("index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
+            let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
             // Finalize tool_use input from accumulated JSON
             if let Some(json_str) = state.partial_json.remove(&index) {
                 if index < state.content_blocks.len() {

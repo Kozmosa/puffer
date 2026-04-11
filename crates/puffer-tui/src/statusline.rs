@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use puffer_core::{AppState, MessageRole};
+use puffer_provider_registry::ProviderRegistry;
 use serde_json::{json, Value};
 use std::io::Write as _;
 use std::process::{Command, Output, Stdio};
@@ -9,7 +10,10 @@ use std::time::{Duration, Instant};
 const STATUS_LINE_TIMEOUT_MS: u64 = 500;
 
 /// Refreshes the configured status line command output when the input snapshot changes.
-pub(crate) fn refresh_status_line(state: &mut AppState) -> Result<()> {
+pub(crate) fn refresh_status_line(
+    state: &mut AppState,
+    providers: &ProviderRegistry,
+) -> Result<()> {
     let Some(config) = state
         .config
         .ui
@@ -23,7 +27,7 @@ pub(crate) fn refresh_status_line(state: &mut AppState) -> Result<()> {
     };
     let command = config.command.clone();
 
-    let input = build_status_line_input(state);
+    let input = build_status_line_input(state, providers);
     let signature = format!("{}\0{}", command, input);
     if state.status_line_signature() == Some(signature.as_str()) {
         return Ok(());
@@ -35,7 +39,7 @@ pub(crate) fn refresh_status_line(state: &mut AppState) -> Result<()> {
     Ok(())
 }
 
-fn build_status_line_input(state: &AppState) -> String {
+fn build_status_line_input(state: &AppState, providers: &ProviderRegistry) -> String {
     let user_messages = state
         .transcript
         .iter()
@@ -70,14 +74,7 @@ fn build_status_line_input(state: &AppState) -> String {
         "output_style": {
             "name": "default",
         },
-        "context_window": {
-            "total_input_tokens": Value::Null,
-            "total_output_tokens": Value::Null,
-            "context_window_size": Value::Null,
-            "current_usage": Value::Null,
-            "used_percentage": Value::Null,
-            "remaining_percentage": Value::Null,
-        },
+        "context_window": context_window_json(state, providers),
         "rate_limits": Value::Null,
         "vim": if state.vim_mode {
             json!({ "mode": "NORMAL" })
@@ -113,6 +110,30 @@ fn build_status_line_input(state: &AppState) -> String {
     .unwrap_or_else(|_| "{}".to_string())
 }
 
+fn context_window_json(state: &AppState, providers: &ProviderRegistry) -> Value {
+    let remaining_pct = puffer_core::estimate_remaining_context_percent(state, providers);
+    let context_window_size = state
+        .current_model
+        .as_deref()
+        .and_then(|selector| providers.resolve_model(selector))
+        .map(|model| model.context_window);
+    match context_window_size {
+        Some(size) if size > 0 => {
+            let used_pct = 100u32.saturating_sub(remaining_pct);
+            json!({
+                "context_window_size": size,
+                "used_percentage": used_pct,
+                "remaining_percentage": remaining_pct,
+            })
+        }
+        _ => json!({
+            "context_window_size": Value::Null,
+            "used_percentage": Value::Null,
+            "remaining_percentage": Value::Null,
+        }),
+    }
+}
+
 fn model_id(model_id: Option<&str>) -> String {
     model_id
         .and_then(|model_id| model_id.rsplit('/').next())
@@ -129,7 +150,7 @@ fn run_status_line_command(
     command: &str,
     input: &str,
 ) -> Result<Option<String>> {
-    let mut child = Command::new("bash")
+    let mut child = Command::new(puffer_tools::detected_shell())
         .arg("-lc")
         .arg(command)
         .current_dir(cwd)
@@ -182,6 +203,7 @@ mod tests {
     use super::{build_status_line_input, refresh_status_line};
     use puffer_config::{PufferConfig, StatusLineConfig};
     use puffer_core::AppState;
+    use puffer_provider_registry::ProviderRegistry;
     use puffer_session_store::SessionMetadata;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -213,7 +235,7 @@ mod tests {
         state.current_provider = Some("openai".to_string());
         state.current_model = Some("openai/gpt-5".to_string());
 
-        refresh_status_line(&mut state).unwrap();
+        refresh_status_line(&mut state, &ProviderRegistry::new()).unwrap();
 
         assert_eq!(state.status_line_text.as_deref(), Some("openai gpt-5"));
         assert!(state.status_line_signature().is_some());
@@ -240,7 +262,7 @@ mod tests {
         state.status_line_text = Some("stale".to_string());
         state.set_status_line_signature(Some("sig".to_string()));
 
-        refresh_status_line(&mut state).unwrap();
+        refresh_status_line(&mut state, &ProviderRegistry::new()).unwrap();
 
         assert!(state.status_line_text.is_none());
         assert!(state.status_line_signature().is_none());
@@ -267,7 +289,9 @@ mod tests {
         state.current_model = Some("openai/gpt-5".to_string());
         state.vim_mode = true;
 
-        let input: Value = serde_json::from_str(&build_status_line_input(&state)).unwrap();
+        let input: Value =
+            serde_json::from_str(&build_status_line_input(&state, &ProviderRegistry::new()))
+                .unwrap();
 
         assert_eq!(input["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(input["output_style"]["name"], "default");

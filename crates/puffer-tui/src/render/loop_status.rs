@@ -37,7 +37,9 @@ pub(crate) fn render_loop_status_box(frame: &mut Frame<'_>, area: Rect, loop_sta
         LoopKind::Loop => {
             spans.push(Span::styled(
                 format!("{icon} loop "),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
             let prompt_preview: String = loop_state.prompt.chars().take(30).collect();
             spans.push(Span::styled(
@@ -53,7 +55,9 @@ pub(crate) fn render_loop_status_box(frame: &mut Frame<'_>, area: Rect, loop_sta
             };
             spans.push(Span::styled(
                 format!("{icon} {verb} "),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 format!("\"{m}\""),
@@ -66,7 +70,10 @@ pub(crate) fn render_loop_status_box(frame: &mut Frame<'_>, area: Rect, loop_sta
 
     // Iteration counter
     spans.push(Span::styled(
-        format!("  iter {}/{}", loop_state.iteration, loop_state.max_iterations),
+        format!(
+            "  iter {}/{}",
+            loop_state.iteration, loop_state.max_iterations
+        ),
         Style::default().fg(Color::White),
     ));
 
@@ -115,9 +122,23 @@ pub(crate) fn render_loop_status_box(frame: &mut Frame<'_>, area: Rect, loop_sta
             let (arrow, color) = if delta.abs() < f64::EPSILON {
                 ("=", Color::Yellow)
             } else if delta > 0.0 {
-                ("↑", if matches!(loop_state.kind, LoopKind::Maximize(_)) { Color::Green } else { Color::Red })
+                (
+                    "↑",
+                    if matches!(loop_state.kind, LoopKind::Maximize(_)) {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    },
+                )
             } else {
-                ("↓", if matches!(loop_state.kind, LoopKind::Minimize(_)) { Color::Green } else { Color::Red })
+                (
+                    "↓",
+                    if matches!(loop_state.kind, LoopKind::Minimize(_)) {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    },
+                )
             };
             line2_spans.push(Span::styled(
                 format!("  ({arrow}{delta:+.4})"),
@@ -129,20 +150,18 @@ pub(crate) fn render_loop_status_box(frame: &mut Frame<'_>, area: Rect, loop_sta
     // Status indicator
     let status_string = match &loop_state.status {
         LoopStatus::Running => "● Running".to_string(),
-        LoopStatus::WaitingInterval => {
-            loop_state
-                .next_fire
-                .map(|t| {
-                    let now = std::time::Instant::now();
-                    if t > now {
-                        let secs = (t - now).as_secs();
-                        format!("◌ Waiting {secs}s")
-                    } else {
-                        "◌ Firing...".to_string()
-                    }
-                })
-                .unwrap_or_else(|| "◌ Waiting".to_string())
-        }
+        LoopStatus::WaitingInterval => loop_state
+            .next_fire
+            .map(|t| {
+                let now = std::time::Instant::now();
+                if t > now {
+                    let secs = (t - now).as_secs();
+                    format!("◌ Waiting {secs}s")
+                } else {
+                    "◌ Firing...".to_string()
+                }
+            })
+            .unwrap_or_else(|| "◌ Waiting".to_string()),
         LoopStatus::Paused => "⏸ Paused".to_string(),
         LoopStatus::Completed(reason) => format!("✓ Done: {reason}"),
     };

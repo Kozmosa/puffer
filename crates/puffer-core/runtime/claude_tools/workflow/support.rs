@@ -2,14 +2,14 @@ use super::store::{
     agents_path, append_agent_message, claude_task_dir, detect_powershell_binary,
     find_team_for_session, git_ahead_count, git_dirty, git_head_commit, git_toplevel, is_git_repo,
     load_store, messages_path, next_task_id, now_ms, register_team_member,
-    remove_claude_team_artifacts, resolve_recipients, save_store, task_output_path, tasks_path,
-    team_lead_agent_id, teams_path, todos_path, validate_ask_user_questions, workflow_root,
-    worktrees_path, write_claude_team_file, AgentInput, AgentStore, AskUserQuestionInput,
-    ClaudeTeamFile, ClaudeTeamMember, ConfigInput, EnterWorktreeInput, ExitWorktreeInput,
-    MessageStore, PendingShutdownRequest, PowerShellInput, SendMessageInput, ShutdownRequestStore,
-    StoredAgent, StoredMessage, StoredTask, StoredTeam, StoredTodo, StoredWorktree, TaskStore,
-    TeamCreateInput, TeamStore, TodoStore, TodoWriteInput, WorktreeStore,
-    shutdown_requests_path,
+    remove_claude_team_artifacts, resolve_recipients, save_store, shutdown_requests_path,
+    task_output_path, tasks_path, team_lead_agent_id, teams_path, todos_path,
+    validate_ask_user_questions, workflow_root, worktrees_path, write_claude_team_file, AgentInput,
+    AgentStore, AskUserQuestionInput, ClaudeTeamFile, ClaudeTeamMember, ConfigInput,
+    EnterWorktreeInput, ExitWorktreeInput, MessageStore, PendingShutdownRequest, PowerShellInput,
+    SendMessageInput, ShutdownRequestStore, StoredAgent, StoredMessage, StoredTask, StoredTeam,
+    StoredTodo, StoredWorktree, TaskStore, TeamCreateInput, TeamStore, TodoStore, TodoWriteInput,
+    WorktreeStore,
 };
 use super::task_runtime::{terminal_task_status, validate_todos, wait_for_child_output};
 use crate::config_settings::{
@@ -139,11 +139,7 @@ pub(super) fn execute_send_message(
     {
         bail!("SendMessage plain-text messages must not be empty");
     }
-    let is_structured = parsed
-        .message
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some();
+    let is_structured = parsed.message.get("type").and_then(Value::as_str).is_some();
     if parsed.message.is_string()
         && parsed
             .summary
@@ -173,8 +169,7 @@ pub(super) fn execute_send_message(
     };
 
     let store_cwd = state.session.cwd.as_path();
-    let recipients =
-        resolve_recipients(store_cwd, state.active_team_name.as_deref(), &to)?;
+    let recipients = resolve_recipients(store_cwd, state.active_team_name.as_deref(), &to)?;
     if recipients.is_empty() {
         bail!("SendMessage could not resolve recipient `{to}`");
     }
@@ -274,8 +269,7 @@ fn handle_shutdown_request(
         .and_then(Value::as_str)
         .map(String::from);
 
-    let mut store =
-        load_store::<ShutdownRequestStore>(&shutdown_requests_path(store_cwd))?;
+    let mut store = load_store::<ShutdownRequestStore>(&shutdown_requests_path(store_cwd))?;
     for recipient in recipients {
         store.requests.push(PendingShutdownRequest {
             request_id: request_id.clone(),
@@ -306,9 +300,11 @@ fn handle_shutdown_request(
             message: enriched.clone(),
             created_at_ms: now_ms(),
         });
-        if let Some(agent) = agents.agents.iter().find(|a| {
-            a.agent_id == *recipient || a.name.as_deref() == Some(recipient.as_str())
-        }) {
+        if let Some(agent) = agents
+            .agents
+            .iter()
+            .find(|a| a.agent_id == *recipient || a.name.as_deref() == Some(recipient.as_str()))
+        {
             append_agent_message(Path::new(&agent.output_file), &enriched)?;
         }
     }
@@ -348,22 +344,19 @@ fn handle_shutdown_response(
     }
 
     // Validate request_id exists.
-    let store =
-        load_store::<ShutdownRequestStore>(&shutdown_requests_path(store_cwd))?;
-    if !store
-        .requests
-        .iter()
-        .any(|r| r.request_id == request_id)
-    {
+    let store = load_store::<ShutdownRequestStore>(&shutdown_requests_path(store_cwd))?;
+    if !store.requests.iter().any(|r| r.request_id == request_id) {
         bail!("unknown shutdown request_id `{request_id}`");
     }
 
     if approve {
         // Set the responding agent's status to stopped.
         let mut agents = load_store::<AgentStore>(&agents_path(store_cwd))?;
-        if let Some(agent) = agents.agents.iter_mut().find(|a| {
-            a.agent_id == from || a.name.as_deref() == Some(from)
-        }) {
+        if let Some(agent) = agents
+            .agents
+            .iter_mut()
+            .find(|a| a.agent_id == from || a.name.as_deref() == Some(from))
+        {
             agent.status = "stopped".to_string();
         }
         save_store(&agents_path(store_cwd), &agents)?;
@@ -447,9 +440,11 @@ fn handle_plan_approval_response(
             message: response_msg.clone(),
             created_at_ms: now_ms(),
         });
-        if let Some(agent) = agents.agents.iter().find(|a| {
-            a.agent_id == *recipient || a.name.as_deref() == Some(recipient.as_str())
-        }) {
+        if let Some(agent) = agents
+            .agents
+            .iter()
+            .find(|a| a.agent_id == *recipient || a.name.as_deref() == Some(recipient.as_str()))
+        {
             append_agent_message(Path::new(&agent.output_file), &response_msg)?;
         }
     }
@@ -496,9 +491,7 @@ pub(super) fn execute_team_create(
     // Reset the team task list on create to avoid stale tasks from previous teams.
     save_store(
         &task_dir.join("tasks.json"),
-        &TaskStore {
-            tasks: Vec::new(),
-        },
+        &TaskStore { tasks: Vec::new() },
     )?;
     let lead_agent_id = team_lead_agent_id(&team_name);
     let lead_agent_type = parsed
@@ -684,6 +677,75 @@ pub(super) fn register_background_shell_task(
         exit_code: None,
     });
     save_store(&tasks_path(cwd), &store)
+}
+
+/// Marks a background shell task as completed in the persistent store.
+/// Called from the reaper thread after `child.wait()` returns.
+pub(super) fn mark_shell_task_completed(
+    cwd: &Path,
+    task_id: &str,
+    exit_code: Option<i32>,
+) -> Result<()> {
+    let mut store = load_store::<TaskStore>(&tasks_path(cwd))?;
+    if let Some(task) = store.tasks.iter_mut().find(|t| t.task_id == task_id) {
+        if task.status == "running" {
+            task.status = "completed".to_string();
+            task.exit_code = exit_code;
+            task.process_id = None;
+            task.updated_at_ms = Some(now_ms());
+            if task.output.is_none() {
+                task.output = super::task_runtime::read_task_output(task);
+            }
+        }
+    }
+    save_store(&tasks_path(cwd), &store)?;
+    // Write a completion marker so the agent loop can detect newly finished tasks.
+    let marker_dir = cwd
+        .join(".puffer")
+        .join("runtime")
+        .join("claude_workflow")
+        .join("completed_tasks");
+    let _ = std::fs::create_dir_all(&marker_dir);
+    let _ = std::fs::write(marker_dir.join(task_id), "");
+    Ok(())
+}
+
+/// Drains completion markers for background shell tasks that finished since
+/// the last call.  Returns a human-readable description for each.
+pub(super) fn drain_completed_shell_tasks(cwd: &Path) -> Vec<String> {
+    let marker_dir = cwd
+        .join(".puffer")
+        .join("runtime")
+        .join("claude_workflow")
+        .join("completed_tasks");
+    let entries = match std::fs::read_dir(&marker_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut descriptions = Vec::new();
+    let store = load_store::<TaskStore>(&tasks_path(cwd)).ok();
+    for entry in entries.flatten() {
+        let task_id = entry.file_name().to_string_lossy().to_string();
+        // Remove marker so we don't report it again.
+        let _ = std::fs::remove_file(entry.path());
+        // Build a description from the stored task metadata.
+        let desc = store
+            .as_ref()
+            .and_then(|s| s.tasks.iter().find(|t| t.task_id == task_id))
+            .map(|t| {
+                let exit = t
+                    .exit_code
+                    .map(|c| format!(" (exit code {c})"))
+                    .unwrap_or_default();
+                format!(
+                    "Background task \"{}\" ({}) completed{}",
+                    t.subject, t.task_id, exit
+                )
+            })
+            .unwrap_or_else(|| format!("Background task {task_id} completed"));
+        descriptions.push(desc);
+    }
+    descriptions
 }
 
 /// Executes the live `AskUserQuestion` workflow tool.

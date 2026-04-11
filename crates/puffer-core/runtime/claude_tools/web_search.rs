@@ -1,3 +1,4 @@
+use super::retry_http_send;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
     build_tool_responses_request, extract_responses_text, parse_responses_response,
@@ -170,28 +171,29 @@ fn send_json_request(
     anthropic: bool,
 ) -> Result<Value> {
     let client = Client::new();
-    let mut request = client.post(url);
-    for (key, value) in headers {
-        request = request.header(key, value);
-    }
-    if !headers
-        .iter()
-        .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
-    {
-        request = request.header("content-type", "application/json");
-    }
-    if anthropic
-        && !headers
+    let response = retry_http_send(3, || {
+        let mut request = client.post(url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        if !headers
             .iter()
-            .any(|(key, _)| key.eq_ignore_ascii_case("anthropic-version"))
-    {
-        request = request.header("anthropic-version", "2023-06-01");
-    }
-
-    let response = request
-        .body(body.to_string())
-        .send()
-        .with_context(|| format!("request to {url} failed"))?;
+            .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+        {
+            request = request.header("content-type", "application/json");
+        }
+        if anthropic
+            && !headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("anthropic-version"))
+        {
+            request = request.header("anthropic-version", "2023-06-01");
+        }
+        request
+            .body(body.to_string())
+            .send()
+            .with_context(|| format!("request to {url} failed"))
+    })?;
     let status = response.status();
     let text = response.text()?;
     if !status.is_success() {

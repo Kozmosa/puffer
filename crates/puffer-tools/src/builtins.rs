@@ -12,6 +12,18 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Returns the user's default shell if it supports `-lc`, otherwise falls back to `bash`.
+pub fn detected_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .filter(|s| {
+            let base = s.rsplit('/').next().unwrap_or(s);
+            matches!(base, "bash" | "zsh" | "sh" | "dash" | "ksh")
+        })
+        .unwrap_or_else(|| "bash".to_string())
+}
+
 /// Returns the built-in tool kind for a declarative handler id.
 pub fn builtin_tool_kind(handler: &str) -> Option<ToolKind> {
     match handler {
@@ -492,7 +504,7 @@ fn run_bash_command(
     command: &str,
     timeout_ms: Option<u64>,
 ) -> Result<TimedCommandOutput> {
-    let mut child = Command::new("bash")
+    let mut child = Command::new(detected_shell())
         .arg("-lc")
         .arg(command)
         .current_dir(cwd)

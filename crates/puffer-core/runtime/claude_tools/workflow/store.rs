@@ -498,6 +498,12 @@ pub(super) fn workflow_root(cwd: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 
+/// Non-panicking variant — returns `None` when the workflow directory cannot
+/// be created (e.g. read-only filesystem in tests).
+pub(super) fn workflow_root_opt(cwd: &Path) -> Option<PathBuf> {
+    workflow_root(cwd).ok()
+}
+
 pub(crate) fn team_lead_agent_id(team_name: &str) -> String {
     format!("team-lead@{team_name}")
 }

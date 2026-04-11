@@ -190,11 +190,11 @@ impl ApprovalOverlay {
             Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" allow  "),
             Span::styled("a", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" allow for session  "),
+            Span::raw(" tool for session  "),
+            Span::styled("A", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" all for session  "),
             Span::styled("n", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" deny  "),
-            Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" confirm  "),
             Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" deny"),
         ])
@@ -213,6 +213,12 @@ fn permissions_options() -> Vec<ApprovalOption> {
             label: "Yes, grant these permissions for this session".to_string(),
             action: PermissionPromptAction::AllowSession,
             shortcuts: vec!['a'],
+            description: None,
+        },
+        ApprovalOption {
+            label: "Yes, allow ALL tools for this session".to_string(),
+            action: PermissionPromptAction::AllowAllSession,
+            shortcuts: vec!['A'],
             description: None,
         },
         ApprovalOption {

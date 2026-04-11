@@ -33,14 +33,20 @@ fn header_snapshot_reports_compact_status() {
     let resources = sample_resources();
     let auth_store = sample_auth_store();
     let registry = ToolRegistry::from_resources(&resources);
-    let snapshot = header_lines(&state, &resources, &auth_store, &registry)
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let snapshot = header_lines(
+        &state,
+        &resources,
+        &auth_store,
+        &registry,
+        &ProviderRegistry::new(),
+    )
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            snapshot,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            @r"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @r"
 Puffer Code
 Account   anthropic via API key
 Model     anthropic/claude-sonnet-4-5 · tools 3/4
@@ -48,7 +54,7 @@ Session   Shipyard · 12345678-1234-5678-1234-567812345678
 Mode      effort high · fast · vim
 Context   puffer · 2 msgs · 2 wds · dockyard@staging
 "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            );
 }
 
 #[test]
@@ -61,11 +67,11 @@ fn footer_snapshot_reports_compact_prompt_rail() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            snapshot,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            @r"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @r"
 anthropic/claude-sonnet-4-5 · 99% left · /tmp/puffer · sandbox workspace-write
 "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       );
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           );
 }
 
 #[test]
@@ -76,14 +82,20 @@ fn header_snapshot_includes_oauth_identity_when_available() {
     let resources = sample_resources();
     let auth_store = sample_auth_store();
     let registry = ToolRegistry::from_resources(&resources);
-    let snapshot = header_lines(&state, &resources, &auth_store, &registry)
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let snapshot = header_lines(
+        &state,
+        &resources,
+        &auth_store,
+        &registry,
+        &ProviderRegistry::new(),
+    )
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            snapshot,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            @r"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @r"
 Puffer Code
 Account   dev@example.com · plan Pro · acct acct-1
 Model     openai/gpt-5 · tools 3/4
@@ -91,7 +103,7 @@ Session   Shipyard · 12345678-1234-5678-1234-567812345678
 Mode      effort high · fast · vim
 Context   puffer · 2 msgs · 2 wds · dockyard@staging
 "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            );
 }
 
 #[test]
@@ -194,6 +206,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
                 Some("Review the current worktree and call out any risks.".to_string()),
                 Vec::new(),
                 Vec::new(),
+                Some(std::time::Instant::now()),
             );
             render(
                 frame,
@@ -207,7 +220,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new(), Vec::new());
+            set_pending_submit_state(None, Vec::new(), Vec::new(), None);
         })
         .unwrap();
 
@@ -243,6 +256,7 @@ fn render_pending_submit_shows_tool_call_before_output() {
                         .to_string(),
                 }],
                 Vec::new(),
+                Some(std::time::Instant::now()),
             );
             render(
                 frame,
@@ -256,7 +270,7 @@ fn render_pending_submit_shows_tool_call_before_output() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new(), Vec::new());
+            set_pending_submit_state(None, Vec::new(), Vec::new(), None);
         })
         .unwrap();
 
@@ -282,6 +296,7 @@ fn render_pending_submit_shows_queued_prompts() {
                 Some("first prompt".to_string()),
                 Vec::new(),
                 vec!["second prompt".to_string(), "third prompt".to_string()],
+                Some(std::time::Instant::now()),
             );
             render(
                 frame,
@@ -295,7 +310,7 @@ fn render_pending_submit_shows_queued_prompts() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new(), Vec::new());
+            set_pending_submit_state(None, Vec::new(), Vec::new(), None);
         })
         .unwrap();
 
@@ -418,7 +433,9 @@ fn render_very_narrow_header_hides_puffer_and_truncates_text() {
     let rendered = terminal_view(&terminal);
     assert!(rendered.contains("Puffer Code"));
     assert!(!rendered.contains("██"));
-    assert!(rendered.lines().any(|line| line.contains("Session") && line.contains("...")));
+    assert!(rendered
+        .lines()
+        .any(|line| line.contains("Session") && line.contains("...")));
 }
 
 #[test]

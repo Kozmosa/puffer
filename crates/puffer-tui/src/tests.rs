@@ -24,6 +24,7 @@ mod help;
 mod model_selection;
 mod overlays;
 mod panels;
+mod permission_prompt;
 mod status;
 mod support;
 mod tag;

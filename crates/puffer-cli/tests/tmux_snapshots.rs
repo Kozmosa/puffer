@@ -85,8 +85,8 @@ fn assert_tmux_home_snapshot(size: TerminalSize, snapshot_name: &str) {
         return;
     }
 
-    let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_with_home(&workspace, size);
+    let (_tempdir, workspace, puffer_home) = configured_workspace();
+    let session = start_tmux_with_home(&workspace, &puffer_home, size);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     let capture = capture_tmux_visible_pane(&session).unwrap();
     assert_normalized_snapshot(
@@ -101,8 +101,8 @@ fn assert_tmux_help_snapshot(size: TerminalSize, snapshot_name: &str) {
         return;
     }
 
-    let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_with_home_args(&workspace, size, &["/help"]);
+    let (_tempdir, workspace, puffer_home) = configured_workspace();
+    let session = start_tmux_with_home_args(&workspace, &puffer_home, size, &["/help"]);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     let capture = capture_tmux_visible_pane(&session).unwrap();
     assert_normalized_snapshot(
@@ -137,9 +137,14 @@ fn assert_tmux_turn_comparison_snapshot(
 }
 
 fn capture_tmux_turn(size: TerminalSize) -> String {
-    let (_tempdir, workspace) = configured_workspace();
+    let (_tempdir, workspace, puffer_home) = configured_workspace();
     let cwd = workspace.join("dockyard");
-    let paths = ConfigPaths::discover(&cwd);
+    let paths = ConfigPaths {
+        workspace_root: cwd.clone(),
+        workspace_config_dir: cwd.join(".puffer"),
+        user_config_dir: puffer_home.join(".puffer"),
+        builtin_resources_dir: workspace.join("resources"),
+    };
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
     let session = session_store.create_session(cwd).unwrap();
@@ -164,8 +169,13 @@ fn capture_tmux_turn(size: TerminalSize) -> String {
         )
         .unwrap();
     let session_id = session.id.to_string();
-    let session = start_tmux_with_home_args(&workspace, size, &["resume", &session_id]);
-    wait_for_tmux_text(&session, "anthropic/claude-sonnet-4-5", Duration::from_secs(10))
+    let session =
+        start_tmux_with_home_args(&workspace, &puffer_home, size, &["resume", &session_id]);
+    wait_for_tmux_text(
+        &session,
+        "anthropic/claude-sonnet-4-5",
+        Duration::from_secs(10),
+    )
     .unwrap_or_else(|error| {
         let capture =
             capture_tmux_pane(&session).unwrap_or_else(|_| "<capture failed>".to_string());
@@ -175,9 +185,15 @@ fn capture_tmux_turn(size: TerminalSize) -> String {
     normalize_tmux_capture(&trim_blank_rows(&capture))
 }
 
-fn configured_workspace() -> (tempfile::TempDir, PathBuf) {
+fn configured_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let (tempdir, workspace) = temp_workspace().unwrap();
-    let paths = ConfigPaths::discover(&workspace);
+    let puffer_home = workspace.clone();
+    let paths = ConfigPaths {
+        workspace_root: workspace.clone(),
+        workspace_config_dir: workspace.join(".puffer"),
+        user_config_dir: puffer_home.join(".puffer"),
+        builtin_resources_dir: workspace.join("resources"),
+    };
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
     fs::create_dir_all(workspace.join("dockyard")).unwrap();
@@ -224,7 +240,7 @@ tmux_golden_mode = true
 }"#,
     )
     .unwrap();
-    (tempdir, workspace)
+    (tempdir, workspace, puffer_home)
 }
 
 fn snapshot_path(name: &str) -> PathBuf {
@@ -236,13 +252,15 @@ fn snapshot_path(name: &str) -> PathBuf {
 
 fn start_tmux_with_home(
     workspace: &std::path::Path,
+    puffer_home: &std::path::Path,
     size: TerminalSize,
 ) -> puffer_test_support::TmuxSession {
-    start_tmux_with_home_args(workspace, size, &[])
+    start_tmux_with_home_args(workspace, puffer_home, size, &[])
 }
 
 fn start_tmux_with_home_args(
     workspace: &std::path::Path,
+    puffer_home: &std::path::Path,
     size: TerminalSize,
     cli_args: &[&str],
 ) -> puffer_test_support::TmuxSession {
@@ -256,7 +274,8 @@ fn start_tmux_with_home_args(
         &[
             "-lc",
             &format!(
-                "HOME='{}' '{}'{}{}",
+                "PUFFER_HOME='{}' HOME='{}' '{}'{}{}",
+                puffer_home.display(),
                 workspace.display(),
                 env!("CARGO_BIN_EXE_puffer"),
                 if extra_args.is_empty() { "" } else { " " },
@@ -485,7 +504,9 @@ fn replace_uuid_like_runs(line: &str) -> String {
     while index < chars.len() {
         let remaining = chars.len() - index;
         let matches_uuid = remaining >= 36
-            && chars[index..index + 8].iter().all(|ch| ch.is_ascii_hexdigit())
+            && chars[index..index + 8]
+                .iter()
+                .all(|ch| ch.is_ascii_hexdigit())
             && chars[index + 8] == '-'
             && chars[index + 9..index + 13]
                 .iter()

@@ -611,6 +611,8 @@ fn build_codex_openai_request_body_uses_priority_tier_for_fast_mode() {
 
     assert_eq!(body["service_tier"], json!("priority"));
     assert_eq!(body["parallel_tool_calls"], json!(true));
+    assert!(body.get("reasoning").is_none());
+    assert!(body["include"].as_array().is_some_and(Vec::is_empty));
 }
 
 #[test]

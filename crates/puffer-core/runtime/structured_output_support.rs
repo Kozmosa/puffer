@@ -137,7 +137,7 @@ pub(super) fn openai_tool_definitions_for_request(
         .map(|definition| OpenAIResponsesTool {
             kind: "function".to_string(),
             name: definition.id.clone(),
-            description: rendered_tool_description(&definition),
+            description: rendered_openai_tool_description(&definition),
             strict: false,
             parameters: openai_compatible_schema(definition.input_schema.as_json_schema()),
             filters: None,
@@ -173,7 +173,7 @@ pub(super) fn openai_chat_completion_tools_for_request(
             kind: "function".to_string(),
             function: OpenAIChatCompletionToolFunction {
                 name: definition.id.clone(),
-                description: rendered_tool_description(&definition),
+                description: rendered_openai_tool_description(&definition),
                 parameters: openai_compatible_schema(definition.input_schema.as_json_schema()),
                 strict: false,
             },
@@ -333,6 +333,46 @@ fn rendered_tool_description(definition: &ToolDefinition) -> String {
     definition.description.clone()
 }
 
+fn rendered_openai_tool_description(definition: &ToolDefinition) -> String {
+    match definition.id.as_str() {
+        "Agent" => "Delegate an independent subtask to a subagent. Use for large or parallelizable work, not simple file reads or searches.".to_string(),
+        "AskUserQuestion" => "Ask the user a short clarification or decision question when blocked by ambiguity.".to_string(),
+        "TodoWrite" => "Update the task list with pending, in_progress, and completed items. Keep at most one item in progress.".to_string(),
+        "Read" => "Read a file. Prefer reading the whole file unless it is large; use offset or limit for partial reads.".to_string(),
+        "Glob" => "Find files by path pattern. Prefer this over shelling out to find or ls for discovery.".to_string(),
+        "Grep" => "Search file contents with ripgrep-style patterns. Prefer this over running grep or rg in Bash.".to_string(),
+        "Edit" => "Make an exact text edit in an existing file. Read the file first when needed.".to_string(),
+        "Write" => "Write a file, creating parent directories if needed.".to_string(),
+        "Bash" => "Run a shell command when no dedicated tool is a better fit.".to_string(),
+        "TaskOutput" => "Read the saved output of a background task by id.".to_string(),
+        "WebFetch" => "Fetch and summarize content from a specific URL.".to_string(),
+        "WebSearch" => render_compact_web_search_description(),
+        _ => compact_tool_description(definition),
+    }
+}
+
+fn compact_tool_description(definition: &ToolDefinition) -> String {
+    let trimmed = definition.description.trim();
+    if trimmed.is_empty() {
+        return definition.name.clone();
+    }
+    let first_paragraph = trimmed.split("\n\n").next().unwrap_or(trimmed).trim();
+    if first_paragraph.len() <= 220 {
+        first_paragraph.to_string()
+    } else {
+        let mut shortened = first_paragraph.chars().take(217).collect::<String>();
+        shortened.push_str("...");
+        shortened
+    }
+}
+
+fn render_compact_web_search_description() -> String {
+    format!(
+        "Search the web for current or external information. The current month is {} and you must use this year when searching for recent information.",
+        current_month_year()
+    )
+}
+
 fn render_web_search_description(description: &str) -> String {
     let current_month_year = current_month_year();
     if let Some(existing_line) = description.lines().find(|line| {
@@ -398,6 +438,57 @@ fn openai_compatible_schema(schema: Value) -> Value {
 mod tests {
     use super::*;
     use puffer_tools::ToolRegistry;
+
+    #[test]
+    fn openai_tool_definitions_use_compact_agent_description() {
+        let registry = ToolRegistry::from_definitions(vec![ToolDefinition {
+            id: "Agent".to_string(),
+            name: "Agent".to_string(),
+            description:
+                "Very long agent description that should not be forwarded verbatim to OpenAI."
+                    .to_string(),
+            handler: "runtime:agent".to_string(),
+            aliases: Vec::new(),
+            handler_args: Vec::new(),
+            kind: ToolKind::Custom,
+            input_schema: ToolInputSchema::default(),
+            metadata: ToolMetadata::default(),
+            policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
+        }]);
+
+        let definitions = openai_tool_definitions(&registry, None, false).unwrap();
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            definitions[0].description,
+            "Delegate an independent subtask to a subagent. Use for large or parallelizable work, not simple file reads or searches."
+        );
+    }
+
+    #[test]
+    fn openai_tool_descriptions_keep_current_month_in_web_search_description() {
+        let description = rendered_openai_tool_description(&ToolDefinition {
+            id: WEB_SEARCH_TOOL_ID.to_string(),
+            name: WEB_SEARCH_TOOL_ID.to_string(),
+            description: "Search the web.".to_string(),
+            handler: "runtime:web_search".to_string(),
+            aliases: Vec::new(),
+            handler_args: Vec::new(),
+            kind: ToolKind::Custom,
+            input_schema: ToolInputSchema::default(),
+            metadata: ToolMetadata::default(),
+            policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
+        });
+
+        assert!(description.contains("The current month is"));
+        assert!(description.contains("recent information"));
+    }
 
     fn structured_output_registry() -> ToolRegistry {
         ToolRegistry::from_definitions(vec![ToolDefinition {

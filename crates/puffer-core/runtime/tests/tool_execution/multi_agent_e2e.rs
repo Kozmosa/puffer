@@ -19,10 +19,7 @@ fn parse_result(raw: &str) -> Value {
 }
 
 fn workflow_path(state: &AppState) -> std::path::PathBuf {
-    state
-        .session
-        .cwd
-        .join(".puffer/runtime/claude_workflow")
+    state.session.cwd.join(".puffer/runtime/claude_workflow")
 }
 
 /// Sets up a team with one fake running agent and returns (agent_id, team_name).
@@ -51,7 +48,11 @@ fn setup_team_with_agent(state: &mut AppState, team: &str, agent: &str) -> Strin
         "status": "running",
         "output_file": output_file.display().to_string(),
     }]});
-    fs::write(wf.join("agents.json"), serde_json::to_string_pretty(&agents).unwrap()).unwrap();
+    fs::write(
+        wf.join("agents.json"),
+        serde_json::to_string_pretty(&agents).unwrap(),
+    )
+    .unwrap();
 
     agent_id
 }
@@ -91,9 +92,14 @@ fn teardown_team(state: &mut AppState) {
     if let Ok(raw) = fs::read_to_string(wf.join("agents.json")) {
         if let Ok(mut agents) = serde_json::from_str::<Value>(&raw) {
             if let Some(arr) = agents["agents"].as_array_mut() {
-                for a in arr { a["status"] = json!("stopped"); }
+                for a in arr {
+                    a["status"] = json!("stopped");
+                }
             }
-            let _ = fs::write(wf.join("agents.json"), serde_json::to_string_pretty(&agents).unwrap());
+            let _ = fs::write(
+                wf.join("agents.json"),
+                serde_json::to_string_pretty(&agents).unwrap(),
+            );
         }
     }
     let _ = run_tool(state, "TeamDelete", json!({}));
@@ -150,7 +156,9 @@ fn registry_can_send_shutdown_signal() {
         .unwrap()
         .get(&id)
         .unwrap()
-        .send(TeammateMessage::Shutdown { request_id: "r-1".into() })
+        .send(TeammateMessage::Shutdown {
+            request_id: "r-1".into(),
+        })
         .unwrap();
 
     match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
@@ -171,7 +179,10 @@ fn send_message_delivers_via_mpsc_and_persists_to_store() {
     let agent_id = setup_team_with_agent(&mut state, "deliver-team", "worker");
 
     let (tx, rx) = std::sync::mpsc::channel();
-    teammate_registry().lock().unwrap().insert(agent_id.clone(), tx);
+    teammate_registry()
+        .lock()
+        .unwrap()
+        .insert(agent_id.clone(), tx);
 
     let raw = run_tool(
         &mut state,
@@ -182,12 +193,20 @@ fn send_message_delivers_via_mpsc_and_persists_to_store() {
     let out = parse_result(&raw);
 
     // Delivered list includes the agent
-    assert!(out["delivered"].as_array().unwrap().iter().any(|v| v == &agent_id));
+    assert!(out["delivered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == &agent_id));
 
     // Received via mpsc
     match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
         TeammateMessage::Incoming(m) => {
-            assert!(m.from.contains("team-lead"), "from should be team-lead, got {}", m.from);
+            assert!(
+                m.from.contains("team-lead"),
+                "from should be team-lead, got {}",
+                m.from
+            );
             assert_eq!(m.text, "do task A");
         }
         other => panic!("expected Incoming, got {other:?}"),
@@ -195,7 +214,10 @@ fn send_message_delivers_via_mpsc_and_persists_to_store() {
 
     // Persisted with from + read fields
     let msgs = read_messages(&state);
-    let stored = msgs.iter().find(|m| m["to"] == agent_id).expect("should persist");
+    let stored = msgs
+        .iter()
+        .find(|m| m["to"] == agent_id)
+        .expect("should persist");
     assert_eq!(stored["read"], false);
     assert_eq!(stored["from"].as_str().unwrap().is_empty(), false);
 
@@ -211,8 +233,12 @@ fn send_message_delivers_via_mpsc_and_persists_to_store() {
 fn send_message_rejects_at_sign_in_recipient() {
     let mut state = temp_state();
     fs::create_dir_all(workflow_path(&state)).unwrap();
-    let err = run_tool(&mut state, "SendMessage", json!({"to": "a@b", "summary": "x", "message": "y"}))
-        .unwrap_err();
+    let err = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({"to": "a@b", "summary": "x", "message": "y"}),
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("do not include @"), "got: {err}");
 }
 
@@ -220,30 +246,51 @@ fn send_message_rejects_at_sign_in_recipient() {
 fn send_message_requires_summary_for_text_messages() {
     let mut state = temp_state();
     fs::create_dir_all(workflow_path(&state)).unwrap();
-    let err = run_tool(&mut state, "SendMessage", json!({"to": "x", "message": "y"}))
-        .unwrap_err();
-    assert!(err.to_string().contains("summary is required"), "got: {err}");
+    let err = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({"to": "x", "message": "y"}),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("summary is required"),
+        "got: {err}"
+    );
 }
 
 #[test]
 fn send_message_blocks_structured_broadcast() {
     let mut state = temp_state();
     fs::create_dir_all(workflow_path(&state)).unwrap();
-    let err = run_tool(&mut state, "SendMessage", json!({"to": "*", "message": {"type": "shutdown_request"}}))
-        .unwrap_err();
-    assert!(err.to_string().contains("cannot be broadcast"), "got: {err}");
+    let err = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({"to": "*", "message": {"type": "shutdown_request"}}),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("cannot be broadcast"),
+        "got: {err}"
+    );
 }
 
 #[test]
 fn send_message_enforces_shutdown_response_target() {
     let mut state = temp_state();
     fs::create_dir_all(workflow_path(&state)).unwrap();
-    let err = run_tool(&mut state, "SendMessage", json!({
-        "to": "someone",
-        "message": {"type": "shutdown_response", "request_id": "x", "approve": true}
-    }))
+    let err = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({
+            "to": "someone",
+            "message": {"type": "shutdown_response", "request_id": "x", "approve": true}
+        }),
+    )
     .unwrap_err();
-    assert!(err.to_string().contains("must be sent to \"team-lead\""), "got: {err}");
+    assert!(
+        err.to_string().contains("must be sent to \"team-lead\""),
+        "got: {err}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -255,16 +302,23 @@ fn shutdown_request_generates_tracked_request_id() {
     let mut state = temp_state();
     let _agent_id = setup_team_with_agent(&mut state, "shut-proto", "bot");
 
-    let raw = run_tool(&mut state, "SendMessage", json!({
-        "to": "bot",
-        "message": {"type": "shutdown_request", "reason": "done"}
-    }))
+    let raw = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({
+            "to": "bot",
+            "message": {"type": "shutdown_request", "reason": "done"}
+        }),
+    )
     .unwrap();
     let out = parse_result(&raw);
 
     assert_eq!(out["success"], true);
     let rid = out["request_id"].as_str().unwrap();
-    assert!(rid.starts_with("shutdown-"), "request_id should start with shutdown-, got {rid}");
+    assert!(
+        rid.starts_with("shutdown-"),
+        "request_id should start with shutdown-, got {rid}"
+    );
 
     // Stored in shutdown_requests.json
     let sr: Value = serde_json::from_str(
@@ -283,27 +337,41 @@ fn shutdown_response_approve_completes_roundtrip() {
     register_team_lead(&state, "roundtrip");
 
     // Step 1: request
-    let raw = run_tool(&mut state, "SendMessage", json!({
-        "to": "helper",
-        "message": {"type": "shutdown_request"}
-    }))
+    let raw = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({
+            "to": "helper",
+            "message": {"type": "shutdown_request"}
+        }),
+    )
     .unwrap();
-    let rid = parse_result(&raw)["request_id"].as_str().unwrap().to_string();
+    let rid = parse_result(&raw)["request_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Step 2: response
-    let raw = run_tool(&mut state, "SendMessage", json!({
-        "to": "team-lead",
-        "message": {"type": "shutdown_response", "request_id": &rid, "approve": true}
-    }))
+    let raw = run_tool(
+        &mut state,
+        "SendMessage",
+        json!({
+            "to": "team-lead",
+            "message": {"type": "shutdown_response", "request_id": &rid, "approve": true}
+        }),
+    )
     .unwrap();
     assert_eq!(parse_result(&raw)["success"], true);
 
     // Confirm delivered to team-lead mailbox
     let msgs = read_messages(&state);
-    let confirmation = msgs.iter().find(|m| {
-        m["message"]["type"] == "shutdown_response" && m["to"] == "team-lead"
-    });
-    assert!(confirmation.is_some(), "approval should appear in team-lead mailbox");
+    let confirmation = msgs
+        .iter()
+        .find(|m| m["message"]["type"] == "shutdown_response" && m["to"] == "team-lead");
+    assert!(
+        confirmation.is_some(),
+        "approval should appear in team-lead mailbox"
+    );
     assert_eq!(confirmation.unwrap()["message"]["approve"], true);
 
     teardown_team(&mut state);
@@ -335,7 +403,10 @@ fn plan_approval_delivers_approve_and_reject_with_feedback() {
     assert_eq!(parse_result(&raw)["success"], true);
 
     let msgs = read_messages(&state);
-    let plan_msgs: Vec<_> = msgs.iter().filter(|m| m["message"]["type"] == "plan_approval_response").collect();
+    let plan_msgs: Vec<_> = msgs
+        .iter()
+        .filter(|m| m["message"]["type"] == "plan_approval_response")
+        .collect();
     assert_eq!(plan_msgs.len(), 2);
     assert_eq!(plan_msgs[0]["message"]["approve"], true);
     assert_eq!(plan_msgs[1]["message"]["approve"], false);
@@ -353,13 +424,34 @@ fn task_update_auto_sets_owner_when_team_active() {
     let mut state = temp_state();
     let _agent_id = setup_team_with_agent(&mut state, "owner-team", "bot");
 
-    let raw = run_tool(&mut state, "TaskCreate", json!({"subject": "feat", "description": "d"})).unwrap();
-    let task_id = parse_result(&raw)["task"]["id"].as_str().unwrap().to_string();
+    let raw = run_tool(
+        &mut state,
+        "TaskCreate",
+        json!({"subject": "feat", "description": "d"}),
+    )
+    .unwrap();
+    let task_id = parse_result(&raw)["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let raw = run_tool(&mut state, "TaskUpdate", json!({"taskId": &task_id, "status": "in_progress"})).unwrap();
+    let raw = run_tool(
+        &mut state,
+        "TaskUpdate",
+        json!({"taskId": &task_id, "status": "in_progress"}),
+    )
+    .unwrap();
     let out = parse_result(&raw);
-    let fields: Vec<&str> = out["updatedFields"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
-    assert!(fields.contains(&"owner"), "updatedFields should include owner, got {fields:?}");
+    let fields: Vec<&str> = out["updatedFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        fields.contains(&"owner"),
+        "updatedFields should include owner, got {fields:?}"
+    );
 
     teardown_team(&mut state);
 }

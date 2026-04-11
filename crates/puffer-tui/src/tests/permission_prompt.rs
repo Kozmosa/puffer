@@ -35,15 +35,22 @@ fn poll_pending_submit_opens_permission_prompt_overlay() {
             prompt: "hi".to_string(),
             receiver: event_rx,
             rendered_tool_invocations: 0,
+            pending_tool_calls: Vec::new(),
+            started_at: std::time::Instant::now(),
         }),
         ..TuiState::default()
     };
     let mut state = sample_state();
     let mut auth_store = sample_auth_store();
 
-    let completed =
-        poll_pending_submit(&mut state, &mut auth_store, &auth_path, &session_store, &mut tui)
-            .unwrap();
+    let completed = poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap();
 
     assert!(!completed);
     assert!(tui.pending_permission_request.is_some());
@@ -121,5 +128,6 @@ fn render_permission_prompt_shows_codex_style_options() {
     assert!(rendered.contains("Would you like to grant these permissions?"));
     assert!(rendered.contains("Yes, grant these permissions"));
     assert!(rendered.contains("Yes, grant these permissions for this session"));
+    assert!(rendered.contains("Yes, allow ALL tools for this session"));
     assert!(rendered.contains("No, continue without permissions"));
 }
