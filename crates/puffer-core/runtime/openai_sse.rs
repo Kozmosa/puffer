@@ -17,6 +17,11 @@ pub(super) struct OpenAISseResult {
     pub(super) assistant_text: String,
     pub(super) tool_calls: Vec<OpenAIResponseToolCall>,
     pub(super) emitted_tool_call_ids: HashSet<String>,
+    /// Reasoning items captured from `response.output_item.done` events when
+    /// the request enabled `include: ["reasoning.encrypted_content"]`. These
+    /// need to be re-emitted in the next turn's `input` so the model can
+    /// resume its prior thought process — aligned with Codex behavior.
+    pub(super) reasoning_items: Vec<Value>,
     /// Raw response Value, kept for backward-compat callers that still need it.
     pub(super) raw_response: Value,
 }
@@ -299,6 +304,16 @@ impl OpenAISseState {
         } else {
             self.assistant_text
         };
+        // Collect reasoning items in the order they appeared in `output`. These
+        // must be replayed in the next turn's `input` so the model can continue
+        // its prior reasoning chain — otherwise high-effort reasoning restarts
+        // from scratch every turn.
+        let reasoning_items: Vec<Value> = self
+            .output
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+            .cloned()
+            .collect();
         OpenAISseResult {
             response_id: self.response_id,
             input_tokens: self.input_tokens,
@@ -307,6 +322,7 @@ impl OpenAISseState {
             assistant_text,
             tool_calls: self.tool_calls,
             emitted_tool_call_ids: self.emitted_tool_call_ids,
+            reasoning_items,
             raw_response,
         }
     }

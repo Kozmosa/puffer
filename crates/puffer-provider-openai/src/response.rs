@@ -36,6 +36,16 @@ pub struct OpenAIResponsesOutputItem {
     pub arguments: Option<Value>,
     #[serde(default)]
     pub content: Vec<OpenAIResponsesContentItem>,
+    /// Present when `kind == "reasoning"` — thinking-chain summary items.
+    /// Aligned with Codex `ResponseItem::Reasoning.summary`.
+    #[serde(default)]
+    pub summary: Vec<Value>,
+    /// Present when `kind == "reasoning"` — opaque encrypted thinking chain
+    /// returned by the Responses API when `include` contains
+    /// `reasoning.encrypted_content`. Aligned with Codex
+    /// `ResponseItem::Reasoning.encrypted_content`.
+    #[serde(default)]
+    pub encrypted_content: Option<String>,
 }
 
 /// A content fragment nested under an OpenAI assistant message output item.

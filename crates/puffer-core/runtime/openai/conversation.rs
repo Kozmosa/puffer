@@ -114,9 +114,29 @@ pub enum ConversationItem {
         call_id: String,
         output: ToolOutputPayload,
     },
+    /// Assistant reasoning chain returned by the Responses API when `include`
+    /// contains `reasoning.encrypted_content`. Aligned with Codex
+    /// `ResponseItem::Reasoning`. Carrying this across turns lets the model
+    /// resume its prior thought process instead of re-thinking from scratch,
+    /// which is essential for multi-turn tool loops with high reasoning effort.
+    Reasoning {
+        /// Summary blocks echoed back verbatim to the server.
+        #[serde(default)]
+        summary: Vec<ReasoningSummary>,
+        /// Opaque encrypted thinking chain — provider-specific blob.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+    },
     /// Compaction marker — replaces summarized older messages.
     /// Aligned with Codex `Compaction { encrypted_content }`.
     Compaction { summary: String },
+}
+
+/// A reasoning summary block. Aligned with Codex `ReasoningItemReasoningSummary`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningSummary {
+    SummaryText { text: String },
 }
 
 impl ConversationItem {
@@ -186,6 +206,22 @@ impl ConversationItem {
                 arguments, name, ..
             } => estimate_text_tokens(name) + estimate_text_tokens(arguments),
             Self::FunctionCallOutput { output, .. } => estimate_text_tokens(&output.text),
+            Self::Reasoning {
+                summary,
+                encrypted_content,
+            } => {
+                let summary_tokens: usize = summary
+                    .iter()
+                    .map(|s| match s {
+                        ReasoningSummary::SummaryText { text } => estimate_text_tokens(text),
+                    })
+                    .sum();
+                let encrypted_tokens = encrypted_content
+                    .as_ref()
+                    .map(|s| estimate_text_tokens(s))
+                    .unwrap_or(0);
+                summary_tokens + encrypted_tokens
+            }
             Self::Compaction { summary } => estimate_text_tokens(summary),
         }
     }
@@ -317,6 +353,64 @@ pub(crate) fn transcript_to_items(state: &AppState, input: &str) -> Vec<Conversa
     items
 }
 
+/// Converts a raw reasoning output item (as returned by the Responses API
+/// `response.output_item.done` event or the non-streaming response body)
+/// into a `ConversationItem::Reasoning`. Returns `None` if the item is not
+/// a reasoning item or has no useful payload.
+///
+/// Aligned with Codex: the server may include either `summary` items,
+/// `encrypted_content`, or both. We preserve whichever is present so the
+/// next turn's request can replay them verbatim.
+pub(crate) fn reasoning_item_from_value(item: &Value) -> Option<ConversationItem> {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return None;
+    }
+    let summary: Vec<ReasoningSummary> = item
+        .get("summary")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    if s.get("type").and_then(Value::as_str) == Some("summary_text") {
+                        s.get("text")
+                            .and_then(Value::as_str)
+                            .map(|text| ReasoningSummary::SummaryText {
+                                text: text.to_string(),
+                            })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let encrypted_content = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    // Skip empty reasoning items (no summary, no encrypted content) to avoid
+    // sending useless payloads.
+    if summary.is_empty() && encrypted_content.is_none() {
+        return None;
+    }
+    Some(ConversationItem::Reasoning {
+        summary,
+        encrypted_content,
+    })
+}
+
+/// Appends reasoning items (captured from a response) to the conversation.
+/// Call this BEFORE `append_tool_results` so reasoning items precede the
+/// function calls they preceded on the wire — matching Codex's history order.
+pub(crate) fn append_reasoning_items(items: &mut Vec<ConversationItem>, raw_items: &[Value]) {
+    for raw in raw_items {
+        if let Some(reasoning) = reasoning_item_from_value(raw) {
+            items.push(reasoning);
+        }
+    }
+}
+
 /// Appends tool call items and their outputs to the conversation.
 /// This is the shared path for both Responses and Chat Completions after
 /// tool execution completes.
@@ -392,6 +486,19 @@ fn item_to_responses_value(item: &ConversationItem) -> Value {
             "call_id": call_id,
             "output": output.text,
         }),
+        ConversationItem::Reasoning {
+            summary,
+            encrypted_content,
+        } => {
+            let mut val = json!({
+                "type": "reasoning",
+                "summary": summary,
+            });
+            if let Some(encrypted) = encrypted_content {
+                val["encrypted_content"] = Value::String(encrypted.clone());
+            }
+            val
+        }
         ConversationItem::Compaction { summary } => {
             // Compaction markers are rendered as user messages on the wire.
             json!({
@@ -496,6 +603,11 @@ pub(crate) fn items_to_chat_messages(
                     tool_call_id: Some(call_id.clone()),
                     tool_calls: Vec::new(),
                 });
+                i += 1;
+            }
+            ConversationItem::Reasoning { .. } => {
+                // Chat Completions has no concept of reasoning items on the
+                // wire — they exist only in the Responses API. Drop them here.
                 i += 1;
             }
             ConversationItem::Compaction { summary } => {
@@ -604,6 +716,11 @@ pub(crate) fn items_to_anthropic_messages(items: &[ConversationItem]) -> Vec<Val
                     }
                 }
                 push_or_merge(&mut messages, "user", Value::Array(tool_results));
+            }
+            ConversationItem::Reasoning { .. } => {
+                // Anthropic has its own thinking blocks; OpenAI reasoning
+                // items do not translate — drop when producing Anthropic wire.
+                i += 1;
             }
             ConversationItem::Compaction { summary } => {
                 let text = format!(
@@ -889,6 +1006,9 @@ pub(crate) fn build_summary_text(items: &[ConversationItem]) -> String {
             ConversationItem::FunctionCallOutput { output, .. } => {
                 let preview: String = output.text.chars().take(300).collect();
                 text.push_str(&format!("[tool_result]: {preview}\n\n"));
+            }
+            ConversationItem::Reasoning { .. } => {
+                // Opaque to summarization — skip.
             }
             ConversationItem::Compaction { summary } => {
                 let preview: String = summary.chars().take(300).collect();
@@ -2116,5 +2236,182 @@ mod tests {
         let anthropic = items_to_anthropic_messages(&items);
         eprintln!("\n========== Anthropic Messages API (CC-style) ==========");
         eprintln!("{}", serde_json::to_string_pretty(&anthropic).unwrap());
+    }
+
+    /// Verifies that a reasoning item from the Responses API is captured and
+    /// re-emitted verbatim in the next turn's `input` array.
+    ///
+    /// Without this, high-effort models re-think from scratch every turn,
+    /// causing minutes-long delays per request on proxies that don't support
+    /// server-side `previous_response_id` threading.
+    #[test]
+    fn reasoning_items_round_trip_through_conversation_history() {
+        let raw_reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_abc123",
+            "summary": [
+                {"type": "summary_text", "text": "Analyzing the task..."},
+                {"type": "summary_text", "text": "Plan: read file, write solution."}
+            ],
+            "encrypted_content": "OPAQUE_BLOB_XYZ"
+        });
+
+        let item = reasoning_item_from_value(&raw_reasoning).expect("reasoning item parsed");
+        let ConversationItem::Reasoning {
+            summary,
+            encrypted_content,
+        } = &item
+        else {
+            panic!("expected Reasoning variant, got {item:?}");
+        };
+        assert_eq!(summary.len(), 2);
+        assert!(matches!(
+            &summary[0],
+            ReasoningSummary::SummaryText { text } if text == "Analyzing the task..."
+        ));
+        assert_eq!(encrypted_content.as_deref(), Some("OPAQUE_BLOB_XYZ"));
+
+        // Serialize back to Responses API wire format.
+        let items = vec![item];
+        let wire = items_to_responses_input(&items);
+        let arr = wire.as_array().expect("wire input is array");
+        assert_eq!(arr.len(), 1);
+        let out = &arr[0];
+        assert_eq!(out.get("type").and_then(Value::as_str), Some("reasoning"));
+        assert_eq!(
+            out.get("encrypted_content").and_then(Value::as_str),
+            Some("OPAQUE_BLOB_XYZ")
+        );
+        let summary_arr = out.get("summary").and_then(Value::as_array).unwrap();
+        assert_eq!(summary_arr.len(), 2);
+        assert_eq!(
+            summary_arr[0].get("type").and_then(Value::as_str),
+            Some("summary_text")
+        );
+        assert_eq!(
+            summary_arr[0].get("text").and_then(Value::as_str),
+            Some("Analyzing the task...")
+        );
+    }
+
+    /// Non-reasoning items return None from the extractor.
+    #[test]
+    fn reasoning_item_from_value_ignores_non_reasoning_items() {
+        assert!(reasoning_item_from_value(&json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "hi"}]
+        }))
+        .is_none());
+        assert!(reasoning_item_from_value(&json!({
+            "type": "function_call",
+            "call_id": "c1",
+            "name": "Read",
+            "arguments": "{}"
+        }))
+        .is_none());
+    }
+
+    /// Reasoning items with empty summary AND missing encrypted_content are
+    /// filtered out — avoids wasting tokens replaying useless payloads.
+    #[test]
+    fn reasoning_item_from_value_rejects_empty_payloads() {
+        assert!(reasoning_item_from_value(&json!({
+            "type": "reasoning",
+            "summary": []
+        }))
+        .is_none());
+        assert!(reasoning_item_from_value(&json!({
+            "type": "reasoning"
+        }))
+        .is_none());
+    }
+
+    /// `append_reasoning_items` preserves the order of reasoning items
+    /// relative to each other. Order matters because a later reasoning item
+    /// may depend on an earlier function_call_output.
+    #[test]
+    fn append_reasoning_items_preserves_order() {
+        let mut items: Vec<ConversationItem> = vec![ConversationItem::user_message("task")];
+        let raw = vec![
+            json!({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "first"}],
+            }),
+            json!({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "second"}],
+            }),
+        ];
+        append_reasoning_items(&mut items, &raw);
+
+        assert_eq!(items.len(), 3);
+        let ConversationItem::Reasoning {
+            summary: s1,
+            ..
+        } = &items[1] else { panic!("item[1] should be Reasoning"); };
+        let ConversationItem::Reasoning {
+            summary: s2,
+            ..
+        } = &items[2] else { panic!("item[2] should be Reasoning"); };
+        assert!(matches!(&s1[0], ReasoningSummary::SummaryText { text } if text == "first"));
+        assert!(matches!(&s2[0], ReasoningSummary::SummaryText { text } if text == "second"));
+    }
+
+    /// End-to-end check on a realistic multi-turn history: once reasoning is
+    /// in the items vector, the next turn's Responses wire body must include
+    /// both `reasoning` items AND function_call / function_call_output items
+    /// in the correct order — mirroring what Codex sends.
+    #[test]
+    fn multi_turn_history_wire_format_includes_reasoning() {
+        let items = vec![
+            ConversationItem::user_message("do the thing"),
+            ConversationItem::Reasoning {
+                summary: vec![ReasoningSummary::SummaryText {
+                    text: "thinking step 1".to_string(),
+                }],
+                encrypted_content: Some("BLOB1".to_string()),
+            },
+            ConversationItem::FunctionCall {
+                call_id: "c1".to_string(),
+                name: "Read".to_string(),
+                arguments: "{\"file_path\":\"/x\"}".to_string(),
+            },
+            ConversationItem::FunctionCallOutput {
+                call_id: "c1".to_string(),
+                output: ToolOutputPayload::success("file body".to_string()),
+            },
+            ConversationItem::Reasoning {
+                summary: vec![ReasoningSummary::SummaryText {
+                    text: "thinking step 2".to_string(),
+                }],
+                encrypted_content: Some("BLOB2".to_string()),
+            },
+        ];
+        let wire = items_to_responses_input(&items);
+        let arr = wire.as_array().unwrap();
+        let types: Vec<&str> = arr
+            .iter()
+            .filter_map(|v| v.get("type").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                "message",
+                "reasoning",
+                "function_call",
+                "function_call_output",
+                "reasoning",
+            ]
+        );
+        // Encrypted blobs are preserved verbatim — that's the whole point.
+        assert_eq!(
+            arr[1].get("encrypted_content").and_then(Value::as_str),
+            Some("BLOB1")
+        );
+        assert_eq!(
+            arr[4].get("encrypted_content").and_then(Value::as_str),
+            Some("BLOB2")
+        );
     }
 }

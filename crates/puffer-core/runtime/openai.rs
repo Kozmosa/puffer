@@ -114,8 +114,9 @@ fn execute_openai_once(
     use_native: bool,
 ) -> Result<super::TurnExecution> {
     use self::conversation::{
-        append_tool_results, compact_conversation, inject_post_compact_context,
-        items_to_responses_input, transcript_to_items, ConversationItem,
+        append_reasoning_items, append_tool_results, compact_conversation,
+        inject_post_compact_context, items_to_responses_input, transcript_to_items,
+        ConversationItem,
     };
 
     let structured_output = options.structured_output;
@@ -231,6 +232,22 @@ fn execute_openai_once(
         if !assistant_text.trim().is_empty() {
             items.push(ConversationItem::assistant_message(&assistant_text));
         }
+        // Preserve the model's reasoning chain so the next turn can resume it
+        // instead of re-thinking from scratch. Without this, high-effort
+        // reasoning models spend minutes per turn on repeated work.
+        let reasoning_raw: Vec<Value> = response
+            .pointer("/output")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        append_reasoning_items(&mut items, &reasoning_raw);
         // Record where continuation starts (tool calls + outputs for next request).
         continuation_start = Some(items.len());
 
@@ -330,8 +347,9 @@ where
     F: FnMut(TurnStreamEvent),
 {
     use self::conversation::{
-        append_tool_results, compact_conversation, inject_post_compact_context,
-        items_to_responses_input, transcript_to_items, ConversationItem,
+        append_reasoning_items, append_tool_results, compact_conversation,
+        inject_post_compact_context, items_to_responses_input, transcript_to_items,
+        ConversationItem,
     };
 
     let structured_output = options.structured_output;
@@ -499,6 +517,11 @@ where
                 &response.assistant_text,
             ));
         }
+        // Preserve the model's reasoning chain (see non-streaming path above
+        // for why this matters — proxies/models that don't support server-side
+        // `previous_response_id` threading rely on us replaying the reasoning
+        // items on every turn).
+        append_reasoning_items(&mut items, &response.reasoning_items);
         // Record where continuation starts (tool calls + outputs for next request).
         continuation_start = Some(items.len());
 
@@ -1385,6 +1408,16 @@ where
         .with_context(|| format!("response from {url} was not a valid Responses payload"))?;
     let assistant_text = extract_responses_text(&parsed);
     let tool_calls = extract_responses_tool_calls(&parsed)?;
+    let reasoning_items: Vec<Value> = raw
+        .pointer("/output")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(OpenAISseResult {
         response_id,
         input_tokens,
@@ -1393,6 +1426,7 @@ where
         assistant_text,
         tool_calls,
         emitted_tool_call_ids: HashSet::new(),
+        reasoning_items,
         raw_response: raw,
     })
 }
