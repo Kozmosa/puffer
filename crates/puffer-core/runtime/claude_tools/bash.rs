@@ -177,7 +177,7 @@ fn execute_foreground(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
         }
         stderr.push_str(&format!("command timed out after {timeout_ms}ms"));
     }
-    let stdout = String::from_utf8_lossy(&timed.output.stdout).to_string();
+    let stdout = truncate_output(String::from_utf8_lossy(&timed.output.stdout).to_string());
     let success = timed.output.status.success() && !timed.timed_out;
     let no_output_expected = success && stdout.trim().is_empty() && stderr.trim().is_empty();
     Ok(ClaudeBashExecution {
@@ -270,6 +270,20 @@ fn run_bash_command(cwd: &Path, command: &str, timeout_ms: u64) -> Result<TimedC
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+const MAX_OUTPUT_CHARS: usize = 30_000;
+
+fn truncate_output(output: String) -> String {
+    let char_count = output.chars().count();
+    if char_count <= MAX_OUTPUT_CHARS {
+        return output;
+    }
+    let truncated: String = output.chars().take(MAX_OUTPUT_CHARS).collect();
+    format!(
+        "{}\n\n[output truncated: {} chars total, showing first {}]",
+        truncated, char_count, MAX_OUTPUT_CHARS
+    )
 }
 
 /// Builds a human-readable summary line for UI/status displays.
