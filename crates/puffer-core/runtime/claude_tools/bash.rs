@@ -326,8 +326,10 @@ mod tests {
     #[test]
     fn execute_foreground_returns_stdout() {
         let temp = tempfile::tempdir().unwrap();
+        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
+            &session_id,
             ClaudeBashInput {
                 command: "printf 'hello'".to_string(),
                 timeout: Some(1_000),
@@ -346,8 +348,10 @@ mod tests {
     #[test]
     fn execute_timeout_marks_interrupted() {
         let temp = tempfile::tempdir().unwrap();
+        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
+            &session_id,
             ClaudeBashInput {
                 command: "sleep 0.2".to_string(),
                 timeout: Some(20),
@@ -366,8 +370,10 @@ mod tests {
     #[test]
     fn execute_background_returns_task_id() {
         let temp = tempfile::tempdir().unwrap();
+        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
+            &session_id,
             ClaudeBashInput {
                 command: "sleep 0.1".to_string(),
                 timeout: Some(1_000),
@@ -386,8 +392,10 @@ mod tests {
     #[test]
     fn execute_background_persists_shell_task() {
         let temp = tempfile::tempdir().unwrap();
+        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
+            &session_id,
             ClaudeBashInput {
                 command: "sleep 0.1".to_string(),
                 timeout: Some(1_000),
@@ -404,6 +412,8 @@ mod tests {
             .join(".puffer")
             .join("runtime")
             .join("claude_workflow")
+            .join("sessions")
+            .join(session_id.to_string())
             .join("tasks.json");
         let payload: Value =
             serde_json::from_str(&fs::read_to_string(tasks_path).unwrap()).unwrap();
@@ -440,7 +450,8 @@ mod tests {
             "run_in_background": false,
             "dangerouslyDisableSandbox": true
         });
-        let result = execute_from_value(temp.path(), input).unwrap();
+        let session_id = Uuid::nil();
+        let result = execute_from_value(temp.path(), &session_id, input).unwrap();
         assert!(result.success);
         assert_eq!(result.output.stdout, "ok");
         assert_eq!(result.output.dangerously_disable_sandbox, Some(true));
