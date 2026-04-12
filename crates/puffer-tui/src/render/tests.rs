@@ -207,6 +207,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
                 Vec::new(),
                 Vec::new(),
                 Some(std::time::Instant::now()),
+                false,
             );
             render(
                 frame,
@@ -220,7 +221,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new(), Vec::new(), None);
+            set_pending_submit_state(None, Vec::new(), Vec::new(), None, false);
         })
         .unwrap();
 
@@ -257,6 +258,7 @@ fn render_pending_submit_shows_tool_call_before_output() {
                 }],
                 Vec::new(),
                 Some(std::time::Instant::now()),
+                false,
             );
             render(
                 frame,
@@ -270,7 +272,7 @@ fn render_pending_submit_shows_tool_call_before_output() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new(), Vec::new(), None);
+            set_pending_submit_state(None, Vec::new(), Vec::new(), None, false);
         })
         .unwrap();
 
@@ -297,6 +299,7 @@ fn render_pending_submit_shows_queued_prompts() {
                 Vec::new(),
                 vec!["second prompt".to_string(), "third prompt".to_string()],
                 Some(std::time::Instant::now()),
+                false,
             );
             render(
                 frame,
@@ -310,7 +313,7 @@ fn render_pending_submit_shows_queued_prompts() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new(), Vec::new(), None);
+            set_pending_submit_state(None, Vec::new(), Vec::new(), None, false);
         })
         .unwrap();
 

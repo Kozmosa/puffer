@@ -196,6 +196,11 @@ where
                 }
             }
         }
+        "response.reasoning_summary_text.delta" => {
+            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                on_event(TurnStreamEvent::ThinkingDelta(delta.to_string()));
+            }
+        }
         "response.output_text.delta" => {
             if let Some(delta) = event.get("delta").and_then(Value::as_str) {
                 state.assistant_text.push_str(delta);

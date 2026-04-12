@@ -112,6 +112,8 @@ pub struct TurnExecution {
 /// Describes one incremental event emitted while a model turn is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnStreamEvent {
+    /// A chunk of the model's internal reasoning / thinking output.
+    ThinkingDelta(String),
     TextDelta(String),
     ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),

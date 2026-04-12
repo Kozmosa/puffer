@@ -52,6 +52,8 @@ struct PendingSubmitRenderState {
     pending_tool_calls: Vec<ToolCallRequest>,
     queued_prompts: Vec<String>,
     started_at: Option<std::time::Instant>,
+    /// True when the model is actively producing thinking/reasoning tokens.
+    thinking_active: bool,
 }
 thread_local! {
     static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
@@ -74,6 +76,7 @@ pub(crate) fn set_pending_submit_state(
     pending_tool_calls: Vec<ToolCallRequest>,
     queued_prompts: Vec<String>,
     started_at: Option<std::time::Instant>,
+    thinking_active: bool,
 ) {
     ACTIVE_PENDING_SUBMIT.with(|value| {
         *value.borrow_mut() = PendingSubmitRenderState {
@@ -81,6 +84,7 @@ pub(crate) fn set_pending_submit_state(
             pending_tool_calls,
             queued_prompts,
             started_at,
+            thinking_active,
         };
     });
 }
@@ -508,7 +512,16 @@ fn render_transcript_message(message: &RenderedMessage, pulse_tool: bool) -> Vec
         MessageRole::Assistant => ("", "  "),
         MessageRole::System | MessageRole::ToolCall | MessageRole::ToolResult => ("· ", "  "),
     };
-    render_markdown(&message.text)
+    let mut lines = Vec::new();
+    // Render thinking block before the main text for assistant messages.
+    if message.role == MessageRole::Assistant {
+        if let Some(thinking) = &message.thinking {
+            if !thinking.is_empty() {
+                lines.extend(render_thinking_block(thinking));
+            }
+        }
+    }
+    let text_lines: Vec<Line<'static>> = render_markdown(&message.text)
         .lines
         .into_iter()
         .enumerate()
@@ -525,7 +538,34 @@ fn render_transcript_message(message: &RenderedMessage, pulse_tool: bool) -> Vec
                 line
             }
         })
-        .collect()
+        .collect();
+    // Only append text lines if there is actual text content.
+    if !message.text.is_empty() {
+        lines.extend(text_lines);
+    }
+    lines
+}
+
+/// Renders a thinking/reasoning block as dimmed indented text with a header.
+fn render_thinking_block(thinking: &str) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let dim_italic = Style::default()
+        .add_modifier(Modifier::DIM)
+        .add_modifier(Modifier::ITALIC);
+    let mut lines = Vec::new();
+    // Header line
+    lines.push(Line::from(vec![
+        Span::styled("  ⎿ ", dim),
+        Span::styled("Thinking", dim_italic),
+    ]));
+    // Thinking content — show each line indented and dimmed
+    for text_line in thinking.lines() {
+        lines.push(Line::from(vec![
+            Span::styled("    ", dim),
+            Span::styled(text_line.to_string(), dim),
+        ]));
+    }
+    lines
 }
 
 fn pending_submit_state() -> PendingSubmitRenderState {
@@ -534,6 +574,7 @@ fn pending_submit_state() -> PendingSubmitRenderState {
         pending_tool_calls: value.borrow().pending_tool_calls.clone(),
         queued_prompts: value.borrow().queued_prompts.clone(),
         started_at: value.borrow().started_at,
+        thinking_active: value.borrow().thinking_active,
     })
 }
 
@@ -553,11 +594,16 @@ fn pending_submit_lines(pending_submit: &PendingSubmitRenderState) -> Vec<Line<'
         }
     }
     if pending_submit.loading_prompt.is_some() {
+        let base_label = if pending_submit.thinking_active {
+            "Thinking..."
+        } else {
+            "Loading..."
+        };
         let label = if let Some(started) = pending_submit.started_at {
             let elapsed = started.elapsed().as_secs_f64();
-            format!("Loading... ({elapsed:.1}s)")
+            format!("{base_label} ({elapsed:.1}s)")
         } else {
-            "Loading...".to_string()
+            base_label.to_string()
         };
         lines.push(Line::from(vec![
             Span::styled("  ⎿ ", Style::default().add_modifier(Modifier::DIM)),

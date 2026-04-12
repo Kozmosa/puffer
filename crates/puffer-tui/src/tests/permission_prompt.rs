@@ -37,6 +37,7 @@ fn poll_pending_submit_opens_permission_prompt_overlay() {
             rendered_tool_invocations: 0,
             pending_tool_calls: Vec::new(),
             started_at: std::time::Instant::now(),
+            thinking_active: false,
         }),
         ..TuiState::default()
     };

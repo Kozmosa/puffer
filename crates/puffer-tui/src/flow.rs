@@ -285,6 +285,9 @@ pub(crate) fn handle_prompt_submit(
             &worker_prompt,
             None,
             |event| match event {
+                TurnStreamEvent::ThinkingDelta(delta) => {
+                    let _ = event_sender.send(PendingSubmitEvent::ThinkingDelta(delta));
+                }
                 TurnStreamEvent::TextDelta(delta) => {
                     let _ = event_sender.send(PendingSubmitEvent::TextDelta(delta));
                 }
@@ -316,6 +319,7 @@ pub(crate) fn handle_prompt_submit(
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
+        thinking_active: false,
     });
     Ok(())
 }
@@ -390,7 +394,14 @@ pub(crate) fn poll_pending_submit(
             }),
         };
         match event {
-            PendingSubmitEvent::TextDelta(delta) => append_assistant_delta(state, &delta),
+            PendingSubmitEvent::ThinkingDelta(delta) => {
+                pending.thinking_active = true;
+                append_thinking_delta(state, &delta);
+            }
+            PendingSubmitEvent::TextDelta(delta) => {
+                pending.thinking_active = false;
+                append_assistant_delta(state, &delta);
+            }
             PendingSubmitEvent::ToolCallsRequested(requests) => {
                 pending.pending_tool_calls.extend(requests);
                 break;
@@ -570,6 +581,23 @@ pub(crate) fn handle_submit(
 
 fn is_auth_command_input(submitted: &str) -> bool {
     matches!(submit_command_name(submitted), "login" | "logout")
+}
+
+fn append_thinking_delta(state: &mut AppState, delta: &str) {
+    if delta.is_empty() {
+        return;
+    }
+    if let Some(last) = state.transcript.last_mut() {
+        if last.role == MessageRole::Assistant {
+            last.thinking.get_or_insert_with(String::new).push_str(delta);
+            return;
+        }
+    }
+    // No existing assistant message yet — create one with thinking content.
+    state.push_message(MessageRole::Assistant, String::new());
+    if let Some(last) = state.transcript.last_mut() {
+        last.thinking = Some(delta.to_string());
+    }
 }
 
 fn append_assistant_delta(state: &mut AppState, delta: &str) {

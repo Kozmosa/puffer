@@ -23,6 +23,9 @@ pub enum MessageRole {
 pub struct RenderedMessage {
     pub role: MessageRole,
     pub text: String,
+    /// Model thinking / reasoning content shown before the main text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
     /// Tool call ID for ToolCall/ToolResult roles.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
@@ -257,6 +260,7 @@ impl AppState {
         self.transcript.push(RenderedMessage {
             role,
             text: text.into(),
+            thinking: None,
             call_id: None,
             tool_id: None,
             tool_input: None,
@@ -276,6 +280,7 @@ impl AppState {
         self.transcript.push(RenderedMessage {
             role: MessageRole::ToolCall,
             text: input.to_string(),
+            thinking: None,
             call_id: Some(call_id.to_string()),
             tool_id: Some(tool_id.to_string()),
             tool_input: Some(input.to_string()),
@@ -284,6 +289,7 @@ impl AppState {
         self.transcript.push(RenderedMessage {
             role: MessageRole::ToolResult,
             text: output.to_string(),
+            thinking: None,
             call_id: Some(call_id.to_string()),
             tool_id: Some(tool_id.to_string()),
             tool_input: None,

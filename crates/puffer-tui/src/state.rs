@@ -84,6 +84,7 @@ pub(crate) struct PendingSubmitResult {
 
 /// Carries one event emitted while a provider-backed turn is in flight.
 pub(crate) enum PendingSubmitEvent {
+    ThinkingDelta(String),
     TextDelta(String),
     ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),
@@ -98,6 +99,8 @@ pub(crate) struct PendingSubmit {
     pub(crate) pending_tool_calls: Vec<ToolCallRequest>,
     pub(crate) rendered_tool_invocations: usize,
     pub(crate) started_at: std::time::Instant,
+    /// Set to true when the model is actively producing thinking/reasoning tokens.
+    pub(crate) thinking_active: bool,
 }
 
 /// Stores the response channel for the currently visible permission prompt.

@@ -1698,6 +1698,7 @@ mod tests {
         // Push a tool call + failed tool result
         state.transcript.push(crate::state::RenderedMessage {
             text: "error output".into(),
+            thinking: None,
             role: crate::MessageRole::ToolResult,
             call_id: Some("c1".into()),
             tool_id: None,

@@ -121,7 +121,7 @@ where
                         }
                     }
                     "thinking_delta" => {
-                        // Thinking blocks — accumulate silently (not emitted to UI).
+                        // Thinking blocks — accumulate and emit to UI.
                         if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
                             if index < state.content_blocks.len() {
                                 let existing = state.content_blocks[index]
@@ -132,6 +132,7 @@ where
                                 state.content_blocks[index]["thinking"] =
                                     Value::String(existing + thinking);
                             }
+                            on_event(TurnStreamEvent::ThinkingDelta(thinking.to_string()));
                         }
                     }
                     _ => {}
