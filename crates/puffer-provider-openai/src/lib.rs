@@ -12,6 +12,7 @@ mod usage;
 
 pub use auth::OpenAIAuth;
 pub use auth::OpenAIOAuthConfig;
+pub use codex::codex_user_agent;
 pub use auth::OpenAIOAuthCredentials;
 pub use auth::OpenAIPkce;
 pub use auth::OPENAI_AUTHORIZE_URL;

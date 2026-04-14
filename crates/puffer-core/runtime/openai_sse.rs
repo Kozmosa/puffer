@@ -7,8 +7,9 @@ use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::io::{BufRead, BufReader};
 
-/// Typed result from SSE parsing — eliminates the need to re-serialize/re-parse
-/// the raw `Value` into `OpenAIResponsesResponse`.
+/// Typed result from streaming response parsing (SSE or WebSocket) — eliminates
+/// the need to re-serialize/re-parse the raw `Value` into
+/// `OpenAIResponsesResponse`.
 pub(super) struct OpenAISseResult {
     pub(super) response_id: Option<String>,
     pub(super) input_tokens: Option<usize>,
@@ -145,6 +146,21 @@ where
     }
     let event: Value =
         serde_json::from_str(&data).with_context(|| format!("invalid SSE payload: {data}"))?;
+    process_openai_event(&event, state, on_event)
+}
+
+/// Processes a single parsed OpenAI streaming event and updates accumulator
+/// state. Returns `Ok(true)` when a terminal event is received (the caller
+/// should stop reading). This function is shared between the SSE and WebSocket
+/// transports — both produce identical event schemas.
+pub(super) fn process_openai_event<F>(
+    event: &Value,
+    state: &mut OpenAISseState,
+    on_event: &mut F,
+) -> Result<bool>
+where
+    F: FnMut(TurnStreamEvent),
+{
     match event
         .get("type")
         .and_then(Value::as_str)
@@ -214,7 +230,7 @@ where
                 on_event(TurnStreamEvent::TextDelta(delta.to_string()));
             }
         }
-        "response.completed" | "response.done" | "response.incomplete" => {
+        "response.completed" | "response.done" | "response.incomplete" | "response.cancelled" => {
             state.update_response(event.get("response"));
             state.terminal = true;
             return Ok(true);
@@ -240,11 +256,18 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
     output.push(item);
 }
 
+/// Accumulator state for OpenAI streaming events (SSE or WebSocket).
+///
+/// Collects response metadata, output items, assistant text deltas, and
+/// typed tool calls as they arrive. Once a terminal event is received
+/// (`response.completed`, `response.done`, `response.incomplete`, or
+/// `response.cancelled`), the accumulated state is converted into an
+/// [`OpenAISseResult`] via [`into_typed_result`](Self::into_typed_result).
 #[derive(Default)]
-struct OpenAISseState {
+pub(super) struct OpenAISseState {
     response: Option<Value>,
     output: Vec<Value>,
-    terminal: bool,
+    pub(super) terminal: bool,
     emitted_tool_call_ids: HashSet<String>,
     // Typed fields — accumulated during SSE to avoid post-parse roundtrip.
     response_id: Option<String>,
@@ -295,7 +318,13 @@ impl OpenAISseState {
         response
     }
 
-    fn into_typed_result(self) -> OpenAISseResult {
+    /// Consumes the accumulated SSE/WS state and produces a typed result.
+    ///
+    /// This avoids re-serializing the raw response into
+    /// `OpenAIResponsesResponse` — the typed fields (`response_id`,
+    /// `input_tokens`, `tool_calls`, etc.) are already populated during
+    /// streaming. A raw `Value` is still built for backward-compat callers.
+    pub(super) fn into_typed_result(self) -> OpenAISseResult {
         let raw_response = self.build_raw_response();
         // If no text was accumulated from deltas, fall back to extracting from
         // completed message output items.
@@ -379,6 +408,7 @@ fn format_openai_sse_error(event: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{parse_openai_sse_response, parse_openai_sse_response_streaming};
+    use crate::runtime::TurnStreamEvent;
     use serde_json::json;
     use std::io::BufReader;
 
@@ -569,5 +599,27 @@ mod tests {
         assert_eq!(result.tool_calls[0].name, "Bash");
         // Invalid JSON preserved as string, not silently replaced with {}.
         assert_eq!(result.tool_calls[0].arguments, json!("not valid json"));
+    }
+
+    #[test]
+    fn process_openai_event_handles_response_cancelled() {
+        let stream = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            "event: response.cancelled\n",
+            "data: {\"type\":\"response.cancelled\",\"response\":{\"id\":\"resp_cancel\",\"status\":\"cancelled\"}}\n\n"
+        );
+        let mut deltas = Vec::new();
+        let result = super::parse_openai_sse_reader_typed(
+            BufReader::new(stream.as_bytes()),
+            &mut |evt| {
+                if let TurnStreamEvent::TextDelta(d) = evt {
+                    deltas.push(d);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(deltas, vec!["partial"]);
+        assert_eq!(result.response_id.as_deref(), Some("resp_cancel"));
     }
 }

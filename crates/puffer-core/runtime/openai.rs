@@ -7,8 +7,10 @@ use crate::permissions::load_runtime_permission_context;
 use crate::workspace_paths;
 pub(crate) mod conversation;
 mod support;
+mod websocket;
 
 pub(super) use self::support::build_codex_openai_request_body;
+pub(super) use self::websocket::{execute_openai_websocket_streaming, openai_websocket_enabled};
 use self::support::{
     append_default_openai_headers, apply_previous_response_id, is_codex_openai_provider,
     is_openai_structured_output_error, openai_base_url_for_auth, openai_model_supports_reasoning,

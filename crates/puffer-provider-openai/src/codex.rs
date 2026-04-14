@@ -10,7 +10,9 @@ pub(crate) fn default_originator() -> String {
         .unwrap_or_else(|| DEFAULT_ORIGINATOR.to_string())
 }
 
-pub(crate) fn codex_user_agent(version: &str, originator: &str) -> String {
+/// Builds the `User-Agent` header value used for OpenAI/Codex API requests.
+/// Includes OS type, version, architecture, and terminal information.
+pub fn codex_user_agent(version: &str, originator: &str) -> String {
     let os_info = os_info::get();
     let fallback = format!("{originator}/{version}");
     let candidate = format!(

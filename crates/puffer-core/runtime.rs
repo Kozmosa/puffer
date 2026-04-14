@@ -27,6 +27,7 @@ mod local_mcp_resources;
 mod local_tools;
 mod openai;
 mod openai_sse;
+mod openai_ws;
 mod permission_prompt;
 mod request_tool_filter;
 mod side_question;
@@ -352,6 +353,14 @@ where
 {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match resolve_model_api(state, providers, provider, &model_id).as_str() {
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses"
+            if openai::openai_websocket_enabled() =>
+        {
+            openai::execute_openai_websocket_streaming(
+                state, resources, providers, provider, model_id, auth_store, input, options,
+                on_event,
+            )
+        }
         "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
             openai::execute_openai_streaming(
                 state, resources, providers, provider, model_id, auth_store, input, options,
