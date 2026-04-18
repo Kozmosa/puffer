@@ -20,6 +20,7 @@ pub use agent_catalog::{load_agent_catalog, AgentCatalogEntry};
 pub use command::{
     command_surface, dispatch_command, find_command, supported_commands, CommandKind, CommandSpec,
 };
+pub use command_helpers::append_trace_events;
 pub use command_helpers::CommandActionEntry;
 pub use command_helpers::CopyActionEntry;
 pub use command_helpers::McpActionEntry;
@@ -44,9 +45,10 @@ pub use runtime::{
     execute_user_prompt_streaming_with_structured_output as execute_user_turn_streaming_with_structured_output,
     execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
     shutdown_runtime_services, with_permission_prompt_handler, CodeJudgeConfig, LlmJudgeConfig,
-    LlmJudgeContextScope, LlmJudgeMode, PermissionPromptAction, PermissionPromptRequest,
-    ReflectionConfig, ReflectionLanguage, StructuredOutputConfig, ToolCallRequest, ToolInvocation,
-    TurnExecution, TurnStreamEvent, TurnUsageReport,
+    LlmJudgeContextScope, LlmJudgeMode, LlmJudgePromptCacheMode, PermissionPromptAction,
+    PermissionPromptRequest, ReflectionConfig, ReflectionLanguage, ReflectionTraceEvent,
+    StructuredOutputConfig, ToolCallRequest, ToolInvocation, TurnExecution, TurnStreamEvent,
+    TurnUsageReport,
 };
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
 

@@ -53,8 +53,8 @@ pub use self::permission_prompt::{
     with_permission_prompt_handler, PermissionPromptAction, PermissionPromptRequest,
 };
 pub use self::reflection::{
-    CodeJudgeConfig, LlmJudgeConfig, LlmJudgeContextScope, LlmJudgeMode, ReflectionConfig,
-    ReflectionLanguage,
+    CodeJudgeConfig, LlmJudgeConfig, LlmJudgeContextScope, LlmJudgeMode, LlmJudgePromptCacheMode,
+    ReflectionConfig, ReflectionLanguage, ReflectionTraceEvent,
 };
 pub(crate) use self::request_tool_filter::{build_request_tool_filter, RequestToolFilter};
 pub use self::structured_output_support::StructuredOutputConfig;
@@ -116,6 +116,13 @@ pub struct ToolCallRequest {
 pub struct TurnExecution {
     pub assistant_text: String,
     pub tool_invocations: Vec<ToolInvocation>,
+    /// Reflection trace events observed during the turn. Populated by every
+    /// execute path (streaming or not) so callers can round-trip them to
+    /// `SessionStore::append_trace_event` (or any other sidecar) without
+    /// branching on transport. Streaming consumers still receive the same
+    /// events incrementally via `TurnStreamEvent::ReflectionTrace` and may
+    /// treat this field as a replay-friendly fallback.
+    pub reflection_traces: Vec<ReflectionTraceEvent>,
 }
 
 /// Per-turn token usage report emitted after the provider response completes.
@@ -135,6 +142,7 @@ pub enum TurnStreamEvent {
     TextDelta(String),
     ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),
+    ReflectionTrace(ReflectionTraceEvent),
     ReflectionCheckpoint(String),
     /// A transport-level retry is about to be attempted.
     RetryAttempt {
@@ -513,6 +521,7 @@ fn execute_anthropic(
     // Build canonical conversation items (shared with OpenAI path).
     let mut items = transcript_to_items(state, input);
     let mut invocations = Vec::new();
+    let mut reflection_traces: Vec<ReflectionTraceEvent> = Vec::new();
     let mut reflection = options
         .reflection
         .map(|config| reflection::ReflectionTracker::new(input, config));
@@ -690,11 +699,20 @@ fn execute_anthropic(
             invocations.extend(tool_results.invocations.clone());
             // Append response content as ConversationItems.
             append_anthropic_response_to_items(&mut items, &response, &tool_results);
-            if let Some(checkpoint) = reflection
-                .as_mut()
-                .and_then(|tracker| tracker.observe_batch(&tool_results.invocations))
-            {
-                items.push(ConversationItem::user_message(checkpoint.prompt));
+            if let Some(observation) = reflection.as_mut().and_then(|tracker| {
+                tracker.observe_batch_with_judge(
+                    &tool_results.invocations,
+                    &items,
+                    state,
+                    resources,
+                    providers,
+                    auth_store,
+                )
+            }) {
+                reflection_traces.extend(observation.trace_events);
+                if let Some(checkpoint) = observation.checkpoint {
+                    items.push(ConversationItem::user_message(checkpoint.prompt));
+                }
             }
             // Compact between tool iterations using shared logic.
             let compacted = compact_conversation_with(
@@ -715,6 +733,7 @@ fn execute_anthropic(
         return Ok(TurnExecution {
             assistant_text,
             tool_invocations: invocations,
+            reflection_traces,
         });
     }
 }
@@ -748,6 +767,7 @@ where
     // Build canonical conversation items (shared with OpenAI path).
     let mut items = transcript_to_items(state, input);
     let mut invocations = Vec::new();
+    let mut reflection_traces: Vec<ReflectionTraceEvent> = Vec::new();
     let mut reflection = options
         .reflection
         .map(|config| reflection::ReflectionTracker::new(input, config));
@@ -904,14 +924,26 @@ where
             invocations.extend(tool_results.invocations.clone());
             // Append response content as ConversationItems.
             append_anthropic_response_to_items(&mut items, &response, &tool_results);
-            if let Some(checkpoint) = reflection
-                .as_mut()
-                .and_then(|tracker| tracker.observe_batch(&tool_results.invocations))
-            {
-                on_event(TurnStreamEvent::ReflectionCheckpoint(
-                    checkpoint.summary.clone(),
-                ));
-                items.push(ConversationItem::user_message(checkpoint.prompt));
+            if let Some(observation) = reflection.as_mut().and_then(|tracker| {
+                tracker.observe_batch_with_judge(
+                    &tool_results.invocations,
+                    &items,
+                    state,
+                    resources,
+                    providers,
+                    auth_store,
+                )
+            }) {
+                for trace_event in &observation.trace_events {
+                    on_event(TurnStreamEvent::ReflectionTrace(trace_event.clone()));
+                }
+                reflection_traces.extend(observation.trace_events);
+                if let Some(checkpoint) = observation.checkpoint {
+                    on_event(TurnStreamEvent::ReflectionCheckpoint(
+                        checkpoint.summary.clone(),
+                    ));
+                    items.push(ConversationItem::user_message(checkpoint.prompt));
+                }
             }
             // Compact between tool iterations.
             let compacted = compact_conversation_with(
@@ -932,6 +964,7 @@ where
         return Ok(TurnExecution {
             assistant_text,
             tool_invocations: invocations,
+            reflection_traces,
         });
     }
 }

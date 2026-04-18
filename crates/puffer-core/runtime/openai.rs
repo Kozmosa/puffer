@@ -149,6 +149,7 @@ fn execute_openai_once(
     let mut reflection = options
         .reflection
         .map(|config| super::reflection::ReflectionTracker::new(input, config));
+    let mut reflection_traces: Vec<super::ReflectionTraceEvent> = Vec::new();
 
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern: dynamic context lives in `input`,
@@ -230,6 +231,7 @@ fn execute_openai_once(
             return Ok(super::TurnExecution {
                 assistant_text,
                 tool_invocations: invocations,
+                reflection_traces,
             });
         }
 
@@ -272,8 +274,8 @@ fn execute_openai_once(
 
         // Shared: append tool calls + outputs to canonical items.
         append_tool_results(&mut items, &tool_results.invocations);
-        if let Some(checkpoint) = reflection.as_mut().and_then(|tracker| {
-            tracker.observe_openai_batch(
+        if let Some(observation) = reflection.as_mut().and_then(|tracker| {
+            tracker.observe_batch_with_judge(
                 &tool_results.invocations,
                 &items,
                 state,
@@ -282,7 +284,10 @@ fn execute_openai_once(
                 auth_store,
             )
         }) {
-            items.push(ConversationItem::user_message(checkpoint.prompt));
+            reflection_traces.extend(observation.trace_events);
+            if let Some(checkpoint) = observation.checkpoint {
+                items.push(ConversationItem::user_message(checkpoint.prompt));
+            }
         }
         invocations.extend(tool_results.invocations);
 
@@ -395,6 +400,7 @@ where
     let mut reflection = options
         .reflection
         .map(|config| super::reflection::ReflectionTracker::new(input, config));
+    let mut reflection_traces: Vec<super::ReflectionTraceEvent> = Vec::new();
 
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern).
@@ -514,6 +520,7 @@ where
             return Ok(super::TurnExecution {
                 assistant_text,
                 tool_invocations: invocations,
+                reflection_traces,
             });
         }
 
@@ -566,8 +573,8 @@ where
 
         // Shared: append tool calls + outputs to canonical items.
         append_tool_results(&mut items, &tool_results.invocations);
-        if let Some(checkpoint) = reflection.as_mut().and_then(|tracker| {
-            tracker.observe_openai_batch(
+        if let Some(observation) = reflection.as_mut().and_then(|tracker| {
+            tracker.observe_batch_with_judge(
                 &tool_results.invocations,
                 &items,
                 state,
@@ -576,10 +583,16 @@ where
                 auth_store,
             )
         }) {
-            on_event(TurnStreamEvent::ReflectionCheckpoint(
-                checkpoint.summary.clone(),
-            ));
-            items.push(ConversationItem::user_message(checkpoint.prompt));
+            for trace_event in &observation.trace_events {
+                on_event(TurnStreamEvent::ReflectionTrace(trace_event.clone()));
+            }
+            reflection_traces.extend(observation.trace_events);
+            if let Some(checkpoint) = observation.checkpoint {
+                on_event(TurnStreamEvent::ReflectionCheckpoint(
+                    checkpoint.summary.clone(),
+                ));
+                items.push(ConversationItem::user_message(checkpoint.prompt));
+            }
         }
         invocations.extend(tool_results.invocations);
 
@@ -683,6 +696,7 @@ fn execute_openai_completions_once(
     let mut reflection = options
         .reflection
         .map(|config| super::reflection::ReflectionTracker::new(input, config));
+    let mut reflection_traces: Vec<super::ReflectionTraceEvent> = Vec::new();
     let mut invocations = Vec::new();
 
     loop {
@@ -737,6 +751,7 @@ fn execute_openai_completions_once(
             return Ok(super::TurnExecution {
                 assistant_text,
                 tool_invocations: invocations,
+                reflection_traces,
             });
         }
 
@@ -764,8 +779,8 @@ fn execute_openai_completions_once(
 
         // Shared: append tool calls + outputs to canonical items.
         append_tool_results(&mut items, &tool_results.invocations);
-        if let Some(checkpoint) = reflection.as_mut().and_then(|tracker| {
-            tracker.observe_openai_batch(
+        if let Some(observation) = reflection.as_mut().and_then(|tracker| {
+            tracker.observe_batch_with_judge(
                 &tool_results.invocations,
                 &items,
                 state,
@@ -774,7 +789,10 @@ fn execute_openai_completions_once(
                 auth_store,
             )
         }) {
-            items.push(ConversationItem::user_message(checkpoint.prompt));
+            reflection_traces.extend(observation.trace_events);
+            if let Some(checkpoint) = observation.checkpoint {
+                items.push(ConversationItem::user_message(checkpoint.prompt));
+            }
         }
         invocations.extend(tool_results.invocations);
 

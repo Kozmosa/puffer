@@ -62,7 +62,7 @@ where
         model_id.clone(),
         auth_store,
         input,
-        options,
+        options.clone(),
         use_native,
         on_event,
     ) {
@@ -230,6 +230,18 @@ where
             );
         }
     };
+
+    // Clone the reflection config because `options` is still needed — the
+    // mid-loop fallback branches below consume `options` by value when
+    // handing control back to the SSE path, and the SSE path constructs its
+    // own tracker from `options.reflection`. If we moved `options.reflection`
+    // into the websocket tracker instead, those fallbacks would lose the
+    // reflection policy.
+    let mut reflection = options
+        .reflection
+        .clone()
+        .map(|config| super::super::reflection::ReflectionTracker::new(input, config));
+    let mut reflection_traces: Vec<super::super::ReflectionTraceEvent> = Vec::new();
 
     loop {
         // Check for background tasks that completed since the last turn.
@@ -400,6 +412,7 @@ where
             return Ok(super::super::TurnExecution {
                 assistant_text,
                 tool_invocations: invocations,
+                reflection_traces,
             });
         }
 
@@ -445,6 +458,27 @@ where
         }
 
         append_tool_results(&mut items, &tool_results.invocations);
+        if let Some(observation) = reflection.as_mut().and_then(|tracker| {
+            tracker.observe_batch_with_judge(
+                &tool_results.invocations,
+                &items,
+                state,
+                resources,
+                providers,
+                auth_store,
+            )
+        }) {
+            for trace_event in &observation.trace_events {
+                on_event(TurnStreamEvent::ReflectionTrace(trace_event.clone()));
+            }
+            reflection_traces.extend(observation.trace_events);
+            if let Some(checkpoint) = observation.checkpoint {
+                on_event(TurnStreamEvent::ReflectionCheckpoint(
+                    checkpoint.summary.clone(),
+                ));
+                items.push(ConversationItem::user_message(checkpoint.prompt));
+            }
+        }
         invocations.extend(tool_results.invocations);
 
         let compacted = compact_conversation(
