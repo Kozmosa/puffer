@@ -134,7 +134,12 @@ impl EventHandler for Handler {
             }
         };
 
-        let from_bot = message.author.bot && message.author.id == current_user_id;
+        // Short-circuit on our own outgoing messages before we spend a
+        // `spawn_blocking` round-trip. Discord routes the bot's own
+        // posts back through `message` events for guilds the bot is in.
+        if message.author.bot && message.author.id == current_user_id {
+            return;
+        }
 
         // Discord embeds mentions as `<@id>` or `<@!id>` tokens inside
         // message.content. Strip ours so the agent sees clean prose, and
@@ -154,16 +159,35 @@ impl EventHandler for Handler {
         // Guild messages are group-like; DMs (no guild id) are 1:1.
         let is_group = message.guild_id.is_some();
 
+        // Thread detection: Discord threads are modeled as channels
+        // whose `parent_id` points at the parent text channel. We look
+        // up the channel once to check, but fall back to `None` on
+        // errors (no lookup permission, API transient failure).
+        let thread_id = match message.channel_id.to_channel(&ctx.http).await {
+            Ok(serenity::all::Channel::Guild(guild_channel)) => {
+                use serenity::model::channel::ChannelType;
+                if matches!(
+                    guild_channel.kind,
+                    ChannelType::PublicThread
+                        | ChannelType::PrivateThread
+                        | ChannelType::NewsThread
+                ) {
+                    Some(guild_channel.id.get().to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
         let inbound = InboundMessage {
             conversation_id: message.channel_id.get().to_string(),
             user_id: Some(message.author.id.get().to_string()),
             text: cleaned_text,
-            // TODO(connector-v2): map Discord threads (ChannelType::PublicThread
-            // / PrivateThread) onto `thread_id` so thread replies stay threaded.
-            thread_id: None,
+            thread_id,
             is_group,
             bot_mentioned,
-            from_bot,
+            from_bot: false, // early-returned above
         };
 
         let runtime = self.runtime.clone();

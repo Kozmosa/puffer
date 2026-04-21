@@ -167,16 +167,23 @@ async fn on_room_message(
         return;
     }
 
-    let text = match &event.content.msgtype {
+    let raw_text = match &event.content.msgtype {
         MessageType::Text(content) => content.body.clone(),
         _ => return,
     };
 
     let me = client.user_id().map(|id| id.to_owned());
-    let from_bot = me
-        .as_ref()
-        .map(|bot_id| event.sender == *bot_id)
-        .unwrap_or(false);
+
+    // Short-circuit on bot-self messages before building an
+    // InboundMessage — saves a spawn_blocking round-trip and prevents
+    // any accidental self-loop if the handler filter is ever removed.
+    if let Some(bot_id) = me.as_ref() {
+        if event.sender == *bot_id {
+            return;
+        }
+    }
+
+    let from_bot = false; // already early-returned above
 
     // Heuristic: treat rooms with more than 2 active members as groups.
     // `active_members_count` returns joined + invited members; for a DM
@@ -185,7 +192,7 @@ async fn on_room_message(
     let active_count = room.active_members_count();
     let is_group = active_count == 0 || active_count > 2;
 
-    // Mention detection:
+    // Mention detection + stripping:
     //  * full MXID substring (`@bot:example.org`) in the body, or
     //  * localpart substring (`bot`) in the body — covers the common
     //    `@bot` display-name mention Matrix clients produce, and
@@ -195,15 +202,17 @@ async fn on_room_message(
     // `m.relates_to` for precise m.in_reply_to detection; the current
     // substring check is good enough for v1 and never wrongly ignores
     // in DMs thanks to the `!is_group` fallback.
-    let bot_mentioned = if let Some(bot_id) = me.as_ref() {
+    let (bot_mentioned, cleaned_text) = if let Some(bot_id) = me.as_ref() {
         let mxid = bot_id.as_str();
         let localpart = bot_id.localpart();
-        let body_lower = text.to_ascii_lowercase();
-        !is_group
+        let body_lower = raw_text.to_ascii_lowercase();
+        let mentioned = !is_group
             || body_lower.contains(&mxid.to_ascii_lowercase())
-            || body_lower.contains(&localpart.to_ascii_lowercase())
+            || body_lower.contains(&localpart.to_ascii_lowercase());
+        let cleaned = strip_matrix_mentions(&raw_text, mxid, localpart);
+        (mentioned, cleaned)
     } else {
-        !is_group
+        (!is_group, raw_text.trim().to_string())
     };
 
     // TODO(connector-matrix): extract a stable thread id from
@@ -215,7 +224,7 @@ async fn on_room_message(
     let inbound = InboundMessage {
         conversation_id: room.room_id().to_string(),
         user_id: Some(event.sender.to_string()),
-        text,
+        text: cleaned_text,
         thread_id,
         is_group,
         bot_mentioned,
@@ -270,5 +279,107 @@ async fn send_with_retry(room: &Room, chunk: &str) -> Result<(), matrix_sdk::Err
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
         }
+    }
+}
+
+/// Strips the bot's MXID and bare localpart from `body`, case-insensitive.
+///
+/// Matrix clients produce mentions either as the full `@bot:example.org`
+/// form or as the bare `@bot` localpart. Both must be removed so the
+/// agent sees clean prose instead of "@bot please fix the bug".
+///
+/// The search is case-insensitive but we preserve the original text
+/// casing for anything that survives stripping.
+pub(crate) fn strip_matrix_mentions(body: &str, mxid: &str, localpart: &str) -> String {
+    // Build patterns once, in decreasing specificity so we never strip a
+    // substring that belongs to something else.
+    let patterns = [
+        mxid.to_string(),           // "@bot:example.org"
+        format!("@{localpart}"),    // "@bot"
+    ];
+
+    let mut out = body.to_string();
+    for pattern in patterns {
+        if pattern.is_empty() {
+            continue;
+        }
+        out = case_insensitive_replace(&out, &pattern, "");
+    }
+    // Collapse any doubled whitespace the replacement introduced.
+    let collapsed = out
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.trim().to_string()
+}
+
+fn case_insensitive_replace(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let lower_haystack = haystack.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(haystack.len());
+    let mut cursor = 0usize;
+    while let Some(relative) = lower_haystack[cursor..].find(&lower_needle) {
+        let absolute = cursor + relative;
+        out.push_str(&haystack[cursor..absolute]);
+        out.push_str(replacement);
+        cursor = absolute + needle.len();
+    }
+    out.push_str(&haystack[cursor..]);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_removes_full_mxid() {
+        let cleaned = strip_matrix_mentions(
+            "@bot:example.org fix the bug",
+            "@bot:example.org",
+            "bot",
+        );
+        assert_eq!(cleaned, "fix the bug");
+    }
+
+    #[test]
+    fn strip_removes_bare_localpart_mention() {
+        let cleaned = strip_matrix_mentions("@bot please help", "@bot:example.org", "bot");
+        assert_eq!(cleaned, "please help");
+    }
+
+    #[test]
+    fn strip_handles_mixed_case() {
+        let cleaned = strip_matrix_mentions("@Bot please HELP", "@bot:example.org", "bot");
+        assert_eq!(cleaned, "please HELP");
+    }
+
+    #[test]
+    fn strip_is_noop_when_no_mention() {
+        let cleaned = strip_matrix_mentions("fix the bug", "@bot:example.org", "bot");
+        assert_eq!(cleaned, "fix the bug");
+    }
+
+    #[test]
+    fn strip_collapses_doubled_whitespace() {
+        let cleaned = strip_matrix_mentions(
+            "hey   @bot   please help",
+            "@bot:example.org",
+            "bot",
+        );
+        assert_eq!(cleaned, "hey please help");
+    }
+
+    #[test]
+    fn strip_removes_multiple_mentions() {
+        let cleaned = strip_matrix_mentions(
+            "@bot @bot:example.org please @Bot help",
+            "@bot:example.org",
+            "bot",
+        );
+        assert_eq!(cleaned, "please help");
     }
 }

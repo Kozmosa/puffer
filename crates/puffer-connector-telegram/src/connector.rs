@@ -131,11 +131,19 @@ async fn process_message(
 ) -> Result<(), teloxide::RequestError> {
     let chat_id = message.chat.id.0;
     let user_id = message.from.as_ref().map(|u| u.id.0 as i64);
+
+    // Short-circuit on bot-self updates. Telegram re-delivers messages
+    // the bot posts in some group configurations; this avoids the
+    // spawn_blocking round trip just so the handler can filter them.
     let from_bot = message
         .from
         .as_ref()
         .map(|u| u.is_bot && u.id.0 == bot_user_id)
         .unwrap_or(false);
+    if from_bot {
+        return Ok(());
+    }
+
     let Some(text) = message.text().map(str::to_string) else {
         return Ok(());
     };
