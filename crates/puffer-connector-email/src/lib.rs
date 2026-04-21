@@ -3,15 +3,20 @@
 //! sender.
 //!
 //! Backed by [`async-imap`](https://docs.rs/async-imap) for inbound
-//! polling and [`lettre`](https://docs.rs/lettre) for SMTP replies. The
-//! connector:
-//! * polls an IMAP mailbox every `poll_interval_secs` for UNSEEN mail on
-//!   a background thread
-//! * maps each email thread (by first `Message-ID`) to a Puffer session
-//! * supports `/new` to reset the session, `/help` for usage, any other
-//!   body text is dispatched to the agent
-//! * restricts access to `allowed_senders` if configured (matched
-//!   case-insensitively on the `From:` address)
+//! polling and [`lettre`](https://docs.rs/lettre) for SMTP replies. See
+//! [`puffer_connector_core`] for the shared conversation→session
+//! bridge and the built-in `/help`/`/new`/`/status`/`/usage` commands;
+//! this crate provides:
+//! * polling-based IMAP listener with graceful shutdown
+//! * bot-self filter (ignores mail where the sender equals the
+//!   configured `from_address`) to prevent mailing-list echo loops
+//! * `allowed_senders` access control (case-insensitive on the `From:`
+//!   address)
+//! * threading via `References` / `In-Reply-To` so follow-up replies
+//!   land on the same Puffer session
+//! * [`MessageSplitter::EMAIL`](puffer_connector_core::MessageSplitter::EMAIL)
+//!   chunking for very long replies plus bounded exponential-backoff
+//!   retries on SMTP errors
 
 mod config;
 mod connector;
@@ -19,4 +24,5 @@ mod handler;
 
 pub use config::EmailConfig;
 pub use connector::EmailConnector;
-pub use handler::{handle_command, CommandOutcome};
+pub use handler::handle_command;
+pub use puffer_connector_core::{CommandOutcome, InboundMessage};

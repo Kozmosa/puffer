@@ -1,3 +1,4 @@
+use puffer_connector_core::GroupKeyPolicy;
 use serde::{Deserialize, Serialize};
 
 fn default_poll_interval_secs() -> u64 {
@@ -43,6 +44,20 @@ pub struct EmailConfig {
     /// Poll interval in seconds. Defaults to 60.
     #[serde(default)]
     pub poll_interval_secs: Option<u64>,
+
+    /// Whether to require an explicit @mention before responding.
+    /// Ignored by the email driver: email is inherently DM-like so
+    /// there is no concept of a group mention. Present for parity with
+    /// other connectors. Defaults to `false`.
+    #[serde(default)]
+    pub require_mention: bool,
+
+    /// How to map conversations to sessions. Has no practical effect
+    /// for email because `is_group` is always `false` on this platform,
+    /// but is kept for parity with other connectors. Defaults to
+    /// [`GroupKeyPolicy::PerUser`].
+    #[serde(default)]
+    pub group_key_policy: GroupKeyPolicy,
 }
 
 impl EmailConfig {
@@ -82,6 +97,8 @@ mod tests {
             allowed_senders: Vec::new(),
             welcome_message: None,
             poll_interval_secs: None,
+            require_mention: false,
+            group_key_policy: GroupKeyPolicy::PerUser,
         }
     }
 
@@ -113,7 +130,9 @@ mod tests {
             "from_address": "bot@example.com",
             "allowed_senders": ["alice@example.com", "bob@example.com"],
             "welcome_message": "hi",
-            "poll_interval_secs": 30
+            "poll_interval_secs": 30,
+            "require_mention": true,
+            "group_key_policy": "per_chat"
         });
         let config: EmailConfig = serde_json::from_value(raw).unwrap();
         assert_eq!(config.imap_host, "imap.example.com");
@@ -125,6 +144,8 @@ mod tests {
         );
         assert_eq!(config.welcome_message.as_deref(), Some("hi"));
         assert_eq!(config.effective_poll_interval_secs(), 30);
+        assert!(config.require_mention);
+        assert_eq!(config.group_key_policy, GroupKeyPolicy::PerChat);
     }
 
     #[test]
@@ -143,5 +164,14 @@ mod tests {
         assert!(config.welcome_message.is_none());
         assert!(config.poll_interval_secs.is_none());
         assert_eq!(config.effective_poll_interval_secs(), 60);
+        assert!(
+            !config.require_mention,
+            "require_mention defaults false on email (inherently DM-like)"
+        );
+        assert_eq!(
+            config.group_key_policy,
+            GroupKeyPolicy::PerUser,
+            "safe default is per-user session segmentation for parity with other connectors"
+        );
     }
 }

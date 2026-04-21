@@ -1,110 +1,64 @@
-use puffer_connector_core::{ConnectorRuntime, ConversationKey};
+use puffer_connector_core::{
+    handle_builtin_command, BuiltinCommandConfig, CommandOutcome, ConnectorRuntime,
+    ConversationKey, InboundMessage,
+};
 use std::sync::Arc;
 
 /// Stable platform id stored in the conversation map.
 pub(crate) const PLATFORM_ID: &str = "email";
 
-/// Outcome of handling one inbound email. The connector uses this to
-/// decide what to send back on the wire.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandOutcome {
-    /// Reply with this static text; the agent was not consulted.
-    Reply(String),
-    /// The agent produced this reply text.
-    AgentReply {
-        session_id: uuid::Uuid,
-        created: bool,
-        text: String,
-    },
-    /// The inbound sender is not permitted to talk to the bot. Silently
-    /// ignore.
-    Ignored,
-}
-
 /// Dispatches one inbound email. Pure logic — no IMAP or SMTP calls here
 /// — so the full decision tree is unit-testable against an in-memory
 /// runtime.
 ///
-/// `thread_id` is the opaque conversation key for this email thread.
-/// Callers derive it from the first `Message-ID` in the reply chain so
-/// that follow-up replies land on the same Puffer session.
-///
-/// `sender` is the bare email address from the `From:` header. `subject`
-/// and `body` are the message's parsed subject line and plain-text body.
-/// A leading command marker like `/new` or `/help` may appear either as
-/// the subject or as the first non-empty line of the body.
+/// Filter order matches the other connectors: bot-self, allowed-senders,
+/// empty text, built-in slash commands, agent dispatch.
 pub fn handle_command(
     runtime: &Arc<ConnectorRuntime>,
-    thread_id: &str,
-    sender: &str,
-    subject: &str,
-    body: &str,
+    message: &InboundMessage,
     config: &crate::EmailConfig,
 ) -> anyhow::Result<CommandOutcome> {
-    if !config.is_sender_allowed(sender) {
+    // 1. Bot-self filter — shouldn't happen on email since we never
+    //    receive our own outbound mail, but cheap to check so we don't
+    //    accidentally loop on edge cases like mail-list echoes.
+    if message.from_bot {
         return Ok(CommandOutcome::Ignored);
     }
 
-    let body_trimmed = body.trim();
-    let subject_trimmed = subject.trim();
-
-    if body_trimmed.is_empty() && subject_trimmed.is_empty() {
-        return Ok(CommandOutcome::Ignored);
-    }
-
-    let key = ConversationKey::new(PLATFORM_ID, thread_id.to_string());
-
-    // Allow slash commands in either the subject line or the first line
-    // of the body. Body takes precedence when both are present so users
-    // who keep a running subject like "Re: Puffer chat" aren't surprised
-    // by `/new` never firing.
-    let command_source = if let Some(cmd) = first_line_command(body_trimmed) {
-        Some(cmd)
-    } else {
-        first_line_command(subject_trimmed)
-    };
-
-    if let Some(command) = command_source {
-        let (name, _args) = command
-            .split_once(char::is_whitespace)
-            .unwrap_or((command, ""));
-        match name.to_ascii_lowercase().as_str() {
-            "start" => {
-                let greeting = config
-                    .welcome_message
-                    .clone()
-                    .unwrap_or_else(default_welcome);
-                return Ok(CommandOutcome::Reply(greeting));
-            }
-            "new" | "reset" => {
-                runtime.reset_conversation(&key)?;
-                return Ok(CommandOutcome::Reply(
-                    "Started a fresh Puffer session.".to_string(),
-                ));
-            }
-            "help" => {
-                return Ok(CommandOutcome::Reply(help_text()));
-            }
-            _ => {
-                // Unknown commands fall through to the agent, just like
-                // the Telegram connector.
-            }
+    // 2. Allowed-senders filter (case-insensitive on the raw sender
+    //    address carried in `InboundMessage.user_id`).
+    if let Some(sender) = message.user_id.as_deref() {
+        if !config.is_sender_allowed(sender) {
+            return Ok(CommandOutcome::Ignored);
         }
     }
 
-    // Prefer the body text for the agent; fall back to the subject when
-    // the body is blank (common for one-liner subject-only emails).
-    let input = if body_trimmed.is_empty() {
-        subject_trimmed
-    } else {
-        body_trimmed
-    };
-
-    if input.is_empty() {
+    let trimmed = message.text.trim();
+    if trimmed.is_empty() {
         return Ok(CommandOutcome::Ignored);
     }
 
-    let outcome = runtime.dispatch(&key, input)?;
+    // 3. Compute the session key. Email is always DM-like so
+    //    `is_group = false`; the policy therefore collapses to keying
+    //    by `(platform, conversation_id)`.
+    let key = ConversationKey::for_policy(
+        PLATFORM_ID,
+        &message.conversation_id,
+        message.user_id.as_deref(),
+        config.group_key_policy,
+        false,
+    );
+
+    // 4. Built-in slash commands (start, new, reset, help, status, usage).
+    let builtin_config = BuiltinCommandConfig {
+        welcome_message: config.welcome_message.clone(),
+    };
+    if let Some(outcome) = handle_builtin_command(runtime, &key, trimmed, &builtin_config)? {
+        return Ok(outcome);
+    }
+
+    // 5. Everything else — forward to the agent.
+    let outcome = runtime.dispatch(&key, trimmed)?;
     Ok(CommandOutcome::AgentReply {
         session_id: outcome.session_id,
         created: outcome.created,
@@ -112,33 +66,12 @@ pub fn handle_command(
     })
 }
 
-/// Returns the slash-command suffix of the first non-empty line of
-/// `text`, if that line starts with `/`.
-fn first_line_command(text: &str) -> Option<&str> {
-    let first_line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
-    first_line.strip_prefix('/')
-}
-
-fn default_welcome() -> String {
-    "Puffer is online. Reply with any text to talk to the agent, or \
-     send /help for commands."
-        .to_string()
-}
-
-fn help_text() -> String {
-    "/start — greeting\n\
-     /new   — start a fresh session for this email thread\n\
-     /help  — show this message\n\
-     any other text — forwarded to the Puffer agent"
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use puffer_config::{ConfigPaths, PufferConfig};
     use puffer_connector_core::{
-        ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap,
+        ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap, GroupKeyPolicy,
     };
     use puffer_provider_registry::{AuthStore, ProviderRegistry};
     use puffer_resources::LoadedResources;
@@ -178,6 +111,24 @@ mod tests {
             allowed_senders: Vec::new(),
             welcome_message: None,
             poll_interval_secs: None,
+            require_mention: false,
+            group_key_policy: GroupKeyPolicy::PerUser,
+        }
+    }
+
+    fn email(
+        thread: &str,
+        sender: Option<&str>,
+        text: &str,
+    ) -> InboundMessage {
+        InboundMessage {
+            conversation_id: thread.to_string(),
+            user_id: sender.map(String::from),
+            text: text.to_string(),
+            thread_id: None,
+            is_group: false,
+            bot_mentioned: true,
+            from_bot: false,
         }
     }
 
@@ -186,9 +137,12 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.allowed_senders = vec!["allowed@example.com".to_string()];
-        let outcome =
-            handle_command(&runtime, "thread-1", "stranger@example.com", "hi", "body", &config)
-                .unwrap();
+        let outcome = handle_command(
+            &runtime,
+            &email("thread-1", Some("stranger@example.com"), "body"),
+            &config,
+        )
+        .unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
@@ -197,10 +151,7 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let outcome = handle_command(
             &runtime,
-            "thread-1",
-            "user@example.com",
-            "   ",
-            "   ",
+            &email("thread-1", Some("user@example.com"), "   "),
             &open_config(),
         )
         .unwrap();
@@ -214,10 +165,7 @@ mod tests {
         config.welcome_message = Some("welcome!".to_string());
         let outcome = handle_command(
             &runtime,
-            "thread-1",
-            "user@example.com",
-            "anything",
-            "/start",
+            &email("thread-1", Some("user@example.com"), "/start"),
             &config,
         )
         .unwrap();
@@ -229,10 +177,7 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let outcome = handle_command(
             &runtime,
-            "thread-1",
-            "user@example.com",
-            "/help",
-            "",
+            &email("thread-1", Some("user@example.com"), "/help"),
             &open_config(),
         )
         .unwrap();
@@ -254,10 +199,7 @@ mod tests {
         runtime.reset_conversation(&key).unwrap();
         let outcome = handle_command(
             &runtime,
-            thread_id,
-            "user@example.com",
-            "whatever",
-            "/new",
+            &email(thread_id, Some("user@example.com"), "/new"),
             &open_config(),
         )
         .unwrap();
@@ -273,13 +215,19 @@ mod tests {
         // /help avoids needing a real provider.
         let outcome = handle_command(
             &runtime,
-            "thread-1",
-            "alice@example.com",
-            "/help",
-            "",
+            &email("thread-1", Some("alice@example.com"), "/help"),
             &config,
         )
         .unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
+    }
+
+    #[test]
+    fn bot_self_messages_are_ignored_to_prevent_loops() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let mut message = email("thread-1", Some("user@example.com"), "hello");
+        message.from_bot = true;
+        let outcome = handle_command(&runtime, &message, &open_config()).unwrap();
+        assert_eq!(outcome, CommandOutcome::Ignored);
     }
 }

@@ -26,6 +26,18 @@ pub struct WebhookConfig {
     /// absent.
     #[serde(default)]
     pub welcome_message: Option<String>,
+
+    /// Whether the router should split long assistant replies into
+    /// multiple chunks when returning them. Webhook responses are a
+    /// single HTTP body so this is informational today — it only
+    /// controls whether the connector logs a warning for over-sized
+    /// bodies. Defaults to `true`.
+    #[serde(default = "default_split_long_responses")]
+    pub split_long_responses: bool,
+}
+
+fn default_split_long_responses() -> bool {
+    true
 }
 
 impl WebhookConfig {
@@ -104,6 +116,7 @@ mod tests {
             auth_token: None,
             allowed_origins: Vec::new(),
             welcome_message: None,
+            split_long_responses: true,
         };
         assert_eq!(tweaked.resolved_path(), "/hook");
     }
@@ -117,6 +130,25 @@ mod tests {
         assert!(config.auth_token.is_none());
         assert!(config.is_token_allowed(None));
         assert!(config.is_token_allowed(Some("anything")));
+    }
+
+    #[test]
+    fn split_long_responses_defaults_to_true_when_missing() {
+        let config: WebhookConfig = serde_json::from_value(serde_json::json!({
+            "bind_address": "127.0.0.1:9001"
+        }))
+        .unwrap();
+        assert!(config.split_long_responses);
+    }
+
+    #[test]
+    fn split_long_responses_respects_explicit_false() {
+        let config: WebhookConfig = serde_json::from_value(serde_json::json!({
+            "bind_address": "127.0.0.1:9001",
+            "split_long_responses": false
+        }))
+        .unwrap();
+        assert!(!config.split_long_responses);
     }
 
     #[test]

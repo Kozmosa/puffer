@@ -4,7 +4,7 @@ use puffer_config::PufferConfig;
 use puffer_core::{execute_user_turn, AppState};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
-use puffer_session_store::{SessionStore, TranscriptEvent};
+use puffer_session_store::{SessionRecord, SessionStore, TranscriptEvent};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -76,6 +76,18 @@ impl ConnectorRuntime {
         }
     }
 
+    /// Binds an existing `session_id` to `key`. Useful when an outer
+    /// process wants to pre-attach a connector conversation to a
+    /// session that was created some other way (tests, seeding from
+    /// a migration, etc).
+    pub fn bind_session(&self, key: &ConversationKey, session_id: Uuid) -> Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("connector runtime mutex poisoned"))?;
+        inner.session_map.insert(key, session_id)
+    }
+
     /// Drops the stored session mapping for `key`. The next message on
     /// that conversation will create a brand-new session.
     ///
@@ -97,6 +109,23 @@ impl ConnectorRuntime {
             .lock()
             .map_err(|_| anyhow::anyhow!("connector runtime mutex poisoned"))?;
         Ok(inner.session_map.get(key))
+    }
+
+    /// Loads the full session record bound to `key`. Useful for slash
+    /// commands like `/status` that want to surface event counts or
+    /// timestamps.
+    pub fn session_record(&self, key: &ConversationKey) -> Result<Option<SessionRecord>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("connector runtime mutex poisoned"))?;
+        match inner.session_map.get(key) {
+            Some(session_id) => match inner.session_store.load_session(session_id) {
+                Ok(record) => Ok(Some(record)),
+                Err(_) => Ok(None),
+            },
+            None => Ok(None),
+        }
     }
 
     /// Runs one Puffer turn for `input` on the session bound to `key`,

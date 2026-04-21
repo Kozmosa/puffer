@@ -1,79 +1,64 @@
-use puffer_connector_core::{ConnectorRuntime, ConversationKey};
+use puffer_connector_core::{
+    handle_builtin_command, BuiltinCommandConfig, CommandOutcome, ConnectorRuntime,
+    ConversationKey, InboundMessage,
+};
 use std::sync::Arc;
 
 /// Stable platform id stored in the conversation map.
 pub(crate) const PLATFORM_ID: &str = "telegram";
-
-/// Outcome of handling one inbound text message. The connector uses this
-/// to decide what to send back on the wire.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandOutcome {
-    /// Reply with this static text; the agent was not consulted.
-    Reply(String),
-    /// The agent produced this reply text.
-    AgentReply {
-        session_id: uuid::Uuid,
-        created: bool,
-        text: String,
-    },
-    /// The inbound user is not permitted to talk to the bot. Silently
-    /// ignore.
-    Ignored,
-}
 
 /// Dispatches one inbound message. Pure logic — no Telegram SDK calls
 /// here — so the full decision tree is unit-testable against an
 /// in-memory runtime.
 pub fn handle_command(
     runtime: &Arc<ConnectorRuntime>,
-    chat_id: i64,
-    user_id: Option<i64>,
-    text: &str,
+    message: &InboundMessage,
     config: &crate::TelegramConfig,
 ) -> anyhow::Result<CommandOutcome> {
-    if let Some(id) = user_id {
-        if !config.is_user_allowed(id) {
-            return Ok(CommandOutcome::Ignored);
+    // 1. Bot-self filter — Telegram delivers updates for our own
+    //    outgoing messages in some configurations; never loop.
+    if message.from_bot {
+        return Ok(CommandOutcome::Ignored);
+    }
+
+    // 2. Allowed-users filter.
+    if let Some(user) = message.user_id.as_deref() {
+        if let Ok(id) = user.parse::<i64>() {
+            if !config.is_user_allowed(id) {
+                return Ok(CommandOutcome::Ignored);
+            }
         }
     }
 
-    let trimmed = text.trim();
+    let trimmed = message.text.trim();
     if trimmed.is_empty() {
         return Ok(CommandOutcome::Ignored);
     }
 
-    let key = ConversationKey::new(PLATFORM_ID, chat_id.to_string());
-
-    // Slash commands are handled locally and never reach the agent.
-    if let Some(command) = trimmed.strip_prefix('/') {
-        let (name, _args) = command
-            .split_once(char::is_whitespace)
-            .unwrap_or((command, ""));
-        match name.to_ascii_lowercase().as_str() {
-            "start" => {
-                let greeting = config
-                    .welcome_message
-                    .clone()
-                    .unwrap_or_else(|| default_welcome());
-                return Ok(CommandOutcome::Reply(greeting));
-            }
-            "new" | "reset" => {
-                runtime.reset_conversation(&key)?;
-                return Ok(CommandOutcome::Reply(
-                    "Started a fresh Puffer session.".to_string(),
-                ));
-            }
-            "help" => {
-                return Ok(CommandOutcome::Reply(help_text()));
-            }
-            _ => {
-                // Fall through — unknown commands become plain text the
-                // agent can interpret (consistent with Puffer CLI which
-                // forwards unknown /slash commands).
-            }
-        }
+    // 3. Mention gating: in group chats with `require_mention = true`,
+    //    ignore messages that did not explicitly tag the bot.
+    if message.is_group && config.require_mention && !message.bot_mentioned {
+        return Ok(CommandOutcome::Ignored);
     }
 
+    // 4. Compute the session key using the configured group policy.
+    let key = ConversationKey::for_policy(
+        PLATFORM_ID,
+        &message.conversation_id,
+        message.user_id.as_deref(),
+        config.group_key_policy,
+        message.is_group,
+    );
+
+    // 5. Built-in slash commands (start, new, reset, help, status, usage).
+    let builtin_config = BuiltinCommandConfig {
+        welcome_message: config.welcome_message.clone(),
+    };
+    if let Some(outcome) = handle_builtin_command(runtime, &key, trimmed, &builtin_config)? {
+        return Ok(outcome);
+    }
+
+    // 6. Everything else — forward to the agent.
     let outcome = runtime.dispatch(&key, trimmed)?;
     Ok(CommandOutcome::AgentReply {
         session_id: outcome.session_id,
@@ -82,32 +67,19 @@ pub fn handle_command(
     })
 }
 
-fn default_welcome() -> String {
-    "Puffer is online. Send any message to talk to the agent, or /help \
-     for commands."
-        .to_string()
-}
-
-fn help_text() -> String {
-    "/start — greeting\n\
-     /new   — start a fresh session for this chat\n\
-     /help  — show this message\n\
-     any other text — forwarded to the Puffer agent"
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use puffer_config::{ConfigPaths, PufferConfig};
     use puffer_connector_core::{
-        ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap,
+        ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap, GroupKeyPolicy,
     };
     use puffer_provider_registry::{AuthStore, ProviderRegistry};
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionStore;
     use std::sync::Arc;
     use tempfile::tempdir;
+    use uuid::Uuid;
 
     fn test_runtime(root: std::path::PathBuf) -> Arc<ConnectorRuntime> {
         let paths = ConfigPaths {
@@ -134,6 +106,32 @@ mod tests {
             token: "t".to_string(),
             allowed_users: Vec::new(),
             welcome_message: None,
+            require_mention: true,
+            group_key_policy: GroupKeyPolicy::PerUser,
+        }
+    }
+
+    fn dm(text: &str, user: Option<&str>) -> InboundMessage {
+        InboundMessage {
+            conversation_id: "42".to_string(),
+            user_id: user.map(String::from),
+            text: text.to_string(),
+            thread_id: None,
+            is_group: false,
+            bot_mentioned: true,
+            from_bot: false,
+        }
+    }
+
+    fn group(text: &str, user: Option<&str>, mentioned: bool) -> InboundMessage {
+        InboundMessage {
+            conversation_id: "-1001".to_string(),
+            user_id: user.map(String::from),
+            text: text.to_string(),
+            thread_id: None,
+            is_group: true,
+            bot_mentioned: mentioned,
+            from_bot: false,
         }
     }
 
@@ -142,14 +140,14 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.allowed_users = vec![42];
-        let outcome = handle_command(&runtime, 1, Some(7), "hi", &config).unwrap();
+        let outcome = handle_command(&runtime, &dm("hi", Some("7")), &config).unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
     #[test]
     fn empty_message_is_ignored() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(&runtime, 1, Some(1), "   ", &open_config()).unwrap();
+        let outcome = handle_command(&runtime, &dm("   ", Some("1")), &open_config()).unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
@@ -158,14 +156,14 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.welcome_message = Some("welcome!".to_string());
-        let outcome = handle_command(&runtime, 1, Some(1), "/start", &config).unwrap();
+        let outcome = handle_command(&runtime, &dm("/start", Some("1")), &config).unwrap();
         assert_eq!(outcome, CommandOutcome::Reply("welcome!".to_string()));
     }
 
     #[test]
     fn help_command_is_handled_locally() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(&runtime, 1, Some(1), "/help", &open_config()).unwrap();
+        let outcome = handle_command(&runtime, &dm("/help", Some("1")), &open_config()).unwrap();
         match outcome {
             CommandOutcome::Reply(text) => {
                 assert!(text.contains("/new"));
@@ -178,14 +176,9 @@ mod tests {
     #[test]
     fn new_command_detaches_the_existing_session() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let key = ConversationKey::new(PLATFORM_ID, "555");
-        // Seed the map so /new has something to remove.
-        runtime
-            .reset_conversation(&key)
-            .unwrap();
-        // After /new the next session_for lookup is None (no dispatch
-        // happened to create one).
-        let outcome = handle_command(&runtime, 555, Some(1), "/new", &open_config()).unwrap();
+        // Seed a session for the DM key the handler would build.
+        let key = ConversationKey::new(PLATFORM_ID, "42");
+        let outcome = handle_command(&runtime, &dm("/new", Some("1")), &open_config()).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
         assert!(runtime.session_for(&key).unwrap().is_none());
     }
@@ -195,8 +188,73 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.allowed_users = vec![42];
-        // /help avoids needing a real provider.
-        let outcome = handle_command(&runtime, 1, Some(42), "/help", &config).unwrap();
+        let outcome = handle_command(&runtime, &dm("/help", Some("42")), &config).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
+    }
+
+    #[test]
+    fn bot_self_messages_are_ignored_to_prevent_loops() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let mut message = dm("hello", Some("1"));
+        message.from_bot = true;
+        let outcome = handle_command(&runtime, &message, &open_config()).unwrap();
+        assert_eq!(outcome, CommandOutcome::Ignored);
+    }
+
+    #[test]
+    fn group_message_without_mention_is_ignored_when_required() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let outcome = handle_command(
+            &runtime,
+            &group("hello", Some("1"), false),
+            &open_config(),
+        )
+        .unwrap();
+        assert_eq!(outcome, CommandOutcome::Ignored);
+    }
+
+    #[test]
+    fn group_message_with_mention_is_accepted_locally() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let outcome = handle_command(
+            &runtime,
+            &group("/help", Some("1"), true),
+            &open_config(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, CommandOutcome::Reply(_)));
+    }
+
+    #[test]
+    fn group_with_require_mention_off_still_dispatches_on_non_mention() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let mut config = open_config();
+        config.require_mention = false;
+        let outcome = handle_command(
+            &runtime,
+            &group("/help", Some("1"), false),
+            &config,
+        )
+        .unwrap();
+        assert!(matches!(outcome, CommandOutcome::Reply(_)));
+    }
+
+    #[test]
+    fn per_user_policy_keys_group_sessions_per_user() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let alice = ConversationKey::with_user(PLATFORM_ID, "-1001", "1");
+        let bob = ConversationKey::with_user(PLATFORM_ID, "-1001", "2");
+        runtime.bind_session(&alice, Uuid::new_v4()).unwrap();
+        runtime.bind_session(&bob, Uuid::new_v4()).unwrap();
+
+        let outcome = handle_command(
+            &runtime,
+            &group("/new", Some("1"), true),
+            &open_config(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, CommandOutcome::Reply(_)));
+        assert!(runtime.session_for(&alice).unwrap().is_none());
+        assert!(runtime.session_for(&bob).unwrap().is_some(), "bob's session untouched");
     }
 }

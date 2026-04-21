@@ -1,4 +1,4 @@
-use crate::handler::{handle_command, CommandOutcome, PLATFORM_ID};
+use crate::handler::{handle_command, PLATFORM_ID};
 use crate::MatrixConfig;
 use anyhow::{Context, Result};
 use matrix_sdk::config::SyncSettings;
@@ -6,9 +6,13 @@ use matrix_sdk::ruma::events::room::message::{
     MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
 };
 use matrix_sdk::{Client, Room, RoomState};
-use puffer_connector_core::{Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError};
+use puffer_connector_core::{
+    CommandOutcome, Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
+    InboundMessage, MessageSplitter,
+};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// Matrix connector ready to be started by the puffer connector hub.
@@ -163,27 +167,68 @@ async fn on_room_message(
         return;
     }
 
-    // Ignore our own echoes.
-    if let Some(me) = client.user_id() {
-        if event.sender == me {
-            return;
-        }
-    }
-
     let text = match &event.content.msgtype {
         MessageType::Text(content) => content.body.clone(),
         _ => return,
     };
 
-    let sender = event.sender.to_string();
-    let room_id = room.room_id().to_string();
+    let me = client.user_id().map(|id| id.to_owned());
+    let from_bot = me
+        .as_ref()
+        .map(|bot_id| event.sender == *bot_id)
+        .unwrap_or(false);
+
+    // Heuristic: treat rooms with more than 2 active members as groups.
+    // `active_members_count` returns joined + invited members; for a DM
+    // this is 2 (bot + one user). Default to `true` on the edge case
+    // where the store hasn't populated yet so we favor mention-gating.
+    let active_count = room.active_members_count();
+    let is_group = active_count == 0 || active_count > 2;
+
+    // Mention detection:
+    //  * full MXID substring (`@bot:example.org`) in the body, or
+    //  * localpart substring (`bot`) in the body — covers the common
+    //    `@bot` display-name mention Matrix clients produce, and
+    //  * in DMs the bot is implicitly always "mentioned".
+    //
+    // TODO(connector-matrix): parse `event.content.mentions` /
+    // `m.relates_to` for precise m.in_reply_to detection; the current
+    // substring check is good enough for v1 and never wrongly ignores
+    // in DMs thanks to the `!is_group` fallback.
+    let bot_mentioned = if let Some(bot_id) = me.as_ref() {
+        let mxid = bot_id.as_str();
+        let localpart = bot_id.localpart();
+        let body_lower = text.to_ascii_lowercase();
+        !is_group
+            || body_lower.contains(&mxid.to_ascii_lowercase())
+            || body_lower.contains(&localpart.to_ascii_lowercase())
+    } else {
+        !is_group
+    };
+
+    // TODO(connector-matrix): extract a stable thread id from
+    // `event.content.relates_to` once we decide how to map Matrix
+    // threads onto Puffer sessions. For now every message in a room
+    // belongs to the same session regardless of thread.
+    let thread_id: Option<String> = None;
+
+    let inbound = InboundMessage {
+        conversation_id: room.room_id().to_string(),
+        user_id: Some(event.sender.to_string()),
+        text,
+        thread_id,
+        is_group,
+        bot_mentioned,
+        from_bot,
+    };
+
     let runtime = ctx.runtime.clone();
     let config = ctx.config.clone();
 
     // Dispatch blocks on the shared runtime mutex; park it on a blocking
     // worker so we don't starve the tokio reactor.
     let outcome = tokio::task::spawn_blocking(move || {
-        handle_command(&runtime, &room_id, Some(&sender), &text, &config)
+        handle_command(&runtime, &inbound, &config)
     })
     .await;
 
@@ -195,6 +240,35 @@ async fn on_room_message(
         Err(join_error) => format!("Puffer error: {join_error}"),
     };
 
-    let content = RoomMessageEventContent::text_plain(reply);
-    let _ = room.send(content).await;
+    let _ = send_reply_chunks(&room, &reply).await;
+}
+
+async fn send_reply_chunks(room: &Room, body: &str) -> Result<(), matrix_sdk::Error> {
+    for chunk in MessageSplitter::MATRIX.split(body) {
+        send_with_retry(room, &chunk).await?;
+    }
+    Ok(())
+}
+
+/// Sends a single chunk with exponential backoff. Retries up to
+/// `MAX_ATTEMPTS` times on transient errors before giving up. Matches
+/// Hermes's `_send_with_retry` behavior in spirit.
+async fn send_with_retry(room: &Room, chunk: &str) -> Result<(), matrix_sdk::Error> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0u32;
+    loop {
+        let content = RoomMessageEventContent::text_plain(chunk);
+        match room.send(content).await {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                if attempt >= MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                // Exponential backoff with a tiny jitter budget.
+                let delay_ms = 250u64 * (1u64 << (attempt - 1));
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
 }

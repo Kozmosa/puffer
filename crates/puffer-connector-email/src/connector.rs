@@ -1,4 +1,4 @@
-use crate::handler::{handle_command, CommandOutcome, PLATFORM_ID};
+use crate::handler::{handle_command, PLATFORM_ID};
 use crate::EmailConfig;
 use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
@@ -7,7 +7,8 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use mail_parser::MessageParser;
 use puffer_connector_core::{
-    Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
+    CommandOutcome, Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
+    InboundMessage, MessageSplitter,
 };
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -113,20 +114,37 @@ async fn poll_once(config: &EmailConfig, runtime: &Arc<ConnectorRuntime>) -> Res
     }
 
     let transport = build_smtp_transport(config)?;
+    let from_address_lc = config.from_address.trim().to_ascii_lowercase();
 
     for message in messages {
+        // Build the shared InboundMessage shape the handler expects.
+        // Email is inherently DM-like so `is_group=false` and
+        // `bot_mentioned=true` always. `from_bot` is true when the
+        // sender address matches our configured `from_address`
+        // (case-insensitive), guarding against rare loop scenarios
+        // (self-forwards, mailing-list echoes).
+        let body_or_subject = if message.body.trim().is_empty() {
+            message.subject.clone()
+        } else {
+            message.body.clone()
+        };
+        let sender_lc = message.sender.trim().to_ascii_lowercase();
+        let from_bot = !from_address_lc.is_empty() && sender_lc == from_address_lc;
+
+        let inbound = InboundMessage {
+            conversation_id: message.thread_id.clone(),
+            user_id: Some(message.sender.clone()),
+            text: body_or_subject,
+            thread_id: None,
+            is_group: false,
+            bot_mentioned: true,
+            from_bot,
+        };
+
         let runtime_for_handler = runtime.clone();
         let config_for_handler = config.clone();
-        let handler_msg = message.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            handle_command(
-                &runtime_for_handler,
-                &handler_msg.thread_id,
-                &handler_msg.sender,
-                &handler_msg.subject,
-                &handler_msg.body,
-                &config_for_handler,
-            )
+            handle_command(&runtime_for_handler, &inbound, &config_for_handler)
         })
         .await
         .map_err(|error| anyhow!("email handler join error: {error}"))??;
@@ -137,7 +155,9 @@ async fn poll_once(config: &EmailConfig, runtime: &Arc<ConnectorRuntime>) -> Res
             CommandOutcome::AgentReply { text, .. } => text,
         };
 
-        if let Err(error) = send_reply(&transport, config, &message, &reply_text).await {
+        if let Err(error) =
+            send_reply_chunks(&transport, config, &message, &reply_text).await
+        {
             eprintln!(
                 "puffer-connector-email: failed to send reply to {}: {error:#}",
                 message.sender
@@ -271,6 +291,52 @@ fn build_smtp_transport(
         .port(config.smtp_port)
         .credentials(creds);
     Ok(builder.build())
+}
+
+/// Splits a long reply using [`MessageSplitter::EMAIL`] and sends each
+/// chunk as a separate email (preserving the threading headers), with
+/// per-chunk retries on transient SMTP errors. In practice email's
+/// 100_000-char budget almost never triggers a split — but very long
+/// agent outputs shouldn't blow up the SMTP session.
+async fn send_reply_chunks(
+    transport: &AsyncSmtpTransport<Tokio1Executor>,
+    config: &EmailConfig,
+    inbound: &InboundEmail,
+    reply_text: &str,
+) -> Result<()> {
+    for chunk in MessageSplitter::EMAIL.split(reply_text) {
+        send_with_retry(transport, config, inbound, &chunk).await?;
+    }
+    Ok(())
+}
+
+/// Sends a single email chunk with exponential backoff. Retries up to
+/// `MAX_ATTEMPTS` times on transient SMTP errors before giving up. Uses
+/// a bigger base delay than chat connectors because email servers are
+/// slower and more sensitive to burst traffic.
+async fn send_with_retry(
+    transport: &AsyncSmtpTransport<Tokio1Executor>,
+    config: &EmailConfig,
+    inbound: &InboundEmail,
+    chunk: &str,
+) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 3;
+    const BASE_DELAY_MS: u64 = 500;
+
+    let mut attempt = 0u32;
+    loop {
+        match send_reply(transport, config, inbound, chunk).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                if attempt >= MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                let delay_ms = BASE_DELAY_MS * (1u64 << (attempt - 1));
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
 }
 
 async fn send_reply(

@@ -6,26 +6,96 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// Identifies one conversation on a specific platform (Telegram chat id,
-/// Slack channel id, Discord thread id, email thread id, …).
+/// Slack channel id, Discord channel id, email thread id, …).
+///
+/// When `user` is `Some`, the session is scoped to *(conversation, user)* —
+/// used for group chats where every user should get their own isolated
+/// Puffer session while still talking in the same channel. This mirrors
+/// Hermes's `group_sessions_per_user` policy.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConversationKey {
     /// Stable platform identifier, e.g. `"telegram"`, `"slack"`, `"discord"`.
     pub platform: String,
     /// Opaque, platform-specific conversation id (chat id, channel id, …).
     pub conversation: String,
+    /// Optional user id to segment sessions within a shared conversation.
+    /// `None` means all users in `conversation` share one session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+/// Whether a connector should keep one session per conversation or per
+/// (conversation, user) pair. Plumbed through platform configs so group
+/// chats don't accidentally mix users into a single session.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupKeyPolicy {
+    /// One session for the entire conversation — correct for DMs and for
+    /// channels you actively want to treat as a shared whiteboard.
+    PerChat,
+    /// One session per distinct user inside a shared conversation — the
+    /// safe default for group chats.
+    PerUser,
+}
+
+impl Default for GroupKeyPolicy {
+    fn default() -> Self {
+        // Matches Hermes's `group_sessions_per_user=True` default — the
+        // safe choice because it prevents two users in the same group
+        // chat from accidentally sharing a single Puffer session.
+        Self::PerUser
+    }
 }
 
 impl ConversationKey {
+    /// Builds a key that is not scoped to any specific user.
     pub fn new(platform: impl Into<String>, conversation: impl Into<String>) -> Self {
         Self {
             platform: platform.into(),
             conversation: conversation.into(),
+            user: None,
         }
     }
 
-    /// Compact string form used as a JSON map key on disk.
+    /// Builds a key scoped to a specific `(conversation, user)` pair.
+    pub fn with_user(
+        platform: impl Into<String>,
+        conversation: impl Into<String>,
+        user: impl Into<String>,
+    ) -> Self {
+        Self {
+            platform: platform.into(),
+            conversation: conversation.into(),
+            user: Some(user.into()),
+        }
+    }
+
+    /// Chooses the right key based on policy + whether this is a group
+    /// chat. For DMs (`is_group = false`), the user segmentation is
+    /// irrelevant and we always key by conversation alone.
+    pub fn for_policy(
+        platform: impl Into<String>,
+        conversation: impl Into<String>,
+        user: Option<&str>,
+        policy: GroupKeyPolicy,
+        is_group: bool,
+    ) -> Self {
+        match (policy, is_group, user) {
+            (GroupKeyPolicy::PerUser, true, Some(user_id)) => {
+                Self::with_user(platform, conversation, user_id)
+            }
+            _ => Self::new(platform, conversation),
+        }
+    }
+
+    /// Compact string form used as a JSON map key on disk. Three fields
+    /// are joined by `::` so parsing back is unambiguous even when one
+    /// component contains a single colon.
     fn storage_key(&self) -> String {
-        format!("{}::{}", self.platform, self.conversation)
+        match self.user.as_deref() {
+            Some(user) => format!("{}::{}::{}", self.platform, self.conversation, user),
+            None => format!("{}::{}", self.platform, self.conversation),
+        }
     }
 }
 
@@ -181,6 +251,55 @@ mod tests {
         let a = ConversationKey::new("telegram", "42");
         let b = ConversationKey::new("discord", "42");
         assert_ne!(a.storage_key(), b.storage_key());
+    }
+
+    #[test]
+    fn per_user_keys_are_distinct_from_per_chat_and_from_each_other() {
+        let group = ConversationKey::new("slack", "C1");
+        let alice = ConversationKey::with_user("slack", "C1", "alice");
+        let bob = ConversationKey::with_user("slack", "C1", "bob");
+
+        assert_ne!(group.storage_key(), alice.storage_key());
+        assert_ne!(alice.storage_key(), bob.storage_key());
+    }
+
+    #[test]
+    fn for_policy_selects_per_user_only_for_group_chats() {
+        let dm =
+            ConversationKey::for_policy("slack", "D1", Some("alice"), GroupKeyPolicy::PerUser, false);
+        assert!(dm.user.is_none(), "DM must not segment by user");
+
+        let channel = ConversationKey::for_policy(
+            "slack",
+            "C1",
+            Some("alice"),
+            GroupKeyPolicy::PerUser,
+            true,
+        );
+        assert_eq!(channel.user.as_deref(), Some("alice"));
+
+        let shared = ConversationKey::for_policy(
+            "slack",
+            "C1",
+            Some("alice"),
+            GroupKeyPolicy::PerChat,
+            true,
+        );
+        assert!(shared.user.is_none(), "per-chat policy keeps sessions shared");
+    }
+
+    #[test]
+    fn per_user_keys_roundtrip_through_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("map.json");
+        let key = ConversationKey::with_user("slack", "C1", "alice");
+        let session_id = Uuid::new_v4();
+
+        let mut map = ConversationSessionMap::load(&path).unwrap();
+        map.insert(&key, session_id).unwrap();
+
+        let reloaded = ConversationSessionMap::load(&path).unwrap();
+        assert_eq!(reloaded.get(&key), Some(session_id));
     }
 
     #[test]

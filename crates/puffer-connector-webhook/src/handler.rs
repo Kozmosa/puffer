@@ -1,82 +1,53 @@
-use puffer_connector_core::{ConnectorRuntime, ConversationKey};
+use puffer_connector_core::{
+    handle_builtin_command, BuiltinCommandConfig, CommandOutcome, ConnectorRuntime,
+    ConversationKey, GroupKeyPolicy, InboundMessage,
+};
 use std::sync::Arc;
 
 /// Stable platform id stored in the conversation map.
 pub const PLATFORM_ID: &str = "webhook";
 
-/// Outcome of handling one inbound webhook request. The connector uses
-/// this to shape the HTTP response.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandOutcome {
-    /// Respond with this static text; the agent was not consulted.
-    Reply(String),
-    /// The agent produced this reply text.
-    AgentReply {
-        session_id: uuid::Uuid,
-        created: bool,
-        text: String,
-    },
-    /// Inbound request was rejected (bad auth / empty body). The
-    /// transport translates this into a non-200 response.
-    Ignored,
-}
-
-/// Pure decision function: given an auth header and a message payload,
-/// decide what to send back. Keeping this free of axum types means the
-/// full decision tree is unit-testable against an in-memory runtime.
+/// Dispatches one inbound webhook message. Pure logic — no axum types
+/// here — so the full decision tree is unit-testable against an
+/// in-memory runtime.
 ///
-/// `auth_header` is the raw value of the `Authorization` header, if
-/// present (e.g. `Some("Bearer abc")`). `conversation_id` is whatever
-/// the caller supplied in the JSON body.
+/// Webhook is a single-session-per-conversation platform with no group
+/// semantics: every call is treated as a DM where the bot was mentioned.
+/// Auth is enforced by the router before this runs.
 pub fn handle_command(
     runtime: &Arc<ConnectorRuntime>,
-    conversation_id: &str,
-    auth_header: Option<&str>,
-    text: &str,
+    message: &InboundMessage,
     config: &crate::WebhookConfig,
 ) -> anyhow::Result<CommandOutcome> {
-    let presented_token = auth_header.and_then(extract_bearer);
-    if !config.is_token_allowed(presented_token.as_deref()) {
+    if message.from_bot {
         return Ok(CommandOutcome::Ignored);
     }
 
-    let trimmed_id = conversation_id.trim();
+    let trimmed_id = message.conversation_id.trim();
     if trimmed_id.is_empty() {
         return Ok(CommandOutcome::Ignored);
     }
-    let trimmed = text.trim();
+
+    let trimmed = message.text.trim();
     if trimmed.is_empty() {
         return Ok(CommandOutcome::Ignored);
     }
 
-    let key = ConversationKey::new(PLATFORM_ID, trimmed_id);
+    // Webhook is always single-session-per-conversation regardless of
+    // user — `PerChat` with `is_group=false` collapses cleanly.
+    let key = ConversationKey::for_policy(
+        PLATFORM_ID,
+        trimmed_id,
+        message.user_id.as_deref(),
+        GroupKeyPolicy::PerChat,
+        false,
+    );
 
-    if let Some(command) = trimmed.strip_prefix('/') {
-        let (name, _args) = command
-            .split_once(char::is_whitespace)
-            .unwrap_or((command, ""));
-        match name.to_ascii_lowercase().as_str() {
-            "start" => {
-                let greeting = config
-                    .welcome_message
-                    .clone()
-                    .unwrap_or_else(default_welcome);
-                return Ok(CommandOutcome::Reply(greeting));
-            }
-            "new" | "reset" => {
-                runtime.reset_conversation(&key)?;
-                return Ok(CommandOutcome::Reply(
-                    "Started a fresh Puffer session.".to_string(),
-                ));
-            }
-            "help" => {
-                return Ok(CommandOutcome::Reply(help_text()));
-            }
-            _ => {
-                // Unknown slash commands fall through to the agent,
-                // matching the CLI and Telegram connector behaviour.
-            }
-        }
+    let builtin_config = BuiltinCommandConfig {
+        welcome_message: config.welcome_message.clone(),
+    };
+    if let Some(outcome) = handle_builtin_command(runtime, &key, trimmed, &builtin_config)? {
+        return Ok(outcome);
     }
 
     let outcome = runtime.dispatch(&key, trimmed)?;
@@ -101,20 +72,6 @@ pub(crate) fn extract_bearer(header: &str) -> Option<String> {
     } else {
         Some(token.to_string())
     }
-}
-
-fn default_welcome() -> String {
-    "Puffer is online. POST JSON { \"conversation_id\": ..., \"message\": ... } \
-     or send /help for commands."
-        .to_string()
-}
-
-fn help_text() -> String {
-    "/start — greeting\n\
-     /new   — start a fresh session for this conversation_id\n\
-     /help  — show this message\n\
-     any other text — forwarded to the Puffer agent"
-        .to_string()
 }
 
 #[cfg(test)]
@@ -157,23 +114,35 @@ mod tests {
             auth_token: None,
             allowed_origins: Vec::new(),
             welcome_message: None,
+            split_long_responses: true,
         }
     }
 
-    #[test]
-    fn wrong_auth_token_is_rejected() {
-        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let mut config = open_config();
-        config.auth_token = Some("expected".to_string());
-        let outcome =
-            handle_command(&runtime, "conv-1", Some("Bearer wrong"), "hi", &config).unwrap();
-        assert_eq!(outcome, CommandOutcome::Ignored);
+    fn msg(text: &str, conversation_id: &str, user: Option<&str>) -> InboundMessage {
+        InboundMessage {
+            conversation_id: conversation_id.to_string(),
+            user_id: user.map(String::from),
+            text: text.to_string(),
+            thread_id: None,
+            is_group: false,
+            bot_mentioned: true,
+            from_bot: false,
+        }
     }
 
     #[test]
     fn empty_message_is_ignored() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(&runtime, "conv-1", None, "   ", &open_config()).unwrap();
+        let outcome =
+            handle_command(&runtime, &msg("   ", "conv-1", None), &open_config()).unwrap();
+        assert_eq!(outcome, CommandOutcome::Ignored);
+    }
+
+    #[test]
+    fn empty_conversation_id_is_ignored() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let outcome =
+            handle_command(&runtime, &msg("hi", "   ", None), &open_config()).unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
@@ -182,24 +151,16 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.welcome_message = Some("welcome!".to_string());
-        let outcome = handle_command(&runtime, "conv-1", None, "/start", &config).unwrap();
+        let outcome =
+            handle_command(&runtime, &msg("/start", "conv-1", None), &config).unwrap();
         assert_eq!(outcome, CommandOutcome::Reply("welcome!".to_string()));
-    }
-
-    #[test]
-    fn start_falls_back_to_default_welcome() {
-        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(&runtime, "conv-1", None, "/start", &open_config()).unwrap();
-        match outcome {
-            CommandOutcome::Reply(text) => assert!(text.contains("Puffer is online")),
-            other => panic!("expected Reply, got {other:?}"),
-        }
     }
 
     #[test]
     fn help_command_is_handled_locally() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(&runtime, "conv-1", None, "/help", &open_config()).unwrap();
+        let outcome =
+            handle_command(&runtime, &msg("/help", "conv-1", None), &open_config()).unwrap();
         match outcome {
             CommandOutcome::Reply(text) => {
                 assert!(text.contains("/new"));
@@ -214,19 +175,72 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let key = ConversationKey::new(PLATFORM_ID, "caller-xyz");
         runtime.reset_conversation(&key).unwrap();
-        let outcome =
-            handle_command(&runtime, "caller-xyz", None, "/new", &open_config()).unwrap();
+        let outcome = handle_command(
+            &runtime,
+            &msg("/new", "caller-xyz", None),
+            &open_config(),
+        )
+        .unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
         assert!(runtime.session_for(&key).unwrap().is_none());
     }
 
     #[test]
-    fn valid_auth_allows_local_command() {
+    fn status_command_is_handled_locally() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let mut config = open_config();
-        config.auth_token = Some("expected".to_string());
         let outcome =
-            handle_command(&runtime, "conv-1", Some("Bearer expected"), "/help", &config).unwrap();
-        assert!(matches!(outcome, CommandOutcome::Reply(_)));
+            handle_command(&runtime, &msg("/status", "conv-1", None), &open_config()).unwrap();
+        match outcome {
+            CommandOutcome::Reply(text) => assert!(text.contains("No active session")),
+            other => panic!("expected Reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bot_self_messages_are_ignored_to_prevent_loops() {
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let mut message = msg("hello", "conv-1", None);
+        message.from_bot = true;
+        let outcome = handle_command(&runtime, &message, &open_config()).unwrap();
+        assert_eq!(outcome, CommandOutcome::Ignored);
+    }
+
+    #[test]
+    fn unknown_command_falls_through_to_agent_dispatch() {
+        // `/mystery` is not a builtin command. The builtin handler must
+        // return `None` so the message is forwarded to the agent
+        // runtime. There's no real agent wired up in the test runtime,
+        // so the best we can do is assert the handler doesn't short-
+        // circuit into a `Reply` — it must attempt dispatch, which
+        // either succeeds or surfaces a dispatch error.
+        let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
+        let result = handle_command(
+            &runtime,
+            &msg("/mystery arg", "conv-1", None),
+            &open_config(),
+        );
+        match result {
+            Ok(CommandOutcome::AgentReply { .. }) => { /* agent was reached */ }
+            Ok(CommandOutcome::Reply(text)) => {
+                panic!("unknown command must not produce a local Reply, got: {text}")
+            }
+            Ok(CommandOutcome::Ignored) => {
+                panic!("unknown command must not be silently ignored")
+            }
+            Err(_) => {
+                // Expected in the test runtime: dispatch fails because
+                // no agent provider is configured. The important bit is
+                // that builtin dispatch did NOT intercept the command.
+            }
+        }
+    }
+
+    #[test]
+    fn extract_bearer_parses_well_formed_header() {
+        assert_eq!(extract_bearer("Bearer abc"), Some("abc".to_string()));
+        assert_eq!(extract_bearer("bearer abc"), Some("abc".to_string()));
+        assert_eq!(extract_bearer("BEARER  token  "), Some("token".to_string()));
+        assert_eq!(extract_bearer("Basic abc"), None);
+        assert_eq!(extract_bearer("Bearer "), None);
     }
 }

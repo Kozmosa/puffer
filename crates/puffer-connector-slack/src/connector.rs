@@ -1,30 +1,46 @@
 use crate::handler::PLATFORM_ID;
 use crate::SlackConfig;
 use anyhow::anyhow;
-use puffer_connector_core::{
-    Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
-};
+use puffer_connector_core::{Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError};
 use std::sync::Arc;
 
 /// Slack connector ready to be started by the puffer connector hub.
 ///
 /// # Live driver status
 ///
-/// TODO(live-driver): The real Socket Mode listener is not wired up yet.
-/// `start` currently returns a `ConnectorStartError::Other` so the crate
-/// compiles and the handler logic is fully exercised by unit tests, but
-/// no inbound Slack traffic is processed at runtime.
+/// TODO(connector-v2): The real Socket Mode listener is **not** wired up
+/// yet. `start` currently returns a `ConnectorStartError::Other` so the
+/// crate compiles and the handler logic is fully exercised by unit
+/// tests, but no inbound Slack traffic is processed at runtime. The live
+/// driver is explicitly deferred to v2 — this pass only refreshes the
+/// handler surface area to match the Telegram reference.
 ///
-/// The intended shape, once slack-morphism 2.x is pulled in, is:
+/// # What the real driver should do
 ///
-/// 1. Build a `SlackClient` with a `SlackClientHyperConnector`.
-/// 2. Open a `SlackSocketModeListener` authenticated with `app_token`.
-/// 3. On each inbound `message` event:
-///    * extract `channel_id`, `user_id`, `thread_ts`, `text`;
-///    * call `spawn_blocking(move || handle_command_threaded(...))`;
-///    * send the resulting reply back with `chat.postMessage` on the
-///      Web API using `bot_token`.
-/// 4. On `oneshot::Receiver<()>` firing, call `shutdown` on the
+/// Once slack-morphism 2.x is pulled in, the intended shape is:
+///
+/// 1. Build a `SlackClient` with a `SlackClientHyperConnector` and open
+///    a `SlackSocketModeListener` authenticated with `app_token`. Cache
+///    the bot's own `user_id` from `auth.test` so inbound events
+///    authored by the bot can be filtered out (prevents reply loops).
+/// 2. On each inbound `message` event, construct an
+///    [`InboundMessage`](puffer_connector_core::InboundMessage) with:
+///    * `conversation_id = channel_id`
+///    * `user_id = Some(event.user)`
+///    * `text` with any leading `<@BOT>` mention stripped
+///    * `thread_id = event.thread_ts` (when present)
+///    * `is_group = channel_id.starts_with('C')` (channels are `C…`,
+///      DMs are `D…`)
+///    * `bot_mentioned = event.text.contains("<@BOT>") || !is_group`
+///    * `from_bot = event.bot_id.is_some() || event.user == bot_user_id`
+/// 3. `spawn_blocking(move || handle_command(&runtime, &inbound, &cfg))`
+///    so the async socket loop isn't blocked by Puffer dispatch.
+/// 4. Send the resulting reply back with `chat.postMessage` on the Web
+///    API using `bot_token`, chunking long bodies through
+///    [`MessageSplitter::SLACK`](puffer_connector_core::MessageSplitter::SLACK)
+///    and passing the original `thread_ts` back on every chunk so the
+///    response lands in the same thread the user asked in.
+/// 5. On `oneshot::Receiver<()>` firing, call `shutdown` on the
 ///    listener's environment and exit the Tokio runtime.
 ///
 /// The spawn-a-thread-with-its-own-Tokio-runtime scaffold mirrors the
@@ -65,7 +81,7 @@ impl Connector for SlackConnector {
             });
         }
 
-        // TODO(live-driver): replace this stub with a real slack-morphism
+        // TODO(connector-v2): replace this stub with a real slack-morphism
         // Socket Mode listener. Until then the connector refuses to start
         // rather than silently swallowing inbound Slack traffic.
         Err(ConnectorStartError::other(
@@ -81,6 +97,7 @@ impl Connector for SlackConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puffer_connector_core::GroupKeyPolicy;
 
     fn sample_config() -> SlackConfig {
         SlackConfig {
@@ -88,6 +105,8 @@ mod tests {
             app_token: "xapp-t".to_string(),
             allowed_users: Vec::new(),
             welcome_message: None,
+            require_mention: true,
+            group_key_policy: GroupKeyPolicy::PerUser,
         }
     }
 

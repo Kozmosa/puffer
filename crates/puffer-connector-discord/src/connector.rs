@@ -1,16 +1,19 @@
-use crate::handler::{handle_command, CommandOutcome, PLATFORM_ID};
+use crate::handler::{handle_command, PLATFORM_ID};
 use crate::DiscordConfig;
 use anyhow::{Context as AnyhowContext, Result};
 use puffer_connector_core::{
-    Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
+    CommandOutcome, Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
+    InboundMessage, MessageSplitter,
 };
 use serenity::async_trait;
 use serenity::client::{Client, Context, EventHandler};
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
+use serenity::model::id::UserId;
 use serenity::prelude::GatewayIntents;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// Discord connector ready to be started by the puffer connector hub.
@@ -121,13 +124,47 @@ struct Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, message: Message) {
-        // Ignore our own messages and other bots.
-        if message.author.bot {
-            return;
-        }
-        let channel_id = message.channel_id.get();
-        let user_id = Some(message.author.id.get());
-        let text = message.content.clone();
+        // Resolve our own bot user id so we can filter self-echoes and
+        // detect raw `<@id>` mention tokens in the text body.
+        let current_user_id: UserId = match ctx.http.get_current_user().await {
+            Ok(user) => user.id,
+            Err(error) => {
+                eprintln!("discord connector: failed to fetch bot identity: {error}");
+                return;
+            }
+        };
+
+        let from_bot = message.author.bot && message.author.id == current_user_id;
+
+        // Discord embeds mentions as `<@id>` or `<@!id>` tokens inside
+        // message.content. Strip ours so the agent sees clean prose, and
+        // use presence of the token as a fallback mention signal.
+        let mention_token = format!("<@{}>", current_user_id.get());
+        let nick_mention_token = format!("<@!{}>", current_user_id.get());
+        let raw_text = message.content.clone();
+        let text_contains_mention =
+            raw_text.contains(&mention_token) || raw_text.contains(&nick_mention_token);
+        let cleaned_text = raw_text
+            .replace(&mention_token, "")
+            .replace(&nick_mention_token, "")
+            .trim()
+            .to_string();
+
+        let bot_mentioned = message.mentions_user_id(current_user_id) || text_contains_mention;
+        // Guild messages are group-like; DMs (no guild id) are 1:1.
+        let is_group = message.guild_id.is_some();
+
+        let inbound = InboundMessage {
+            conversation_id: message.channel_id.get().to_string(),
+            user_id: Some(message.author.id.get().to_string()),
+            text: cleaned_text,
+            // TODO(connector-v2): map Discord threads (ChannelType::PublicThread
+            // / PrivateThread) onto `thread_id` so thread replies stay threaded.
+            thread_id: None,
+            is_group,
+            bot_mentioned,
+            from_bot,
+        };
 
         let runtime = self.runtime.clone();
         let config = self.config.clone();
@@ -135,7 +172,7 @@ impl EventHandler for Handler {
         // The dispatch itself blocks on the shared runtime mutex. Park on
         // a blocking worker so we don't starve the tokio reactor.
         let outcome = tokio::task::spawn_blocking(move || {
-            handle_command(&runtime, channel_id, user_id, &text, &config)
+            handle_command(&runtime, &inbound, &config)
         })
         .await;
 
@@ -147,12 +184,50 @@ impl EventHandler for Handler {
             Err(error) => format!("Puffer error: {error}"),
         };
 
-        if let Err(error) = message.channel_id.say(&ctx.http, reply).await {
+        if let Err(error) = send_reply_chunks(&ctx, &message, &reply).await {
             eprintln!("discord connector: failed to send reply: {error}");
         }
     }
 
     async fn ready(&self, _: Context, _ready: Ready) {
         // Intentionally silent — the connector hub logs start/stop.
+    }
+}
+
+async fn send_reply_chunks(
+    ctx: &Context,
+    message: &Message,
+    body: &str,
+) -> Result<(), serenity::Error> {
+    for chunk in MessageSplitter::DISCORD.split(body) {
+        send_with_retry(ctx, message, &chunk).await?;
+    }
+    Ok(())
+}
+
+/// Sends a single chunk with exponential backoff. Retries up to
+/// `MAX_ATTEMPTS` times on transient errors before giving up. Matches
+/// the telegram connector's `send_with_retry` shape so operators get
+/// the same resiliency everywhere.
+async fn send_with_retry(
+    ctx: &Context,
+    message: &Message,
+    chunk: &str,
+) -> Result<(), serenity::Error> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0u32;
+    loop {
+        match message.channel_id.say(&ctx.http, chunk).await {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                if attempt >= MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                // Exponential backoff with a tiny jitter budget.
+                let delay_ms = 250u64 * (1u64 << (attempt - 1));
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
     }
 }
