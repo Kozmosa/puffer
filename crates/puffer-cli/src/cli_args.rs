@@ -136,6 +136,16 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DesktopApiCommand,
     },
+    /// Run Puffer in connector-only mode (Telegram, Slack, …).
+    ///
+    /// Reads `.puffer/connectors.toml` (workspace) or
+    /// `~/.puffer/connectors.toml` (user) and starts every enabled,
+    /// compiled-in platform connector. Blocks until SIGINT/SIGTERM.
+    Serve {
+        /// Override the connectors config path.
+        #[arg(long = "config")]
+        config: Option<String>,
+    },
     /// Run one unattended benchmark turn and emit result artifacts.
     #[command(hide = true)]
     BenchmarkRun {

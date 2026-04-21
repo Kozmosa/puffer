@@ -5,6 +5,7 @@ mod authflow;
 mod benchmark_run;
 mod cli_args;
 mod command_surface;
+mod connectors;
 mod desktop_api;
 mod desktop_api_types;
 mod resource_fs;
@@ -261,6 +262,16 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Some(Command::Serve { config: config_override }) => run_serve_command(
+            config_override.as_deref(),
+            &cwd,
+            config,
+            resources,
+            providers,
+            auth_store,
+            auth_path,
+            &paths,
+        ),
         Some(Command::Tool { command }) => run_tool_command(command, &resources, &cwd),
         Some(Command::Remote {
             target,
@@ -990,4 +1001,67 @@ fn resolve_session_query(session_store: &SessionStore, query: &str) -> Result<Uu
         .find_session(query)?
         .ok_or_else(|| anyhow::anyhow!("no session matched `{query}`"))?;
     Ok(session.id)
+}
+
+/// Runs `puffer serve` — headless connector-only mode. Blocks on
+/// SIGINT/SIGTERM, then drives a graceful shutdown for every connector.
+fn run_serve_command(
+    config_override: Option<&str>,
+    cwd: &std::path::Path,
+    config: puffer_config::PufferConfig,
+    resources: puffer_resources::LoadedResources,
+    providers: ProviderRegistry,
+    auth_store: AuthStore,
+    auth_path: std::path::PathBuf,
+    paths: &ConfigPaths,
+) -> Result<()> {
+    let connectors_config = match config_override {
+        Some(path) => puffer_connector_core::ConnectorsConfig::load(std::path::Path::new(path))?,
+        None => connectors::load_connectors_config(paths)?,
+    };
+
+    if !connectors_config.enabled {
+        eprintln!("connectors are disabled (enabled = false); nothing to run");
+        return Ok(());
+    }
+
+    let session_store = SessionStore::from_paths(paths)?;
+    let map_path = connectors::session_map_path(paths);
+    let runtime = connectors::build_runtime(
+        config,
+        resources,
+        providers,
+        auth_store,
+        auth_path,
+        session_store,
+        cwd.to_path_buf(),
+        &map_path,
+    )?;
+
+    let running = connectors::start_configured_connectors(runtime, &connectors_config)?;
+    if running.is_empty() {
+        eprintln!("no connectors started; add entries to connectors.toml or enable more features");
+        return Ok(());
+    }
+
+    let ids = running.ids();
+    eprintln!("puffer serve: running {} connector(s): {}", ids.len(), ids.join(", "));
+    eprintln!("press Ctrl+C to stop");
+
+    // Block on SIGINT. `ctrlc` installs the handler and signals via the
+    // shared channel; we block on receive once it fires.
+    let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = signal_tx.send(());
+    })
+    .map_err(|error| anyhow::anyhow!("failed to install Ctrl+C handler: {error}"))?;
+    let _ = signal_rx.recv();
+
+    eprintln!("shutting down connectors…");
+    let errors = running.shutdown();
+    for (id, error) in errors {
+        eprintln!("  connector `{id}` shutdown error: {error:#}");
+    }
+    puffer_core::shutdown_runtime_services().ok();
+    Ok(())
 }

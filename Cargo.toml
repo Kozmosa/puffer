@@ -2,6 +2,13 @@
 members = [
     "crates/puffer-cli",
     "crates/puffer-config",
+    "crates/puffer-connector-core",
+    "crates/puffer-connector-discord",
+    "crates/puffer-connector-email",
+    "crates/puffer-connector-matrix",
+    "crates/puffer-connector-slack",
+    "crates/puffer-connector-telegram",
+    "crates/puffer-connector-webhook",
     "crates/puffer-core",
     "crates/puffer-provider-openai",
     "crates/puffer-provider-registry",

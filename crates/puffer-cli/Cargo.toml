@@ -28,6 +28,36 @@ puffer-transport-anthropic = { path = "../puffer-transport-anthropic" }
 puffer-tools = { path = "../puffer-tools" }
 puffer-tui = { path = "../puffer-tui" }
 
+# Connector support (opt-in per platform). The `serve` subcommand is
+# compiled in unconditionally, but each platform connector is gated
+# behind its own feature so users don't pay for SDK bloat they don't
+# want. Enable `connectors-all` to get the full set.
+puffer-connector-core = { path = "../puffer-connector-core" }
+puffer-connector-telegram = { path = "../puffer-connector-telegram", optional = true }
+puffer-connector-discord = { path = "../puffer-connector-discord", optional = true }
+puffer-connector-slack = { path = "../puffer-connector-slack", optional = true }
+puffer-connector-matrix = { path = "../puffer-connector-matrix", optional = true }
+puffer-connector-email = { path = "../puffer-connector-email", optional = true }
+puffer-connector-webhook = { path = "../puffer-connector-webhook", optional = true }
+ctrlc = "3"
+
+[features]
+default = []
+connector-telegram = ["dep:puffer-connector-telegram"]
+connector-discord = ["dep:puffer-connector-discord"]
+connector-slack = ["dep:puffer-connector-slack"]
+connector-matrix = ["dep:puffer-connector-matrix"]
+connector-email = ["dep:puffer-connector-email"]
+connector-webhook = ["dep:puffer-connector-webhook"]
+connectors-all = [
+    "connector-telegram",
+    "connector-discord",
+    "connector-slack",
+    "connector-matrix",
+    "connector-email",
+    "connector-webhook",
+]
+
 [dev-dependencies]
 puffer-config = { path = "../puffer-config" }
 puffer-session-store = { path = "../puffer-session-store" }
