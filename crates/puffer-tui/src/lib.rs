@@ -34,12 +34,13 @@ use app_helpers::{
     apply_model_selection_preferences, apply_selected_model, help_pane_active_without_overlay,
     should_use_inline_viewport,
 };
+use crossterm::ExecutableCommand;
 use crossterm::cursor::MoveTo;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, size as terminal_size, Clear, ClearType,
-    EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, size as terminal_size, BeginSynchronizedUpdate, Clear,
+    ClearType, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use puffer_core::{command_surface, shutdown_runtime_services, AppState, CommandSpec};
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
@@ -158,6 +159,7 @@ pub fn run_app(
     }
 
     sync_render_state(&tui);
+
     let mut viewport_height = if use_content_viewport {
         let (width, height) = terminal_size()?;
         render::desired_height(
@@ -229,6 +231,9 @@ pub fn run_app(
         }
         refresh_status_line(state, providers)?;
         sync_render_state(&tui);
+        // Begin synchronized update so the terminal buffers all output and
+        // presents the completed frame atomically, preventing visible flicker.
+        io::stdout().execute(BeginSynchronizedUpdate)?;
         if use_content_viewport {
             let size = terminal.size()?;
             let next_height = render::desired_height(
@@ -242,8 +247,13 @@ pub fn run_app(
                 &commands,
             )
             .max(1);
-            if next_height != viewport_height {
-                terminal.clear()?;
+            // Hysteresis: always grow immediately (content would be clipped),
+            // but only shrink when the excess exceeds a threshold to avoid
+            // cascading rebuilds during overlay transitions.
+            let needs_grow = next_height > viewport_height;
+            let shrink_excess = viewport_height.saturating_sub(next_height);
+            let needs_shrink = shrink_excess > 2;
+            if needs_grow || needs_shrink {
                 terminal = Terminal::with_options(
                     CrosstermBackend::new(io::stdout()),
                     TerminalOptions {
@@ -269,6 +279,7 @@ pub fn run_app(
                 &commands,
             )
         })?;
+        io::stdout().execute(EndSynchronizedUpdate)?;
         if state.should_exit {
             break;
         }

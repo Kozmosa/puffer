@@ -198,7 +198,6 @@ pub(crate) fn render(
     scroll_offset: u16,
     commands: &[CommandSpec],
 ) {
-    frame.render_widget(Clear, frame.area());
     let tool_registry = ToolRegistry::from_resources(resources);
     let active_overlay = ACTIVE_OVERLAY.with(|value| value.borrow().clone());
     let onboarding_active = active_overlay
