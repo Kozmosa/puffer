@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const ORANGE_ACCENT: Color = Color::Indexed(214);
 const TOOL_OUTPUT_COLOR: Color = Color::DarkGray;
 const RUNNING_PULSE_MS: u128 = 800;
+const DISPLAY_TAB_STOP: usize = 4;
 
 // JSON syntax coloring.
 const JSON_KEY_COLOR: Color = Color::Cyan;
@@ -214,6 +215,10 @@ fn output_display_lines(
     }
 
     let (lines, is_json) = display_output_lines(tool_id, text);
+    let lines = lines
+        .into_iter()
+        .map(|line| sanitize_display_line(&line))
+        .collect::<Vec<_>>();
     if lines.is_empty() {
         return (Vec::new(), false);
     }
@@ -615,6 +620,36 @@ fn truncate(text: &str, max_chars: usize) -> String {
     format!("{retained}…")
 }
 
+fn sanitize_display_line(text: &str) -> String {
+    let mut rendered = String::with_capacity(text.len());
+    let mut column = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\t' => {
+                let spaces = DISPLAY_TAB_STOP - (column % DISPLAY_TAB_STOP);
+                rendered.push_str(&" ".repeat(spaces));
+                column += spaces;
+            }
+            '\u{1b}' => {
+                if chars.next_if_eq(&'[').is_some() {
+                    while let Some(next) = chars.next() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+            }
+            control if control.is_control() => {}
+            _ => {
+                rendered.push(ch);
+                column += 1;
+            }
+        }
+    }
+    rendered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,9 +718,17 @@ mod tests {
             text,
             vec![
                 "● Read /tmp/demo.txt".to_string(),
-                "└      1\thello".to_string(),
-                "       2\tworld".to_string(),
+                "└      1  hello".to_string(),
+                "       2  world".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn tool_output_sanitizes_tabs_and_control_characters() {
+        assert_eq!(
+            sanitize_display_line("     1\thello\r\x1b[31m"),
+            "     1  hello"
         );
     }
 

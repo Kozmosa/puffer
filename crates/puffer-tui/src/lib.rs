@@ -451,6 +451,7 @@ fn handle_key(
                     render::transcript_line_count(
                         state,
                         resources,
+                        providers,
                         auth_store,
                         tui.has_pending_submit(),
                     ),
@@ -468,6 +469,7 @@ fn handle_key(
                     render::transcript_line_count(
                         state,
                         resources,
+                        providers,
                         auth_store,
                         tui.has_pending_submit(),
                     ),
@@ -487,6 +489,7 @@ fn handle_key(
                     render::transcript_line_count(
                         state,
                         resources,
+                        providers,
                         auth_store,
                         tui.has_pending_submit(),
                     ),
@@ -506,6 +509,7 @@ fn handle_key(
                     render::transcript_line_count(
                         state,
                         resources,
+                        providers,
                         auth_store,
                         tui.has_pending_submit(),
                     ),
@@ -1137,11 +1141,26 @@ fn handle_overlay_key(
             if let Some(overlay) = tui.overlay.as_mut() {
                 if overlay.is_text_overlay() {
                     match ch {
-                        'j' => { overlay.select_next(); return Ok(false); }
-                        'k' => { overlay.select_previous(); return Ok(false); }
-                        'g' => { overlay.scroll_to_top(); return Ok(false); }
-                        'G' => { overlay.scroll_to_bottom(); return Ok(false); }
-                        'q' => { set_overlay_state(tui, None); return Ok(false); }
+                        'j' => {
+                            overlay.select_next();
+                            return Ok(false);
+                        }
+                        'k' => {
+                            overlay.select_previous();
+                            return Ok(false);
+                        }
+                        'g' => {
+                            overlay.scroll_to_top();
+                            return Ok(false);
+                        }
+                        'G' => {
+                            overlay.scroll_to_bottom();
+                            return Ok(false);
+                        }
+                        'q' => {
+                            set_overlay_state(tui, None);
+                            return Ok(false);
+                        }
                         _ => {}
                     }
                 }
