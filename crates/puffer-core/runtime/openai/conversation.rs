@@ -446,7 +446,50 @@ pub(crate) fn items_to_responses_input(items: &[ConversationItem]) -> Value {
     if items.is_empty() {
         return Value::Array(Vec::new());
     }
-    Value::Array(items.iter().map(item_to_responses_value).collect())
+    Value::Array(
+        drop_transient_system_messages(items)
+            .into_iter()
+            .map(item_to_responses_value)
+            .collect(),
+    )
+}
+
+/// Strips transient `role:"system"` items that appear after the first
+/// non-system item — these are local UI notifications (slash command
+/// output, "Provider request failed: ...", "Interrupted by user.")
+/// that leaked into the transcript via `emit_system_message` and have
+/// no business reaching the model.
+///
+/// Items at the head of the list are preserved so legitimate system
+/// content (e.g. a sub-agent identity prompt pushed by `agents.rs:321`)
+/// still reaches the wire — until we move that to top-level
+/// `instructions` in a follow-up.
+///
+/// Without this filter:
+/// - ChatGPT Codex backend (`chatgpt.com/backend-api/codex/responses`)
+///   rejects with `400` on any role:"system" inside `input`.
+/// - Permissive proxies silently merge the leaked content into the
+///   top-level `instructions`, corrupting the system prompt.
+/// - On Chat Completions, the leaked entry shows up mid-conversation
+///   which strict providers reject and lenient ones treat as a real
+///   instruction switch.
+fn drop_transient_system_messages(items: &[ConversationItem]) -> Vec<&ConversationItem> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut seen_non_system = false;
+    for item in items {
+        let is_system = matches!(
+            item,
+            ConversationItem::Message { role, .. } if role == "system"
+        );
+        if is_system && seen_non_system {
+            continue;
+        }
+        if !is_system {
+            seen_non_system = true;
+        }
+        out.push(item);
+    }
+    out
 }
 
 fn item_to_responses_value(item: &ConversationItem) -> Value {
@@ -556,6 +599,13 @@ pub(crate) fn items_to_chat_messages(
         messages.push(chat_message("system", reminder));
     }
 
+    // Same boundary filter as items_to_responses_input — strip transient
+    // role:"system" items emitted by `flow.rs::emit_system_message` so they
+    // don't appear mid-conversation on the wire (which strict Chat
+    // Completions providers reject).
+    let filtered: Vec<&ConversationItem> = drop_transient_system_messages(items);
+    let items_owned: Vec<ConversationItem> = filtered.into_iter().cloned().collect();
+    let items: &[ConversationItem] = &items_owned;
     let mut i = 0;
     while i < items.len() {
         match &items[i] {
@@ -1197,6 +1247,99 @@ mod tests {
         assert_eq!(arr[2]["name"], "Bash");
         assert_eq!(arr[3]["type"], "function_call_output");
         assert_eq!(arr[3]["output"], "file.txt");
+    }
+
+    /// Regression: a `MessageRole::System` item pushed by
+    /// `flow.rs::emit_system_message` after the conversation has already
+    /// started (e.g. "Interrupted by user.", "Provider request failed: ...")
+    /// must be stripped before reaching the Responses API `input` array,
+    /// because (a) ChatGPT Codex backend rejects it with 400, and
+    /// (b) permissive proxies silently merge it into the top-level
+    /// `instructions`, polluting the system prompt.
+    #[test]
+    fn responses_input_drops_transient_system_messages() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::assistant_message("first reply"),
+            ConversationItem::system_message("Interrupted by user."),
+            ConversationItem::user_message("second user message"),
+        ];
+        let value = items_to_responses_input(&items);
+        let arr = value.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "transient system entry must be dropped");
+        assert!(
+            !arr.iter().any(|m| m["role"] == "system"),
+            "no system role should appear after the first non-system item: {arr:?}"
+        );
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[1]["role"], "assistant");
+        assert_eq!(arr[2]["role"], "user");
+        assert_eq!(arr[2]["content"][0]["text"], "second user message");
+    }
+
+    /// Regression: same scenario for Chat Completions wire format. Strict
+    /// providers (and some Anthropic-via-OpenAI shims like GLM coding plan
+    /// when routed through chat completions) reject mid-conversation
+    /// `role:"system"`; lenient ones treat it as an instruction switch
+    /// and behave unpredictably.
+    #[test]
+    fn chat_messages_drops_transient_system_messages() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::assistant_message("first reply"),
+            ConversationItem::system_message("Interrupted by user."),
+            ConversationItem::user_message("second user message"),
+        ];
+        let msgs = items_to_chat_messages(&items, Some("real system prompt"), None, None);
+        // Position 0 is the explicit top-level system_prompt; positions
+        // 1..N must contain no further `system` role.
+        assert_eq!(msgs[0].role, "system");
+        for (i, m) in msgs.iter().enumerate().skip(1) {
+            assert_ne!(
+                m.role, "system",
+                "transient system leaked into chat messages at position {i}: {m:?}"
+            );
+        }
+        // Sanity: message order is user, assistant, user.
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[2].role, "assistant");
+        assert_eq!(msgs[3].role, "user");
+    }
+
+    /// First-position exemption: a `system_message` at the head of the
+    /// items list represents legitimate model-facing system content
+    /// (e.g. a sub-agent identity prompt pushed by `agents.rs:321`
+    /// after `nested_state.transcript.clear()`). It must NOT be dropped.
+    #[test]
+    fn responses_input_preserves_leading_system_message() {
+        let items = vec![
+            ConversationItem::system_message("You are the bug-bounty subagent."),
+            ConversationItem::user_message("audit this"),
+        ];
+        let value = items_to_responses_input(&items);
+        let arr = value.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"], "system");
+        assert_eq!(arr[0]["content"], "You are the bug-bounty subagent.");
+        assert_eq!(arr[1]["role"], "user");
+    }
+
+    /// Anthropic boundary already strips role:"system" entirely (the
+    /// protocol disallows it in messages) — keep that contract under
+    /// the same scenario the Responses-side regression covers.
+    #[test]
+    fn anthropic_messages_never_contain_system_role() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::assistant_message("first reply"),
+            ConversationItem::system_message("Interrupted by user."),
+            ConversationItem::user_message("second user message"),
+        ];
+        let msgs = items_to_anthropic_messages(&items);
+        for m in &msgs {
+            assert_ne!(m["role"], "system",
+                "system role leaked into Anthropic messages: {m:?}");
+        }
     }
 
     #[test]
