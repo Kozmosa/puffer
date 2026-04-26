@@ -29,6 +29,9 @@
      *  the composer's send button into a red "Stop" so the user can
      *  interrupt a runaway loop. */
     turnRunning?: boolean;
+    turnStartedAtMs?: number | null;
+    turnThinking?: boolean;
+    turnStatusHint?: string | null;
     onSubmitMessage: (message: string) => void;
     onResolvePermission: (permissionId: string, choice: string) => void;
     onCancelTurn?: () => void;
@@ -42,6 +45,9 @@
     pendingPermissions,
     loading,
     turnRunning = false,
+    turnStartedAtMs = null,
+    turnThinking = false,
+    turnStatusHint = null,
     onSubmitMessage,
     onResolvePermission,
     onCancelTurn
@@ -50,6 +56,7 @@
   let draft = $state("");
   let threadEl: HTMLDivElement | undefined;
   let lastSessionId: string | null = null;
+  let nowMs = $state(Date.now());
 
   // Rolled-up thread: we group consecutive tool / diff items under the most
   // recent assistant message so the design's "assistant speaks, then shows its
@@ -107,12 +114,27 @@
     return `${hh}:${m}`;
   }
 
+  function formatElapsed(startedAtMs: number | null): string {
+    if (!startedAtMs) return "";
+    const elapsed = Math.max(0, nowMs - startedAtMs) / 1000;
+    return elapsed < 10 ? `${elapsed.toFixed(1)}s` : `${Math.floor(elapsed)}s`;
+  }
+
   $effect(() => {
     // On session change, reset scroll to top so users see the start.
     if (session?.id !== lastSessionId) {
       lastSessionId = session?.id ?? null;
       void tick().then(() => threadEl?.scrollTo({ top: 0, behavior: "auto" }));
     }
+  });
+
+  $effect(() => {
+    if (!turnRunning || !turnStartedAtMs) return;
+    nowMs = Date.now();
+    const interval = window.setInterval(() => {
+      nowMs = Date.now();
+    }, 100);
+    return () => window.clearInterval(interval);
   });
 
   async function submit() {
@@ -151,9 +173,14 @@
   });
 
   let typingLabel = $derived.by(() => {
-    if (agentState === "thinking") return `${agentName} is thinking…`;
-    if (agentState === "running") return `${agentName} is running a tool…`;
-    if (agentState === "awaiting") return `${agentName} paused — waiting for your approval`;
+    const elapsed = formatElapsed(turnStartedAtMs);
+    const suffix = elapsed ? ` (${elapsed})` : "";
+    if (turnRunning) {
+      if (turnStatusHint) return `${turnStatusHint}${suffix}`;
+      if (turnThinking) return `Thinking${suffix}`;
+      return `Running${suffix}`;
+    }
+    if (agentState === "awaiting") return `${agentName} paused - waiting for your approval`;
     return null;
   });
 </script>
@@ -163,7 +190,7 @@
     <div class="pf-chat-thread-inner">
       {#if loading}
         <div class="state">Loading conversation…</div>
-      {:else if rows.length === 0}
+      {:else if rows.length === 0 && !typingLabel}
         <div class="state">No messages in this session yet. Send a prompt to get started.</div>
       {:else}
         {#each distributedRows as row, idx (idx)}

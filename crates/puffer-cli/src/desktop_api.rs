@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
-use puffer_config::{ConfigPaths, PufferConfig};
-use puffer_provider_registry::{AuthMode, AuthStore, ProviderRegistry, StoredCredential};
+use puffer_config::{load_config, save_user_config, ConfigPaths, PufferConfig};
+use puffer_provider_registry::{
+    detect_import_candidates, AuthMode, AuthStore, ExternalImportCandidate, ExternalImportFamily,
+    ExternalImportSource, ProviderRegistry, StoredCredential,
+};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{GitDiffSnapshot, SessionRecord, SessionStore, TranscriptEvent};
 use serde_json::Value;
@@ -11,9 +14,10 @@ use uuid::Uuid;
 use crate::cli_args::DesktopApiCommand;
 use crate::desktop_api_types::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto, DiffSummaryDto,
-    DivergenceReportDto, FolderGroupDto, ProviderSummaryDto, RepoActionResultDto,
-    RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto, SessionListItemDto,
-    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
+    DivergenceReportDto, ExternalCredentialDto, FolderGroupDto, ProviderSummaryDto,
+    RepoActionResultDto, RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto,
+    SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto,
+    TimelineItemDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.
@@ -195,7 +199,10 @@ pub(crate) fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<
     Ok(folders)
 }
 
-pub(crate) fn load_session_detail(session_store: &SessionStore, session_id: &str) -> Result<SessionDetailDto> {
+pub(crate) fn load_session_detail(
+    session_store: &SessionStore,
+    session_id: &str,
+) -> Result<SessionDetailDto> {
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     let folder_path = session_group_root(&record.metadata.cwd)
@@ -383,6 +390,103 @@ pub(crate) fn store_api_key(
         .context("failed to save auth store")
 }
 
+/// Lists importable `.claude` and `.codex` credentials for all compatible providers.
+pub(crate) fn list_external_credentials(
+    providers: &ProviderRegistry,
+) -> Result<Vec<ExternalCredentialDto>> {
+    let mut out = Vec::new();
+    for entry in providers.provider_entries() {
+        let Some(family) = import_family(&entry.descriptor.default_api) else {
+            continue;
+        };
+        let candidates = detect_import_candidates(family).unwrap_or_default();
+        for candidate in candidates {
+            out.push(ExternalCredentialDto {
+                provider_id: entry.descriptor.id.clone(),
+                source: source_label(candidate.source).to_string(),
+                kind: credential_kind(&candidate.credential).to_string(),
+                description: candidate.description.clone(),
+                source_path: candidate.source_path.display().to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Imports a `.claude` or `.codex` credential into Puffer's auth store.
+pub(crate) fn import_external_credential(
+    paths: &ConfigPaths,
+    auth_store: &mut AuthStore,
+    providers: &ProviderRegistry,
+    auth_path: &Path,
+    provider_id: &str,
+    source: &str,
+) -> Result<()> {
+    let provider = providers
+        .provider(provider_id)
+        .with_context(|| format!("unknown provider `{provider_id}`"))?;
+    let family = import_family(&provider.default_api)
+        .with_context(|| format!("provider `{provider_id}` has no importable credential family"))?;
+    let source_kind = match source {
+        "claude" => ExternalImportSource::Claude,
+        "codex" => ExternalImportSource::Codex,
+        other => anyhow::bail!("unknown import source `{other}`"),
+    };
+    let candidate = detect_import_candidates(family)?
+        .into_iter()
+        .find(|candidate| candidate.source == source_kind)
+        .with_context(|| {
+            format!("no `{source}` credential available on disk for provider `{provider_id}`")
+        })?;
+    apply_imported_credential(paths, auth_store, provider_id, candidate)?;
+    auth_store
+        .save(auth_path)
+        .context("failed to save auth store")
+}
+
+/// Ensures a freshly authenticated provider becomes the default route when needed.
+pub(crate) fn ensure_default_routing(
+    paths: &ConfigPaths,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+    just_authed: &str,
+) -> Result<()> {
+    let mut config = load_config(paths)?;
+    let mut changed = false;
+
+    let default_has_creds = config
+        .default_provider
+        .as_deref()
+        .map(|id| auth_store.get(id).is_some())
+        .unwrap_or(false);
+    if !default_has_creds {
+        config.default_provider = Some(just_authed.to_string());
+        changed = true;
+    }
+
+    let default_provider_id = config.default_provider.clone().unwrap_or_default();
+    let provider_models = providers
+        .provider(&default_provider_id)
+        .map(|provider| provider.models.clone())
+        .unwrap_or_default();
+    let default_model_belongs = config
+        .default_model
+        .as_deref()
+        .map(|model_id| provider_models.iter().any(|model| model.id == model_id))
+        .unwrap_or(false);
+    if !default_model_belongs {
+        if let Some(first) = provider_models.first() {
+            config.default_model = Some(first.id.clone());
+            changed = true;
+        }
+    }
+
+    if changed {
+        save_user_config(paths, &config)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn logout_provider(
     auth_store: &mut AuthStore,
     auth_path: &Path,
@@ -392,6 +496,58 @@ pub(crate) fn logout_provider(
     auth_store
         .save(auth_path)
         .context("failed to save auth store")
+}
+
+fn import_family(default_api: &str) -> Option<ExternalImportFamily> {
+    match default_api {
+        "anthropic-messages" => Some(ExternalImportFamily::Anthropic),
+        "openai-responses"
+        | "openai-completions"
+        | "openai-codex-responses"
+        | "azure-openai-responses" => Some(ExternalImportFamily::OpenAi),
+        _ => None,
+    }
+}
+
+fn source_label(source: ExternalImportSource) -> &'static str {
+    match source {
+        ExternalImportSource::Claude => "claude",
+        ExternalImportSource::Codex => "codex",
+    }
+}
+
+fn credential_kind(credential: &StoredCredential) -> &'static str {
+    match credential {
+        StoredCredential::ApiKey { .. } => "api_key",
+        StoredCredential::OAuth(_) => "oauth",
+    }
+}
+
+fn apply_imported_credential(
+    paths: &ConfigPaths,
+    auth_store: &mut AuthStore,
+    provider_id: &str,
+    candidate: ExternalImportCandidate,
+) -> Result<()> {
+    let openai_base_url = candidate.openai_base_url.clone();
+    let openai_headers = candidate.openai_headers.clone();
+    let openai_query_params = candidate.openai_query_params.clone();
+    match candidate.credential {
+        StoredCredential::ApiKey { key } => {
+            auth_store.set_api_key(provider_id.to_string(), key);
+        }
+        StoredCredential::OAuth(credential) => {
+            auth_store.set_oauth(provider_id.to_string(), credential);
+        }
+    }
+    if provider_id == "openai" {
+        let mut config = load_config(paths)?;
+        config.openai_base_url = openai_base_url;
+        config.openai_headers = openai_headers;
+        config.openai_query_params = openai_query_params;
+        save_user_config(paths, &config)?;
+    }
+    Ok(())
 }
 
 fn store_credential(
@@ -670,8 +826,7 @@ fn compute_divergence(
     latest_git_diff: Option<&DiffSummaryDto>,
     cwd: &Path,
 ) -> DivergenceReportDto {
-    let agent_paths: BTreeSet<String> =
-        agent_diff.files.iter().map(|f| f.path.clone()).collect();
+    let agent_paths: BTreeSet<String> = agent_diff.files.iter().map(|f| f.path.clone()).collect();
     let git_paths = latest_git_diff
         .map(|d| extract_paths_from_patch(&d.patch, cwd))
         .unwrap_or_default();
@@ -684,14 +839,8 @@ fn compute_divergence(
         .map(|p| relativize_path(p, cwd))
         .collect();
 
-    let agent_only: Vec<String> = agent_relative
-        .difference(&git_paths)
-        .cloned()
-        .collect();
-    let git_only: Vec<String> = git_paths
-        .difference(&agent_relative)
-        .cloned()
-        .collect();
+    let agent_only: Vec<String> = agent_relative.difference(&git_paths).cloned().collect();
+    let git_only: Vec<String> = git_paths.difference(&agent_relative).cloned().collect();
 
     DivergenceReportDto {
         agent_total: agent_relative.len(),

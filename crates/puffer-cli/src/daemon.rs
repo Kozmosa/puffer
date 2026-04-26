@@ -35,12 +35,21 @@ use puffer_config::{
     ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, PufferConfig,
 };
 use puffer_core::{
-    execute_user_turn_streaming_with_permissions, AppState, MessageRole,
-    PermissionPromptAction, PermissionPromptRequest, TurnStreamEvent,
+    execute_user_turn_streaming_with_permissions, AppState, MessageRole, PermissionPromptAction,
+    PermissionPromptRequest, TurnStreamEvent,
 };
-use puffer_provider_registry::{AuthStore, ProviderRegistry};
+use puffer_provider_openai::{
+    exchange_authorization_code as exchange_openai_authorization_code,
+    parse_authorization_input as parse_openai_authorization_input,
+};
+use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::{load_resources, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
+use puffer_transport_anthropic::{
+    exchange_authorization_code as exchange_anthropic_authorization_code,
+    parse_authorization_input as parse_anthropic_authorization_input, ANTHROPIC_API_BASE_URL,
+    ANTHROPIC_MANUAL_REDIRECT_URL,
+};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -50,15 +59,23 @@ use std::net::SocketAddr;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use uuid::Uuid;
 
+use crate::auth_credentials::{
+    inferred_anthropic_redirect_uri, set_stored_credential, store_anthropic_credential,
+    to_registry_oauth_credential_openai,
+};
+use crate::auth_provider::{
+    oauth_family_for_provider, oauth_login_bundle_for_provider, OauthFamily,
+};
 use crate::daemon_fs_watch::FsWatchRegistry;
 use crate::daemon_pty::PtyRegistry;
 use crate::desktop_api;
 use crate::desktop_api_types::{
-    FolderGroupDto, McpServerDto, ModelDescriptorDto, RepoActionResultDto, RepoStatusDto,
-    SessionDetailDto, SettingsSnapshotDto,
+    ExternalCredentialDto, FolderGroupDto, McpServerDto, ModelDescriptorDto, RepoActionResultDto,
+    RepoStatusDto, SessionDetailDto, SettingsSnapshotDto,
 };
 
 const PROTOCOL_VERSION: &str = "1";
@@ -94,7 +111,9 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
     let paths = ConfigPaths::discover(&cwd);
     ensure_workspace_dirs(&paths)?;
 
-    let token = options.token.unwrap_or_else(|| load_or_generate_token(&paths));
+    let token = options
+        .token
+        .unwrap_or_else(|| load_or_generate_token(&paths));
 
     let state = DaemonState::load(cwd.clone(), paths.clone(), token.clone())?;
     let state = Arc::new(state);
@@ -133,7 +152,10 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
         println!("{handshake_json}");
     }
 
-    eprintln!("puffer daemon listening on {url} (workspace: {})", paths.workspace_root.display());
+    eprintln!(
+        "puffer daemon listening on {url} (workspace: {})",
+        paths.workspace_root.display()
+    );
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -553,6 +575,15 @@ async fn dispatch_request(
         "login_with_api_key" => {
             respond!(detached!(|s, p| handle_login_with_api_key(&s, &p)))
         }
+        "login_with_oauth" => {
+            respond!(detached!(|s, p| handle_login_with_oauth(&s, &p)))
+        }
+        "list_external_credentials" => {
+            respond!(detached!(|s| handle_list_external_credentials(&s)))
+        }
+        "import_external_credential" => {
+            respond!(detached!(|s, p| handle_import_external_credential(&s, &p)))
+        }
         "logout_provider" => respond!(detached!(|s, p| handle_logout_provider(&s, &p))),
         "list_mcp_servers" => respond!(detached!(|s| handle_list_mcp_servers(&s))),
         "list_provider_models" => {
@@ -691,6 +722,13 @@ fn handle_login_with_api_key(state: &DaemonState, params: &Value) -> Result<Valu
         provider_id,
         api_key,
     )?;
+    let _ = desktop_api::ensure_default_routing(
+        &state.paths,
+        &inputs.providers,
+        &inputs.auth_store,
+        provider_id,
+    );
+    reload_daemon_config(state)?;
     // Rebuild so provider discovery can pick up the newly-stored key.
     let fresh = state.build_runtime_inputs()?;
     let config = state.config.lock().unwrap().clone();
@@ -703,6 +741,148 @@ fn handle_login_with_api_key(state: &DaemonState, params: &Value) -> Result<Valu
         &fresh.session_store,
     )?;
     Ok(serde_json::to_value(snapshot)?)
+}
+
+/// Runs the provider OAuth flow from the daemon host and returns a fresh snapshot.
+fn handle_login_with_oauth(state: &DaemonState, params: &Value) -> Result<Value> {
+    let provider_id = params
+        .get("providerId")
+        .or_else(|| params.get("provider_id"))
+        .and_then(|v| v.as_str())
+        .context("missing providerId")?;
+
+    let mut inputs = state.build_runtime_inputs()?;
+    let auth_path = state.paths.user_config_dir.join("auth.json");
+    let listener = crate::authflow::CallbackListener::bind_localhost("/callback")?;
+    let bundle =
+        oauth_login_bundle_for_provider(&inputs.providers, provider_id, listener.redirect_uri())?;
+    let launch_url = bundle
+        .automatic_authorization_url
+        .as_deref()
+        .unwrap_or(bundle.authorization_url.as_str());
+    if !crate::authflow::open_browser(launch_url) {
+        anyhow::bail!("could not open the system browser for `{provider_id}` login");
+    }
+    let callback = listener
+        .wait_for_callback_url(Duration::from_secs(180))?
+        .ok_or_else(|| anyhow::anyhow!("timed out waiting for OAuth callback"))?;
+
+    match oauth_family_for_provider(&inputs.providers, provider_id) {
+        Some(OauthFamily::OpenAi) => {
+            let (code, parsed_state) = parse_openai_authorization_input(&callback);
+            let code = code
+                .ok_or_else(|| anyhow::anyhow!("could not extract an OpenAI authorization code"))?;
+            if let Some(parsed_state) = parsed_state {
+                if parsed_state != bundle.state {
+                    anyhow::bail!("oauth state mismatch for openai");
+                }
+            }
+            let credential = exchange_openai_authorization_code(&code, &bundle.verifier, None)?;
+            set_stored_credential(
+                &mut inputs.auth_store,
+                provider_id.to_string(),
+                StoredCredential::OAuth(to_registry_oauth_credential_openai(credential)),
+            );
+        }
+        Some(OauthFamily::Anthropic) => {
+            let (code, parsed_state) = parse_anthropic_authorization_input(&callback);
+            let code = code.ok_or_else(|| {
+                anyhow::anyhow!("could not extract an Anthropic authorization code")
+            })?;
+            let parsed_state = parsed_state.unwrap_or_else(|| bundle.state.clone());
+            if parsed_state != bundle.state {
+                anyhow::bail!("oauth state mismatch for anthropic");
+            }
+            let redirect_uri = inferred_anthropic_redirect_uri(&callback)
+                .or_else(|| bundle.manual_redirect_uri.clone())
+                .unwrap_or_else(|| ANTHROPIC_MANUAL_REDIRECT_URL.to_string());
+            let credential = exchange_anthropic_authorization_code(
+                &code,
+                &bundle.verifier,
+                &bundle.state,
+                Some(&redirect_uri),
+                Some(ANTHROPIC_API_BASE_URL),
+            )?;
+            store_anthropic_credential(&mut inputs.auth_store, provider_id, credential)?;
+        }
+        None => anyhow::bail!("oauth login is not implemented for {provider_id}"),
+    }
+
+    inputs.auth_store.save(&auth_path)?;
+    let _ = desktop_api::ensure_default_routing(
+        &state.paths,
+        &inputs.providers,
+        &inputs.auth_store,
+        provider_id,
+    );
+    reload_daemon_config(state)?;
+    let fresh = state.build_runtime_inputs()?;
+    let config = state.config.lock().unwrap().clone();
+    let snapshot: SettingsSnapshotDto = desktop_api::load_settings_snapshot(
+        &state.paths,
+        &config,
+        &fresh.resources,
+        &fresh.providers,
+        &fresh.auth_store,
+        &fresh.session_store,
+    )?;
+    Ok(serde_json::to_value(snapshot)?)
+}
+
+/// Lists importable credentials discovered under external tool config roots.
+fn handle_list_external_credentials(state: &DaemonState) -> Result<Value> {
+    let inputs = state.build_runtime_inputs()?;
+    let credentials: Vec<ExternalCredentialDto> =
+        desktop_api::list_external_credentials(&inputs.providers)?;
+    Ok(serde_json::to_value(credentials)?)
+}
+
+/// Imports a discovered external credential and returns a fresh settings snapshot.
+fn handle_import_external_credential(state: &DaemonState, params: &Value) -> Result<Value> {
+    let provider_id = params
+        .get("providerId")
+        .or_else(|| params.get("provider_id"))
+        .and_then(|v| v.as_str())
+        .context("missing providerId")?;
+    let source = params
+        .get("source")
+        .and_then(|v| v.as_str())
+        .context("missing source")?;
+
+    let mut inputs = state.build_runtime_inputs()?;
+    let auth_path = state.paths.user_config_dir.join("auth.json");
+    desktop_api::import_external_credential(
+        &state.paths,
+        &mut inputs.auth_store,
+        &inputs.providers,
+        &auth_path,
+        provider_id,
+        source,
+    )?;
+    let _ = desktop_api::ensure_default_routing(
+        &state.paths,
+        &inputs.providers,
+        &inputs.auth_store,
+        provider_id,
+    );
+    reload_daemon_config(state)?;
+    let fresh = state.build_runtime_inputs()?;
+    let config = state.config.lock().unwrap().clone();
+    let snapshot: SettingsSnapshotDto = desktop_api::load_settings_snapshot(
+        &state.paths,
+        &config,
+        &fresh.resources,
+        &fresh.providers,
+        &fresh.auth_store,
+        &fresh.session_store,
+    )?;
+    Ok(serde_json::to_value(snapshot)?)
+}
+
+fn reload_daemon_config(state: &DaemonState) -> Result<()> {
+    let config = load_config(&state.paths)?;
+    *state.config.lock().unwrap() = config;
+    Ok(())
 }
 
 /// Removes stored credentials for a provider and returns the refreshed
@@ -803,10 +983,9 @@ fn permissions_file_path(state: &DaemonState) -> std::path::PathBuf {
 fn handle_list_permissions(state: &DaemonState) -> Result<Value> {
     let path = permissions_file_path(state);
     let loaded: PermissionsFileDto = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
-        toml::from_str(&text)
-            .with_context(|| format!("parse {}", path.display()))?
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?
     } else {
         PermissionsFileDto::default()
     };
@@ -817,9 +996,7 @@ fn handle_list_permissions(state: &DaemonState) -> Result<Value> {
 }
 
 fn handle_save_permissions(state: &DaemonState, params: &Value) -> Result<Value> {
-    let tools_val = params
-        .get("tools")
-        .context("missing tools map")?;
+    let tools_val = params.get("tools").context("missing tools map")?;
     let tools: std::collections::BTreeMap<String, String> =
         serde_json::from_value(tools_val.clone()).context("tools must be object<string,string>")?;
     // Normalize: lowercase policy, trim tool ids. Reject unknown policies
@@ -1030,9 +1207,8 @@ fn handle_git_clone(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
     };
 
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating parent directory {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent directory {}", parent.display()))?;
     }
     if dest.exists() {
         let non_empty = std::fs::read_dir(&dest)
@@ -1067,10 +1243,7 @@ fn handle_git_clone(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
     let mut child = cmd
         .spawn()
         .context("failed to spawn `git clone` — is git installed?")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("git clone stderr missing")?;
+    let stderr = child.stderr.take().context("git clone stderr missing")?;
     let stdout_pipe = child.stdout.take();
 
     let clone_id_thread = clone_id.clone();
@@ -1459,10 +1632,7 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
         let on_permission = move |req: PermissionPromptRequest| -> PermissionPromptAction {
             let request_id = next_req_id.fetch_add(1, Ordering::SeqCst).to_string();
             let (tx, rx) = std::sync::mpsc::channel();
-            perm_pending
-                .lock()
-                .unwrap()
-                .insert(request_id.clone(), tx);
+            perm_pending.lock().unwrap().insert(request_id.clone(), tx);
 
             perm_state.publish_event(ServerEnvelope::Event {
                 event: perm_channel.clone(),
@@ -1551,9 +1721,12 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
             }
         }
 
-        state_for_thread.turns.lock().unwrap().remove(&turn_id_thread);
+        state_for_thread
+            .turns
+            .lock()
+            .unwrap()
+            .remove(&turn_id_thread);
     });
 
     Ok(json!({"turnId": turn_id_resp}))
 }
-

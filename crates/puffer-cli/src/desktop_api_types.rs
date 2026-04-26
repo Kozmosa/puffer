@@ -287,6 +287,16 @@ pub(crate) struct ProviderSummaryDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalCredentialDto {
+    pub(crate) provider_id: String,
+    pub(crate) source: String,
+    pub(crate) kind: String,
+    pub(crate) description: String,
+    pub(crate) source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct McpServerDto {
     pub(crate) id: String,
     pub(crate) display_name: String,

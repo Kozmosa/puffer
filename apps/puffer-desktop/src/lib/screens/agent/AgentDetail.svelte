@@ -27,6 +27,9 @@
     pendingPermissions: PermissionTimelineItem[];
     loading: boolean;
     turnRunning?: boolean;
+    turnStartedAtMs?: number | null;
+    turnThinking?: boolean;
+    turnStatusHint?: string | null;
     onBack: () => void;
     onSubmitMessage: (message: string) => void;
     onResolvePermission: (permissionId: string, choice: string) => void;
@@ -40,6 +43,9 @@
     pendingPermissions,
     loading,
     turnRunning = false,
+    turnStartedAtMs = null,
+    turnThinking = false,
+    turnStatusHint = null,
     onBack,
     onSubmitMessage,
     onResolvePermission,
@@ -69,7 +75,22 @@
     return "idle";
   }
 
-  let pufferState = $derived<AgentState>(agentPufferState(status));
+  let pufferState = $derived<AgentState>(
+    pendingPermissions.length > 0
+      ? "awaiting"
+      : turnRunning
+        ? turnThinking
+          ? "thinking"
+          : "running"
+        : agentPufferState(status)
+  );
+  let statusLabel = $derived(
+    turnRunning
+      ? turnThinking
+        ? "thinking"
+        : "running"
+      : AGENT_STATE_LABELS[status] ?? status
+  );
   let diffCount = $derived(timeline.filter((t) => t.kind === "diff").length);
   let agentDiff = $derived(sessionDetail?.agentDiff ?? { files: [], entries: [] });
   let divergence = $derived(
@@ -122,10 +143,10 @@
       </div>
     </div>
     <span class="pf-agent-status-pill" data-status={status}>
-      {#if status === "running"}
+      {#if pufferState === "running"}
         <span class="pip"></span>
       {/if}
-      {AGENT_STATE_LABELS[status] ?? status}
+      {statusLabel}
     </span>
     <div class="pf-agent-tabs">
       <button class="pf-agent-tab" class:on={tab === "chat"} onclick={() => (tab = "chat")}>
@@ -156,6 +177,9 @@
         pendingPermissions={pendingPermissions}
         loading={loading}
         turnRunning={turnRunning}
+        turnStartedAtMs={turnStartedAtMs}
+        turnThinking={turnThinking}
+        turnStatusHint={turnStatusHint}
         onSubmitMessage={onSubmitMessage}
         onResolvePermission={onResolvePermission}
         onCancelTurn={onCancelTurn}

@@ -497,7 +497,10 @@ export async function loginWithOauth(
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
     if (canReachDaemon()) {
-      throw new Error("OAuth login requires the Tauri desktop shell. Use API key login in browser mode.");
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("login_with_oauth", {
+        providerId
+      });
     }
     return mockSettingsSnapshot;
   }
@@ -534,7 +537,13 @@ export async function loginWithApiKey(
  *  shell surfaces these so the user does not have to paste an API key they
  *  already have on disk. */
 export async function listExternalCredentials(): Promise<ExternalCredential[]> {
-  if (!canInvokeTauri()) return [];
+  if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<ExternalCredential[]>("list_external_credentials");
+    }
+    return [];
+  }
   return invoke<ExternalCredential[]>("list_external_credentials");
 }
 
@@ -544,7 +553,16 @@ export async function importExternalCredential(
   providerId: string,
   source: "claude" | "codex"
 ): Promise<SettingsSnapshot> {
-  if (!canInvokeTauri()) return mockSettingsSnapshot;
+  if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("import_external_credential", {
+        providerId,
+        source
+      });
+    }
+    return mockSettingsSnapshot;
+  }
   return invoke<BackendSettingsSnapshot>("import_external_credential", {
     providerId,
     source

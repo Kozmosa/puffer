@@ -113,6 +113,9 @@
   // running. When the turn finishes we reload the session detail so the real
   // persisted transcript replaces these placeholders.
   let currentTurnId = $state<string | null>(null);
+  let turnStartedAtMs = $state<number | null>(null);
+  let turnThinking = $state(false);
+  let turnStatusHint = $state<string | null>(null);
   let liveStreamItems = $state<TimelineItem[]>([]);
   let turnPermissionLookup = $state<Record<string, { turnId: string; requestId: string }>>({});
   let sessionEventUnlisten: UnlistenFn | null = null;
@@ -177,6 +180,7 @@
         t.kind === "permission" && !dismissedPermissionIds.includes(t.id)
     )
   );
+  let turnRunning = $derived(currentTurnId !== null || turnStartedAtMs !== null);
 
   let realAgents = $derived<ActiveAgent[]>(
     groups.flatMap((g) =>
@@ -436,6 +440,10 @@
       submittedMessages = [];
       liveStreamItems = [];
       turnPermissionLookup = {};
+      currentTurnId = null;
+      turnStartedAtMs = null;
+      turnThinking = false;
+      turnStatusHint = null;
       statusMessage = `Loaded ${detail.timeline.length} conversation items.`;
     } catch (error) {
       statusMessage = String(error);
@@ -588,6 +596,9 @@
       return;
     }
     const now = Date.now();
+    turnStartedAtMs = now;
+    turnThinking = true;
+    turnStatusHint = "Thinking";
     submittedMessages = [
       ...submittedMessages,
       {
@@ -604,6 +615,10 @@
       currentTurnId = turnId;
       statusMessage = `Agent turn ${turnId.slice(0, 8)} started.`;
     } catch (error) {
+      currentTurnId = null;
+      turnStartedAtMs = null;
+      turnThinking = false;
+      turnStatusHint = null;
       statusMessage = `run_agent_turn failed: ${error}`;
     }
   }
@@ -659,12 +674,27 @@
     if (!selectedSession || selectedSession.id !== sid) return;
     switch (ev.type) {
       case "turn-start":
+        currentTurnId = ev.turnId;
+        turnStartedAtMs = Date.now();
+        turnThinking = true;
+        turnStatusHint = "Thinking";
         liveStreamItems = [];
         break;
+      case "thinking-delta":
+        currentTurnId = ev.turnId;
+        turnThinking = true;
+        turnStatusHint = "Thinking";
+        break;
       case "text-delta":
+        currentTurnId = ev.turnId;
+        turnThinking = false;
+        turnStatusHint = null;
         upsertStreamingAssistant(ev.delta);
         break;
       case "tool-calls-requested":
+        currentTurnId = ev.turnId;
+        turnThinking = false;
+        turnStatusHint = "Running tools";
         // Render an immediate pending card per requested call so the user
         // sees *what* the agent is doing before it finishes. The id is
         // `live-tool-<callId>` — we replace in place when `tool-invocations`
@@ -688,6 +718,9 @@
         }
         break;
       case "tool-invocations":
+        currentTurnId = ev.turnId;
+        turnThinking = false;
+        turnStatusHint = null;
         for (const inv of ev.invocations) {
           const id = `live-tool-${inv.callId}`;
           const existingIdx = liveStreamItems.findIndex((x) => x.id === id);
@@ -717,7 +750,23 @@
           }
         }
         break;
+      case "reflection-checkpoint":
+        currentTurnId = ev.turnId;
+        turnThinking = true;
+        turnStatusHint = "Thinking";
+        break;
+      case "retry-attempt":
+        currentTurnId = ev.turnId;
+        turnThinking = true;
+        turnStatusHint = `Retrying ${ev.attempt}/${ev.maxAttempts}`;
+        break;
+      case "usage":
+        currentTurnId = ev.turnId;
+        break;
       case "permission-request": {
+        currentTurnId = ev.turnId;
+        turnThinking = false;
+        turnStatusHint = "Awaiting approval";
         const id = `live-perm-${ev.requestId}`;
         appendLive({
           id,
@@ -748,6 +797,9 @@
       case "turn-complete":
       case "turn-error":
         currentTurnId = null;
+        turnStartedAtMs = null;
+        turnThinking = false;
+        turnStatusHint = null;
         if (ev.type === "turn-error") {
           // Surface the daemon's error so the user sees *why* the agent
           // didn't reply — otherwise we'd silently reload an empty
@@ -861,7 +913,10 @@
                 timeline={combinedTimeline}
                 pendingPermissions={pendingPermissions}
                 loading={sessionLoading}
-                turnRunning={!!currentTurnId}
+                turnRunning={turnRunning}
+                turnStartedAtMs={turnStartedAtMs}
+                turnThinking={turnThinking}
+                turnStatusHint={turnStatusHint}
                 onBack={onCloseAgent}
                 onSubmitMessage={submitMessage}
                 onResolvePermission={resolvePermission}
@@ -897,7 +952,14 @@
               onResetPreferences={resetDesktopPreferences}
               onRefresh={() => void refreshSettings()}
               onLogout={(providerId) => void handleLogout(providerId)}
+              onLoginOauth={(providerId) => void handleOauthLogin(providerId)}
               onApiKeyLogin={(providerId, apiKey) => void handleApiKeyLogin(providerId, apiKey)}
+              onImportExternal={(providerId, source) =>
+                void handleImportExternal(providerId, source)}
+              busyProviderId={authBusyProviderId}
+              authError={authError}
+              externals={externalCredentials}
+              busyImportKey={importBusyKey}
               onRunRemoteBash={(command) => void handleRemoteBash(command)}
               onReadRemoteFile={(path) => void handleRemoteRead(path)}
               onWriteRemoteFile={(path, contents) => void handleRemoteWrite(path, contents)}
@@ -924,6 +986,10 @@
       submittedMessages = [];
       liveStreamItems = [];
       turnPermissionLookup = {};
+      currentTurnId = null;
+      turnStartedAtMs = null;
+      turnThinking = false;
+      turnStatusHint = null;
       await refreshGroups();
       statusMessage = `Switched workspace to ${hs.workspaceRoot}.`;
     }}

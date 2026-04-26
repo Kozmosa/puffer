@@ -211,6 +211,42 @@ fn resolve_selection_uses_first_provider_model_when_unset() {
 }
 
 #[test]
+fn resolve_selection_uses_provider_scoped_default_model_id() {
+    let mut registry = ProviderRegistry::new();
+    let mut descriptor = provider();
+    descriptor.id = "openai".to_string();
+    descriptor.display_name = "OpenAI".to_string();
+    descriptor.default_api = "openai-responses".to_string();
+    descriptor.models = vec![
+        puffer_provider_registry::ModelDescriptor {
+            id: "gpt-5.1".to_string(),
+            display_name: "gpt-5.1".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+        },
+        puffer_provider_registry::ModelDescriptor {
+            id: "gpt-5.4".to_string(),
+            display_name: "gpt-5.4".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+        },
+    ];
+    registry.register(descriptor);
+    let mut state = state();
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("gpt-5.4".to_string());
+    let (provider, model_id) = resolve_provider_and_model(&state, &registry).unwrap();
+    assert_eq!(provider.id, "openai");
+    assert_eq!(model_id, "gpt-5.4");
+}
+
+#[test]
 fn resolve_model_api_supports_custom_provider_families() {
     let mut descriptor = provider();
     descriptor.id = "custom-openai".to_string();
@@ -1026,10 +1062,10 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
 
 #[path = "tests/http_retries.rs"]
 mod http_retries;
-#[path = "tests/openai_stream_transport.rs"]
-mod openai_stream_transport;
 #[path = "tests/iteration_behavior.rs"]
 mod iteration_behavior;
+#[path = "tests/openai_stream_transport.rs"]
+mod openai_stream_transport;
 #[path = "tests/openai_tool_errors.rs"]
 mod openai_tool_errors;
 #[path = "tests/permissions.rs"]

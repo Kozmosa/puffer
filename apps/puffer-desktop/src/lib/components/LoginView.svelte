@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { providerVisual } from "../providerVisuals";
   import type { ExternalCredential, ProviderSummary, SettingsSnapshot } from "../types";
 
   export let snapshot: SettingsSnapshot | null = null;
@@ -15,37 +16,6 @@
 
   let apiKeys: Record<string, string> = {};
   let query = "";
-
-  // Per-provider visual treatment. Keeps everything offline-friendly: we
-  // render a colored monogram tile rather than fetching remote logo
-  // assets that would break in air-gapped setups. The accent color is
-  // also reused as a soft card background so the catalog reads as a grid
-  // of distinct providers instead of identical white cards.
-  type ProviderBadge = { initial: string; accent: string };
-  const PROVIDER_ACCENTS: Record<string, string> = {
-    anthropic: "#d97706",
-    openai: "#10a37f",
-    "anthropic-bedrock": "#d97706",
-    "anthropic-vertex": "#d97706",
-    cerebras: "#7c3aed",
-    groq: "#f97316",
-    "kimi-coding": "#0ea5e9",
-    "llama-cpp": "#dc2626",
-    lmstudio: "#1e293b",
-    "minimax-cn": "#1d4ed8",
-    minimax: "#1d4ed8",
-    ollama: "#0f172a",
-    openrouter: "#06b6d4",
-    "vercel-ai-gateway": "#0f172a",
-    vllm: "#16a34a",
-    xai: "#0f172a"
-  };
-  function badge(provider: ProviderSummary): ProviderBadge {
-    const accent = PROVIDER_ACCENTS[provider.id] ?? "#475569";
-    const source = provider.displayName || provider.id;
-    const initial = source.replace(/[^A-Za-z0-9]/g, "").charAt(0).toUpperCase() || "P";
-    return { initial, accent };
-  }
 
   function updateApiKey(providerId: string, value: string) {
     apiKeys = { ...apiKeys, [providerId]: value };
@@ -124,11 +94,13 @@
       <div class="empty-card">No providers match "{query}".</div>
     {:else}
       {#each filteredProviders as provider (provider.id)}
-        {@const b = badge(provider)}
+        {@const visual = providerVisual(provider)}
         {@const candidates = importsByProvider[provider.id] ?? []}
-        <article class="provider-card" style="--provider-accent: {b.accent};">
+        <article class="provider-card" style="--provider-accent: {visual.accent};">
           <header class="card-head">
-            <span class="logo" aria-hidden="true">{b.initial}</span>
+            <span class="logo" aria-hidden="true">
+              <img src={visual.icon} alt="" />
+            </span>
             <div class="head-text">
               <h2 class="name">{provider.displayName}</h2>
               <p class="meta">{provider.id} · {provider.modelCount} model{provider.modelCount === 1 ? "" : "s"}</p>
@@ -288,17 +260,19 @@
     height: 36px;
     flex: 0 0 36px;
     border-radius: 10px;
-    background: var(--provider-accent);
-    color: #fff;
+    background: rgba(255, 255, 255, 0.92);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-weight: 700;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    letter-spacing: -0.02em;
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.4) inset,
-      0 0 0 1px color-mix(in oklab, var(--provider-accent) 70%, black) inset;
+      0 0 0 1px color-mix(in oklab, var(--provider-accent) 35%, rgba(111, 101, 89, 0.25)) inset;
+  }
+  .logo img {
+    width: 23px;
+    height: 23px;
+    object-fit: contain;
+    display: block;
   }
   .head-text {
     display: grid;

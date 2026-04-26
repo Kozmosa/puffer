@@ -2,6 +2,7 @@
   import "../design/settings.css";
 
   import Icon, { type IconName } from "../design/Icon.svelte";
+  import LoginView from "../components/LoginView.svelte";
   import { currentDaemonClient } from "../api/daemonClient";
   import {
     isDaemonReachable,
@@ -16,7 +17,7 @@
   } from "../api/desktop";
   import type {
     DesktopPreferences,
-    ProviderSummary,
+    ExternalCredential,
     RemoteOperation,
     SettingsSnapshot
   } from "../types";
@@ -34,7 +35,13 @@
     onResetPreferences: () => void;
     onRefresh: () => void;
     onLogout: (providerId: string) => void;
+    onLoginOauth?: (providerId: string) => void;
     onApiKeyLogin?: (providerId: string, apiKey: string) => void;
+    onImportExternal?: (providerId: string, source: "claude" | "codex") => void;
+    busyProviderId?: string | null;
+    authError?: string | null;
+    externals?: ExternalCredential[];
+    busyImportKey?: string | null;
     onRunRemoteBash: (command: string) => void;
     onReadRemoteFile: (path: string) => void;
     onWriteRemoteFile: (path: string, contents: string) => void;
@@ -42,12 +49,12 @@
 
   let props: Props = $props();
 
-  type Section = "general" | "models" | "permissions" | "mcp" | "git" | "appearance" | "shortcuts";
+  type Section = "general" | "providers" | "permissions" | "mcp" | "git" | "appearance" | "shortcuts";
   let section = $state<Section>("general");
 
   const navItems: { id: Section; label: string; icon: IconName }[] = [
     { id: "general",     label: "General",    icon: "settings" },
-    { id: "models",      label: "Models",     icon: "cpu" },
+    { id: "providers",   label: "Providers",  icon: "plug" },
     { id: "permissions", label: "Permissions", icon: "bolt" },
     { id: "mcp",         label: "MCP Servers", icon: "plug" },
     { id: "git",         label: "Git & PRs",  icon: "git" },
@@ -71,7 +78,7 @@
   let mcpError = $state<string | null>(null);
 
   // Per-provider model listings cached by providerId. Populated on demand
-  // when the user expands the Models pane.
+  // when the user expands the Providers pane.
   let providerModels = $state<Record<string, ModelDescriptorInfo[]>>({});
   let modelPickerProvider = $state<string>("");
   let modelPickerModel = $state<string>("");
@@ -188,40 +195,7 @@
     }
   }
 
-  // Providers the user can log in to with an api key. Pulled from the real
-  // registry — if the user hasn't refreshed yet the list is empty.
-  let apiKeyProviders = $derived<ProviderSummary[]>(
-    (props.snapshot?.providers ?? []).filter((p) => p.authModes.includes("api_key"))
-  );
-
-  // The id of the provider currently selected for the "Add API key" form.
-  // Defaults to the config's default_provider when present, otherwise the
-  // first api_key-capable provider.
-  let loginProviderId = $state<string>("");
-  let loginApiKey = $state<string>("");
-  $effect(() => {
-    if (loginProviderId) return;
-    const fromConfig = props.snapshot?.config.defaultProvider ?? "";
-    if (fromConfig && apiKeyProviders.some((p) => p.id === fromConfig)) {
-      loginProviderId = fromConfig;
-      return;
-    }
-    if (apiKeyProviders[0]) {
-      loginProviderId = apiKeyProviders[0].id;
-    }
-  });
-
-  function submitApiKey() {
-    if (!props.onApiKeyLogin || !loginProviderId) return;
-    const trimmed = loginApiKey.trim();
-    if (!trimmed) return;
-    props.onApiKeyLogin(loginProviderId, trimmed);
-    loginApiKey = "";
-  }
-
-  function authedProviderIds(): Set<string> {
-    return new Set((props.snapshot?.auth ?? []).map((a) => a.providerId));
-  }
+  let authedProviderIds = $derived(new Set((props.snapshot?.auth ?? []).map((a) => a.providerId)));
 
   // The shared daemon client's handshake — shows the actual URL + workspace
   // root the frontend is talking to. Undefined until the first connect.
@@ -246,7 +220,7 @@
   // is logged in to one of these we show their auth status inline.
   const GIT_PROVIDER_IDS: string[] = ["github", "gitlab"];
 
-  // Seed the model-picker from the snapshot so switching to the Models tab
+  // Seed the model-picker from the snapshot so switching to the Providers tab
   // shows the currently-persisted default without a refetch.
   $effect(() => {
     if (!modelPickerProvider) {
@@ -272,7 +246,7 @@
     if (section === "mcp" && mcpServers.length === 0 && !mcpLoading) {
       void loadMcpServers();
     }
-    if (section === "models" && modelPickerProvider) {
+    if (section === "providers" && modelPickerProvider) {
       void loadModelsForProvider(modelPickerProvider);
     }
   });
@@ -392,9 +366,9 @@
         </div>
       </div>
 
-    {:else if section === "models"}
-      <h2>Models</h2>
-      <p class="lead">Providers discovered from the workspace config. Connect one with an API key to activate it.</p>
+    {:else if section === "providers"}
+      <h2>Providers</h2>
+      <p class="lead">Connect providers, review their available models, and choose the default route for new turns.</p>
 
       {#if !daemonReachable}
         <div class="pf-settings-note">
@@ -456,69 +430,19 @@
         </div>
       </div>
 
-      {#if props.onApiKeyLogin && apiKeyProviders.length > 0}
-        <div class="pf-api-form">
-          <div class="pf-api-form-row">
-            <label>Provider
-              <select class="sc-input" bind:value={loginProviderId}>
-                {#each apiKeyProviders as p (p.id)}
-                  <option value={p.id}>{p.displayName} ({p.id})</option>
-                {/each}
-              </select>
-            </label>
-            <label>API key
-              <input
-                class="sc-input"
-                type="password"
-                placeholder="sk-…"
-                bind:value={loginApiKey}
-                onkeydown={(e) => { if (e.key === "Enter") submitApiKey(); }}
-              />
-            </label>
-            <button type="button" class="sc-btn" data-variant="default" data-size="sm" onclick={submitApiKey}>
-              Save key
-            </button>
-          </div>
-          <div class="pf-api-form-help">
-            Stored at <code>{props.snapshot?.authStoreFile ?? "~/.config/puffer/auth.json"}</code>.
-          </div>
-        </div>
-      {/if}
-
-      <div class="pf-model-list">
-        {#each props.snapshot?.providers ?? [] as p (p.id)}
-          {@const authed = authedProviderIds().has(p.id)}
-          <div class="pf-model-row">
-            <div>
-              <div class="pf-model-name">{p.displayName}
-                <span class="pf-model-id">{p.id}</span>
-              </div>
-              <div class="pf-model-meta">
-                {p.modelCount} model{p.modelCount === 1 ? "" : "s"}
-                · {p.defaultApi}
-                · auth: {p.authModes.join(", ") || "—"}
-                {#if p.sourceKind}
-                  · {p.sourceKind}
-                {/if}
-              </div>
-            </div>
-            <div class="pf-model-status">
-              {#if authed}
-                <span class="pf-model-badge ok">
-                  <span class="dot"></span>signed in
-                </span>
-              {:else if p.authModes.includes("api_key")}
-                <span class="pf-model-badge muted">not signed in</span>
-              {:else}
-                <span class="pf-model-badge muted">oauth only</span>
-              {/if}
-            </div>
-          </div>
-        {/each}
-        {#if (props.snapshot?.providers ?? []).length === 0}
-          <div class="pf-empty">No providers discovered. Check your workspace config.</div>
-        {/if}
-      </div>
+      <LoginView
+        snapshot={props.snapshot}
+        loading={props.loading}
+        remoteEnabled={props.remoteEnabled}
+        busyProviderId={props.busyProviderId ?? null}
+        errorMessage={props.authError ?? null}
+        externals={props.externals ?? []}
+        busyImportKey={props.busyImportKey ?? null}
+        onLoginOauth={props.onLoginOauth ?? (() => {})}
+        onLoginApiKey={props.onApiKeyLogin ?? (() => {})}
+        onImportExternal={props.onImportExternal ?? (() => {})}
+        onRefresh={props.onRefresh}
+      />
 
     {:else if section === "permissions"}
       <h2>Permissions</h2>
@@ -666,7 +590,7 @@
           <div class="label">Forge accounts</div>
           <div class="desc">
             Git-hosting providers Puffer recognizes. To add one, connect it from the
-            Models pane using an API key.
+            Providers pane using an API key.
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: 6px; justify-self: end; align-items: flex-end;">
@@ -681,7 +605,7 @@
               {/if}
             </div>
           {/each}
-          {#if !GIT_PROVIDER_IDS.some((id) => authedProviderIds().has(id))}
+          {#if !GIT_PROVIDER_IDS.some((id) => authedProviderIds.has(id))}
             <div style="color: var(--muted-foreground); font-size: 11.5px; max-width: 260px; text-align: right;">
               No git provider connected. PR creation still works via <code>gh</code> if it's
               authenticated on the host shell.
@@ -806,67 +730,6 @@
     border-radius: 4px;
     color: var(--foreground);
   }
-  .pf-api-form {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
-    margin-bottom: 18px;
-    background: var(--background);
-  }
-  .pf-api-form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr auto;
-    gap: 10px;
-    align-items: end;
-  }
-  .pf-api-form-row label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 11.5px;
-    color: var(--muted-foreground);
-  }
-  .pf-api-form-help {
-    font-size: 11px;
-    color: var(--muted-foreground);
-    margin-top: 8px;
-  }
-  .pf-api-form-help code {
-    font-family: var(--font-mono);
-  }
-  .pf-model-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .pf-model-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    padding: 10px 14px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    gap: 12px;
-    background: var(--background);
-  }
-  .pf-model-name {
-    font-weight: 500;
-    font-size: 13.5px;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 8px;
-  }
-  .pf-model-id {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--muted-foreground);
-    font-weight: 400;
-  }
-  .pf-model-meta {
-    font-size: 11.5px;
-    color: var(--muted-foreground);
-    margin-top: 2px;
-  }
   .pf-model-badge {
     display: inline-flex;
     align-items: center;
@@ -879,10 +742,6 @@
   .pf-model-badge.ok {
     background: color-mix(in oklab, oklch(0.7 0.18 145) 16%, transparent);
     color: oklch(0.42 0.15 145);
-  }
-  .pf-model-badge.muted {
-    background: color-mix(in oklab, var(--muted) 55%, transparent);
-    color: var(--muted-foreground);
   }
   .pf-model-badge .dot {
     width: 6px;

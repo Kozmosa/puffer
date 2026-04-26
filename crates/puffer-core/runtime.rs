@@ -467,6 +467,22 @@ fn resolve_provider_and_model<'a>(
                 .ok_or_else(|| anyhow!("provider {} not found", model.provider))?;
             return Ok((provider, model.id.clone()));
         }
+        if let Some(provider_id) = &state.current_provider {
+            if let Some(provider) = providers.provider(provider_id) {
+                if let Some(model) = provider.models.iter().find(|model| model.id == *selected) {
+                    return Ok((provider, model.id.clone()));
+                }
+            }
+        }
+        if let Some((provider, model)) = providers.providers().find_map(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.id == *selected)
+                .map(|model| (provider, model))
+        }) {
+            return Ok((provider, model.id.clone()));
+        }
     }
 
     if let Some(provider_id) = &state.current_provider {
