@@ -43,7 +43,8 @@
     resolvePermission as resolveTurnPermission,
     cancelTurn,
     createSession,
-    loadDefaultWorkspace
+    loadDefaultWorkspace,
+    updateConfig
   } from "./lib/api/desktop";
   import {
     subscribeSessionEvents,
@@ -317,6 +318,22 @@
       if (skipOnboarding) onboarding = false;
     } finally {
       settingsLoading = false;
+    }
+  }
+
+  /** Patches the workspace's default routing so the next agent turn uses
+   *  the picked (provider, model). The daemon's `update_config` reloads
+   *  its in-memory PufferConfig under lock so subsequent turns pick this
+   *  up without restarting. */
+  async function handleModelChange(providerId: string, modelId: string) {
+    try {
+      settingsSnapshot = await updateConfig({
+        defaultProvider: providerId,
+        defaultModel: modelId
+      });
+      statusMessage = `Switched to ${providerId} · ${modelId}.`;
+    } catch (error) {
+      statusMessage = `Failed to switch model: ${error}`;
     }
   }
 
@@ -861,10 +878,13 @@
                 pendingPermissions={pendingPermissions}
                 loading={sessionLoading}
                 turnRunning={!!currentTurnId}
+                settingsSnapshot={settingsSnapshot}
                 onBack={onCloseAgent}
                 onSubmitMessage={submitMessage}
                 onResolvePermission={resolvePermission}
                 onCancelTurn={() => { if (currentTurnId) void cancelTurn(currentTurnId); }}
+                onModelChange={(providerId, modelId) =>
+                  void handleModelChange(providerId, modelId)}
               />
             {:else}
               <Workspace
