@@ -24,6 +24,8 @@
 
   import {
     createPullRequest,
+    importExternalCredential,
+    listExternalCredentials,
     loginWithApiKey,
     loginWithApiKeyViaDaemon,
     loginWithOauth,
@@ -55,6 +57,7 @@
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type {
     DesktopPreferences,
+    ExternalCredential,
     FolderGroup,
     PermissionTimelineItem,
     RemoteConnection,
@@ -119,6 +122,8 @@
   let settingsLoading = $state(false);
   let authBusyProviderId = $state<string | null>(null);
   let authError = $state<string | null>(null);
+  let externalCredentials = $state<ExternalCredential[]>([]);
+  let importBusyKey = $state<string | null>(null);
   let actionBusy = $state(false);
   let remoteOperation = $state<RemoteOperation | null>(null);
   let remoteBusy = $state(false);
@@ -296,12 +301,44 @@
       } else {
         onboarding = (settingsSnapshot.auth?.length ?? 0) === 0;
       }
+      // Re-scan ~/.claude / ~/.codex so the LoginView can offer one-click
+      // imports for credentials the user already has on disk. Failure is
+      // non-fatal — the manual API-key path still works.
+      void listExternalCredentials()
+        .then((found) => {
+          externalCredentials = found;
+        })
+        .catch(() => {
+          externalCredentials = [];
+        });
       statusMessage = "Settings snapshot refreshed.";
     } catch (error) {
       statusMessage = String(error);
       if (skipOnboarding) onboarding = false;
     } finally {
       settingsLoading = false;
+    }
+  }
+
+  async function handleImportExternal(providerId: string, source: "claude" | "codex") {
+    importBusyKey = `${providerId}::${source}`;
+    authError = null;
+    try {
+      settingsSnapshot = await importExternalCredential(providerId, source);
+      onboarding = false;
+      tweaks = { ...tweaks, screen: "workspace" };
+      statusMessage = `Imported ${source} credential into ${providerId}.`;
+      void listExternalCredentials()
+        .then((found) => {
+          externalCredentials = found;
+        })
+        .catch(() => {});
+      await refreshGroups();
+    } catch (error) {
+      authError = String(error);
+      statusMessage = authError;
+    } finally {
+      importBusyKey = null;
     }
   }
 
@@ -312,7 +349,7 @@
       settingsSnapshot = await loginWithOauth(providerId, remoteConnection);
       onboarding = false;
       tweaks = { ...tweaks, screen: "workspace" };
-      statusMessage = `Logged in to ${providerId}.`;
+      statusMessage = `Connected to ${providerId}.`;
       await refreshGroups();
     } catch (error) {
       authError = String(error);
@@ -357,7 +394,7 @@
       } else {
         settingsSnapshot = await logoutProviderViaDaemon(providerId);
       }
-      statusMessage = `Logged out from ${providerId}.`;
+      statusMessage = `Disconnected ${providerId}.`;
       if ((settingsSnapshot.auth?.length ?? 0) === 0) {
         groups = [];
         selectedSession = null;
@@ -710,10 +747,31 @@
       case "turn-complete":
       case "turn-error":
         currentTurnId = null;
+        if (ev.type === "turn-error") {
+          // Surface the daemon's error so the user sees *why* the agent
+          // didn't reply — otherwise we'd silently reload an empty
+          // transcript. Renders inline as a system-style timeline item
+          // and a status-strip toast.
+          const detail = ev.error?.trim() || "Unknown agent error.";
+          statusMessage = `Agent error: ${detail}`;
+          appendLive({
+            id: `live-turn-error-${ev.turnId}`,
+            kind: "system",
+            title: "Agent error",
+            summary: detail,
+            body: detail,
+            meta: ["turn-error"]
+          });
+        }
         // Reload the persisted transcript; then drop live items.
         if (selectedSession) {
           void openSession(selectedSession).then(() => {
-            liveStreamItems = [];
+            // Preserve a turn-error placeholder so the user can still
+            // read the failure after the persisted transcript reloads.
+            const errorItems = liveStreamItems.filter((item) =>
+              item.id.startsWith("live-turn-error-")
+            );
+            liveStreamItems = errorItems;
             submittedMessages = [];
           });
         }
@@ -768,8 +826,12 @@
             remoteEnabled={remoteConnection.enabled}
             busyProviderId={authBusyProviderId}
             errorMessage={authError}
+            externals={externalCredentials}
+            busyImportKey={importBusyKey}
             onLoginOauth={(providerId) => void handleOauthLogin(providerId)}
             onLoginApiKey={(providerId, apiKey) => void handleApiKeyLogin(providerId, apiKey)}
+            onImportExternal={(providerId, source) =>
+              void handleImportExternal(providerId, source)}
             onRefresh={() => void refreshSettings()}
             forceRepoStep={forceOnboarding}
           />

@@ -329,8 +329,9 @@
         </div>
       {:else if remoteEnabled}
         <div class="empty-card">
-          Remote auth is empty for this SSH target. Use the login page to store an API key or OAuth
-          credential on the remote host, or use the remote TUI / `puffer auth ...` over SSH.
+          No providers connected on this SSH target yet. Connect one from the onboarding pane to
+          store an API key or OAuth credential on the remote host, or use the remote TUI /
+          `puffer auth ...` over SSH.
         </div>
       {:else if snapshot?.auth.length}
         <div class="stack">

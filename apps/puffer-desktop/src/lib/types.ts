@@ -269,3 +269,11 @@ export type SettingsSnapshot = {
   auth: AuthProviderStatus[];
   providers: ProviderSummary[];
 };
+
+export type ExternalCredential = {
+  providerId: string;
+  source: "claude" | "codex";
+  kind: "api_key" | "oauth";
+  description: string;
+  sourcePath: string;
+};

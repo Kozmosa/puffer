@@ -394,7 +394,7 @@
 
     {:else if section === "models"}
       <h2>Models</h2>
-      <p class="lead">Providers discovered from the workspace config. Sign in with an API key to activate one.</p>
+      <p class="lead">Providers discovered from the workspace config. Connect one with an API key to activate it.</p>
 
       {#if !daemonReachable}
         <div class="pf-settings-note">
@@ -665,7 +665,7 @@
         <div class="meta">
           <div class="label">Forge accounts</div>
           <div class="desc">
-            Git-hosting providers Puffer recognizes. To add one, sign in from the
+            Git-hosting providers Puffer recognizes. To add one, connect it from the
             Models pane using an API key.
           </div>
         </div>

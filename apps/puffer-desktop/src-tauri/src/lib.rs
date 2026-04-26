@@ -9,8 +9,8 @@ mod turn;
 
 use crate::daemon_launcher::{DaemonHandshake, DaemonLauncher};
 use crate::dtos::{
-    FolderGroupDto, RemoteOperationDto, RepoActionResultDto, RepoStatusDto, SessionDetailDto,
-    SettingsSnapshotDto,
+    ExternalCredentialDto, FolderGroupDto, RemoteOperationDto, RepoActionResultDto, RepoStatusDto,
+    SessionDetailDto, SettingsSnapshotDto,
 };
 use crate::turn::TurnRegistry;
 use anyhow::Result;
@@ -254,6 +254,19 @@ fn logout_provider(
 }
 
 #[tauri::command]
+fn list_external_credentials() -> Result<Vec<ExternalCredentialDto>, String> {
+    auth_data::list_external_credentials().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn import_external_credential(
+    provider_id: String,
+    source: String,
+) -> Result<SettingsSnapshotDto, String> {
+    auth_data::import_external_credential(&provider_id, &source).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn run_remote_bash(
     remote_target: String,
     remote_cwd: Option<String>,
@@ -401,6 +414,20 @@ fn start_ssh_daemon(
 
 /// Runs the Puffer Desktop Tauri host.
 pub fn run() {
+    // The in-process Tauri commands (e.g. `load_settings_snapshot`) discover
+    // resources relative to `current_dir()`, which on a packaged app is wherever
+    // the OS launched the binary from — almost never the puffer repo root, so
+    // the LoginView ends up with an empty provider catalog. Point the
+    // resource loader at the bundled `resources/` dir we ship next to the
+    // binary if one is discoverable. Honors a pre-set env var so users can
+    // override the catalog location.
+    if std::env::var_os("PUFFER_BUILTIN_RESOURCES_DIR").is_none() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(resources_dir) = daemon_launcher::resolve_builtin_resources_dir(&exe) {
+                std::env::set_var("PUFFER_BUILTIN_RESOURCES_DIR", resources_dir);
+            }
+        }
+    }
     Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -418,6 +445,8 @@ pub fn run() {
             login_with_oauth,
             login_with_api_key,
             logout_provider,
+            list_external_credentials,
+            import_external_credential,
             run_remote_bash,
             read_remote_file,
             write_remote_file,

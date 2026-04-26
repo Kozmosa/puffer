@@ -470,12 +470,32 @@ async fn send_envelope(
     guard.send(Message::Text(text)).await
 }
 
+/// Runs a sync handler on a fresh OS thread (no tokio context) and awaits
+/// its result. Required for any handler that transitively builds + drops
+/// a `reqwest::blocking::Client` — the inner runtime panics on drop when
+/// dropped from a tokio worker. See the agent-turn loop above for the
+/// same pattern. Results route back through a oneshot so the caller stays
+/// async-friendly.
+async fn run_off_runtime<F>(f: F) -> Result<Value>
+where
+    F: FnOnce() -> Result<Value> + Send + 'static,
+{
+    let (tx_done, rx_done) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx_done.send(f());
+    });
+    rx_done
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("handler thread panicked or vanished")))
+}
+
 async fn dispatch_request(
     request: ClientRequest,
     state: Arc<DaemonState>,
     tx: Arc<AsyncMutex<futures::stream::SplitSink<WebSocket, Message>>>,
 ) {
     let id = request.id.clone().unwrap_or_default();
+    let params = request.params;
 
     macro_rules! respond {
         ($result:expr) => {{
@@ -498,7 +518,21 @@ async fn dispatch_request(
         }};
     }
 
-    let params = request.params;
+    /// Bind state/params clones into a `move ||` closure so a sync handler
+    /// can run on a non-tokio thread. Two arms — handlers that take just
+    /// the state and handlers that take state + params.
+    macro_rules! detached {
+        (|$s:ident| $body:expr) => {{
+            let $s = state.clone();
+            run_off_runtime(move || $body).await
+        }};
+        (|$s:ident, $p:ident| $body:expr) => {{
+            let $s = state.clone();
+            let $p = params.clone();
+            run_off_runtime(move || $body).await
+        }};
+    }
+
     match request.method.as_str() {
         "ping" => {
             let _ = send_envelope(
@@ -515,11 +549,15 @@ async fn dispatch_request(
         "list_grouped_sessions" => respond!(handle_list_grouped_sessions(&state)),
         "load_session_detail" => respond!(handle_load_session_detail(&state, &params)),
         "refresh_repo_status" => respond!(handle_refresh_repo_status(&state, &params)),
-        "load_settings_snapshot" => respond!(handle_load_settings_snapshot(&state)),
-        "login_with_api_key" => respond!(handle_login_with_api_key(&state, &params)),
-        "logout_provider" => respond!(handle_logout_provider(&state, &params)),
-        "list_mcp_servers" => respond!(handle_list_mcp_servers(&state)),
-        "list_provider_models" => respond!(handle_list_provider_models(&state, &params)),
+        "load_settings_snapshot" => respond!(detached!(|s| handle_load_settings_snapshot(&s))),
+        "login_with_api_key" => {
+            respond!(detached!(|s, p| handle_login_with_api_key(&s, &p)))
+        }
+        "logout_provider" => respond!(detached!(|s, p| handle_logout_provider(&s, &p))),
+        "list_mcp_servers" => respond!(detached!(|s| handle_list_mcp_servers(&s))),
+        "list_provider_models" => {
+            respond!(detached!(|s, p| handle_list_provider_models(&s, &p)))
+        }
         "list_permissions" => respond!(handle_list_permissions(&state)),
         "save_permissions" => respond!(handle_save_permissions(&state, &params)),
         "update_config" => respond!(handle_update_config(&state, &params)),
@@ -1501,6 +1539,7 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                 });
             }
             Err(err) => {
+                eprintln!("turn {turn_id_thread} failed: {err:#}");
                 setup_state.publish_event(ServerEnvelope::Event {
                     event: channel_thread.clone(),
                     payload: json!({

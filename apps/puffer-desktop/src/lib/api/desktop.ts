@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AuthProviderStatus,
   DiffSnapshot,
+  ExternalCredential,
   FolderGroup,
   ProviderSummary,
   PullRequest,
@@ -507,6 +508,28 @@ export async function loginWithApiKey(
     providerId,
     apiKey,
     ...remoteArgs(remote)
+  });
+}
+
+/** Lists credentials Puffer can adopt without an interactive flow — typically
+ *  whatever is already stored under `~/.claude` or `~/.codex`. The desktop
+ *  shell surfaces these so the user does not have to paste an API key they
+ *  already have on disk. */
+export async function listExternalCredentials(): Promise<ExternalCredential[]> {
+  if (!canInvokeTauri()) return [];
+  return invoke<ExternalCredential[]>("list_external_credentials");
+}
+
+/** Adopts a credential discovered by `listExternalCredentials` for the given
+ *  provider, then returns the refreshed settings snapshot. */
+export async function importExternalCredential(
+  providerId: string,
+  source: "claude" | "codex"
+): Promise<SettingsSnapshot> {
+  if (!canInvokeTauri()) return mockSettingsSnapshot;
+  return invoke<BackendSettingsSnapshot>("import_external_credential", {
+    providerId,
+    source
   });
 }
 

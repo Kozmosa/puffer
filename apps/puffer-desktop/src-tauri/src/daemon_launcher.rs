@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -248,6 +248,16 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    // Resources (providers, tools, prompts…) load relative to the workspace
+    // root by default. When the daemon is rooted at $HOME there's no
+    // bundled `resources/` next to it, so the LoginView shows "No
+    // providers are registered." Point the daemon at the repo's bundled
+    // resources dir if one is discoverable next to the puffer binary.
+    if std::env::var_os("PUFFER_BUILTIN_RESOURCES_DIR").is_none() {
+        if let Some(resources_dir) = resolve_builtin_resources_dir(&binary) {
+            cmd.env("PUFFER_BUILTIN_RESOURCES_DIR", resources_dir);
+        }
+    }
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning `{}` daemon", binary.display()))?;
@@ -452,6 +462,7 @@ fn shell_quote(s: &str) -> String {
 /// target directory); in release builds we fall back to the first `puffer`
 /// on `PATH`.
 fn resolve_puffer_binary() -> Result<PathBuf> {
+    let bin_name = if cfg!(windows) { "puffer.exe" } else { "puffer" };
     if let Ok(explicit) = std::env::var("PUFFER_BINARY") {
         let path = PathBuf::from(explicit);
         if path.exists() {
@@ -459,13 +470,55 @@ fn resolve_puffer_binary() -> Result<PathBuf> {
         }
     }
     if let Ok(exe) = std::env::current_exe() {
+        // Sibling of the Tauri host (release bundles ship `puffer` alongside
+        // `puffer-desktop`).
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(if cfg!(windows) { "puffer.exe" } else { "puffer" });
+            let candidate = dir.join(bin_name);
             if candidate.exists() {
                 return Ok(candidate);
             }
         }
+        // `cargo run` / `tauri dev` puts `puffer-desktop` in
+        // `apps/puffer-desktop/src-tauri/target/debug/` while the CLI lives
+        // in the workspace's own `target/debug/puffer`. Walk up looking for
+        // a `target/<profile>/puffer` whose `<profile>` matches our own.
+        if let Some(profile_dir) = exe.parent() {
+            let profile = profile_dir.file_name().and_then(|name| name.to_str());
+            if let Some(profile) = profile {
+                let mut dir = profile_dir.to_path_buf();
+                for _ in 0..6 {
+                    let candidate = dir.join("target").join(profile).join(bin_name);
+                    if candidate.exists() {
+                        return Ok(candidate);
+                    }
+                    if !dir.pop() {
+                        break;
+                    }
+                }
+            }
+        }
     }
     // Last resort: rely on PATH.
-    Ok(PathBuf::from("puffer"))
+    Ok(PathBuf::from(bin_name))
+}
+
+/// Finds the bundled `resources/` directory by walking up from the puffer
+/// binary's location. The repo layout is `<repo>/target/<profile>/puffer`
+/// with `<repo>/resources/providers/anthropic.yaml` etc., so we ascend
+/// until we hit a directory that contains `resources/providers`.
+/// Returns None for installed-via-PATH layouts where no sibling resources
+/// dir exists; the daemon then loads only the empty workspace overlay,
+/// matching what the user sees today.
+pub(crate) fn resolve_builtin_resources_dir(binary: &Path) -> Option<PathBuf> {
+    let mut dir = binary.parent()?.to_path_buf();
+    for _ in 0..6 {
+        let candidate = dir.join("resources");
+        if candidate.join("providers").is_dir() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
 }

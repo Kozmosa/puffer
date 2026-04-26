@@ -238,6 +238,18 @@ pub(crate) struct ProviderSummaryDto {
     pub source_path: Option<String>,
 }
 
+/// Describes one importable credential discovered on disk (`~/.claude`,
+/// `~/.codex`, …) that the desktop can adopt without an interactive flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalCredentialDto {
+    pub provider_id: String,
+    pub source: String,
+    pub kind: String,
+    pub description: String,
+    pub source_path: String,
+}
+
 /// Describes one remote command or file operation result for the desktop scratchpad.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
