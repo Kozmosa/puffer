@@ -3,7 +3,9 @@
   import {
     cloneRepo,
     connectSshDaemon,
-    createSession
+    createSession,
+    listDir,
+    type DirEntry
   } from "../../api/desktop";
   import { canInvokeTauri } from "../../api/daemonClient";
 
@@ -52,6 +54,11 @@
   let status = $state<string | null>(null);
   let error = $state<string | null>(null);
   let sshErrorHint = $state<string | null>(null);
+  let pickerOpen = $state(false);
+  let pickerPath = $state("");
+  let pickerEntries = $state<DirEntry[]>([]);
+  let pickerLoading = $state(false);
+  let pickerError = $state<string | null>(null);
 
   let canSubmit = $derived(() => {
     if (busy) return false;
@@ -170,6 +177,55 @@
     }
     return null;
   }
+
+  function initialPickerPath(): string {
+    const candidate = (localDest || defaultLocalPath).trim();
+    if (candidate.startsWith("/")) return candidate;
+    if (candidate.startsWith("~")) {
+      const parts = defaultLocalPath.split("/").filter(Boolean);
+      if (defaultLocalPath.startsWith("/") && parts.length >= 2) {
+        return `/${parts[0]}/${parts[1]}${candidate.slice(1)}`;
+      }
+    }
+    return defaultLocalPath.startsWith("/") ? defaultLocalPath : "/";
+  }
+
+  function parentPath(path: string): string {
+    const trimmed = path.replace(/\/+$/, "");
+    if (!trimmed || trimmed === "/") return "/";
+    const idx = trimmed.lastIndexOf("/");
+    return idx <= 0 ? "/" : trimmed.slice(0, idx);
+  }
+
+  async function openBrowserPicker() {
+    pickerOpen = true;
+    await loadPickerPath(initialPickerPath());
+  }
+
+  async function loadPickerPath(path: string) {
+    const nextPath = path.trim() || "/";
+    pickerLoading = true;
+    pickerError = null;
+    try {
+      const entries = await listDir(nextPath);
+      pickerPath = nextPath;
+      pickerEntries = entries.filter((entry) => entry.kind === "directory" || entry.kind === "symlink");
+    } catch (e) {
+      pickerError = e instanceof Error ? e.message : String(e);
+      pickerEntries = [];
+    } finally {
+      pickerLoading = false;
+    }
+  }
+
+  async function browseLocalDirectory() {
+    const picked = await pickDirectory();
+    if (picked) {
+      localDest = picked;
+      return;
+    }
+    await openBrowserPicker();
+  }
 </script>
 
 <div
@@ -251,10 +307,7 @@
               data-variant="outline"
               data-size="sm"
               disabled={busy}
-              onclick={async () => {
-                const picked = await pickDirectory();
-                if (picked) localDest = picked;
-              }}
+              onclick={browseLocalDirectory}
             >Browse…</button>
           </div>
           <div class="pf-field-hint">
@@ -346,6 +399,91 @@
           {error ?? status}
         </div>
       {/if}
+      {#if pickerOpen}
+        <div class="pf-dir-picker" role="group" aria-label="Choose directory">
+          <div class="pf-dir-picker-head">
+            <div class="pf-dir-picker-title">Choose directory</div>
+            <button
+              type="button"
+              class="pf-modal-close"
+              onclick={() => (pickerOpen = false)}
+              aria-label="Close directory picker"
+              disabled={pickerLoading}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+          <div class="pf-field-row">
+            <div class="pf-field-input pf-field-input-path">
+              <Icon name="folder" size={12} />
+              <input
+                bind:value={pickerPath}
+                placeholder="/Users/me/src"
+                spellcheck="false"
+                disabled={pickerLoading}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") void loadPickerPath(pickerPath);
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              class="sc-btn"
+              data-variant="outline"
+              data-size="sm"
+              disabled={pickerLoading}
+              onclick={() => loadPickerPath(pickerPath)}
+            >Go</button>
+          </div>
+          <div class="pf-dir-picker-toolbar">
+            <button
+              type="button"
+              class="sc-btn"
+              data-variant="ghost"
+              data-size="sm"
+              disabled={pickerLoading || pickerPath === "/"}
+              onclick={() => loadPickerPath(parentPath(pickerPath))}
+            >
+              <Icon name="chevL" size={12} />Parent
+            </button>
+            <button
+              type="button"
+              class="sc-btn"
+              data-variant="default"
+              data-size="sm"
+              disabled={pickerLoading || !pickerPath.trim() || !!pickerError}
+              onclick={() => {
+                localDest = pickerPath.trim();
+                pickerOpen = false;
+              }}
+            >
+              Use this directory
+            </button>
+          </div>
+          {#if pickerError}
+            <div class="pf-modal-status" data-error="true">{pickerError}</div>
+          {:else}
+            <div class="pf-dir-picker-list" aria-busy={pickerLoading}>
+              {#if pickerLoading}
+                <div class="pf-dir-picker-empty">Loading directories...</div>
+              {:else if pickerEntries.length === 0}
+                <div class="pf-dir-picker-empty">No child directories.</div>
+              {:else}
+                {#each pickerEntries as entry (entry.name)}
+                  <button
+                    type="button"
+                    class="pf-dir-picker-row"
+                    onclick={() => loadPickerPath(`${pickerPath.replace(/\/+$/, "")}/${entry.name}`)}
+                  >
+                    <Icon name="folder" size={12} />
+                    <span>{entry.name}</span>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
       {#if error && sshErrorHint}
         <div class="pf-modal-hint" role="note">
           {sshErrorHint}
@@ -409,5 +547,66 @@
     color: oklch(0.45 0.12 240);
     border: 1px solid color-mix(in oklab, oklch(0.72 0.12 240) 30%, var(--border));
     line-height: 1.45;
+  }
+  .pf-dir-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in oklab, var(--background) 96%, var(--muted));
+    padding: 10px;
+  }
+  .pf-dir-picker-head,
+  .pf-dir-picker-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pf-dir-picker-title {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .pf-dir-picker-toolbar {
+    justify-content: space-between;
+  }
+  .pf-dir-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--background);
+    padding: 4px;
+  }
+  .pf-dir-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--foreground);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 8px;
+    text-align: left;
+  }
+  .pf-dir-picker-row:hover {
+    background: var(--muted);
+  }
+  .pf-dir-picker-row :global(svg) {
+    color: var(--muted-foreground);
+    flex-shrink: 0;
+  }
+  .pf-dir-picker-empty {
+    padding: 14px 8px;
+    text-align: center;
+    color: var(--muted-foreground);
+    font-size: 12px;
   }
 </style>
