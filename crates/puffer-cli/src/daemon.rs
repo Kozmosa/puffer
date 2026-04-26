@@ -569,7 +569,7 @@ async fn dispatch_request(
         }
         "list_permissions" => respond!(handle_list_permissions(&state)),
         "save_permissions" => respond!(handle_save_permissions(&state, &params)),
-        "update_config" => respond!(handle_update_config(&state, &params)),
+        "update_config" => respond!(detached!(|s, p| handle_update_config(&s, &p))),
         "create_pull_request" => respond!(handle_create_pull_request(&state, &params)),
         "merge_pull_request" => respond!(handle_merge_pull_request(&state, &params)),
         "create_session" => respond!(handle_create_session(&state, &params)),

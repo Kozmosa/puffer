@@ -4,6 +4,7 @@
   import ConversationView from "./ConversationView.svelte";
   import DiffView from "../../components/DiffView.svelte";
   import FilesPane from "./FilesPane.svelte";
+  import ModelPicker from "./ModelPicker.svelte";
   import TerminalPane from "./TerminalPane.svelte";
   import {
     AGENT_STATE_LABELS,
@@ -14,6 +15,7 @@
     PermissionTimelineItem,
     SessionDetail,
     SessionListItem,
+    SettingsSnapshot,
     TimelineItem
   } from "../../types";
   import type { AgentState } from "../../shell/tweaks";
@@ -26,10 +28,12 @@
     pendingPermissions: PermissionTimelineItem[];
     loading: boolean;
     turnRunning?: boolean;
+    settingsSnapshot?: SettingsSnapshot | null;
     onBack: () => void;
     onSubmitMessage: (message: string) => void;
     onResolvePermission: (permissionId: string, choice: string) => void;
     onCancelTurn?: () => void;
+    onModelChange?: (providerId: string, modelId: string) => void;
   };
 
   let {
@@ -39,10 +43,12 @@
     pendingPermissions,
     loading,
     turnRunning = false,
+    settingsSnapshot = null,
     onBack,
     onSubmitMessage,
     onResolvePermission,
-    onCancelTurn
+    onCancelTurn,
+    onModelChange
   }: Props = $props();
 
   type Tab = "chat" | "diff" | "terminal" | "files";
@@ -120,6 +126,12 @@
         {/if}
       </div>
     </div>
+    {#if onModelChange}
+      <ModelPicker
+        snapshot={settingsSnapshot}
+        onChange={(providerId, modelId) => onModelChange?.(providerId, modelId)}
+      />
+    {/if}
     <span class="pf-agent-status-pill" data-status={status}>
       {#if status === "running"}
         <span class="pip"></span>
