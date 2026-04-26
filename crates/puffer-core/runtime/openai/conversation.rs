@@ -454,6 +454,25 @@ pub(crate) fn items_to_responses_input(items: &[ConversationItem]) -> Value {
     )
 }
 
+/// Inserts a synthetic user-context reminder at the right position in
+/// `items`: after any leading run of `role:"system"` items, so the boundary
+/// filter's first-position exemption keeps preserving the sub-agent
+/// identity prompt that `agents.rs:319` pushes at transcript[0].
+///
+/// Naive `items.insert(0, ...)` would push the identity to position 1,
+/// past the exemption, and `drop_transient_system_messages()` would then
+/// strip it. Inserting after the leading system run keeps both the
+/// reminder and the identity in their right slots.
+pub(crate) fn insert_context_reminder(items: &mut Vec<ConversationItem>, reminder_text: &str) {
+    let insert_pos = items
+        .iter()
+        .take_while(|item| {
+            matches!(item, ConversationItem::Message { role, .. } if role == "system")
+        })
+        .count();
+    items.insert(insert_pos, ConversationItem::user_message(reminder_text));
+}
+
 /// Strips transient `role:"system"` items that appear after the first
 /// non-system item — these are local UI notifications (slash command
 /// output, "Provider request failed: ...", "Interrupted by user.")
@@ -1342,35 +1361,25 @@ mod tests {
         }
     }
 
-    /// Documents the gap that codex-review R2 surfaced and that we are
-    /// punting to a follow-up: `runtime/openai.rs:158` prepends a synthetic
-    /// `ConversationItem::user_message(context_reminder)` before the wire
-    /// boundary runs. So the sub-agent identity prompt that `agents.rs:319`
-    /// pushes at transcript index 0 ends up at items index 1 by the time
-    /// `items_to_responses_input` sees it — past our first-position
-    /// exemption — and gets dropped.
+    /// Regression for the gap that codex-review R2 surfaced: the runtime
+    /// path used to do `items.insert(0, user_message(context_reminder))`
+    /// before the wire boundary, which pushed the sub-agent identity
+    /// prompt that `agents.rs:319` puts at transcript[0] to items[1] —
+    /// past `drop_transient_system_messages`'s first-position exemption,
+    /// where it then got stripped.
     ///
-    /// Why we leave it:
-    /// - The pre-fix puffer behaviour also failed on this for the
-    ///   ChatGPT-Codex backend (it 400'd because `role:"system"` is
-    ///   rejected mid-input) and on Anthropic (the boundary already
-    ///   stripped every `system` role at conversation.rs:706). So this is
-    ///   an existing latent failure, not a fresh regression introduced
-    ///   here for those two backends.
-    /// - The right fix is structural: route sub-agent identity through
-    ///   the request-level `instructions` / `system` blocks (matches how
-    ///   codex and pi-mono do it). Tracked separately.
-    ///
-    /// `#[ignore]` so CI stays green until the follow-up; flip back to
-    /// active once the refactor lands.
-    #[ignore = "follow-up: move sub-agent identity to top-level instructions"]
+    /// The fix lives in `insert_context_reminder()` (this file): it
+    /// inserts the reminder *after* any leading run of `role:"system"`
+    /// items, preserving the sub-agent identity at the head where the
+    /// boundary expects it.
     #[test]
     fn responses_input_keeps_subagent_identity_after_runtime_prepend() {
         let mut items = vec![
             ConversationItem::system_message("You are the bug-bounty subagent."),
             ConversationItem::user_message("audit this"),
         ];
-        items.insert(0, ConversationItem::user_message("[context: cwd=/foo, ts=...]"));
+        // Mimic the runtime call site (openai.rs / websocket.rs).
+        insert_context_reminder(&mut items, "[context: cwd=/foo, ts=...]");
         let value = items_to_responses_input(&items);
         let arr = value.as_array().unwrap();
         let identity_count = arr
@@ -1385,7 +1394,18 @@ mod tests {
             .count();
         assert_eq!(
             identity_count, 1,
-            "sub-agent identity prompt was stripped after the runtime prepend at openai.rs:158: {arr:?}"
+            "sub-agent identity prompt must survive the runtime context-reminder prepend: {arr:?}"
+        );
+        // And the reminder itself must still be present, immediately after
+        // the system identity.
+        assert_eq!(arr[0]["role"], "system");
+        assert_eq!(arr[1]["role"], "user");
+        assert!(
+            arr[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("context"),
+            "reminder text expected at position 1"
         );
     }
 

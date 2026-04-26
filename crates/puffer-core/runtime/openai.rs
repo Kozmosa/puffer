@@ -155,7 +155,7 @@ fn execute_openai_once(
     // array (matching Codex/CC pattern: dynamic context lives in `input`,
     // not `instructions`, so `instructions` stays static and cacheable).
     let context_reminder = build_context_reminder_message();
-    items.insert(0, ConversationItem::user_message(&context_reminder));
+    super::openai::conversation::insert_context_reminder(&mut items, &context_reminder);
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
@@ -405,7 +405,7 @@ where
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern).
     let context_reminder = build_context_reminder_message();
-    items.insert(0, ConversationItem::user_message(&context_reminder));
+    super::openai::conversation::insert_context_reminder(&mut items, &context_reminder);
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);

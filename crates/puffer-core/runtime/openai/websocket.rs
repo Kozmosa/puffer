@@ -210,7 +210,7 @@ where
     let mut items = transcript_to_items(state, input);
 
     let context_reminder = build_context_reminder_message();
-    items.insert(0, ConversationItem::user_message(&context_reminder));
+    super::conversation::insert_context_reminder(&mut items, &context_reminder);
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
