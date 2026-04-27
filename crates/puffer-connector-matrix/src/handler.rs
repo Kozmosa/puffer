@@ -139,12 +139,8 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.allowed_users = vec!["@alice:example.org".to_string()];
-        let outcome = handle_command(
-            &runtime,
-            &dm("hi", Some("@mallory:example.org")),
-            &config,
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &dm("hi", Some("@mallory:example.org")), &config).unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
@@ -165,12 +161,8 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.welcome_message = Some("welcome!".to_string());
-        let outcome = handle_command(
-            &runtime,
-            &dm("/start", Some("@alice:example.org")),
-            &config,
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &dm("/start", Some("@alice:example.org")), &config).unwrap();
         assert_eq!(outcome, CommandOutcome::Reply("welcome!".to_string()));
     }
 
@@ -211,12 +203,8 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.allowed_users = vec!["@alice:example.org".to_string()];
-        let outcome = handle_command(
-            &runtime,
-            &dm("/help", Some("@alice:example.org")),
-            &config,
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &dm("/help", Some("@alice:example.org")), &config).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
     }
 
@@ -272,8 +260,7 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let alice =
             ConversationKey::with_user(PLATFORM_ID, "!group:example.org", "@alice:example.org");
-        let bob =
-            ConversationKey::with_user(PLATFORM_ID, "!group:example.org", "@bob:example.org");
+        let bob = ConversationKey::with_user(PLATFORM_ID, "!group:example.org", "@bob:example.org");
         runtime.bind_session(&alice, Uuid::new_v4()).unwrap();
         runtime.bind_session(&bob, Uuid::new_v4()).unwrap();
 

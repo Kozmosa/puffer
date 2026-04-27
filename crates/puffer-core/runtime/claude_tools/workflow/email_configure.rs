@@ -30,11 +30,7 @@ struct ConfigureInput {
 
 /// Executes `EmailConfigure`. Ensures the subscriber is running, then
 /// sends an [`SubscriberCommand::EmailConfigure`] over its stdin.
-pub fn execute_email_configure(
-    _state: &mut AppState,
-    _cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub fn execute_email_configure(_state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: ConfigureInput =
         serde_json::from_value(input).context("invalid EmailConfigure input")?;
     ensure_subscriber_running()?;

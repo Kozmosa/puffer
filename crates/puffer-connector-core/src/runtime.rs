@@ -205,11 +205,7 @@ impl ConnectorRuntimeInner {
                 text: turn.assistant_text.clone(),
             },
         )?;
-        puffer_core::append_trace_events(
-            &self.session_store,
-            session_id,
-            &turn.reflection_traces,
-        );
+        puffer_core::append_trace_events(&self.session_store, session_id, &turn.reflection_traces);
         self.session_store
             .append_event(session_id, state.snapshot_event())?;
 
@@ -254,7 +250,7 @@ mod tests {
             session_store,
             session_map,
             default_cwd,
-            })
+        })
     }
 
     #[test]
@@ -268,10 +264,7 @@ mod tests {
         // provider-backed turn.
         {
             let mut inner = runtime.inner.lock().unwrap();
-            inner
-                .session_map
-                .insert(&key, Uuid::new_v4())
-                .unwrap();
+            inner.session_map.insert(&key, Uuid::new_v4()).unwrap();
         }
         assert!(runtime.session_for(&key).unwrap().is_some());
 

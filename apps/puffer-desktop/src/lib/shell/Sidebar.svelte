@@ -8,6 +8,8 @@
     project: string;
     branch: string;
     state: AgentState;
+    updatedAtMs: number;
+    pinned: boolean;
   };
 
   export type UserChip = {
@@ -28,6 +30,7 @@
     agents: ActiveAgent[];
     activeAgentId?: string | null;
     onOpenAgent?: (id: string) => void;
+    onToggleAgentPin?: (id: string, pinned: boolean) => void;
     user?: UserChip | null;
   };
 
@@ -37,6 +40,7 @@
     agents,
     activeAgentId = null,
     onOpenAgent,
+    onToggleAgentPin,
     user = null
   }: Props = $props();
 
@@ -96,23 +100,34 @@
     </div>
     <div class="pf-sidebar-agents-list">
       {#each filtered as a (a.id)}
-        <button
-          type="button"
-          class="pf-sidebar-agent"
-          data-active={activeAgentId === a.id}
-          onclick={() => onOpenAgent?.(a.id)}
-        >
-          <Puffer size={16} state={a.state} />
-          <div class="pf-row-stack">
-            <span class="title">
-              {a.name}
-              {#if a.title}
-                · {a.title}
-              {/if}
-            </span>
-            <span class="pf-task-status">{a.project} · {a.state}</span>
-          </div>
-        </button>
+        <div class="pf-sidebar-agent-row" data-active={activeAgentId === a.id} data-pinned={a.pinned}>
+          <button
+            type="button"
+            class="pf-sidebar-agent"
+            onclick={() => onOpenAgent?.(a.id)}
+          >
+            <Puffer size={16} state={a.state} />
+            <div class="pf-row-stack">
+              <span class="title">
+                {a.name}
+                {#if a.title}
+                  · {a.title}
+                {/if}
+              </span>
+              <span class="pf-task-status">{a.project} · {a.state}</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            class="pf-pin-button"
+            data-pinned={a.pinned}
+            title={a.pinned ? "Unpin agent" : "Pin agent"}
+            aria-label={a.pinned ? "Unpin agent" : "Pin agent"}
+            onclick={() => onToggleAgentPin?.(a.id, !a.pinned)}
+          >
+            <Icon name="pin" size={12} />
+          </button>
+        </div>
       {/each}
       {#if filtered.length === 0}
         <div class="pf-sidebar-empty">No agents match</div>

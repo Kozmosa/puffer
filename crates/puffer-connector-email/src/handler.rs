@@ -116,11 +116,7 @@ mod tests {
         }
     }
 
-    fn email(
-        thread: &str,
-        sender: Option<&str>,
-        text: &str,
-    ) -> InboundMessage {
+    fn email(thread: &str, sender: Option<&str>, text: &str) -> InboundMessage {
         InboundMessage {
             conversation_id: thread.to_string(),
             user_id: sender.map(String::from),

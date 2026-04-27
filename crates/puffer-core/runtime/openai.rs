@@ -10,7 +10,6 @@ mod support;
 mod websocket;
 
 pub(super) use self::support::build_codex_openai_request_body;
-pub(super) use self::websocket::{execute_openai_websocket_streaming, openai_websocket_enabled};
 use self::support::{
     append_default_openai_headers, apply_previous_response_id, is_codex_openai_provider,
     is_openai_structured_output_error, openai_base_url_for_auth, openai_model_supports_reasoning,
@@ -19,6 +18,7 @@ use self::support::{
     structured_output_endpoint_id, trace_openai_http_request, trace_openai_http_response_headers,
     OPENAI_STRUCTURED_OUTPUT_FAMILY,
 };
+pub(super) use self::websocket::{execute_openai_websocket_streaming, openai_websocket_enabled};
 use super::structured_output_support::{
     openai_chat_completion_tools_for_request, openai_chat_response_format,
     openai_responses_text_config, openai_tool_definitions_for_request, StructuredOutputConfig,
@@ -155,7 +155,10 @@ fn execute_openai_once(
     // array (matching Codex/CC pattern: dynamic context lives in `input`,
     // not `instructions`, so `instructions` stays static and cacheable).
     let context_reminder = build_context_reminder_message();
-    super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(&mut items, &context_reminder);
+    super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(
+        &mut items,
+        &context_reminder,
+    );
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
@@ -405,7 +408,10 @@ where
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern).
     let context_reminder = build_context_reminder_message();
-    super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(&mut items, &context_reminder);
+    super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(
+        &mut items,
+        &context_reminder,
+    );
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);

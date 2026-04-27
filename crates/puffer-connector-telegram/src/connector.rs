@@ -2,7 +2,7 @@ use crate::handler::{handle_command, PLATFORM_ID};
 use crate::TelegramConfig;
 use anyhow::{Context, Result};
 use puffer_connector_core::{
-    Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError, CommandOutcome,
+    CommandOutcome, Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
     InboundMessage, MessageSplitter,
 };
 use std::sync::mpsc;
@@ -95,16 +95,15 @@ async fn run_dispatcher(
     let config_for_handler = config.clone();
     let bot_username_for_handler = bot_username.clone();
 
-    let handler = Update::filter_message().endpoint(
-        move |bot: Bot, message: Message| {
+    let handler =
+        Update::filter_message().endpoint(move |bot: Bot, message: Message| {
             let runtime = runtime_for_handler.clone();
             let config = config_for_handler.clone();
             let bot_username = bot_username_for_handler.clone();
             async move {
                 process_message(bot, message, runtime, config, bot_user_id, bot_username).await
             }
-        },
-    );
+        });
 
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()

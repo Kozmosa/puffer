@@ -75,21 +75,33 @@ pub fn tool_description(input: &ClaudeBashInput) -> String {
 }
 
 /// Parses JSON input and executes a Claude-style `Bash` tool invocation.
-pub fn execute_from_value(cwd: &Path, session_id: &Uuid, input: Value) -> Result<ClaudeBashExecution> {
+pub fn execute_from_value(
+    cwd: &Path,
+    session_id: &Uuid,
+    input: Value,
+) -> Result<ClaudeBashExecution> {
     let typed: ClaudeBashInput =
         serde_json::from_value(input).context("invalid Bash tool input payload")?;
     execute(cwd, session_id, typed)
 }
 
 /// Executes a Claude-style `Bash` tool invocation in the provided working directory.
-pub fn execute(cwd: &Path, session_id: &Uuid, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
+pub fn execute(
+    cwd: &Path,
+    session_id: &Uuid,
+    input: ClaudeBashInput,
+) -> Result<ClaudeBashExecution> {
     if input.run_in_background {
         return execute_background(cwd, session_id, input);
     }
     execute_foreground(cwd, input)
 }
 
-fn execute_background(cwd: &Path, session_id: &Uuid, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
+fn execute_background(
+    cwd: &Path,
+    session_id: &Uuid,
+    input: ClaudeBashInput,
+) -> Result<ClaudeBashExecution> {
     let output_dir = shell_output_dir(cwd)?;
     let pending_output_file =
         output_dir.join(format!("shell-pending-{}.log", unique_output_nonce()));
@@ -143,7 +155,12 @@ fn execute_background(cwd: &Path, session_id: &Uuid, input: ClaudeBashInput) -> 
         let exit_status = child.wait();
         let exit_code = exit_status.ok().and_then(|s| s.code());
         // Best-effort: mark the stored task as completed.
-        let _ = super::workflow::mark_shell_task_completed(&reaper_cwd, &reaper_session_id, &reaper_task_id, exit_code);
+        let _ = super::workflow::mark_shell_task_completed(
+            &reaper_cwd,
+            &reaper_session_id,
+            &reaper_task_id,
+            exit_code,
+        );
     });
 
     Ok(ClaudeBashExecution {
@@ -287,9 +304,7 @@ fn truncate_output(output: String) -> String {
     let head: String = chars[..head_len].iter().collect();
     let tail: String = chars[chars.len() - tail_len..].iter().collect();
     let omitted = chars.len() - MAX_OUTPUT_CHARS;
-    format!(
-        "{head}\n\n[…{omitted} chars truncated…]\n\n{tail}"
-    )
+    format!("{head}\n\n[…{omitted} chars truncated…]\n\n{tail}")
 }
 
 /// Builds a human-readable summary line for UI/status displays.
@@ -543,7 +558,10 @@ mod tests {
         assert!(result.success, "command failed: {}", result.output.stderr);
         let stdout = &result.output.stdout;
         // 40000 chars > 30000 limit, must be truncated
-        assert!(stdout.contains("[…"), "large output must be middle-truncated");
+        assert!(
+            stdout.contains("[…"),
+            "large output must be middle-truncated"
+        );
         // Head preserved (starts with A's)
         assert!(stdout.starts_with('A'), "head must start with A");
         // Tail preserved (ends with Z's)

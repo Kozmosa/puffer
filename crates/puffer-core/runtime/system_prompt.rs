@@ -410,9 +410,7 @@ fn os_version() -> String {
 mod tests {
     use super::render_runtime_system_prompt;
     use crate::runtime::tests::state;
-    use puffer_resources::{
-        LoadedItem, LoadedResources, PromptTemplate, SourceInfo, SourceKind,
-    };
+    use puffer_resources::{LoadedItem, LoadedResources, PromptTemplate, SourceInfo, SourceKind};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
 
@@ -454,13 +452,9 @@ mod tests {
         assert!(prompt.contains("GPT5 SYSTEM BODY"));
         assert!(!prompt.contains("BASE SYSTEM BODY"));
 
-        let fallback = render_runtime_system_prompt(
-            &state,
-            &resources,
-            "claude-opus-4-6",
-            &BTreeSet::new(),
-        )
-        .unwrap();
+        let fallback =
+            render_runtime_system_prompt(&state, &resources, "claude-opus-4-6", &BTreeSet::new())
+                .unwrap();
         assert!(fallback.contains("BASE SYSTEM BODY"));
         assert!(!fallback.contains("GPT5 SYSTEM BODY"));
     }

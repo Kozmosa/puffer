@@ -311,13 +311,8 @@ mod tests {
         fs::write(temp.path().join("a/mid.o"), "x").unwrap();
         fs::write(temp.path().join("a/b/c/deep.o"), "x").unwrap();
 
-        let output = execute_claude_glob(
-            temp.path(),
-            &[],
-            false,
-            json!({ "pattern": "**/*.o" }),
-        )
-        .unwrap();
+        let output =
+            execute_claude_glob(temp.path(), &[], false, json!({ "pattern": "**/*.o" })).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         let filenames = parsed["filenames"]
             .as_array()
@@ -342,13 +337,8 @@ mod tests {
             fs::write(temp.path().join(format!("f{i}.txt")), "x").unwrap();
         }
 
-        let output = execute_claude_glob(
-            temp.path(),
-            &[],
-            false,
-            json!({ "pattern": "*.txt" }),
-        )
-        .unwrap();
+        let output =
+            execute_claude_glob(temp.path(), &[], false, json!({ "pattern": "*.txt" })).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["truncated"], true);
         let hint = parsed["hint"]
@@ -364,13 +354,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("a.txt"), "x").unwrap();
 
-        let output = execute_claude_glob(
-            temp.path(),
-            &[],
-            false,
-            json!({ "pattern": "*.txt" }),
-        )
-        .unwrap();
+        let output =
+            execute_claude_glob(temp.path(), &[], false, json!({ "pattern": "*.txt" })).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["truncated"], false);
         assert!(

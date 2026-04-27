@@ -1,6 +1,6 @@
-use super::{append_tool_invocations, append_trace_events};
 use super::common::open_text_file_in_editor;
 use super::emit_system;
+use super::{append_tool_invocations, append_trace_events};
 use crate::plan_mode::{enter_plan_mode, preview_plan_mode_context_message};
 use crate::plans::{plan_file_path, plan_has_user_content, read_plan_text};
 use crate::runtime::RequestToolFilter;

@@ -6,12 +6,14 @@
   type Props = {
     project: MockProject;
     agents: MockAgent[];
+    pinned?: boolean;
     onOpenAgent?: (id: string) => void;
     onOpenBoard?: (projectId: string) => void;
     onNewAgent?: () => void;
+    onTogglePin?: () => void;
   };
 
-  let { project, agents, onOpenAgent, onOpenBoard, onNewAgent }: Props = $props();
+  let { project, agents, pinned = false, onOpenAgent, onOpenBoard, onNewAgent, onTogglePin }: Props = $props();
 
   let running = $derived(agents.filter((a) => a.status === "running").length);
   let review = $derived(agents.filter((a) => a.status === "review").length);
@@ -42,19 +44,21 @@
       class="sc-btn"
       data-variant="ghost"
       data-size="sm"
-      onclick={() => onOpenBoard?.(project.id)}
-      title="Open project details"
-    >Details</button>
+      data-pinned={pinned}
+      onclick={onTogglePin}
+      title={pinned ? "Unpin workspace" : "Pin workspace"}
+      aria-label={pinned ? "Unpin workspace" : "Pin workspace"}
+      aria-pressed={pinned ? "true" : "false"}
+      disabled={!onTogglePin}
+    ><Icon name="pin" size={12} />{pinned ? "Pinned" : "Pin"}</button>
     <button
       type="button"
       class="sc-btn"
-      data-variant="default"
+      data-variant="ghost"
       data-size="sm"
-      onclick={onNewAgent}
-      disabled={!onNewAgent}
-    >
-      <Icon name="plus" size={12} />New agent
-    </button>
+      onclick={() => onOpenBoard?.(project.id)}
+      title="Open project details"
+    >Details</button>
   </div>
 
   <div class="pf-pw-agents-strip">
@@ -65,10 +69,17 @@
       <div class="pf-pw-agents-empty">
         <span class="icon"><Icon name="sparkles" size={14} color="var(--muted-foreground)" /></span>
         <span>No active agents.</span>
-        <button type="button" class="sc-btn" data-variant="outline" data-size="sm" onclick={onNewAgent} disabled={!onNewAgent}>
-          <Icon name="plus" size={11} />Start one
-        </button>
       </div>
     {/if}
+    <button
+      type="button"
+      class="pf-pw-agent-add"
+      onclick={onNewAgent}
+      disabled={!onNewAgent}
+      title="New agent"
+      aria-label={`New agent in ${project.name}`}
+    >
+      <Icon name="plus" size={15} />
+    </button>
   </div>
 </div>

@@ -156,7 +156,10 @@ fn decision_from_anthropic(parsed: &serde_json::Value) -> ClassifyDecision {
     let text = parsed
         .get("content")
         .and_then(|c| c.as_array())
-        .and_then(|arr| arr.iter().find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text")))
+        .and_then(|arr| {
+            arr.iter()
+                .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        })
         .and_then(|b| b.get("text").and_then(|t| t.as_str()))
         .unwrap_or("")
         .trim()
@@ -184,9 +187,7 @@ struct ManagerOutbound {
 impl Outbound for ManagerOutbound {
     fn send(&self, platform: &str, target: &str, text: &str) -> Result<String> {
         let subscriber_id = subscriber_for_platform(platform).ok_or_else(|| {
-            anyhow::anyhow!(
-                "no subscriber is configured to send messages on platform `{platform}`"
-            )
+            anyhow::anyhow!("no subscriber is configured to send messages on platform `{platform}`")
         })?;
         let manager = self
             .manager
@@ -220,10 +221,7 @@ fn subscriptions_path(paths: &ConfigPaths) -> PathBuf {
 
 fn autostart_subscribers(manager: &SubscriptionManager, paths: &ConfigPaths) {
     let mut needed: Vec<String> = match manager.store().list() {
-        list => list
-            .into_iter()
-            .map(|spec| spec.source_topic)
-            .collect(),
+        list => list.into_iter().map(|spec| spec.source_topic).collect(),
     };
     needed.sort();
     needed.dedup();
@@ -232,9 +230,7 @@ fn autostart_subscribers(manager: &SubscriptionManager, paths: &ConfigPaths) {
             Some(dir) => match Manifest::load(&dir) {
                 Ok(manifest) => {
                     if let Err(error) = manager.start_subscriber(manifest) {
-                        eprintln!(
-                            "subscription: failed to start subscriber `{topic}`: {error:#}"
-                        );
+                        eprintln!("subscription: failed to start subscriber `{topic}`: {error:#}");
                     }
                 }
                 Err(error) => {
@@ -251,10 +247,7 @@ fn autostart_subscribers(manager: &SubscriptionManager, paths: &ConfigPaths) {
 }
 
 fn find_subscriber_manifest(paths: &ConfigPaths, topic: &str) -> Option<PathBuf> {
-    let workspace = paths
-        .workspace_config_dir
-        .join("subscribers")
-        .join(topic);
+    let workspace = paths.workspace_config_dir.join("subscribers").join(topic);
     if workspace.join("manifest.toml").exists() {
         return Some(workspace);
     }

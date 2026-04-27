@@ -185,8 +185,8 @@ pub fn retry_with_backoff<T, E>(
                 if attempt >= max_attempts {
                     return Err(error);
                 }
-                let delay_ms = base.as_millis() as u64 * (1u64 << (attempt - 1)).min(16)
-                    + jitter_ms();
+                let delay_ms =
+                    base.as_millis() as u64 * (1u64 << (attempt - 1)).min(16) + jitter_ms();
                 std::thread::sleep(Duration::from_millis(delay_ms));
             }
         }

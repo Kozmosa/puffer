@@ -64,11 +64,7 @@ impl RunningConnectors {
     pub(crate) fn shutdown(self) -> Vec<(String, anyhow::Error)> {
         let mut errors = Vec::new();
         for handle in self.handles {
-            let ConnectorHandle {
-                id,
-                shutdown,
-                join,
-            } = handle;
+            let ConnectorHandle { id, shutdown, join } = handle;
             (shutdown)();
             match join.join() {
                 Ok(Ok(())) => {}
@@ -97,8 +93,12 @@ pub(crate) fn build_runtime(
     default_cwd: PathBuf,
     map_path: &Path,
 ) -> Result<Arc<ConnectorRuntime>> {
-    let session_map = ConversationSessionMap::load(map_path)
-        .with_context(|| format!("failed to load connector session map {}", map_path.display()))?;
+    let session_map = ConversationSessionMap::load(map_path).with_context(|| {
+        format!(
+            "failed to load connector session map {}",
+            map_path.display()
+        )
+    })?;
     Ok(Arc::new(ConnectorRuntime::new(ConnectorRuntimeConfig {
         config,
         resources,
@@ -128,15 +128,13 @@ pub(crate) fn start_configured_connectors(
             continue;
         }
         match build_connector(platform, entry) {
-            BuildOutcome::Built(connector) => {
-                match connector.start(runtime.clone()) {
-                    Ok(handle) => handles.push(handle),
-                    Err(error) => eprintln!(
-                        "connector `{platform}` failed to start: {}",
-                        describe_start_error(&error)
-                    ),
-                }
-            }
+            BuildOutcome::Built(connector) => match connector.start(runtime.clone()) {
+                Ok(handle) => handles.push(handle),
+                Err(error) => eprintln!(
+                    "connector `{platform}` failed to start: {}",
+                    describe_start_error(&error)
+                ),
+            },
             BuildOutcome::ConfigError(error) => {
                 eprintln!("connector `{platform}` config invalid: {error:#}");
             }
@@ -176,10 +174,7 @@ enum BuildOutcome {
     Unknown,
 }
 
-fn build_connector(
-    platform: &str,
-    entry: &puffer_connector_core::ConnectorConfig,
-) -> BuildOutcome {
+fn build_connector(platform: &str, entry: &puffer_connector_core::ConnectorConfig) -> BuildOutcome {
     match platform {
         "telegram" => {
             #[cfg(feature = "connector-telegram")]

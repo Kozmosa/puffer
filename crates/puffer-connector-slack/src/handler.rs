@@ -238,12 +238,8 @@ mod tests {
         runtime.bind_session(&alice, Uuid::new_v4()).unwrap();
         runtime.bind_session(&bob, Uuid::new_v4()).unwrap();
 
-        let outcome = handle_command(
-            &runtime,
-            &channel("/new", Some("U1"), true),
-            &open_config(),
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &channel("/new", Some("U1"), true), &open_config()).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
         assert!(runtime.session_for(&alice).unwrap().is_none());
         assert!(
@@ -259,9 +255,7 @@ mod tests {
         // Seed a session for the DM-in-thread variant so we can verify
         // the handler keys it separately from the bare DM session.
         let threaded_key = ConversationKey::new(PLATFORM_ID, "D1:1700000000.000100");
-        runtime
-            .bind_session(&threaded_key, Uuid::new_v4())
-            .unwrap();
+        runtime.bind_session(&threaded_key, Uuid::new_v4()).unwrap();
         let bare_key = ConversationKey::new(PLATFORM_ID, "D1");
         runtime.bind_session(&bare_key, Uuid::new_v4()).unwrap();
 

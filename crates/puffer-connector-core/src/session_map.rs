@@ -187,10 +187,7 @@ impl ConversationSessionMap {
         fs::write(&tmp, raw)
             .with_context(|| format!("failed to write connector session map {}", tmp.display()))?;
         fs::rename(&tmp, path).with_context(|| {
-            format!(
-                "failed to replace connector session map {}",
-                path.display()
-            )
+            format!("failed to replace connector session map {}", path.display())
         })?;
         Ok(())
     }
@@ -265,8 +262,13 @@ mod tests {
 
     #[test]
     fn for_policy_selects_per_user_only_for_group_chats() {
-        let dm =
-            ConversationKey::for_policy("slack", "D1", Some("alice"), GroupKeyPolicy::PerUser, false);
+        let dm = ConversationKey::for_policy(
+            "slack",
+            "D1",
+            Some("alice"),
+            GroupKeyPolicy::PerUser,
+            false,
+        );
         assert!(dm.user.is_none(), "DM must not segment by user");
 
         let channel = ConversationKey::for_policy(
@@ -285,7 +287,10 @@ mod tests {
             GroupKeyPolicy::PerChat,
             true,
         );
-        assert!(shared.user.is_none(), "per-chat policy keeps sessions shared");
+        assert!(
+            shared.user.is_none(),
+            "per-chat policy keeps sessions shared"
+        );
     }
 
     #[test]

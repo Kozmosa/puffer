@@ -1,12 +1,13 @@
 use crate::dtos::{
-    DiffSummaryDto, FolderGroupDto, SessionDetailDto, SessionListItemDto, TimelineItemDto,
+    AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, DiffSummaryDto, DivergenceReportDto,
+    FolderGroupDto, SessionDetailDto, SessionListItemDto, TimelineItemDto,
 };
 use crate::repo_actions;
 use anyhow::{Context, Result};
 use puffer_config::ConfigPaths;
 use puffer_session_store::{GitDiffSnapshot, SessionRecord, SessionStore, TranscriptEvent};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -58,7 +59,23 @@ pub(crate) fn list_grouped_sessions() -> Result<Vec<FolderGroupDto>> {
             }
         })
         .collect::<Vec<_>>();
-    folders.sort_by(|left, right| left.folder_label.cmp(&right.folder_label));
+    folders.sort_by(|left, right| {
+        let left_latest = left
+            .sessions
+            .iter()
+            .map(|session| session.updated_at_ms)
+            .max()
+            .unwrap_or(0);
+        let right_latest = right
+            .sessions
+            .iter()
+            .map(|session| session.updated_at_ms)
+            .max()
+            .unwrap_or(0);
+        right_latest
+            .cmp(&left_latest)
+            .then_with(|| left.folder_label.cmp(&right.folder_label))
+    });
     Ok(folders)
 }
 
@@ -75,7 +92,9 @@ pub(crate) fn load_session_detail(session_id: &str) -> Result<SessionDetailDto> 
     let diff_history = diff_history(&record);
     let latest_diff = diff_history.first().cloned();
     let repo_status =
-        repo_actions::repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
+        repo_actions::deferred_repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
+    let agent_diff = build_agent_diff(&record);
+    let divergence = compute_divergence(&agent_diff, latest_diff.as_ref(), &record.metadata.cwd);
 
     Ok(SessionDetailDto {
         session_id: record.metadata.id.to_string(),
@@ -101,6 +120,8 @@ pub(crate) fn load_session_detail(session_id: &str) -> Result<SessionDetailDto> 
         latest_diff,
         diff_history,
         repo_status,
+        agent_diff,
+        divergence,
     })
 }
 
@@ -143,7 +164,7 @@ fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn session_group_root(cwd: &Path) -> PathBuf {
-    find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+    cwd.to_path_buf()
 }
 
 fn session_title(
@@ -198,6 +219,223 @@ fn diff_summary(index: usize, snapshot: &GitDiffSnapshot) -> DiffSummaryDto {
         },
         patch_excerpt: snapshot.patch_excerpt.clone(),
     }
+}
+
+fn build_agent_diff(record: &SessionRecord) -> AgentDiffDto {
+    let mut entries: Vec<AgentDiffEntryDto> = Vec::new();
+    let mut by_path: BTreeMap<String, AgentDiffFileDto> = BTreeMap::new();
+
+    for event in record.events.iter() {
+        let TranscriptEvent::ToolInvocation {
+            call_id,
+            tool_id,
+            input,
+            success,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        let Some(intent) = agent_edit_intent(tool_id, input) else {
+            continue;
+        };
+
+        let entry = AgentDiffEntryDto {
+            call_id: call_id.clone(),
+            tool_id: tool_id.clone(),
+            kind: intent.kind.to_string(),
+            path: intent.path.clone(),
+            success: *success,
+            summary: intent.summary.clone(),
+        };
+
+        if *success {
+            by_path
+                .entry(intent.path.clone())
+                .and_modify(|file| {
+                    file.edit_count += 1;
+                    file.latest_kind = intent.kind.to_string();
+                    file.latest_summary = intent.summary.clone();
+                })
+                .or_insert_with(|| AgentDiffFileDto {
+                    path: intent.path.clone(),
+                    latest_kind: intent.kind.to_string(),
+                    edit_count: 1,
+                    latest_summary: intent.summary.clone(),
+                });
+        }
+
+        entries.push(entry);
+    }
+
+    AgentDiffDto {
+        files: by_path.into_values().collect(),
+        entries,
+    }
+}
+
+struct AgentEditIntent {
+    kind: &'static str,
+    path: String,
+    summary: String,
+}
+
+fn agent_edit_intent(tool_id: &str, raw_input: &str) -> Option<AgentEditIntent> {
+    let value: Value = serde_json::from_str(raw_input).ok()?;
+    let obj = value.as_object()?;
+    match tool_id {
+        "write_file" | "Write" => {
+            let path = obj
+                .get("path")
+                .or_else(|| obj.get("file_path"))
+                .and_then(Value::as_str)?
+                .to_string();
+            let contents = obj
+                .get("contents")
+                .or_else(|| obj.get("content"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some(AgentEditIntent {
+                kind: "write",
+                path,
+                summary: render_write_summary(&contents),
+            })
+        }
+        "replace_in_file" | "edit_file" | "Edit" => {
+            let path = obj
+                .get("path")
+                .or_else(|| obj.get("file_path"))
+                .and_then(Value::as_str)?
+                .to_string();
+            let old = obj
+                .get("old")
+                .or_else(|| obj.get("old_string"))
+                .or_else(|| obj.get("oldText"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let new_text = obj
+                .get("new")
+                .or_else(|| obj.get("new_string"))
+                .or_else(|| obj.get("newText"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            Some(AgentEditIntent {
+                kind: "replace",
+                path,
+                summary: render_replace_summary(old, new_text),
+            })
+        }
+        "move_path" => {
+            let from = obj.get("from").and_then(Value::as_str)?.to_string();
+            let to = obj.get("to").and_then(Value::as_str)?.to_string();
+            Some(AgentEditIntent {
+                kind: "move",
+                path: to.clone(),
+                summary: format!("renamed {from} -> {to}"),
+            })
+        }
+        "remove_path" => {
+            let path = obj.get("path").and_then(Value::as_str)?.to_string();
+            Some(AgentEditIntent {
+                kind: "remove",
+                path: path.clone(),
+                summary: format!("removed {path}"),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn render_write_summary(contents: &str) -> String {
+    const MAX_LINES: usize = 80;
+    let mut out = String::new();
+    let mut lines = 0;
+    for line in contents.lines() {
+        if lines >= MAX_LINES {
+            out.push_str("... (truncated)\n");
+            break;
+        }
+        out.push('+');
+        out.push_str(line);
+        out.push('\n');
+        lines += 1;
+    }
+    out
+}
+
+fn render_replace_summary(old: &str, new_text: &str) -> String {
+    const MAX_LINES: usize = 200;
+    let mut out = String::new();
+    let mut lines = 0;
+    for line in old.lines() {
+        if lines >= MAX_LINES {
+            out.push_str("... (truncated)\n");
+            break;
+        }
+        out.push('-');
+        out.push_str(line);
+        out.push('\n');
+        lines += 1;
+    }
+    for line in new_text.lines() {
+        if lines >= MAX_LINES {
+            out.push_str("... (truncated)\n");
+            break;
+        }
+        out.push('+');
+        out.push_str(line);
+        out.push('\n');
+        lines += 1;
+    }
+    out
+}
+
+fn compute_divergence(
+    agent_diff: &AgentDiffDto,
+    latest_git_diff: Option<&DiffSummaryDto>,
+    cwd: &Path,
+) -> DivergenceReportDto {
+    let git_paths = latest_git_diff
+        .map(|d| extract_paths_from_patch(&d.patch))
+        .unwrap_or_default();
+    let agent_relative: BTreeSet<String> = agent_diff
+        .files
+        .iter()
+        .map(|f| relativize_path(&f.path, cwd))
+        .collect();
+
+    DivergenceReportDto {
+        agent_only: agent_relative.difference(&git_paths).cloned().collect(),
+        git_only: git_paths.difference(&agent_relative).cloned().collect(),
+        agent_total: agent_relative.len(),
+        git_total: git_paths.len(),
+    }
+}
+
+fn relativize_path(path: &str, cwd: &Path) -> String {
+    let trimmed = path.trim();
+    if let Ok(stripped) = Path::new(trimmed).strip_prefix(cwd) {
+        return stripped.display().to_string();
+    }
+    trimmed.to_string()
+}
+
+fn extract_paths_from_patch(patch: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in patch.lines() {
+        let line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            if let Some(b_index) = rest.find(" b/") {
+                let after = &rest[b_index + 3..];
+                let path = after.split_whitespace().next().unwrap_or("").to_string();
+                if !path.is_empty() {
+                    out.insert(path);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {

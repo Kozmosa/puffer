@@ -139,6 +139,13 @@ impl SessionStore {
         })
     }
 
+    /// Sets or clears a display name without appending a rename event.
+    pub fn set_display_name(&self, session_id: Uuid, display_name: Option<String>) -> Result<()> {
+        self.update_metadata(session_id, |metadata| {
+            metadata.display_name = display_name;
+        })
+    }
+
     /// Sets or clears a free-form note on a session.
     pub fn set_note(&self, session_id: Uuid, note: Option<String>) -> Result<()> {
         self.update_metadata(session_id, |metadata| {
@@ -452,6 +459,30 @@ mod tests {
         store.set_note(session.id, None).unwrap();
         let cleared = store.load_session(session.id).unwrap();
         assert!(cleared.metadata.note.is_none());
+    }
+
+    #[test]
+    fn display_name_can_be_set_without_rename_event() {
+        let tempdir = tempdir().unwrap();
+        let paths = test_paths(tempdir.path());
+        fs::create_dir_all(&paths.workspace_config_dir).unwrap();
+        let store = SessionStore::from_paths(&paths).unwrap();
+
+        let session = store.create_session(tempdir.path().join("src")).unwrap();
+        store
+            .set_display_name(session.id, Some("Fix browser title".to_string()))
+            .unwrap();
+
+        let loaded = store.load_session(session.id).unwrap();
+        assert_eq!(
+            loaded.metadata.display_name.as_deref(),
+            Some("Fix browser title")
+        );
+        assert!(loaded.events.is_empty());
+
+        store.set_display_name(session.id, None).unwrap();
+        let cleared = store.load_session(session.id).unwrap();
+        assert!(cleared.metadata.display_name.is_none());
     }
 
     #[test]

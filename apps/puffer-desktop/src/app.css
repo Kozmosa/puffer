@@ -333,23 +333,33 @@ html.is-tauri-mac .pf-titlebar { padding-left: 84px; }
 }
 .pf-sidebar-filters select:hover { color: var(--foreground); }
 .pf-sidebar-agents-list { flex: 1; overflow: auto; padding: 0 0 4px; }
-.pf-sidebar-agent {
+.pf-sidebar-agent-row {
   display: flex; align-items: center; gap: 10px;
-  padding: 6px 10px;
+  padding: 0;
   margin: 0 4px;
   border-radius: 6px;
+  overflow: hidden;
+}
+.pf-sidebar-agent {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 6px 6px 10px;
+  border-radius: 6px 0 0 6px;
   cursor: pointer;
   color: var(--foreground);
   font-size: 13px;
   overflow: hidden;
-  background: transparent; border: 0; width: calc(100% - 8px);
+  background: transparent; border: 0; flex: 1; min-width: 0;
   text-align: left;
 }
-.pf-sidebar-agent:hover { background: color-mix(in oklab, var(--accent) 60%, transparent); }
-.pf-sidebar-agent[data-active="true"] {
+.pf-sidebar-agent-row:hover { background: color-mix(in oklab, var(--accent) 60%, transparent); }
+.pf-sidebar-agent-row[data-active="true"] {
   background: var(--background);
   box-shadow: var(--shadow-xs);
   font-weight: 500;
+}
+.pf-sidebar-agent-row[data-pinned="true"] .pf-pin-button {
+  color: var(--puffer-accent);
+  opacity: 1;
 }
 .pf-sidebar-agent .pf-row-stack {
   display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0;
@@ -359,6 +369,24 @@ html.is-tauri-mac .pf-titlebar { padding-left: 84px; }
   font-size: 10.5px; font-family: var(--font-mono);
   color: var(--muted-foreground);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pf-pin-button {
+  width: 26px;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0 6px 6px 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0.55;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pf-pin-button:hover {
+  color: var(--foreground);
+  opacity: 1;
 }
 .pf-sidebar-empty {
   padding: 16px 14px;
@@ -554,73 +582,4 @@ html.is-tauri-mac .pf-titlebar { padding-left: 84px; }
   background: var(--background);
   font-size: 12px; color: var(--muted-foreground);
   font-family: var(--font-mono);
-}
-
-/* ==========================================================================
-   Tweaks panel
-   ========================================================================== */
-.pf-tweaks-toggle {
-  position: fixed; bottom: 16px; right: 16px;
-  z-index: 60;
-  width: 36px; height: 36px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--background);
-  box-shadow: var(--shadow-md);
-  display: inline-flex; align-items: center; justify-content: center;
-  cursor: pointer;
-}
-.pf-tweaks-panel {
-  position: fixed; bottom: 64px; right: 16px;
-  z-index: 70;
-  width: 300px;
-  background: var(--popover);
-  color: var(--popover-foreground);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow-lg);
-  padding: 14px;
-  font-size: 13px;
-  display: flex; flex-direction: column; gap: 12px;
-  max-height: calc(100vh - 120px);
-  overflow: auto;
-}
-.pf-tweaks-panel h3 {
-  font-size: 13px; font-weight: 600; margin: 0;
-  display: flex; align-items: center; justify-content: space-between;
-  letter-spacing: -0.01em;
-}
-.pf-tweak-group { display: flex; flex-direction: column; gap: 6px; }
-.pf-tweak-label {
-  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--muted-foreground); font-weight: 600;
-}
-.pf-tweak-row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
-.pf-tweak-pill {
-  padding: 4px 9px; border-radius: 999px;
-  border: 1px solid var(--border);
-  background: transparent;
-  font-size: 11px; cursor: pointer;
-  color: var(--foreground);
-  font-family: var(--font-mono); font-weight: 500;
-}
-.pf-tweak-pill:hover { background: var(--accent); }
-.pf-tweak-pill[data-active="true"] {
-  background: var(--foreground);
-  color: var(--background);
-  border-color: var(--foreground);
-}
-.pf-tweak-row .swatch {
-  width: 24px; height: 24px; border-radius: 6px;
-  border: 1px solid var(--border);
-  cursor: pointer; position: relative;
-}
-.pf-tweak-row .swatch[data-active="true"]::after {
-  content: ''; position: absolute; inset: -3px;
-  border: 2px solid var(--foreground);
-  border-radius: 9px;
-}
-.pf-switch-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 0;
 }

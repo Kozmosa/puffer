@@ -1,8 +1,9 @@
-//! Read-only filesystem RPCs for the Files tab in the desktop app.
+//! Filesystem RPCs for the Files tab in the desktop app.
 //!
-//! Two methods:
+//! Methods:
 //!   - `list_dir(path)` → directory listing, dirs first then files
 //!   - `read_file(path, {maxBytes?})` → UTF-8 or base64 content
+//!   - `write_file(path, content)` → overwrite an existing text file
 //!
 //! Path safety: every incoming path must be absolute AND canonicalize
 //! underneath one of the daemon's allowed roots — the session cwd, the
@@ -104,16 +105,8 @@ pub(crate) fn handle_list_dir(state: &DaemonState, params: &Value) -> Result<Val
     fn name_of(v: &Value) -> &str {
         v.get("name").and_then(|n| n.as_str()).unwrap_or("")
     }
-    dirs.sort_by(|a, b| {
-        name_of(a)
-            .to_lowercase()
-            .cmp(&name_of(b).to_lowercase())
-    });
-    files.sort_by(|a, b| {
-        name_of(a)
-            .to_lowercase()
-            .cmp(&name_of(b).to_lowercase())
-    });
+    dirs.sort_by(|a, b| name_of(a).to_lowercase().cmp(&name_of(b).to_lowercase()));
+    files.sort_by(|a, b| name_of(a).to_lowercase().cmp(&name_of(b).to_lowercase()));
 
     let mut entries = dirs;
     entries.extend(files);
@@ -150,8 +143,8 @@ pub(crate) fn handle_read_file(state: &DaemonState, params: &Value) -> Result<Va
     let cap = std::cmp::min(size as usize, max_bytes);
     let mut buf = vec![0u8; cap];
     use std::io::Read;
-    let mut f = std::fs::File::open(&path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let mut f =
+        std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
     let mut filled = 0usize;
     while filled < cap {
         let n = f
@@ -187,11 +180,41 @@ pub(crate) fn handle_read_file(state: &DaemonState, params: &Value) -> Result<Va
     }))
 }
 
+/// Overwrite one existing text file and return the updated read-file result.
+pub(crate) fn handle_write_file(state: &DaemonState, params: &Value) -> Result<Value> {
+    let raw = params
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("missing path")?;
+    let content = params
+        .get("content")
+        .and_then(|v| v.as_str())
+        .context("missing content")?;
+
+    let path = validate_path(state, raw)?;
+    let meta = std::fs::metadata(&path)
+        .with_context(|| format!("path does not exist: {}", path.display()))?;
+    if meta.is_dir() {
+        bail!("path is a directory, not a file: {}", path.display());
+    }
+    if content.len() as u64 > HARD_MAX_BYTES {
+        bail!(
+            "file is too large to write ({} bytes, hard limit {} bytes)",
+            content.len(),
+            HARD_MAX_BYTES
+        );
+    }
+
+    std::fs::write(&path, content.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    handle_read_file(state, &json!({ "path": path.display().to_string() }))
+}
+
 /// Validate that `raw` is absolute and that its canonical form lives
 /// under one of the allowed roots. Returns the canonicalized path so
 /// callers use it for subsequent syscalls (avoids TOCTOU symlink games
 /// between validation and read).
-fn validate_path(state: &DaemonState, raw: &str) -> Result<PathBuf> {
+pub(crate) fn validate_path(state: &DaemonState, raw: &str) -> Result<PathBuf> {
     let p = PathBuf::from(raw);
     if !p.is_absolute() {
         bail!("path must be absolute: {}", raw);

@@ -265,10 +265,11 @@ mod tests {
 
     impl Outbound for RecordingOutbound {
         fn send(&self, platform: &str, target: &str, text: &str) -> Result<String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((platform.to_string(), target.to_string(), text.to_string()));
+            self.calls.lock().unwrap().push((
+                platform.to_string(),
+                target.to_string(),
+                text.to_string(),
+            ));
             Ok(format!("recorded {platform}:{target}"))
         }
     }

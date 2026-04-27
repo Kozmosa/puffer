@@ -88,7 +88,9 @@ pub fn execute_subscriber_scaffold(
 
 fn is_valid_id(id: &str) -> bool {
     !id.is_empty()
-        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !id.starts_with('-')
         && !id.ends_with('-')
 }

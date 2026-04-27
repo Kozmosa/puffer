@@ -98,3 +98,22 @@
   color: oklch(0.5 0.16 145);
 }
 .pf-mcp-card .conn .dot { width: 6px; height: 6px; border-radius: 50%; background: oklch(0.65 0.18 145); }
+.pf-mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-self: end;
+  min-width: 360px;
+}
+.pf-mcp-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+}
+.pf-mcp-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}

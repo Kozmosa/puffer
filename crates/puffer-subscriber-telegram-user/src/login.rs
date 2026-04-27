@@ -9,16 +9,12 @@
 //! progress without polling.
 
 use anyhow::Context as _;
-use grammers_client::{
-    session::Session, Client, Config, InitParams, SignInError,
-};
+use grammers_client::{session::Session, Client, Config, InitParams, SignInError};
 use serde_json::json;
 use tracing::{info, warn};
 
 use crate::events::emit_control;
-use crate::state::{
-    resolve_api_hash, resolve_api_id, LoginState, PersistedCredentials, SkillEnv,
-};
+use crate::state::{resolve_api_hash, resolve_api_id, LoginState, PersistedCredentials, SkillEnv};
 
 /// Starts a login attempt: connects to Telegram (creating a fresh session if
 /// necessary), requests a login code for `phone`, stores the resulting
@@ -72,11 +68,7 @@ pub async fn start(
             state.phone = Some(phone.clone());
             state.api_id = Some(api_id);
             state.api_hash = Some(api_hash);
-            emit_control(
-                &env.topic,
-                "login_awaiting_code",
-                json!({ "phone": phone }),
-            )?;
+            emit_control(&env.topic, "login_awaiting_code", json!({ "phone": phone }))?;
             info!(phone = %phone, "login code requested");
             Ok(Some(client))
         }
@@ -181,7 +173,10 @@ pub async fn submit_password(
         return Ok(false);
     };
 
-    match client.check_password(password_token, password.as_bytes()).await {
+    match client
+        .check_password(password_token, password.as_bytes())
+        .await
+    {
         Ok(user) => {
             save_session(env, client)?;
             persist_credentials_from_state(env, state);

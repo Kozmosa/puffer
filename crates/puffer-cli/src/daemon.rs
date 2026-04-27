@@ -44,7 +44,7 @@ use puffer_provider_openai::{
     parse_authorization_input as parse_openai_authorization_input,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
-use puffer_resources::{load_resources, LoadedResources};
+use puffer_resources::{load_resources, LoadedResources, McpServerSpec};
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_transport_anthropic::{
     exchange_authorization_code as exchange_anthropic_authorization_code,
@@ -73,6 +73,7 @@ use crate::auth_provider::{
 };
 use crate::daemon_fs_watch::FsWatchRegistry;
 use crate::daemon_pty::PtyRegistry;
+use crate::daemon_ui_state::{load_pin_state, set_pin_state, DesktopPinState};
 use crate::desktop_api;
 use crate::desktop_api_types::{
     ExternalCredentialDto, FolderGroupDto, McpServerDto, ModelDescriptorDto, RepoActionResultDto,
@@ -241,6 +242,10 @@ impl DaemonState {
     /// One of the allowed roots for filesystem RPCs.
     pub(crate) fn workspace_root(&self) -> std::path::PathBuf {
         self.paths.workspace_root.clone()
+    }
+
+    pub(crate) fn config_paths(&self) -> &ConfigPaths {
+        &self.paths
     }
 }
 
@@ -572,6 +577,8 @@ async fn dispatch_request(
         }
 
         "list_grouped_sessions" => respond!(handle_list_grouped_sessions(&state)),
+        "load_desktop_pins" => respond!(handle_load_desktop_pins(&state)),
+        "set_desktop_pin" => respond!(handle_set_desktop_pin(&state, &params)),
         "load_session_detail" => respond!(handle_load_session_detail(&state, &params)),
         "refresh_repo_status" => respond!(handle_refresh_repo_status(&state, &params)),
         "load_settings_snapshot" => respond!(detached!(|s| handle_load_settings_snapshot(&s))),
@@ -589,6 +596,7 @@ async fn dispatch_request(
         }
         "logout_provider" => respond!(detached!(|s, p| handle_logout_provider(&s, &p))),
         "list_mcp_servers" => respond!(detached!(|s| handle_list_mcp_servers(&s))),
+        "add_mcp_server" => respond!(detached!(|s, p| handle_add_mcp_server(&s, &p))),
         "list_provider_models" => {
             respond!(detached!(|s, p| handle_list_provider_models(&s, &p)))
         }
@@ -606,6 +614,10 @@ async fn dispatch_request(
         "pty_close" => respond!(handle_pty_close(&state, &params)),
         "list_dir" => respond!(crate::daemon_files::handle_list_dir(&state, &params)),
         "read_file" => respond!(crate::daemon_files::handle_read_file(&state, &params)),
+        "write_file" => respond!(crate::daemon_files::handle_write_file(&state, &params)),
+        "lsp_inspect" => respond!(detached!(|s, p| crate::daemon_lsp::handle_lsp_inspect(
+            &s, &p
+        ))),
         "fs_watch" => respond!(crate::daemon_fs_watch::handle_fs_watch(&state, &params)),
         "fs_unwatch" => respond!(crate::daemon_fs_watch::handle_fs_unwatch(&state, &params)),
 
@@ -663,6 +675,32 @@ fn handle_list_grouped_sessions(state: &DaemonState) -> Result<Value> {
     let session_store = SessionStore::from_paths(&state.paths)?;
     let groups: Vec<FolderGroupDto> = desktop_api::list_grouped_sessions(&session_store)?;
     Ok(serde_json::to_value(groups)?)
+}
+
+fn handle_load_desktop_pins(state: &DaemonState) -> Result<Value> {
+    let pins = load_pin_state(&state.paths.user_config_dir)?;
+    Ok(serde_json::to_value(pins)?)
+}
+
+fn handle_set_desktop_pin(state: &DaemonState, params: &Value) -> Result<Value> {
+    let kind = params
+        .get("kind")
+        .and_then(Value::as_str)
+        .context("missing kind")?;
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .context("missing id")?;
+    let pinned = params
+        .get("pinned")
+        .and_then(Value::as_bool)
+        .context("missing pinned")?;
+    let pins: DesktopPinState = set_pin_state(&state.paths.user_config_dir, kind, id, pinned)?;
+    state.publish_event(ServerEnvelope::Event {
+        event: "desktop:pins:changed".to_string(),
+        payload: serde_json::to_value(&pins)?,
+    });
+    Ok(serde_json::to_value(pins)?)
 }
 
 fn handle_load_session_detail(state: &DaemonState, params: &Value) -> Result<Value> {
@@ -914,12 +952,97 @@ fn handle_logout_provider(state: &DaemonState, params: &Value) -> Result<Value> 
 }
 
 /// Lists all MCP servers discovered across workspace + user + builtin
-/// resource roots. Read-only — editing servers still happens by editing
-/// the TOML on disk (the UI just surfaces what's loaded).
+/// resource roots.
 fn handle_list_mcp_servers(state: &DaemonState) -> Result<Value> {
     let inputs = state.build_runtime_inputs()?;
-    let servers: Vec<McpServerDto> = inputs
-        .resources
+    let servers = mcp_server_dtos(&inputs.resources);
+    Ok(json!({ "servers": servers }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddMcpServerParams {
+    id: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    transport: String,
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+fn handle_add_mcp_server(state: &DaemonState, params: &Value) -> Result<Value> {
+    let params: AddMcpServerParams = serde_json::from_value(params.clone())?;
+    let id = params.id.trim();
+    validate_mcp_id(id)?;
+    let transport = params.transport.trim();
+    if !matches!(transport, "stdio" | "sse" | "http") {
+        anyhow::bail!("unsupported MCP transport `{transport}`");
+    }
+
+    let endpoint = params.endpoint.unwrap_or_default().trim().to_string();
+    let target = params.target.unwrap_or_default().trim().to_string();
+    if transport == "stdio" && target.is_empty() {
+        anyhow::bail!("stdio MCP servers require a command");
+    }
+    if transport != "stdio" && endpoint.is_empty() {
+        anyhow::bail!("{transport} MCP servers require a URL");
+    }
+
+    let spec = McpServerSpec {
+        id: id.to_string(),
+        display_name: params
+            .display_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| id.to_string()),
+        transport: transport.to_string(),
+        endpoint,
+        target,
+        description: params
+            .description
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default(),
+    };
+
+    let dir = match params.scope.as_deref().unwrap_or("local") {
+        "user" => state.paths.user_config_dir.join("resources/mcp_servers"),
+        "local" | "project" | "workspace" => state
+            .paths
+            .workspace_config_dir
+            .join("resources/mcp_servers"),
+        other => anyhow::bail!("unsupported MCP scope `{other}`"),
+    };
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{id}.yaml"));
+    std::fs::write(&path, serde_yaml::to_string(&spec)?)?;
+
+    let inputs = state.build_runtime_inputs()?;
+    Ok(json!({ "servers": mcp_server_dtos(&inputs.resources) }))
+}
+
+fn validate_mcp_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("MCP server id is required");
+    }
+    if !id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+    {
+        anyhow::bail!(
+            "MCP server id may only contain letters, numbers, dots, dashes, and underscores"
+        );
+    }
+    Ok(())
+}
+
+fn mcp_server_dtos(resources: &LoadedResources) -> Vec<McpServerDto> {
+    resources
         .mcp_servers
         .iter()
         .map(|item| McpServerDto {
@@ -936,8 +1059,7 @@ fn handle_list_mcp_servers(state: &DaemonState) -> Result<Value> {
             source_kind: format!("{:?}", item.source_info.kind).to_lowercase(),
             source_path: Some(item.source_info.path.display().to_string()),
         })
-        .collect();
-    Ok(json!({ "servers": servers }))
+        .collect()
 }
 
 /// Returns the full model list for one provider. The snapshot only carries
@@ -1600,8 +1722,36 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                 return;
             }
         };
+        let has_user_message = record
+            .events
+            .iter()
+            .any(|event| matches!(event, TranscriptEvent::UserMessage { .. }));
+        let auto_title = if crate::daemon_title::should_auto_title(
+            record.metadata.display_name.as_deref(),
+            has_user_message,
+        ) {
+            crate::daemon_title::title_from_first_message(&message_for_thread)
+        } else {
+            None
+        };
         let cfg_for_turn = setup_state.config.lock().unwrap().clone();
         let mut app_state = AppState::from_session_record(cfg_for_turn, record);
+        if let Some(title) = auto_title {
+            if inputs
+                .session_store
+                .set_display_name(session_uuid, Some(title.clone()))
+                .is_ok()
+            {
+                app_state.session.display_name = Some(title);
+                setup_state.publish_event(ServerEnvelope::Event {
+                    event: "workspace:sessions:changed".to_string(),
+                    payload: json!({
+                        "reason": "auto_title",
+                        "sessionId": session_id_for_thread.clone(),
+                    }),
+                });
+            }
+        }
 
         // Persist the user message before the turn starts so a crash
         // doesn't silently drop it.

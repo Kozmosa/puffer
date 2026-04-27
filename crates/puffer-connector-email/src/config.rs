@@ -140,7 +140,10 @@ mod tests {
         assert_eq!(config.smtp_port, 465);
         assert_eq!(
             config.allowed_senders,
-            vec!["alice@example.com".to_string(), "bob@example.com".to_string()]
+            vec![
+                "alice@example.com".to_string(),
+                "bob@example.com".to_string()
+            ]
         );
         assert_eq!(config.welcome_message.as_deref(), Some("hi"));
         assert_eq!(config.effective_poll_interval_secs(), 30);

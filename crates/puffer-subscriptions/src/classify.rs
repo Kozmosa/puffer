@@ -141,7 +141,9 @@ mod tests {
         let classifier = RemoteClassifier::new(|_, _, _| {
             panic!("closure should not run when classify_prompt is None")
         });
-        assert_eq!(classifier.classify(&spec, &event("x")), ClassifyDecision::Pass);
+        assert_eq!(
+            classifier.classify(&spec, &event("x")),
+            ClassifyDecision::Pass
+        );
     }
 }
-

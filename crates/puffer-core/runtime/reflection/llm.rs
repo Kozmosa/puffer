@@ -404,9 +404,12 @@ mod tests {
             reason: "looping".to_string(),
             next_action: None,
         };
-        let selected =
-            select_final_signal(Some(LlmJudgeMode::Independent), Some(code_signal.clone()), None)
-                .expect("independent mode should fall back to code judge on llm failure");
+        let selected = select_final_signal(
+            Some(LlmJudgeMode::Independent),
+            Some(code_signal.clone()),
+            None,
+        )
+        .expect("independent mode should fall back to code judge on llm failure");
         assert_eq!(selected.source, code_signal.source);
     }
 

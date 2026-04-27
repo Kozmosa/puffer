@@ -59,7 +59,11 @@ pub(super) fn execute_task_create(
 /// Executes the live `TaskGet` workflow tool.
 pub(super) fn execute_task_get(state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: TaskIdInput = serde_json::from_value(input).context("invalid TaskGet input")?;
-    let task = refresh_stored_task(state.session.cwd.as_path(), &state.session.id, &parsed.task_id)?;
+    let task = refresh_stored_task(
+        state.session.cwd.as_path(),
+        &state.session.id,
+        &parsed.task_id,
+    )?;
     Ok(serde_json::to_string_pretty(&json!({
         "task": task.map(|task| {
             json!({

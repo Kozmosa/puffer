@@ -252,7 +252,9 @@ fn is_scp_style_remote(token: &str) -> bool {
         && !host.is_empty()
         && !host.contains('/')
         && !user.contains('/')
-        && host.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        && host
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
 }
 
 fn find_number_before(text: &str) -> Option<u32> {

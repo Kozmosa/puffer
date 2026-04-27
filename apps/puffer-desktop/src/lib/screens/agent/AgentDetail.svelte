@@ -1,6 +1,7 @@
 <script lang="ts">
   import Puffer from "../../design/Puffer.svelte";
   import Icon from "../../design/Icon.svelte";
+  import HighlightedLine from "../../components/HighlightedLine.svelte";
   import ConversationView from "./ConversationView.svelte";
   import DiffView from "../../components/DiffView.svelte";
   import FilesPane from "./FilesPane.svelte";
@@ -72,6 +73,7 @@
   let displayTitle = $derived(sessionDisplayTitle(session));
   let displayBranch = $derived(sessionDetail?.repoStatus?.branch ?? "");
   let displayProject = $derived(session?.folderPath?.split("/").pop() ?? "");
+  let projectCwd = $derived(sessionDetail?.repoStatus?.cwd ?? session?.cwd ?? "");
   let displayWorktree = $derived("");
   let status = $derived<AgentStatus>(inferStatusFromSession(sessionDetail));
 
@@ -250,7 +252,7 @@
                       <span class="count">×{file.editCount}</span>
                     {/if}
                   </header>
-                  <pre class="diff-snippet"><code>{file.latestSummary}</code></pre>
+                  <pre class="diff-snippet"><code>{#each file.latestSummary.split("\n") as line, i (i)}<span><HighlightedLine text={line || " "} path={file.path} /></span>{/each}</code></pre>
                 </article>
               {/each}
             </div>
@@ -333,9 +335,9 @@
         </div>
       {/if}
     {:else if tab === "terminal"}
-      <TerminalPane cwd={session?.cwd ?? displayProject} />
+      <TerminalPane cwd={projectCwd} />
     {:else if tab === "files"}
-      <FilesPane cwd={session?.cwd ?? displayProject} />
+      <FilesPane cwd={projectCwd} />
     {/if}
   </div>
 </div>
@@ -599,6 +601,9 @@
     overflow-x: auto;
   }
   .diff-snippet code { color: inherit; }
+  .diff-snippet code > span {
+    display: block;
+  }
 
   .divergence-pane {
     padding: 14px 16px;

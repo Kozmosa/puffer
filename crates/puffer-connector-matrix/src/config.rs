@@ -46,8 +46,7 @@ fn default_require_mention() -> bool {
 impl MatrixConfig {
     /// Returns `true` when `user_id` may talk to the bot.
     pub fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.is_empty()
-            || self.allowed_users.iter().any(|allowed| allowed == user_id)
+        self.allowed_users.is_empty() || self.allowed_users.iter().any(|allowed| allowed == user_id)
     }
 }
 

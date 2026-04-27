@@ -2,9 +2,7 @@ use crate::handler::PLATFORM_ID;
 use crate::router::{build_router, AppState};
 use crate::WebhookConfig;
 use anyhow::{Context, Result};
-use puffer_connector_core::{
-    Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError,
-};
+use puffer_connector_core::{Connector, ConnectorHandle, ConnectorRuntime, ConnectorStartError};
 use std::sync::mpsc;
 use std::sync::Arc;
 use tokio::sync::oneshot;

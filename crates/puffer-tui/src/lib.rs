@@ -34,7 +34,6 @@ use app_helpers::{
     apply_model_selection_preferences, apply_selected_model, help_pane_active_without_overlay,
     should_use_inline_viewport,
 };
-use crossterm::ExecutableCommand;
 use crossterm::cursor::MoveTo;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -42,6 +41,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, size as terminal_size, BeginSynchronizedUpdate, Clear,
     ClearType, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use crossterm::ExecutableCommand;
 use puffer_core::{command_surface, shutdown_runtime_services, AppState, CommandSpec};
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;

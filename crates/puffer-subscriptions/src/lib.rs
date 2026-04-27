@@ -27,7 +27,7 @@ mod store;
 pub use action::{
     install_outbound, ActionDispatcher, ActionResult, BuiltinActionDispatcher, Outbound,
 };
-pub use classify::{ClassifyDecision, Classifier, NullClassifier, RemoteClassifier};
+pub use classify::{Classifier, ClassifyDecision, NullClassifier, RemoteClassifier};
 pub use manager::{SubscriptionManager, SubscriptionManagerBuilder};
 pub use router::{RouterStats, SubscriptionRouter};
 pub use spec::{ActionSpec, PrefilterSpec, SubscriptionSpec, SubscriptionStatus};

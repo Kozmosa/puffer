@@ -141,7 +141,10 @@ impl ProviderRegistry {
             if all_fresh {
                 for entry in self.providers.values_mut() {
                     if let Some(cached) = cache.entries.get(entry.descriptor.id.as_str()) {
-                        merge_discovered_models(&mut entry.descriptor.models, cached.models.clone());
+                        merge_discovered_models(
+                            &mut entry.descriptor.models,
+                            cached.models.clone(),
+                        );
                     }
                 }
                 return Ok(());
@@ -160,24 +163,23 @@ impl ProviderRegistry {
             .map(|entry| entry.descriptor.clone())
             .collect();
 
-        let results: Vec<(String, Result<Vec<ModelDescriptor>>)> =
-            std::thread::scope(|s| {
-                let handles: Vec<_> = eligible
-                    .iter()
-                    .map(|provider| {
-                        let id = provider.id.clone();
-                        let client = ModelDiscoveryClient::new();
-                        s.spawn(move || {
-                            let models = client.discover_models(provider, auth_store);
-                            (id, models)
-                        })
+        let results: Vec<(String, Result<Vec<ModelDescriptor>>)> = std::thread::scope(|s| {
+            let handles: Vec<_> = eligible
+                .iter()
+                .map(|provider| {
+                    let id = provider.id.clone();
+                    let client = ModelDiscoveryClient::new();
+                    s.spawn(move || {
+                        let models = client.discover_models(provider, auth_store);
+                        (id, models)
                     })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| h.join().expect("discovery thread panicked"))
-                    .collect()
-            });
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("discovery thread panicked"))
+                .collect()
+        });
 
         let mut failures = Vec::new();
         let mut cache_entries: HashMap<String, DiscoveryCacheEntry> = HashMap::new();
@@ -207,7 +209,12 @@ impl ProviderRegistry {
 
         // --- Persist cache ---
         if !cache_entries.is_empty() {
-            let _ = save_discovery_cache(&cache_path, &DiscoveryCache { entries: cache_entries });
+            let _ = save_discovery_cache(
+                &cache_path,
+                &DiscoveryCache {
+                    entries: cache_entries,
+                },
+            );
         }
 
         if failures.is_empty() {

@@ -372,11 +372,11 @@ pub(crate) fn reasoning_item_from_value(item: &Value) -> Option<ConversationItem
             arr.iter()
                 .filter_map(|s| {
                     if s.get("type").and_then(Value::as_str) == Some("summary_text") {
-                        s.get("text")
-                            .and_then(Value::as_str)
-                            .map(|text| ReasoningSummary::SummaryText {
+                        s.get("text").and_then(Value::as_str).map(|text| {
+                            ReasoningSummary::SummaryText {
                                 text: text.to_string(),
-                            })
+                            }
+                        })
                     } else {
                         None
                     }
@@ -475,9 +475,9 @@ pub(crate) fn insert_context_reminder_preserving_legacy_leading_system(
 ) {
     let insert_pos = items
         .iter()
-        .take_while(|item| {
-            matches!(item, ConversationItem::Message { role, .. } if role == "system")
-        })
+        .take_while(
+            |item| matches!(item, ConversationItem::Message { role, .. } if role == "system"),
+        )
         .count();
     items.insert(insert_pos, ConversationItem::user_message(reminder_text));
 }
@@ -689,9 +689,8 @@ pub(crate) fn items_to_chat_messages(
                 i += 1;
             }
             ConversationItem::Compaction { summary } => {
-                let text = format!(
-                    "[Conversation compacted — prior context summarized]\n\n{summary}"
-                );
+                let text =
+                    format!("[Conversation compacted — prior context summarized]\n\n{summary}");
                 messages.push(chat_message("user", &text));
                 i += 1;
             }
@@ -758,8 +757,7 @@ pub(crate) fn items_to_anthropic_messages(items: &[ConversationItem]) -> Vec<Val
                         arguments,
                     } = &items[i]
                     {
-                        let input_val: Value =
-                            serde_json::from_str(arguments).unwrap_or(json!({}));
+                        let input_val: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
                         tool_uses.push(json!({
                             "type": "tool_use",
                             "id": call_id,
@@ -801,9 +799,8 @@ pub(crate) fn items_to_anthropic_messages(items: &[ConversationItem]) -> Vec<Val
                 i += 1;
             }
             ConversationItem::Compaction { summary } => {
-                let text = format!(
-                    "[Conversation compacted — prior context summarized]\n\n{summary}"
-                );
+                let text =
+                    format!("[Conversation compacted — prior context summarized]\n\n{summary}");
                 push_or_merge(&mut messages, "user", json!(text));
                 i += 1;
             }
@@ -1002,9 +999,8 @@ pub(crate) fn compact_conversation(
     request_config: &OpenAIRequestConfig,
     input_tokens_hint: Option<usize>,
 ) -> bool {
-    let summary_fn = |old_context: &str, mid: &str| {
-        generate_summary(old_context, mid, provider, request_config)
-    };
+    let summary_fn =
+        |old_context: &str, mid: &str| generate_summary(old_context, mid, provider, request_config);
     compact_conversation_with(items, provider, model_id, input_tokens_hint, &summary_fn)
 }
 
@@ -1365,8 +1361,10 @@ mod tests {
         ];
         let msgs = items_to_anthropic_messages(&items);
         for m in &msgs {
-            assert_ne!(m["role"], "system",
-                "system role leaked into Anthropic messages: {m:?}");
+            assert_ne!(
+                m["role"], "system",
+                "system role leaked into Anthropic messages: {m:?}"
+            );
         }
     }
 
@@ -1388,7 +1386,10 @@ mod tests {
             ConversationItem::user_message("audit this"),
         ];
         // Mimic the runtime call site (openai.rs / websocket.rs).
-        insert_context_reminder_preserving_legacy_leading_system(&mut items, "[context: cwd=/foo, ts=...]");
+        insert_context_reminder_preserving_legacy_leading_system(
+            &mut items,
+            "[context: cwd=/foo, ts=...]",
+        );
         let value = items_to_responses_input(&items);
         let arr = value.as_array().unwrap();
         let identity_count = arr
@@ -1730,7 +1731,10 @@ mod tests {
         let recovered: ConversationItem = serde_json::from_str(&json).unwrap();
         if let ConversationItem::FunctionCallOutput { output, .. } = &recovered {
             assert_eq!(output.text, "permission denied");
-            assert!(!output.is_error, "is_error should default to false after deserialization");
+            assert!(
+                !output.is_error,
+                "is_error should default to false after deserialization"
+            );
         } else {
             panic!("expected FunctionCallOutput");
         }
@@ -1844,7 +1848,11 @@ mod tests {
         ];
         let original_len = items.len();
         normalize_items(&mut items);
-        assert_eq!(items.len(), original_len, "paired items should not be modified");
+        assert_eq!(
+            items.len(),
+            original_len,
+            "paired items should not be modified"
+        );
     }
 
     #[test]
@@ -1907,7 +1915,7 @@ mod tests {
     fn token_estimation_function_call() {
         let item = ConversationItem::FunctionCall {
             call_id: "c1".into(),
-            name: "Bash".into(),             // 4 chars → 1 token
+            name: "Bash".into(),                 // 4 chars → 1 token
             arguments: r#"{"cmd":"ls"}"#.into(), // 12 chars → 3 tokens
         };
         // name(1) + arguments(3) = 4
@@ -2090,12 +2098,15 @@ mod tests {
         });
         let items = transcript_to_items(&state, "");
         // Find the FunctionCallOutput
-        let output_item = items.iter().find(|i| {
-            matches!(i, ConversationItem::FunctionCallOutput { .. })
-        });
+        let output_item = items
+            .iter()
+            .find(|i| matches!(i, ConversationItem::FunctionCallOutput { .. }));
         assert!(output_item.is_some(), "should have a FunctionCallOutput");
         if let ConversationItem::FunctionCallOutput { output, .. } = output_item.unwrap() {
-            assert!(output.is_error, "is_error should be true for failed tool result");
+            assert!(
+                output.is_error,
+                "is_error should be true for failed tool result"
+            );
             assert_eq!(output.text, "error output");
         }
     }
@@ -2148,7 +2159,11 @@ mod tests {
             },
         ];
         let msgs = items_to_anthropic_messages(&items);
-        assert_eq!(msgs.len(), 3, "user + assistant(tool_use) + user(tool_result)");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "user + assistant(tool_use) + user(tool_result)"
+        );
 
         // Assistant message with tool_use
         assert_eq!(msgs[1]["role"], "assistant");
@@ -2164,7 +2179,10 @@ mod tests {
         assert_eq!(tool_result["type"], "tool_result");
         assert_eq!(tool_result["tool_use_id"], "c1");
         assert_eq!(tool_result["content"], "file.rs");
-        assert!(tool_result.get("is_error").is_none(), "is_error should be absent when false");
+        assert!(
+            tool_result.get("is_error").is_none(),
+            "is_error should be absent when false"
+        );
     }
 
     #[test]
@@ -2374,7 +2392,10 @@ mod tests {
         // === Chat Completions (OpenAI legacy pattern) ===
         let chat = items_to_chat_messages(&items, None, None, None);
         // user → assistant(tool_calls) → tool → assistant → user → assistant(tool_calls) → tool → assistant
-        assert!(chat.len() >= 4, "Chat Completions: should have role-based messages");
+        assert!(
+            chat.len() >= 4,
+            "Chat Completions: should have role-based messages"
+        );
         assert_eq!(chat[0].role, "user");
         // Function calls become assistant with tool_calls
         assert_eq!(chat[1].role, "assistant");
@@ -2390,7 +2411,8 @@ mod tests {
         // Verify alternation
         for i in 1..anthropic.len() {
             assert_ne!(
-                anthropic[i]["role"], anthropic[i - 1]["role"],
+                anthropic[i]["role"],
+                anthropic[i - 1]["role"],
                 "Anthropic: strict alternation violated at index {i}"
             );
         }
@@ -2404,7 +2426,10 @@ mod tests {
                     .map(|c| c.iter().any(|b| b["type"] == "tool_use"))
                     .unwrap_or(false)
         });
-        assert!(assistant_with_tool.is_some(), "Anthropic: should have assistant with tool_use");
+        assert!(
+            assistant_with_tool.is_some(),
+            "Anthropic: should have assistant with tool_use"
+        );
         let tool_use_block = assistant_with_tool.unwrap()["content"]
             .as_array()
             .unwrap()
@@ -2422,7 +2447,10 @@ mod tests {
                     .map(|c| c.iter().any(|b| b["type"] == "tool_result"))
                     .unwrap_or(false)
         });
-        assert!(user_with_result.is_some(), "Anthropic: should have user with tool_result");
+        assert!(
+            user_with_result.is_some(),
+            "Anthropic: should have user with tool_result"
+        );
         let tool_result_block = user_with_result.unwrap()["content"]
             .as_array()
             .unwrap()
@@ -2432,13 +2460,27 @@ mod tests {
         assert_eq!(tool_result_block["tool_use_id"], "call_1");
 
         // Find is_error propagation in Turn 2
-        let error_result = anthropic.iter().flat_map(|m| {
-            m["content"].as_array().unwrap_or(&vec![]).iter().filter(|b| {
-                b["type"] == "tool_result" && b["tool_use_id"] == "call_2"
-            }).cloned().collect::<Vec<_>>()
-        }).next();
-        assert!(error_result.is_some(), "Anthropic: should have tool_result for call_2");
-        assert_eq!(error_result.unwrap()["is_error"], true, "Anthropic: is_error should propagate");
+        let error_result = anthropic
+            .iter()
+            .flat_map(|m| {
+                m["content"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .filter(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_2")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .next();
+        assert!(
+            error_result.is_some(),
+            "Anthropic: should have tool_result for call_2"
+        );
+        assert_eq!(
+            error_result.unwrap()["is_error"],
+            true,
+            "Anthropic: is_error should propagate"
+        );
     }
 
     /// Dumps the actual wire-format JSON for visual inspection.
@@ -2609,14 +2651,12 @@ mod tests {
         append_reasoning_items(&mut items, &raw);
 
         assert_eq!(items.len(), 3);
-        let ConversationItem::Reasoning {
-            summary: s1,
-            ..
-        } = &items[1] else { panic!("item[1] should be Reasoning"); };
-        let ConversationItem::Reasoning {
-            summary: s2,
-            ..
-        } = &items[2] else { panic!("item[2] should be Reasoning"); };
+        let ConversationItem::Reasoning { summary: s1, .. } = &items[1] else {
+            panic!("item[1] should be Reasoning");
+        };
+        let ConversationItem::Reasoning { summary: s2, .. } = &items[2] else {
+            panic!("item[2] should be Reasoning");
+        };
         assert!(matches!(&s1[0], ReasoningSummary::SummaryText { text } if text == "first"));
         assert!(matches!(&s2[0], ReasoningSummary::SummaryText { text } if text == "second"));
     }

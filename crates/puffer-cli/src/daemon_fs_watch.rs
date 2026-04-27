@@ -227,10 +227,7 @@ impl FsWatchRegistry {
 }
 
 fn build_event_payload(watch_id: &str, paths: &[PathBuf]) -> Value {
-    let mut out: Vec<String> = paths
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
+    let mut out: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
     // Sort for a stable event payload — helps UI diffing + log readability.
     out.sort();
     json!({

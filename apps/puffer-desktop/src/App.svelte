@@ -3,7 +3,6 @@
 
   import TitleBar, { type TitleTab } from "./lib/shell/TitleBar.svelte";
   import Sidebar, { type ActiveAgent, type UserChip } from "./lib/shell/Sidebar.svelte";
-  import TweaksPanel from "./lib/shell/TweaksPanel.svelte";
   import {
     applyTweaksToDocument,
     defaultTweaks,
@@ -45,7 +44,9 @@
     resolveUserQuestion as resolveTurnUserQuestion,
     cancelTurn,
     createSession,
-    loadDefaultWorkspace
+    loadDefaultWorkspace,
+    loadDesktopPins,
+    setDesktopPin
   } from "./lib/api/desktop";
   import {
     subscribeSessionEvents,
@@ -60,6 +61,7 @@
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type {
     DesktopPreferences,
+    DesktopPinState,
     ExternalCredential,
     FolderGroup,
     AskUserQuestionItem,
@@ -128,6 +130,8 @@
   let sessionEventUnlisten: UnlistenFn | null = null;
   let subscribedSessionId: string | null = null;
   let connectionState = $state<ConnectionState>("idle");
+  let sessionLoadGeneration = 0;
+  let desktopPins = $state<DesktopPinState>({ pinnedAgentIds: [], pinnedWorkspacePaths: [] });
 
   let settingsSnapshot = $state<SettingsSnapshot | null>(null);
   let settingsLoading = $state(false);
@@ -190,22 +194,56 @@
   let pendingQuestions = $derived<UserQuestionTimelineItem[]>(
     combinedTimeline.filter(
       (t): t is UserQuestionTimelineItem =>
-        t.kind === "question" && !dismissedQuestionIds.includes(t.id)
+        t.kind === "question" && t.status === "pending" && !dismissedQuestionIds.includes(t.id)
     )
   );
   let turnRunning = $derived(currentTurnId !== null || turnStartedAtMs !== null);
 
+  function latestGroupMs(group: FolderGroup): number {
+    return group.sessions.reduce((latest, session) => Math.max(latest, session.updatedAtMs), 0);
+  }
+
+  function pinnedIndex(values: string[], id: string): number {
+    const index = values.indexOf(id);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  }
+
+  let sortedGroups = $derived<FolderGroup[]>(
+    groups.slice().sort((left, right) => {
+      const leftPin = Math.min(
+        pinnedIndex(desktopPins.pinnedWorkspacePaths, left.path),
+        pinnedIndex(desktopPins.pinnedWorkspacePaths, left.id)
+      );
+      const rightPin = Math.min(
+        pinnedIndex(desktopPins.pinnedWorkspacePaths, right.path),
+        pinnedIndex(desktopPins.pinnedWorkspacePaths, right.id)
+      );
+      return leftPin - rightPin
+        || latestGroupMs(right) - latestGroupMs(left)
+        || left.label.localeCompare(right.label);
+    })
+  );
+
   let realAgents = $derived<ActiveAgent[]>(
-    groups.flatMap((g) =>
-      g.sessions.slice(0, 3).map((s) => ({
+    sortedGroups
+      .flatMap((g) =>
+        g.sessions.map((s) => ({
         id: s.id,
         name: sessionDisplayName(s).slice(0, 24),
         title: sessionDisplayTitle(s),
         project: g.label,
         branch: "",
-        state: "idle" as AgentState
+        state: "idle" as AgentState,
+        updatedAtMs: s.updatedAtMs,
+        pinned: desktopPins.pinnedAgentIds.includes(s.id)
       }))
     )
+      .slice()
+      .sort((left, right) =>
+        pinnedIndex(desktopPins.pinnedAgentIds, left.id) - pinnedIndex(desktopPins.pinnedAgentIds, right.id)
+        || right.updatedAtMs - left.updatedAtMs
+        || left.project.localeCompare(right.project)
+      )
   );
 
   let activeAgents = $derived<ActiveAgent[]>(realAgents);
@@ -273,6 +311,7 @@
           // When we reconnect after a drop, refresh groups + re-open the
           // selected session so the UI catches up.
           if (s === "open" && !onboarding) {
+            void refreshPins();
             void refreshGroups();
             if (selectedSession) void openSession(selectedSession);
           }
@@ -283,19 +322,26 @@
         client.on("workspace:sessions:changed", () => {
           void refreshGroups();
         });
+        client.on<DesktopPinState>("desktop:pins:changed", (pins) => {
+          desktopPins = {
+            pinnedAgentIds: Array.isArray(pins?.pinnedAgentIds) ? pins.pinnedAgentIds : [],
+            pinnedWorkspacePaths: Array.isArray(pins?.pinnedWorkspacePaths) ? pins.pinnedWorkspacePaths : []
+          };
+        });
       })
       .catch(() => {
         /* connection may be unavailable (web preview); stay idle */
       });
     await refreshSettings();
     if (!onboarding) {
+      await refreshPins();
       await refreshGroups();
       // When drilled into a mock agent via the screenshot harness (or the
       // user just landed after login without picking a session), auto-open
       // the most recent real session so the Chat tab renders a transcript
       // instead of the empty state.
       if (!selectedSession) {
-        const firstReal = groups
+        const firstReal = sortedGroups
           .flatMap((g) => g.sessions)
           .sort((a, b) => b.updatedAtMs - a.updatedAtMs)[0];
         if (firstReal) {
@@ -442,6 +488,41 @@
     }
   }
 
+  async function refreshPins() {
+    try {
+      desktopPins = await loadDesktopPins();
+    } catch (error) {
+      statusMessage = `Failed to load pins: ${error}`;
+    }
+  }
+
+  function applyPin(kind: "agent" | "workspace", id: string, pinned: boolean) {
+    if (kind === "agent") {
+      const next = desktopPins.pinnedAgentIds.filter((value) => value !== id);
+      desktopPins = {
+        ...desktopPins,
+        pinnedAgentIds: pinned ? [id, ...next] : next
+      };
+      return;
+    }
+    const next = desktopPins.pinnedWorkspacePaths.filter((value) => value !== id);
+    desktopPins = {
+      ...desktopPins,
+      pinnedWorkspacePaths: pinned ? [id, ...next] : next
+    };
+  }
+
+  async function toggleDesktopPin(kind: "agent" | "workspace", id: string, pinned: boolean) {
+    applyPin(kind, id, pinned);
+    try {
+      desktopPins = await setDesktopPin(kind, id, pinned);
+      statusMessage = `${pinned ? "Pinned" : "Unpinned"} ${kind}.`;
+    } catch (error) {
+      applyPin(kind, id, !pinned);
+      statusMessage = `Failed to update pin: ${error}`;
+    }
+  }
+
   type OpenSessionOptions = {
     showLoading?: boolean;
     resetLiveState?: boolean;
@@ -450,9 +531,11 @@
   async function openSession(session: SessionListItem, options: OpenSessionOptions = {}) {
     const showLoading = options.showLoading ?? selectedSession?.id !== session.id;
     const resetLiveState = options.resetLiveState ?? true;
+    const loadGeneration = ++sessionLoadGeneration;
     if (showLoading) sessionLoading = true;
     try {
       const detail = await loadSessionDetailFromDaemon(session.id);
+      if (loadGeneration !== sessionLoadGeneration) return;
       selectedSession = detail.session;
       sessionDetail = detail;
       if (resetLiveState) {
@@ -469,13 +552,14 @@
       }
       statusMessage = `Loaded ${detail.timeline.length} conversation items.`;
     } catch (error) {
+      if (loadGeneration !== sessionLoadGeneration) return;
       const detail = errorText(error);
       statusMessage = detail;
       if (selectedSession?.id === session.id || openAgentSessionId === session.id) {
         appendAgentError("Conversation load failed", detail, "load-session");
       }
     } finally {
-      if (showLoading) sessionLoading = false;
+      if (showLoading && loadGeneration === sessionLoadGeneration) sessionLoading = false;
     }
   }
 
@@ -524,6 +608,17 @@
   function resetDesktopPreferences() {
     desktopPreferences = { ...defaultDesktopPreferences };
     statusMessage = "Desktop preferences reset.";
+  }
+
+  function resetAppearanceTweaks() {
+    tweaks = {
+      ...tweaks,
+      theme: defaultTweaks.theme,
+      accent: defaultTweaks.accent,
+      density: defaultTweaks.density,
+      fontMix: defaultTweaks.fontMix
+    };
+    statusMessage = "Appearance reset.";
   }
 
   async function handleRemoteBash(command: string) {
@@ -1026,6 +1121,7 @@
           agents={activeAgents}
           activeAgentId={selectedSession?.id ?? null}
           onOpenAgent={onOpenAgent}
+          onToggleAgentPin={(id, pinned) => void toggleDesktopPin("agent", id, pinned)}
           user={userChip}
         />
       {/if}
@@ -1050,16 +1146,17 @@
                 onResolveUserQuestion={resolveUserQuestion}
                 onCancelTurn={() => { if (currentTurnId) void cancelTurn(currentTurnId); }}
               />
-            {:else if openProjectId && groups.find((g) => g.id === openProjectId)}
+            {:else if openProjectId && sortedGroups.find((g) => g.id === openProjectId)}
               <ProjectDetail
-                group={groups.find((g) => g.id === openProjectId)!}
+                group={sortedGroups.find((g) => g.id === openProjectId)!}
+                pinnedAgentIds={desktopPins.pinnedAgentIds}
                 onBack={() => (openProjectId = null)}
                 onOpenAgent={(id) => onOpenAgent(id)}
                 onNewAgent={(cwd) => handleNewAgent(cwd)}
               />
             {:else}
               <Workspace
-                groups={groups}
+                groups={sortedGroups}
                 defaultWorkspaceCwd={defaultWorkspaceCwd}
                 loading={groupsLoading}
                 onOpenAgent={(id) => onOpenAgent(id)}
@@ -1067,6 +1164,8 @@
                 onNewAgent={(cwd) => handleNewAgent(cwd)}
                 onSessionReady={(sessionId) => handleSessionReady(sessionId)}
                 onOpenWorkspacePicker={() => (showWorkspacePicker = true)}
+                pinnedWorkspacePaths={desktopPins.pinnedWorkspacePaths}
+                onToggleWorkspacePin={(path, pinned) => void toggleDesktopPin("workspace", path, pinned)}
               />
             {/if}
           {:else if tweaks.screen === "pipelines"}
@@ -1077,6 +1176,7 @@
             <Settings
               snapshot={settingsSnapshot}
               loading={settingsLoading}
+              tweaks={tweaks}
               preferences={desktopPreferences}
               remoteEnabled={remoteConnection.enabled}
               remotePassword={remotePassword}
@@ -1085,6 +1185,8 @@
               onPreferenceChange={updateDesktopPreference}
               onRemotePasswordChange={(value) => (remotePassword = value)}
               onResetPreferences={resetDesktopPreferences}
+              onTweakChange={updateTweak}
+              onResetAppearance={resetAppearanceTweaks}
               onRefresh={() => void refreshSettings()}
               onLogout={(providerId) => void handleLogout(providerId)}
               onLoginOauth={(providerId) => void handleOauthLogin(providerId)}
@@ -1105,7 +1207,6 @@
     </div>
   {/if}
 
-  <TweaksPanel tweaks={tweaks} onChange={updateTweak} />
 </div>
 
 {#if showWorkspacePicker}
@@ -1128,6 +1229,7 @@
       turnStartedAtMs = null;
       turnThinking = false;
       turnStatusHint = null;
+      await refreshPins();
       await refreshGroups();
       statusMessage = `Switched workspace to ${hs.workspaceRoot}.`;
     }}

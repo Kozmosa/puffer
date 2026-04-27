@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { DiffSnapshot } from "../types";
+  import HighlightedLine from "./HighlightedLine.svelte";
 
   type PatchLine = {
     kind: "meta" | "context" | "added" | "removed";
@@ -99,7 +100,7 @@
         <div class={"patch-line " + line.kind}>
           <span class="gutter">{line.oldNumber ?? ""}</span>
           <span class="gutter">{line.newNumber ?? ""}</span>
-          <code>{line.text}</code>
+          <code><HighlightedLine text={line.text} path={diff.title || diff.command} /></code>
         </div>
       {/each}
     </div>

@@ -105,10 +105,9 @@ async fn webhook(
     // Dispatch is blocking (it acquires the runtime mutex and may run a
     // whole agent turn); run it on a blocking worker so the reactor
     // stays responsive.
-    let result = tokio::task::spawn_blocking(move || {
-        handle_command(&runtime, &inbound, config.as_ref())
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || handle_command(&runtime, &inbound, config.as_ref()))
+            .await;
 
     let outcome = match result {
         Ok(Ok(outcome)) => outcome,
@@ -194,9 +193,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt as _;
     use puffer_config::{ConfigPaths, PufferConfig};
-    use puffer_connector_core::{
-        ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap,
-    };
+    use puffer_connector_core::{ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap};
     use puffer_provider_registry::{AuthStore, ProviderRegistry};
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionStore;

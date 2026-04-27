@@ -195,7 +195,23 @@ pub(crate) fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<
             }
         })
         .collect::<Vec<_>>();
-    folders.sort_by(|left, right| left.folder_label.cmp(&right.folder_label));
+    folders.sort_by(|left, right| {
+        let left_latest = left
+            .sessions
+            .iter()
+            .map(|session| session.updated_at_ms)
+            .max()
+            .unwrap_or(0);
+        let right_latest = right
+            .sessions
+            .iter()
+            .map(|session| session.updated_at_ms)
+            .max()
+            .unwrap_or(0);
+        right_latest
+            .cmp(&left_latest)
+            .then_with(|| left.folder_label.cmp(&right.folder_label))
+    });
     Ok(folders)
 }
 
@@ -210,7 +226,7 @@ pub(crate) fn load_session_detail(
         .to_string();
     let diff_history = diff_history(&record);
     let latest_diff = diff_history.first().cloned();
-    let repo_status = repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
+    let repo_status = deferred_repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
     let agent_diff = build_agent_diff(&record);
     let divergence = compute_divergence(&agent_diff, latest_diff.as_ref(), &record.metadata.cwd);
     Ok(SessionDetailDto {
@@ -246,6 +262,30 @@ pub(crate) fn load_session_cwd(session_store: &SessionStore, session_id: &str) -
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     Ok(record.metadata.cwd)
+}
+
+fn deferred_repo_status(session_id: &str, cwd: &Path) -> RepoStatusDto {
+    RepoStatusDto {
+        session_id: session_id.to_string(),
+        cwd: cwd.display().to_string(),
+        repo_root: None,
+        branch: None,
+        head_sha: None,
+        is_clean: true,
+        status_lines: Vec::new(),
+        has_gh: false,
+        gh_authenticated: false,
+        can_create_pull_request: false,
+        can_merge_pull_request: false,
+        create_pull_request_reason: Some(
+            "Repository status has not been refreshed yet.".to_string(),
+        ),
+        merge_pull_request_reason: Some(
+            "Repository status has not been refreshed yet.".to_string(),
+        ),
+        open_pull_request: None,
+        warnings: Vec::new(),
+    }
 }
 
 pub(crate) fn load_settings_snapshot(
@@ -582,7 +622,7 @@ fn store_credential(
 }
 
 fn session_group_root(cwd: &Path) -> PathBuf {
-    cwd.parent().unwrap_or(cwd).to_path_buf()
+    cwd.to_path_buf()
 }
 
 fn session_title(
@@ -713,10 +753,15 @@ fn agent_edit_intent(tool_id: &str, raw_input: &str) -> Option<AgentEditIntent> 
     let value: Value = serde_json::from_str(raw_input).ok()?;
     let obj = value.as_object()?;
     match tool_id {
-        "write_file" => {
-            let path = obj.get("path").and_then(Value::as_str)?.to_string();
+        "write_file" | "Write" => {
+            let path = obj
+                .get("path")
+                .or_else(|| obj.get("file_path"))
+                .and_then(Value::as_str)?
+                .to_string();
             let contents = obj
                 .get("contents")
+                .or_else(|| obj.get("content"))
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
@@ -726,18 +771,24 @@ fn agent_edit_intent(tool_id: &str, raw_input: &str) -> Option<AgentEditIntent> 
                 summary: render_write_summary(&contents),
             })
         }
-        "replace_in_file" | "edit_file" => {
-            let path = obj.get("path").and_then(Value::as_str)?.to_string();
+        "replace_in_file" | "edit_file" | "Edit" => {
+            let path = obj
+                .get("path")
+                .or_else(|| obj.get("file_path"))
+                .and_then(Value::as_str)?
+                .to_string();
             // `replace_in_file` uses old/new; some custom tools mirror
             // the Anthropic-style old_string/new_string. Accept both.
             let old = obj
                 .get("old")
                 .or_else(|| obj.get("old_string"))
+                .or_else(|| obj.get("oldText"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let new_text = obj
                 .get("new")
                 .or_else(|| obj.get("new_string"))
+                .or_else(|| obj.get("newText"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             Some(AgentEditIntent {

@@ -54,7 +54,10 @@ pub fn execute_subscription_create(
         created_at_ms: now_ms,
     };
     let manager = subscription_globals::manager()?;
-    manager.store().create(spec.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    manager
+        .store()
+        .create(spec.clone())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let _ = ensure_subscriber_started(&manager, &parsed.source_topic);
     Ok(serde_json::to_string_pretty(&spec)?)
 }

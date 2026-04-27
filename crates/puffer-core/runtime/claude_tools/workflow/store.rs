@@ -650,7 +650,11 @@ pub(super) fn team_tasks_path(cwd: &Path, team_name: &str) -> Result<PathBuf> {
 }
 
 /// Returns the structured task store path for the active team when present.
-pub(super) fn structured_tasks_path(cwd: &Path, session_id: &Uuid, active_team_name: Option<&str>) -> Result<PathBuf> {
+pub(super) fn structured_tasks_path(
+    cwd: &Path,
+    session_id: &Uuid,
+    active_team_name: Option<&str>,
+) -> Result<PathBuf> {
     match active_team_name
         .map(str::trim)
         .filter(|name| !name.is_empty())

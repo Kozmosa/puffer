@@ -171,7 +171,11 @@ mod tests {
         assert!(rendered.contains("Review /tmp/work"));
     }
 
-    fn make_prompt(id: &str, template: &str, for_model: Option<&str>) -> LoadedItem<PromptTemplate> {
+    fn make_prompt(
+        id: &str,
+        template: &str,
+        for_model: Option<&str>,
+    ) -> LoadedItem<PromptTemplate> {
         LoadedItem {
             value: PromptTemplate {
                 id: id.to_string(),

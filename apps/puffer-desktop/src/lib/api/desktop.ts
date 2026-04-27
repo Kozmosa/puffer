@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AuthProviderStatus,
+  AskUserQuestionItem,
+  DesktopPinState,
   DiffSnapshot,
   ExternalCredential,
   FolderGroup,
@@ -31,6 +33,11 @@ type BackendFolderGroup = {
   folderPath: string;
   sessionCount: number;
   sessions: BackendSessionListItem[];
+};
+
+type BackendDesktopPinState = {
+  pinnedAgentIds?: string[];
+  pinnedWorkspacePaths?: string[];
 };
 
 type BackendSessionListItem = {
@@ -104,12 +111,16 @@ type BackendTimelineItem =
   | {
       kind: "tool_call";
       id: string;
-      toolId: string;
+      toolId?: string;
+      tool_id?: string;
       status: string;
       summary: string | null;
-      inputText: string;
-      inputJson: Record<string, unknown> | null;
-      outputText: string;
+      inputText?: string;
+      input_text?: string;
+      inputJson?: Record<string, unknown> | null;
+      input_json?: Record<string, unknown> | null;
+      outputText?: string;
+      output_text?: string;
     }
   | {
       kind: "permission_dialog";
@@ -253,6 +264,81 @@ function normalizeDiff(value: BackendDiff): DiffSnapshot {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAskUserQuestions(raw: unknown): AskUserQuestionItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      question: typeof item.question === "string" ? item.question : "Question",
+      header: typeof item.header === "string" ? item.header : "Question",
+      multiSelect: item.multiSelect === true,
+      options: Array.isArray(item.options)
+        ? item.options
+            .map(asRecord)
+            .filter((option): option is Record<string, unknown> => option !== null)
+            .map((option) => ({
+              label: typeof option.label === "string" ? option.label : "Option",
+              description: typeof option.description === "string" ? option.description : "",
+              preview: typeof option.preview === "string" ? option.preview : null
+            }))
+        : []
+    }));
+}
+
+function normalizeQuestionAnswers(raw: unknown): Record<string, string | string[]> {
+  const record = asRecord(raw);
+  if (!record) return {};
+  const answers: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string") {
+      answers[key] = value;
+    } else if (Array.isArray(value)) {
+      const values = value.filter((item): item is string => typeof item === "string");
+      if (values.length > 0) answers[key] = values;
+    }
+  }
+  return answers;
+}
+
+function normalizeAskUserQuestionTool(
+  value: Extract<BackendTimelineItem, { kind: "tool_call" }>,
+  input: Record<string, unknown>,
+  output: Record<string, unknown>
+): TimelineItem {
+  const questions = normalizeAskUserQuestions(output.questions ?? input.questions);
+  const answers = normalizeQuestionAnswers(output.answers ?? input.answers);
+  const pending = output.pending === true || Object.keys(answers).length === 0;
+  const answerSummary = Object.entries(answers)
+    .map(([question, answer]) =>
+      `${question}: ${Array.isArray(answer) ? answer.join(", ") : answer}`
+    )
+    .join("\n");
+  return {
+    id: value.id,
+    kind: "question",
+    title: pending ? "Question" : "Answered question",
+    summary: answerSummary || questions.map((question) => question.question).join("\n"),
+    body: "",
+    meta: [],
+    status: pending ? "pending" : "answered",
+    questions,
+    answers
+  };
+}
+
 function normalizeSessionListItem(value: BackendSessionListItem): SessionListItem {
   return {
     id: value.sessionId,
@@ -309,18 +395,32 @@ function normalizeTimelineItem(value: BackendTimelineItem): TimelineItem {
         meta: ["slash command"]
       };
     case "tool_call":
+      const toolId = value.toolId ?? value.tool_id ?? "";
+      const inputText = value.inputText ?? value.input_text ?? "";
+      const inputJson = value.inputJson ?? value.input_json ?? null;
+      const outputText = value.outputText ?? value.output_text ?? "";
+      const input = inputJson ?? parseJsonObject(inputText) ?? {};
+      const output = parseJsonObject(outputText) ?? {};
+      if (
+        toolId === "AskUserQuestion" ||
+        Array.isArray(input.questions) ||
+        Array.isArray(output.questions)
+      ) {
+        return normalizeAskUserQuestionTool(value, input, output);
+      }
+      const toolName = toolId || "Tool";
       return {
         id: value.id,
         kind: "tool",
-        title: `Tool call: ${value.toolId}`,
-        summary: value.summary ?? preview(value.outputText || value.inputText),
-        body: value.outputText || "Tool call completed without textual output.",
-        meta: [value.toolId, value.status],
-        toolName: value.toolId,
+        title: `Tool call: ${toolName}`,
+        summary: value.summary ?? preview(outputText || inputText),
+        body: outputText || "Tool call completed without textual output.",
+        meta: [toolName, value.status],
+        toolName,
         status: value.status,
-        input: value.inputText,
-        output: value.outputText,
-        inputJson: value.inputJson
+        input: inputText,
+        output: outputText,
+        inputJson
       };
     case "permission_dialog":
       return {
@@ -811,6 +911,38 @@ export async function listGroupedSessionsFromDaemon(): Promise<FolderGroup[]> {
   }
 }
 
+function normalizeDesktopPinState(value: BackendDesktopPinState | null | undefined): DesktopPinState {
+  return {
+    pinnedAgentIds: Array.isArray(value?.pinnedAgentIds) ? value.pinnedAgentIds : [],
+    pinnedWorkspacePaths: Array.isArray(value?.pinnedWorkspacePaths) ? value.pinnedWorkspacePaths : []
+  };
+}
+
+export async function loadDesktopPins(): Promise<DesktopPinState> {
+  try {
+    const client = await ensureLocalDaemonClient();
+    const raw = await client.request<BackendDesktopPinState>("load_desktop_pins");
+    return normalizeDesktopPinState(raw);
+  } catch (_error) {
+    if (!canReachDaemon()) return { pinnedAgentIds: [], pinnedWorkspacePaths: [] };
+    throw _error;
+  }
+}
+
+export async function setDesktopPin(
+  kind: "agent" | "workspace",
+  id: string,
+  pinned: boolean
+): Promise<DesktopPinState> {
+  const client = await ensureLocalDaemonClient();
+  const raw = await client.request<BackendDesktopPinState>("set_desktop_pin", {
+    kind,
+    id,
+    pinned
+  });
+  return normalizeDesktopPinState(raw);
+}
+
 /** Load one session's detail (transcript + latest diff + repo state) via
  *  the daemon. Falls back to mock detail in web preview mode. */
 export async function loadSessionDetailFromDaemon(
@@ -934,7 +1066,7 @@ export async function logoutProviderViaDaemon(
 }
 
 // ---------------------------------------------------------------------------
-// Read-only filesystem RPCs for the Files tab.
+// Filesystem RPCs for the Files tab.
 // ---------------------------------------------------------------------------
 
 export type DirEntryKind = "file" | "directory" | "symlink";
@@ -952,6 +1084,22 @@ export type ReadFileResult = {
   content: string;
   size: number;
   truncated: boolean;
+};
+
+export type LspOperationResult = {
+  operation: string;
+  filePath: string;
+  result: string;
+  resultCount?: number;
+  fileCount?: number;
+};
+
+export type LspInspectResult = {
+  path: string;
+  cwd: string;
+  line: number;
+  character: number;
+  operations: Record<string, LspOperationResult>;
 };
 
 /** List one directory. Absolute path required. The daemon enforces an
@@ -973,6 +1121,24 @@ export async function readFile(path: string, maxBytes?: number): Promise<ReadFil
     "read_file",
     maxBytes != null ? { path, maxBytes } : { path }
   );
+}
+
+/** Overwrite an existing UTF-8 file and return the updated file content. */
+export async function writeFile(path: string, content: string): Promise<ReadFileResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ReadFileResult>("write_file", { path, content });
+}
+
+/** Ask the configured language server for symbol context at a file position.
+ *  `line` and `character` are zero-based LSP coordinates. */
+export async function lspInspect(
+  path: string,
+  cwd: string,
+  line: number,
+  character: number
+): Promise<LspInspectResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LspInspectResult>("lsp_inspect", { path, cwd, line, character });
 }
 
 /** Start a filesystem watch. `paths` must live under the daemon's allowlist
@@ -1062,6 +1228,16 @@ export type McpServerInfo = {
   sourcePath: string | null;
 };
 
+export type AddMcpServerInput = {
+  id: string;
+  displayName?: string;
+  description?: string;
+  transport: "stdio" | "sse" | "http";
+  endpoint?: string;
+  target?: string;
+  scope?: "local" | "user";
+};
+
 export type ModelDescriptorInfo = {
   id: string;
   displayName: string;
@@ -1087,6 +1263,12 @@ export type ConfigPatch = {
 export async function listMcpServers(): Promise<McpServerInfo[]> {
   const client = await ensureLocalDaemonClient();
   const result = await client.request<{ servers: McpServerInfo[] }>("list_mcp_servers");
+  return result.servers;
+}
+
+export async function addMcpServer(input: AddMcpServerInput): Promise<McpServerInfo[]> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<{ servers: McpServerInfo[] }>("add_mcp_server", input);
   return result.servers;
 }
 

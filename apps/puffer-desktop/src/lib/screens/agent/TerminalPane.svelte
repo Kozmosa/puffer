@@ -27,11 +27,30 @@
     if (!container) return;
     const t = new Terminal({
       cursorBlink: true,
-      fontFamily: "var(--font-mono)",
+      fontFamily: '"JetBrains Mono", "JetBrainsMono Nerd Font", "SF Mono", Menlo, Consolas, monospace',
       fontSize: 13,
+      letterSpacing: 0,
       theme: {
-        background: "#0a0a0a",
-        foreground: "#e4e4e4"
+        background: "#ffffff",
+        foreground: "#171717",
+        cursor: "#171717",
+        selectionBackground: "#d4d4d4",
+        black: "#171717",
+        red: "#b91c1c",
+        green: "#15803d",
+        yellow: "#a16207",
+        blue: "#1d4ed8",
+        magenta: "#9333ea",
+        cyan: "#0e7490",
+        white: "#f5f5f5",
+        brightBlack: "#737373",
+        brightRed: "#dc2626",
+        brightGreen: "#16a34a",
+        brightYellow: "#ca8a04",
+        brightBlue: "#2563eb",
+        brightMagenta: "#a855f7",
+        brightCyan: "#0891b2",
+        brightWhite: "#ffffff"
       }
     });
     const fa = new FitAddon();
@@ -157,17 +176,28 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: #0a0a0a;
+    background: var(--background);
   }
   .pf-terminal-host {
     flex: 1;
     min-height: 0;
-    padding: 8px;
+    padding: 10px;
+    background: var(--background);
   }
   /* xterm.js sets its own inline sizing; we just need the host to fill. */
   .pf-terminal-host :global(.xterm),
   .pf-terminal-host :global(.xterm-viewport),
   .pf-terminal-host :global(.xterm-screen) {
     height: 100%;
+  }
+  .pf-terminal-host :global(.xterm) {
+    padding: 8px;
+    border: 0;
+    border-radius: 0;
+    background: var(--background);
+    letter-spacing: 0;
+  }
+  .pf-terminal-host :global(.xterm-viewport) {
+    background: var(--background) !important;
   }
 </style>

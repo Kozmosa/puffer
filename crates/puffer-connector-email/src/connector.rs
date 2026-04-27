@@ -46,8 +46,7 @@ impl Connector for EmailConnector {
         {
             return Err(ConnectorStartError::MissingConfig {
                 id: PLATFORM_ID.to_string(),
-                detail: "imap_host, smtp_host, username, and from_address are required"
-                    .to_string(),
+                detail: "imap_host, smtp_host, username, and from_address are required".to_string(),
             });
         }
 
@@ -155,9 +154,7 @@ async fn poll_once(config: &EmailConfig, runtime: &Arc<ConnectorRuntime>) -> Res
             CommandOutcome::AgentReply { text, .. } => text,
         };
 
-        if let Err(error) =
-            send_reply_chunks(&transport, config, &message, &reply_text).await
-        {
+        if let Err(error) = send_reply_chunks(&transport, config, &message, &reply_text).await {
             eprintln!(
                 "puffer-connector-email: failed to send reply to {}: {error:#}",
                 message.sender
@@ -282,9 +279,7 @@ fn parse_email(raw: &[u8]) -> Option<InboundEmail> {
     })
 }
 
-fn build_smtp_transport(
-    config: &EmailConfig,
-) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
+fn build_smtp_transport(config: &EmailConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
     let creds = Credentials::new(config.username.clone(), config.password.clone());
     let builder = AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
         .with_context(|| format!("invalid SMTP host {}", config.smtp_host))?
@@ -372,9 +367,6 @@ async fn send_reply(
         .body(reply_text.to_string())
         .context("failed to build reply email")?;
 
-    transport
-        .send(email)
-        .await
-        .context("SMTP send failed")?;
+    transport.send(email).await.context("SMTP send failed")?;
     Ok(())
 }

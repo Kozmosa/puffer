@@ -67,9 +67,8 @@ impl ConnectorConfig {
     /// Parses the platform-specific `raw` blob into a typed struct.
     pub fn parse<T: serde::de::DeserializeOwned>(&self) -> anyhow::Result<T> {
         let value = serde_json::Value::Object(self.raw.clone());
-        serde_json::from_value(value).map_err(|error| {
-            anyhow::anyhow!("failed to parse connector config: {error}")
-        })
+        serde_json::from_value(value)
+            .map_err(|error| anyhow::anyhow!("failed to parse connector config: {error}"))
     }
 }
 
@@ -86,9 +85,8 @@ impl ConnectorsConfig {
         }
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read connector config {}", path.display()))?;
-        Self::from_toml(&raw).with_context(|| {
-            format!("failed to parse connector config {}", path.display())
-        })
+        Self::from_toml(&raw)
+            .with_context(|| format!("failed to parse connector config {}", path.display()))
     }
 
     /// Parses a connector config from a TOML string.
@@ -131,9 +129,8 @@ impl ConnectorsConfig {
                 continue;
             }
             let json = toml_to_json(value);
-            let config: ConnectorConfig = serde_json::from_value(json).with_context(|| {
-                format!("invalid config for connector `{key}`")
-            })?;
+            let config: ConnectorConfig = serde_json::from_value(json)
+                .with_context(|| format!("invalid config for connector `{key}`"))?;
             platforms.insert(key, config);
         }
         Ok(Self { enabled, platforms })

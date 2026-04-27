@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "../../design/Icon.svelte";
+  import HighlightedLine from "../../components/HighlightedLine.svelte";
   import type { DiffTimelineItem } from "../../types";
 
   type Props = { item: DiffTimelineItem };
@@ -49,8 +50,6 @@
 
   // Collapse thresholds — one-hunk, short diffs render inline; anything
   // bigger defaults to a preview with a chevron.
-  const PREVIEW_HUNKS = 1;
-  const PREVIEW_ROWS_PER_HUNK = 12;
   const AUTO_COLLAPSE_HUNKS = 2;
   const AUTO_COLLAPSE_TOTAL_ROWS = 18;
 
@@ -66,20 +65,7 @@
     collapsed = isLarge;
   });
 
-  let visibleHunks = $derived(
-    collapsed
-      ? allHunks.slice(0, PREVIEW_HUNKS).map((h) => ({
-          ...h,
-          rows: h.rows.slice(0, PREVIEW_ROWS_PER_HUNK)
-        }))
-      : allHunks
-  );
-  let hiddenHunkCount = $derived(Math.max(0, allHunks.length - visibleHunks.length));
-  let hiddenRowCount = $derived(
-    collapsed
-      ? totalRows - visibleHunks.reduce((n, h) => n + h.rows.length, 0)
-      : 0
-  );
+  let visibleHunks = $derived(allHunks);
 </script>
 
 <div class="pf-tool" data-collapsed={collapsed}>
@@ -100,6 +86,7 @@
       <Icon name={collapsed ? "chevR" : "chevD"} size={11} />
     </span>
   </button>
+  {#if !collapsed}
   <div class="pf-tool-body">
     <div class="pf-diff">
       {#each visibleHunks as h, hi (hi)}
@@ -109,17 +96,13 @@
         {#each h.rows as r, ri (ri)}
           <div class="row {r.k}">
             <span class="gutter">{r.n ?? ""}</span>
-            <span class="code">{r.t}</span>
+            <span class="code"><HighlightedLine text={r.t || " "} path={item.diff.title} /></span>
           </div>
         {/each}
       {/each}
-      {#if collapsed && (hiddenHunkCount > 0 || hiddenRowCount > 0)}
-        <button type="button" class="pf-tool-more" onclick={() => (collapsed = false)}>
-          Show {hiddenHunkCount > 0 ? `${hiddenHunkCount} more ${hiddenHunkCount === 1 ? "hunk" : "hunks"}` : `${hiddenRowCount} more ${hiddenRowCount === 1 ? "line" : "lines"}`}
-        </button>
-      {/if}
     </div>
   </div>
+  {/if}
 </div>
 
 <style>

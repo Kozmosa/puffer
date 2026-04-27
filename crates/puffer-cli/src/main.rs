@@ -1,7 +1,7 @@
 mod auth_credentials;
 mod auth_provider;
-mod benchmark_reflection;
 mod authflow;
+mod benchmark_reflection;
 mod benchmark_run;
 mod cli_args;
 mod command_surface;
@@ -9,7 +9,10 @@ mod connectors;
 mod daemon;
 mod daemon_files;
 mod daemon_fs_watch;
+mod daemon_lsp;
 mod daemon_pty;
+mod daemon_title;
+mod daemon_ui_state;
 mod desktop_api;
 mod desktop_api_types;
 mod resource_fs;
@@ -110,9 +113,7 @@ fn main() -> Result<()> {
     // classifier can fish the Anthropic base URL out of the registry.
     // Held until end of `main`; dropped on normal exit, draining the
     // router and supervisors.
-    let anthropic_base = providers
-        .provider("anthropic")
-        .map(|p| p.base_url.clone());
+    let anthropic_base = providers.provider("anthropic").map(|p| p.base_url.clone());
     let _subscription_runtime =
         match subscriptions::install(&paths, &auth_store, anthropic_base.as_deref()) {
             Ok(rt) => Some(rt),
@@ -308,7 +309,9 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Some(Command::Serve { config: config_override }) => run_serve_command(
+        Some(Command::Serve {
+            config: config_override,
+        }) => run_serve_command(
             config_override.as_deref(),
             &cwd,
             config,
@@ -1112,7 +1115,11 @@ fn run_serve_command(
     }
 
     let ids = running.ids();
-    eprintln!("puffer serve: running {} connector(s): {}", ids.len(), ids.join(", "));
+    eprintln!(
+        "puffer serve: running {} connector(s): {}",
+        ids.len(),
+        ids.join(", ")
+    );
     eprintln!("press Ctrl+C to stop");
 
     // Block on SIGINT. `ctrlc` installs the handler and signals via the

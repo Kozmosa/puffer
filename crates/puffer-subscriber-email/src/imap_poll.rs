@@ -61,8 +61,7 @@ pub async fn poll_once(
         Some(high) => {
             let uids = search_new_uids(&mut session, high).await?;
             if !uids.is_empty() {
-                emitted =
-                    fetch_and_emit(&mut session, topic, config, &uids, seen).await?;
+                emitted = fetch_and_emit(&mut session, topic, config, &uids, seen).await?;
                 state::save(state_dir, seen).await?;
             }
         }
@@ -80,9 +79,7 @@ pub async fn poll_once(
 async fn connect_and_login(config: &EmailConfig) -> anyhow::Result<ImapSession> {
     let tcp = TcpStream::connect((config.imap_host.as_str(), config.imap_port))
         .await
-        .with_context(|| {
-            format!("connect to IMAP {}:{}", config.imap_host, config.imap_port)
-        })?;
+        .with_context(|| format!("connect to IMAP {}:{}", config.imap_host, config.imap_port))?;
     let tls = async_native_tls::TlsConnector::new();
     let tls_stream = tls
         .connect(config.imap_host.as_str(), tcp)
@@ -110,10 +107,7 @@ async fn fetch_max_uid(session: &mut ImapSession) -> anyhow::Result<u32> {
 /// Returns every UID strictly greater than `high` that is currently present
 /// in the mailbox. Uses `UID SEARCH UID high+1:*` so the server filters for
 /// us. The result is sorted ascending.
-async fn search_new_uids(
-    session: &mut ImapSession,
-    high: u32,
-) -> anyhow::Result<Vec<u32>> {
+async fn search_new_uids(session: &mut ImapSession, high: u32) -> anyhow::Result<Vec<u32>> {
     let lower = high.saturating_add(1);
     // `UID high+1:*` on an empty-above-high mailbox returns the single UID
     // `*` (the current max); we defensively filter to `uid > high` below.
@@ -270,12 +264,7 @@ impl ParsedEmail {
 }
 
 /// Assembles the ndjson [`Event`] for one parsed inbound email.
-fn build_message_event(
-    topic: &str,
-    config: &EmailConfig,
-    uid: u32,
-    email: &ParsedEmail,
-) -> Event {
+fn build_message_event(topic: &str, config: &EmailConfig, uid: u32, email: &ParsedEmail) -> Event {
     let text = if email.body.is_empty() {
         email.subject.clone()
     } else if email.subject.is_empty() {

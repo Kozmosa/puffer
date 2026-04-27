@@ -108,9 +108,8 @@ pub async fn load(state_dir: &Path) -> anyhow::Result<Option<EmailConfig>> {
             Ok(Some(cfg))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(anyhow::anyhow!(err)).with_context(|| {
-            format!("read email subscriber config at {}", path.display())
-        }),
+        Err(err) => Err(anyhow::anyhow!(err))
+            .with_context(|| format!("read email subscriber config at {}", path.display())),
     }
 }
 

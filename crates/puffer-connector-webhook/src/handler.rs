@@ -78,9 +78,7 @@ pub(crate) fn extract_bearer(header: &str) -> Option<String> {
 mod tests {
     use super::*;
     use puffer_config::{ConfigPaths, PufferConfig};
-    use puffer_connector_core::{
-        ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap,
-    };
+    use puffer_connector_core::{ConnectorRuntime, ConnectorRuntimeConfig, ConversationSessionMap};
     use puffer_provider_registry::{AuthStore, ProviderRegistry};
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionStore;
@@ -141,8 +139,7 @@ mod tests {
     #[test]
     fn empty_conversation_id_is_ignored() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome =
-            handle_command(&runtime, &msg("hi", "   ", None), &open_config()).unwrap();
+        let outcome = handle_command(&runtime, &msg("hi", "   ", None), &open_config()).unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
@@ -151,8 +148,7 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.welcome_message = Some("welcome!".to_string());
-        let outcome =
-            handle_command(&runtime, &msg("/start", "conv-1", None), &config).unwrap();
+        let outcome = handle_command(&runtime, &msg("/start", "conv-1", None), &config).unwrap();
         assert_eq!(outcome, CommandOutcome::Reply("welcome!".to_string()));
     }
 
@@ -175,12 +171,8 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let key = ConversationKey::new(PLATFORM_ID, "caller-xyz");
         runtime.reset_conversation(&key).unwrap();
-        let outcome = handle_command(
-            &runtime,
-            &msg("/new", "caller-xyz", None),
-            &open_config(),
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &msg("/new", "caller-xyz", None), &open_config()).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
         assert!(runtime.session_for(&key).unwrap().is_none());
     }

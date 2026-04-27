@@ -2,7 +2,7 @@
 //! invokes matching subscriptions.
 
 use crate::action::{ActionDispatcher, BuiltinActionDispatcher};
-use crate::classify::{ClassifyDecision, Classifier, NullClassifier};
+use crate::classify::{Classifier, ClassifyDecision, NullClassifier};
 use crate::spec::{PrefilterSpec, SubscriptionStatus};
 use crate::store::SubscriptionStore;
 use puffer_subscriber_runtime::{EventBus, EventEnvelope};
@@ -62,7 +62,15 @@ impl SubscriptionRouter {
         let stats = Arc::new(RouterStats::default());
         let stats_for_task = stats.clone();
         let join = tokio::spawn(async move {
-            run(bus, store, dispatcher, classifier, shutdown_rx, stats_for_task).await;
+            run(
+                bus,
+                store,
+                dispatcher,
+                classifier,
+                shutdown_rx,
+                stats_for_task,
+            )
+            .await;
         });
         Self {
             shutdown_tx,

@@ -107,7 +107,11 @@ pub(super) fn read_task_output(task: &StoredTask) -> Option<String> {
 }
 
 /// Refreshes one stored task from disk-backed process and output state.
-pub(super) fn refresh_stored_task(store_cwd: &Path, session_id: &Uuid, task_id: &str) -> Result<Option<StoredTask>> {
+pub(super) fn refresh_stored_task(
+    store_cwd: &Path,
+    session_id: &Uuid,
+    task_id: &str,
+) -> Result<Option<StoredTask>> {
     let tp = tasks_path(store_cwd, session_id);
     let mut store = load_store::<TaskStore>(&tp)?;
     let Some(task) = store.tasks.iter_mut().find(|task| task.task_id == task_id) else {

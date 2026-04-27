@@ -70,9 +70,7 @@ impl OpenAIWebSocket {
     /// closed. This is always safe in normal usage since `close()` is the
     /// last operation before drop.
     fn socket_mut(&mut self) -> &mut WebSocket<MaybeTlsStream<TcpStream>> {
-        self.socket
-            .as_mut()
-            .expect("WebSocket already closed")
+        self.socket.as_mut().expect("WebSocket already closed")
     }
 
     /// Sends a `response.create` event over the WebSocket. The `body` should
@@ -96,13 +94,11 @@ impl OpenAIWebSocket {
         let mut state = OpenAISseState::default();
         let socket = self.socket_mut();
         loop {
-            let msg = socket
-                .read()
-                .context("failed to read WebSocket message")?;
+            let msg = socket.read().context("failed to read WebSocket message")?;
             match msg {
                 Message::Text(text) => {
-                    let event: Value = serde_json::from_str(&text)
-                        .context("invalid WebSocket JSON payload")?;
+                    let event: Value =
+                        serde_json::from_str(&text).context("invalid WebSocket JSON payload")?;
                     // Handle WS-level error events (e.g. previous_response_not_found,
                     // websocket_connection_limit_reached).
                     if event.get("type").and_then(Value::as_str) == Some("error") {
@@ -175,10 +171,7 @@ impl Drop for OpenAIWebSocket {
 
 /// Sets the read timeout on the underlying TCP stream of a tungstenite
 /// `WebSocket<MaybeTlsStream<TcpStream>>`.
-fn set_tcp_read_timeout(
-    socket: &WebSocket<MaybeTlsStream<TcpStream>>,
-    timeout: Option<Duration>,
-) {
+fn set_tcp_read_timeout(socket: &WebSocket<MaybeTlsStream<TcpStream>>, timeout: Option<Duration>) {
     let stream = socket.get_ref();
     let tcp: &TcpStream = match stream {
         MaybeTlsStream::Plain(s) => s,
@@ -285,8 +278,8 @@ mod tests {
     #[test]
     #[ignore]
     fn e2e_ws_smoke_test() {
-        let api_key = std::env::var("INFER_API_KEY")
-            .expect("INFER_API_KEY env var required for E2E test");
+        let api_key =
+            std::env::var("INFER_API_KEY").expect("INFER_API_KEY env var required for E2E test");
         let base_url = std::env::var("INFER_BASE_URL")
             .unwrap_or_else(|_| "https://api-infer.agentsey.ai/v1".to_string());
 
@@ -299,9 +292,7 @@ mod tests {
             format!("{ws}/responses")
         };
 
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {api_key}")),
-        ];
+        let headers = vec![("Authorization".to_string(), format!("Bearer {api_key}"))];
 
         let ws = match OpenAIWebSocket::connect(&ws_url, &headers) {
             Ok(ws) => ws,
@@ -314,9 +305,7 @@ mod tests {
                     || msg.contains("Not Implemented")
                     || msg.contains("Upgrade")
                 {
-                    eprintln!(
-                        "[e2e] skipping: endpoint does not support WebSocket upgrade: {msg}"
-                    );
+                    eprintln!("[e2e] skipping: endpoint does not support WebSocket upgrade: {msg}");
                     return;
                 }
                 panic!("failed to connect to WS endpoint: {error:#}");

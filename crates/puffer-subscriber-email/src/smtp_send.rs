@@ -21,9 +21,7 @@ pub struct SendOutcome {
 ///
 /// Uses `starttls_relay` (submission on port 587 by default) with basic
 /// credentials. Callers must still be connected to the tokio runtime.
-pub fn build_transport(
-    config: &EmailConfig,
-) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
+pub fn build_transport(config: &EmailConfig) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
     let creds = Credentials::new(config.username.clone(), config.password.clone());
     let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
         .with_context(|| format!("invalid SMTP host {}", config.smtp_host))?

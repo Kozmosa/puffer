@@ -30,11 +30,13 @@ export type DaemonHandshake = {
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 type RpcError = { code: string; message: string };
 
 export type ConnectionState = "idle" | "connecting" | "open" | "reconnecting" | "closed";
+const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
 export class DaemonClient {
   private ws: WebSocket | null = null;
@@ -93,7 +95,10 @@ export class DaemonClient {
       ws.addEventListener("close", (ev) => {
         this.ws = null;
         const err = new Error(`daemon websocket closed (${ev.code})`);
-        for (const [, pending] of this.pending) pending.reject(err);
+        for (const [, pending] of this.pending) {
+          clearTimeout(pending.timer);
+          pending.reject(err);
+        }
         this.pending.clear();
         if (!opened) {
           reject(err);
@@ -152,6 +157,7 @@ export class DaemonClient {
       const pending = this.pending.get(msg.id);
       if (pending) {
         this.pending.delete(msg.id);
+        clearTimeout(pending.timer);
         if (msg.error) {
           pending.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
         } else {
@@ -178,9 +184,14 @@ export class DaemonClient {
     const id = String(this.nextId++);
     const frame = JSON.stringify({ id, method, params });
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`daemon RPC timed out: ${method}`));
+      }, DEFAULT_RPC_TIMEOUT_MS);
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
-        reject
+        reject,
+        timer
       });
       ws.send(frame);
     });

@@ -109,13 +109,20 @@
       } else if (item.kind === "diff") {
         if (!current) current = { kind: "agent", item: null, children: [], approvals: [], questions: [] };
         current.children.push(item as DiffTimelineItem);
+      } else if (item.kind === "question") {
+        if (!current) current = { kind: "agent", item: null, children: [], approvals: [], questions: [] };
+        current.questions.push(item as UserQuestionTimelineItem);
       }
     }
     if (current) rows.push(current);
     return rows;
   }
 
-  let rows = $derived(buildRows(timeline.filter((i) => i.kind !== "permission" && i.kind !== "question")));
+  let rows = $derived(
+    buildRows(
+      timeline.filter((i) => i.kind !== "permission" && !(i.kind === "question" && i.status === "pending"))
+    )
+  );
 
   function formatTime(ms: number | undefined): string {
     if (!ms) return "";

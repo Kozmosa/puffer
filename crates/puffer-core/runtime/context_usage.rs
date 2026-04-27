@@ -219,9 +219,7 @@ fn provider_message_payload(message: &RenderedMessage, api: &str, index: usize) 
                 "status": "completed",
                 "id": format!("msg_{index}"),
             }),
-            MessageRole::System
-            | MessageRole::ToolCall
-            | MessageRole::ToolResult => json!({
+            MessageRole::System | MessageRole::ToolCall | MessageRole::ToolResult => json!({
                 "role": "system",
                 "content": message.text,
             }),

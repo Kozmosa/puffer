@@ -192,7 +192,10 @@ fn prompt_field_matches(field: Option<&str>, want: Option<&str>) -> bool {
 
 fn normalize_model_id(raw: &str) -> String {
     let trimmed = raw.trim();
-    let without_provider = trimmed.split_once('/').map(|(_, rest)| rest).unwrap_or(trimmed);
+    let without_provider = trimmed
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
     without_provider.to_ascii_lowercase()
 }
 
@@ -448,8 +451,9 @@ fn load_skill_embedded() -> Result<Vec<LoadedItem<SkillSpec>>> {
             .contents_utf8()
             .ok_or_else(|| anyhow!("embedded skill {} is not UTF-8", skill_path.display()))?
             .to_string();
-        let (frontmatter, body) = split_frontmatter(&raw)
-            .with_context(|| format!("failed to parse skill frontmatter {}", skill_path.display()))?;
+        let (frontmatter, body) = split_frontmatter(&raw).with_context(|| {
+            format!("failed to parse skill frontmatter {}", skill_path.display())
+        })?;
         let raw_name = frontmatter_string(&frontmatter, &["name"]).unwrap_or_else(|| {
             subdir
                 .path()
@@ -1239,7 +1243,10 @@ mod tests {
                 .template,
             "base body"
         );
-        assert_eq!(prompt_by_id(&loaded, "system-base").unwrap().value.template, "base body");
+        assert_eq!(
+            prompt_by_id(&loaded, "system-base").unwrap().value.template,
+            "base body"
+        );
     }
 
     #[test]

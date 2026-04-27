@@ -236,10 +236,8 @@ async fn on_room_message(
 
     // Dispatch blocks on the shared runtime mutex; park it on a blocking
     // worker so we don't starve the tokio reactor.
-    let outcome = tokio::task::spawn_blocking(move || {
-        handle_command(&runtime, &inbound, &config)
-    })
-    .await;
+    let outcome =
+        tokio::task::spawn_blocking(move || handle_command(&runtime, &inbound, &config)).await;
 
     let reply = match outcome {
         Ok(Ok(CommandOutcome::Ignored)) => return,
@@ -294,8 +292,8 @@ pub(crate) fn strip_matrix_mentions(body: &str, mxid: &str, localpart: &str) -> 
     // Build patterns once, in decreasing specificity so we never strip a
     // substring that belongs to something else.
     let patterns = [
-        mxid.to_string(),           // "@bot:example.org"
-        format!("@{localpart}"),    // "@bot"
+        mxid.to_string(),        // "@bot:example.org"
+        format!("@{localpart}"), // "@bot"
     ];
 
     let mut out = body.to_string();
@@ -306,10 +304,7 @@ pub(crate) fn strip_matrix_mentions(body: &str, mxid: &str, localpart: &str) -> 
         out = case_insensitive_replace(&out, &pattern, "");
     }
     // Collapse any doubled whitespace the replacement introduced.
-    let collapsed = out
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.trim().to_string()
 }
 
@@ -337,11 +332,8 @@ mod tests {
 
     #[test]
     fn strip_removes_full_mxid() {
-        let cleaned = strip_matrix_mentions(
-            "@bot:example.org fix the bug",
-            "@bot:example.org",
-            "bot",
-        );
+        let cleaned =
+            strip_matrix_mentions("@bot:example.org fix the bug", "@bot:example.org", "bot");
         assert_eq!(cleaned, "fix the bug");
     }
 
@@ -365,11 +357,7 @@ mod tests {
 
     #[test]
     fn strip_collapses_doubled_whitespace() {
-        let cleaned = strip_matrix_mentions(
-            "hey   @bot   please help",
-            "@bot:example.org",
-            "bot",
-        );
+        let cleaned = strip_matrix_mentions("hey   @bot   please help", "@bot:example.org", "bot");
         assert_eq!(cleaned, "hey please help");
     }
 

@@ -27,12 +27,13 @@
 
   type Props = {
     group: FolderGroup;
+    pinnedAgentIds?: string[];
     onBack: () => void;
     onOpenAgent?: (id: string) => void;
     onNewAgent?: (cwd: string) => void | Promise<void>;
   };
 
-  let { group, onBack, onOpenAgent, onNewAgent }: Props = $props();
+  let { group, pinnedAgentIds = [], onBack, onOpenAgent, onNewAgent }: Props = $props();
   let tab = $state<"board" | "memory">("board");
   let selectedMemoryId = $state<string | null>(null);
 
@@ -70,7 +71,18 @@
     };
   }
 
-  let agents = $derived<MockAgent[]>(group.sessions.map(agentFromSession));
+  function pinnedIndex(id: string): number {
+    const index = pinnedAgentIds.indexOf(id);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  }
+
+  let sortedSessions = $derived(
+    group.sessions.slice().sort((left, right) =>
+      pinnedIndex(left.id) - pinnedIndex(right.id)
+      || right.updatedAtMs - left.updatedAtMs
+    )
+  );
+  let agents = $derived<MockAgent[]>(sortedSessions.map(agentFromSession));
   let columns = $derived<BoardColumn[]>([
     {
       id: "queued",
@@ -104,7 +116,7 @@
       kind: "project",
       tags: ["project", "workspace"]
     },
-    ...group.sessions.slice(0, 5).map((session, index) => ({
+    ...sortedSessions.slice(0, 5).map((session, index) => ({
       id: session.id,
       name: `session-${index + 1}.md`,
       path: `${group.path}/.puffer/memory/sessions/session-${index + 1}.md`,

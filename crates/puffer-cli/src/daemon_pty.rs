@@ -35,6 +35,10 @@ pub struct PtyHandle {
     /// Master side — we write user keystrokes here. The reader thread owns
     /// its own `try_clone_reader()` so we don't need to share the reader.
     master: Box<dyn MasterPty + Send>,
+    /// Persistent writer for the master side. This must live for the full
+    /// PTY lifetime; recreating and dropping it per keystroke can close
+    /// stdin and make interactive shells treat one character as EOF.
+    writer: Box<dyn Write + Send>,
     /// Cloned killer handle — the live Child lives inside the reader
     /// thread (so `wait()` can drive it) and this is our remote SIGKILL
     /// pathway from `close()`.
@@ -105,10 +109,8 @@ impl PtyRegistry {
 
         let pty_id = Uuid::new_v4().to_string();
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .context("clone pty reader")?;
+        let mut reader = pair.master.try_clone_reader().context("clone pty reader")?;
+        let writer = pair.master.take_writer().context("take pty writer")?;
 
         // `Child` isn't Clone, but the cloned killer is Send + Sync and
         // can SIGKILL independently. The live Child moves into the reader
@@ -163,6 +165,7 @@ impl PtyRegistry {
 
         let handle = PtyHandle {
             master: pair.master,
+            writer,
             killer,
             reader: Some(reader_handle),
         };
@@ -178,12 +181,8 @@ impl PtyRegistry {
         let handle = guard
             .get_mut(pty_id)
             .with_context(|| format!("no pty `{pty_id}`"))?;
-        let mut writer = handle
-            .master
-            .take_writer()
-            .context("take pty writer")?;
-        writer.write_all(&bytes).context("write to pty")?;
-        writer.flush().ok();
+        handle.writer.write_all(&bytes).context("write to pty")?;
+        handle.writer.flush().ok();
         Ok(())
     }
 

@@ -195,10 +195,8 @@ impl EventHandler for Handler {
 
         // The dispatch itself blocks on the shared runtime mutex. Park on
         // a blocking worker so we don't starve the tokio reactor.
-        let outcome = tokio::task::spawn_blocking(move || {
-            handle_command(&runtime, &inbound, &config)
-        })
-        .await;
+        let outcome =
+            tokio::task::spawn_blocking(move || handle_command(&runtime, &inbound, &config)).await;
 
         let reply = match outcome {
             Ok(Ok(CommandOutcome::Ignored)) => return,

@@ -204,24 +204,16 @@ mod tests {
     #[test]
     fn group_message_without_mention_is_ignored_when_required() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(
-            &runtime,
-            &group("hello", Some("1"), false),
-            &open_config(),
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &group("hello", Some("1"), false), &open_config()).unwrap();
         assert_eq!(outcome, CommandOutcome::Ignored);
     }
 
     #[test]
     fn group_message_with_mention_is_accepted_locally() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
-        let outcome = handle_command(
-            &runtime,
-            &group("/help", Some("1"), true),
-            &open_config(),
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &group("/help", Some("1"), true), &open_config()).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
     }
 
@@ -230,12 +222,7 @@ mod tests {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let mut config = open_config();
         config.require_mention = false;
-        let outcome = handle_command(
-            &runtime,
-            &group("/help", Some("1"), false),
-            &config,
-        )
-        .unwrap();
+        let outcome = handle_command(&runtime, &group("/help", Some("1"), false), &config).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
     }
 
@@ -247,12 +234,8 @@ mod tests {
         runtime.bind_session(&alice, Uuid::new_v4()).unwrap();
         runtime.bind_session(&bob, Uuid::new_v4()).unwrap();
 
-        let outcome = handle_command(
-            &runtime,
-            &group("/new", Some("1"), true),
-            &open_config(),
-        )
-        .unwrap();
+        let outcome =
+            handle_command(&runtime, &group("/new", Some("1"), true), &open_config()).unwrap();
         assert!(matches!(outcome, CommandOutcome::Reply(_)));
         assert!(runtime.session_for(&alice).unwrap().is_none());
         assert!(

@@ -104,8 +104,7 @@ pub(super) fn run_llm_judge(
         }
     };
     let (provider_descriptor, model_id) = resolved;
-    let api =
-        resolve_model_api(&side_state, providers, provider_descriptor, &model_id);
+    let api = resolve_model_api(&side_state, providers, provider_descriptor, &model_id);
 
     if matches!(
         api.as_str(),

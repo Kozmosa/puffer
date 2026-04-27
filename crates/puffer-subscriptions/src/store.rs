@@ -178,6 +178,9 @@ mod tests {
         store.create(sample("a")).unwrap();
         store.set_status("a", SubscriptionStatus::Paused).unwrap();
         let reopened = SubscriptionStore::load(&path).unwrap();
-        assert_eq!(reopened.get("a").unwrap().status, SubscriptionStatus::Paused);
+        assert_eq!(
+            reopened.get("a").unwrap().status,
+            SubscriptionStatus::Paused
+        );
     }
 }

@@ -78,8 +78,7 @@ fn session_map_survives_runtime_rebuild() {
 #[test]
 fn session_for_is_idempotent() {
     let dir = tempdir().unwrap();
-    let (runtime, _) =
-        build_runtime(dir.path().to_path_buf(), dir.path().join("map.json"));
+    let (runtime, _) = build_runtime(dir.path().to_path_buf(), dir.path().join("map.json"));
     let key = ConversationKey::new("matrix", "!room");
 
     for _ in 0..3 {

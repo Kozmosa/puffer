@@ -153,7 +153,7 @@ fn command_dropdown_lines(
                 .unwrap_or_default();
             command_selection_line(
                 &command.name,
-                &format!("{}{}",command.description, argument_hint),
+                &format!("{}{}", command.description, argument_hint),
                 selected,
             )
         })

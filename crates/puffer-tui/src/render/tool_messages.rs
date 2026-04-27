@@ -187,9 +187,7 @@ fn summarize_input(tool_id: &str, input: &str) -> Option<String> {
         "listmcpresourcestool" => {
             extract_string(parsed.as_ref(), &["server"]).map(normalize_inline_text)
         }
-        "taskcreate" => {
-            extract_string(parsed.as_ref(), &["subject"]).map(normalize_inline_text)
-        }
+        "taskcreate" => extract_string(parsed.as_ref(), &["subject"]).map(normalize_inline_text),
         "taskupdate" => extract_string(parsed.as_ref(), &["id"]).map(normalize_inline_text),
         "task" | "agent" => extract_string(parsed.as_ref(), &["prompt"]).map(normalize_inline_text),
         "subscriptioncreate" | "subscriptiondelete" | "subscriberscaffold"
@@ -217,8 +215,9 @@ fn summarize_input(tool_id: &str, input: &str) -> Option<String> {
         "telegramloginsubmitpassword" => Some("(password redacted)".to_string()),
         // Email configure surfaces the username only — credentials and
         // hosts stay out of the transcript header.
-        "emailconfigure" => extract_string(parsed.as_ref(), &["username"])
-            .map(normalize_inline_text),
+        "emailconfigure" => {
+            extract_string(parsed.as_ref(), &["username"]).map(normalize_inline_text)
+        }
         _ => extract_first_string(parsed.as_ref()).map(normalize_inline_text),
     }?;
     Some(truncate(&summary, 140))
@@ -575,7 +574,11 @@ fn subscription_create_output_lines(output: &str) -> Option<Vec<String>> {
     let mut lines = vec![format!(
         "Created subscription {id} (topic={topic}, action={action_type})"
     )];
-    if parsed.get("classify_prompt").and_then(Value::as_str).is_some() {
+    if parsed
+        .get("classify_prompt")
+        .and_then(Value::as_str)
+        .is_some()
+    {
         lines.push("LLM judge enabled".to_string());
     }
     if let Some(prefilter_kind) = parsed
@@ -598,7 +601,10 @@ fn subscription_list_output_lines(output: &str) -> Option<Vec<String>> {
         for sub in subs {
             let id = sub.get("id").and_then(Value::as_str).unwrap_or("?");
             let status = sub.get("status").and_then(Value::as_str).unwrap_or("?");
-            let topic = sub.get("source_topic").and_then(Value::as_str).unwrap_or("?");
+            let topic = sub
+                .get("source_topic")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
             let action_type = sub
                 .get("action")
                 .and_then(|a| a.get("type"))
@@ -996,7 +1002,10 @@ mod tests {
         let header = rendered[0].to_string();
         assert!(header.contains("Telegram Login (2FA)"), "got: {header}");
         assert!(header.contains("redacted"), "got: {header}");
-        assert!(!header.contains("hunter2"), "header leaked password: {header}");
+        assert!(
+            !header.contains("hunter2"),
+            "header leaked password: {header}"
+        );
     }
 
     #[test]
@@ -1039,7 +1048,9 @@ mod tests {
         )
         .expect("rendered");
         let body: Vec<String> = rendered.into_iter().map(|l| l.to_string()).collect();
-        assert!(body.iter().any(|l| l.contains("a") && l.contains("enabled")));
+        assert!(body
+            .iter()
+            .any(|l| l.contains("a") && l.contains("enabled")));
         assert!(body.iter().any(|l| l.contains("b") && l.contains("paused")));
         assert!(body
             .iter()

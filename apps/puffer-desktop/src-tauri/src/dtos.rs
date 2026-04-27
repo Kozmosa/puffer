@@ -153,6 +153,44 @@ pub(crate) struct SessionDetailDto {
     pub latest_diff: Option<DiffSummaryDto>,
     pub diff_history: Vec<DiffSummaryDto>,
     pub repo_status: RepoStatusDto,
+    pub agent_diff: AgentDiffDto,
+    pub divergence: DivergenceReportDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffDto {
+    pub files: Vec<AgentDiffFileDto>,
+    pub entries: Vec<AgentDiffEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffFileDto {
+    pub path: String,
+    pub latest_kind: String,
+    pub edit_count: usize,
+    pub latest_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffEntryDto {
+    pub call_id: String,
+    pub tool_id: String,
+    pub kind: String,
+    pub path: String,
+    pub success: bool,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DivergenceReportDto {
+    pub agent_only: Vec<String>,
+    pub git_only: Vec<String>,
+    pub agent_total: usize,
+    pub git_total: usize,
 }
 
 /// Describes the loaded runtime configuration snapshot for the desktop settings page.

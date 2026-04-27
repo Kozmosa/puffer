@@ -60,6 +60,15 @@ use puffer_resources::LoadedResources;
 use puffer_session_store::{SessionStore, SessionSummary};
 use std::path::Path;
 
+/// Executes a standalone LSP query against the configured workspace language servers.
+pub fn execute_lsp_query(
+    resources: &LoadedResources,
+    cwd: &Path,
+    input: serde_json::Value,
+) -> Result<String> {
+    runtime::claude_tools::workflow::lsp::execute_lsp_query(resources, cwd, input)
+}
+
 /// Renders the current session/provider/tool status summary used by `/status`.
 pub fn render_status_summary(
     state: &AppState,

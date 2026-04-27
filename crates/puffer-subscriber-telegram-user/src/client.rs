@@ -13,9 +13,7 @@ use tracing::{error, info, warn};
 use crate::commands::CommandStream;
 use crate::events::{build_message_event, emit, emit_control};
 use crate::login;
-use crate::state::{
-    resolve_api_hash, resolve_api_id, LoginState, PersistedCredentials, SkillEnv,
-};
+use crate::state::{resolve_api_hash, resolve_api_id, LoginState, PersistedCredentials, SkillEnv};
 
 /// Runs the Telegram user subscriber until stdin closes or a fatal error
 /// occurs. The caller is expected to already be inside a Tokio runtime
@@ -40,9 +38,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     if let Some(parent) = env.session_path.parent() {
         if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("create session parent dir {}", parent.display())
-            })?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create session parent dir {}", parent.display()))?;
         }
     }
 
@@ -74,12 +72,14 @@ pub async fn run() -> anyhow::Result<()> {
             return Ok(());
         };
         match cmd {
-            SubscriberCommand::TelegramLoginStart { phone, api_id, api_hash } => {
-                match login::start(&env, &mut login_state, phone, api_id, api_hash).await? {
-                    Some(c) => client = Some(c),
-                    None => continue,
-                }
-            }
+            SubscriberCommand::TelegramLoginStart {
+                phone,
+                api_id,
+                api_hash,
+            } => match login::start(&env, &mut login_state, phone, api_id, api_hash).await? {
+                Some(c) => client = Some(c),
+                None => continue,
+            },
             SubscriberCommand::TelegramLoginSubmitCode { .. }
             | SubscriberCommand::TelegramLoginSubmitPassword { .. } => {
                 emit_control(
@@ -152,7 +152,11 @@ pub async fn run() -> anyhow::Result<()> {
                     authorized = true;
                 }
             }
-            SubscriberCommand::TelegramLoginStart { phone, api_id, api_hash } => {
+            SubscriberCommand::TelegramLoginStart {
+                phone,
+                api_id,
+                api_hash,
+            } => {
                 // Operator restarted the flow; re-request the login code on
                 // the same connection.
                 login::start(&env, &mut login_state, phone, api_id, api_hash).await?;
@@ -288,12 +292,15 @@ async fn handle_runtime_command(
     cmd: SubscriberCommand,
 ) -> anyhow::Result<()> {
     match cmd {
-        SubscriberCommand::TelegramLoginStart { phone, api_id, api_hash } => {
+        SubscriberCommand::TelegramLoginStart {
+            phone,
+            api_id,
+            api_hash,
+        } => {
             // Re-request a code on the live client rather than reconnecting.
             // The effect is that the running session keeps serving updates
             // until sign_in succeeds and overwrites the auth.
-            let persisted = PersistedCredentials::load(&env.credentials_path())
-                .unwrap_or_default();
+            let persisted = PersistedCredentials::load(&env.credentials_path()).unwrap_or_default();
             let resolved_id = resolve_api_id(api_id, &persisted);
             let resolved_hash = resolve_api_hash(api_hash, &persisted);
             match client.request_login_code(&phone).await {
@@ -302,11 +309,7 @@ async fn handle_runtime_command(
                     login_state.phone = Some(phone.clone());
                     login_state.api_id = Some(resolved_id);
                     login_state.api_hash = Some(resolved_hash);
-                    emit_control(
-                        &env.topic,
-                        "login_awaiting_code",
-                        json!({ "phone": phone }),
-                    )?;
+                    emit_control(&env.topic, "login_awaiting_code", json!({ "phone": phone }))?;
                 }
                 Err(err) => {
                     warn!(error = %err, "runtime request_login_code failed");
@@ -397,10 +400,7 @@ async fn handle_send_message(
     Ok(())
 }
 
-async fn resolve_peer(
-    client: &Client,
-    peer: &str,
-) -> anyhow::Result<grammers_client::types::Chat> {
+async fn resolve_peer(client: &Client, peer: &str) -> anyhow::Result<grammers_client::types::Chat> {
     let trimmed = peer.trim();
     if let Some(handle) = trimmed.strip_prefix('@') {
         let chat = client

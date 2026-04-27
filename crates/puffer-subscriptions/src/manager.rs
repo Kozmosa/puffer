@@ -107,9 +107,9 @@ impl SubscriptionManager {
             return Ok(id);
         }
         let bus = self.bus.clone();
-        let handle = self
-            .handle
-            .block_on(async move { SubscriberSupervisor::spawn(manifest, bus, SupervisorConfig::default()) })?;
+        let handle = self.handle.block_on(async move {
+            SubscriberSupervisor::spawn(manifest, bus, SupervisorConfig::default())
+        })?;
         guard.insert(id.clone(), handle);
         Ok(id)
     }
@@ -125,13 +125,12 @@ impl SubscriptionManager {
             let guard = self.subscribers.lock().unwrap();
             guard
                 .get(subscriber_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("subscriber `{subscriber_id}` is not running")
-                })?
+                .ok_or_else(|| anyhow::anyhow!("subscriber `{subscriber_id}` is not running"))?
                 .commands
                 .clone()
         };
-        self.handle.block_on(async move { sender.send(command).await })
+        self.handle
+            .block_on(async move { sender.send(command).await })
     }
 
     /// Returns the ids of currently supervised subscribers.

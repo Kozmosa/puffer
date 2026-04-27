@@ -19,6 +19,11 @@ export type FolderGroup = {
   sessions: SessionListItem[];
 };
 
+export type DesktopPinState = {
+  pinnedAgentIds: string[];
+  pinnedWorkspacePaths: string[];
+};
+
 export type SessionListItem = {
   id: string;
   displayName: string | null;
@@ -142,6 +147,7 @@ export type UserQuestionTimelineItem = TimelineBase & {
   kind: "question";
   status: string;
   questions: AskUserQuestionItem[];
+  answers?: Record<string, string | string[]>;
 };
 
 export type DiffTimelineItem = TimelineBase & {

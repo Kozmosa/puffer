@@ -38,8 +38,8 @@ pub fn execute_subscriber_install(
             parsed.id
         )
     })?;
-    let manifest = Manifest::load(&dir)
-        .with_context(|| format!("load manifest at {}", dir.display()))?;
+    let manifest =
+        Manifest::load(&dir).with_context(|| format!("load manifest at {}", dir.display()))?;
     let topic = manifest.topic().to_string();
     let id = manager.start_subscriber(manifest)?;
     Ok(json!({

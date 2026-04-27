@@ -105,8 +105,7 @@ async fn run_socket_mode(
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let client = Arc::new(SlackClient::new(
-        SlackClientHyperConnector::new()
-            .context("failed to build slack hyper connector")?,
+        SlackClientHyperConnector::new().context("failed to build slack hyper connector")?,
     ));
 
     let bot_token_value: SlackApiTokenValue = config.bot_token.clone().into();
@@ -146,8 +145,7 @@ async fn run_socket_mode(
             .with_user_state(ctx),
     );
 
-    let callbacks =
-        SlackSocketModeListenerCallbacks::new().with_push_events(on_push_event);
+    let callbacks = SlackSocketModeListenerCallbacks::new().with_push_events(on_push_event);
 
     let listener = SlackClientSocketModeListener::new(
         &SlackClientSocketModeConfig::new(),
@@ -209,10 +207,8 @@ async fn on_push_event(
 
     let runtime = ctx.runtime.clone();
     let config = ctx.config.clone();
-    let outcome = tokio::task::spawn_blocking(move || {
-        handle_command(&runtime, &inbound, &config)
-    })
-    .await?;
+    let outcome =
+        tokio::task::spawn_blocking(move || handle_command(&runtime, &inbound, &config)).await?;
 
     let reply_text = match outcome {
         Ok(CommandOutcome::Ignored) => return Ok(()),
@@ -222,8 +218,14 @@ async fn on_push_event(
     };
 
     if let Some(channel) = reply_target.channel {
-        send_reply_chunks(&client, &ctx.bot_token, &channel, reply_target.thread_ts, &reply_text)
-            .await?;
+        send_reply_chunks(
+            &client,
+            &ctx.bot_token,
+            &channel,
+            reply_target.thread_ts,
+            &reply_text,
+        )
+        .await?;
     }
     Ok(())
 }

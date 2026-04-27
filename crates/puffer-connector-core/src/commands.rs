@@ -104,10 +104,7 @@ fn help_text() -> String {
 
 fn status_text(runtime: &ConnectorRuntime, key: &ConversationKey) -> anyhow::Result<String> {
     let Some(record) = runtime.session_record(key)? else {
-        return Ok(
-            "No active session yet. Send any message to create one."
-                .to_string(),
-        );
+        return Ok("No active session yet. Send any message to create one.".to_string());
     };
     let counts = count_turns(&record.events);
     Ok(format!(
@@ -181,17 +178,13 @@ fn format_unix_ms(ms: u64) -> String {
     let hours = remainder / 3600;
     let minutes = (remainder % 3600) / 60;
     let seconds = remainder % 60;
-    format!(
-        "epoch+{days_since_epoch}d {hours:02}:{minutes:02}:{seconds:02}",
-    )
+    format!("epoch+{days_since_epoch}d {hours:02}:{minutes:02}:{seconds:02}",)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ConnectorRuntimeConfig, ConversationSessionMap,
-    };
+    use crate::{ConnectorRuntimeConfig, ConversationSessionMap};
     use puffer_config::{ConfigPaths, PufferConfig};
     use puffer_provider_registry::{AuthStore, ProviderRegistry};
     use puffer_resources::LoadedResources;
@@ -269,17 +262,17 @@ mod tests {
     fn help_lists_the_core_commands() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let key = ConversationKey::new("test", "c1");
-        let Some(CommandOutcome::Reply(text)) = handle_builtin_command(
-            &runtime,
-            &key,
-            "/help",
-            &BuiltinCommandConfig::default(),
-        )
-        .unwrap() else {
+        let Some(CommandOutcome::Reply(text)) =
+            handle_builtin_command(&runtime, &key, "/help", &BuiltinCommandConfig::default())
+                .unwrap()
+        else {
             panic!("help should return a reply");
         };
         for command in ["/start", "/new", "/help", "/status", "/usage"] {
-            assert!(text.contains(command), "help missing `{command}` in:\n{text}");
+            assert!(
+                text.contains(command),
+                "help missing `{command}` in:\n{text}"
+            );
         }
     }
 
@@ -287,13 +280,10 @@ mod tests {
     fn status_reports_no_session_before_dispatch() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let key = ConversationKey::new("test", "c1");
-        let Some(CommandOutcome::Reply(text)) = handle_builtin_command(
-            &runtime,
-            &key,
-            "/status",
-            &BuiltinCommandConfig::default(),
-        )
-        .unwrap() else {
+        let Some(CommandOutcome::Reply(text)) =
+            handle_builtin_command(&runtime, &key, "/status", &BuiltinCommandConfig::default())
+                .unwrap()
+        else {
             panic!("status should return a reply");
         };
         assert!(text.contains("No active session"));
@@ -319,13 +309,9 @@ mod tests {
     fn reset_is_an_alias_for_new() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let key = ConversationKey::new("test", "c1");
-        let outcome = handle_builtin_command(
-            &runtime,
-            &key,
-            "/reset",
-            &BuiltinCommandConfig::default(),
-        )
-        .unwrap();
+        let outcome =
+            handle_builtin_command(&runtime, &key, "/reset", &BuiltinCommandConfig::default())
+                .unwrap();
         assert!(matches!(outcome, Some(CommandOutcome::Reply(_))));
     }
 
@@ -333,13 +319,10 @@ mod tests {
     fn usage_reports_no_session_before_dispatch() {
         let runtime = test_runtime(tempdir().unwrap().path().to_path_buf());
         let key = ConversationKey::new("test", "c1");
-        let Some(CommandOutcome::Reply(text)) = handle_builtin_command(
-            &runtime,
-            &key,
-            "/usage",
-            &BuiltinCommandConfig::default(),
-        )
-        .unwrap() else {
+        let Some(CommandOutcome::Reply(text)) =
+            handle_builtin_command(&runtime, &key, "/usage", &BuiltinCommandConfig::default())
+                .unwrap()
+        else {
             panic!("usage should return a reply");
         };
         assert!(text.contains("No active session"));

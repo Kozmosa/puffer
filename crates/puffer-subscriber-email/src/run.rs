@@ -221,10 +221,7 @@ async fn drive_poll_loop(
 /// `tokio::time::Sleep::deadline` gives us the firing instant; subtracting
 /// `now` yields the residual wait. Clamped to zero for a timer that has
 /// already expired (the next select branch will fire it immediately).
-fn remaining(
-    timer: &std::pin::Pin<&mut tokio::time::Sleep>,
-    _current: Duration,
-) -> Duration {
+fn remaining(timer: &std::pin::Pin<&mut tokio::time::Sleep>, _current: Duration) -> Duration {
     let deadline = timer.deadline();
     let now = tokio::time::Instant::now();
     deadline.saturating_duration_since(now)

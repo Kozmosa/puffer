@@ -1,14 +1,18 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
+  import HighlightedLine from "../../components/HighlightedLine.svelte";
   import Icon from "../../design/Icon.svelte";
   import {
     fsUnwatch,
     fsWatch,
     isDaemonReachable,
     listDir,
+    lspInspect,
     readFile,
+    writeFile,
     type DirEntry,
     type FsChangedEvent,
+    type LspInspectResult,
     type ReadFileResult
   } from "../../api/desktop";
   import { ensureLocalDaemonClient } from "../../api/daemonClient";
@@ -32,6 +36,17 @@
   let activeFile = $state<ReadFileResult | null>(null);
   let activeLoading = $state(false);
   let activeError = $state<string | null>(null);
+  let editing = $state(false);
+  let draftContent = $state("");
+  let saving = $state(false);
+  let saveError = $state<string | null>(null);
+  let selectedSymbol = $state<string | null>(null);
+  let lspLoading = $state(false);
+  let lspError = $state<string | null>(null);
+  let lspResult = $state<LspInspectResult | null>(null);
+  let lspAnchor = $state<{ line: number; character: number } | null>(null);
+  let editorGutterEl = $state<HTMLDivElement | null>(null);
+  let editorHighlightEl = $state<HTMLPreElement | null>(null);
 
   // Root is derived from cwd — switching sessions resets everything.
   let root = $derived(cwd);
@@ -56,6 +71,11 @@
       activeFile = null;
       activeError = null;
       activeSize = 0;
+      editing = false;
+      draftContent = "";
+      saving = false;
+      saveError = null;
+      clearLspState();
       void loadDir(next);
     });
   });
@@ -221,6 +241,7 @@
   async function reloadActiveFile() {
     const target = activePath;
     if (!target) return;
+    if (editing) return;
     try {
       const result = await readFile(target);
       if (activePath === target) {
@@ -287,6 +308,10 @@
     activeSize = size;
     activeFile = null;
     activeError = null;
+    editing = false;
+    draftContent = "";
+    saveError = null;
+    clearLspState();
     activeLoading = true;
     try {
       const result = await readFile(path);
@@ -318,6 +343,297 @@
   let viewerLines = $derived(
     activeFile && activeFile.encoding === "utf8" ? splitLines(activeFile.content) : []
   );
+  let draftLineNumbers = $derived(
+    Array.from({ length: Math.max(1, draftContent.split("\n").length) }, (_, index) => index + 1)
+  );
+  let draftLines = $derived(splitLines(draftContent));
+  let referenceSections = $derived(lspResult ? buildReferenceSections(lspResult) : []);
+  let definitionLocations = $derived(lspResult ? parseDefinitionLocations(lspResult) : []);
+  let hoverText = $derived(lspResult?.operations.hover?.result ?? "");
+  let lspFallbackText = $derived(
+    lspResult
+      ? Object.values(lspResult.operations)
+          .map((op) => op.result)
+          .filter(Boolean)
+          .join("\n\n")
+      : ""
+  );
+  let canEdit = $derived(
+    !!activeFile && activeFile.encoding === "utf8" && !activeFile.truncated && !activeLoading
+  );
+  let dirty = $derived(editing && activeFile?.encoding === "utf8" && draftContent !== activeFile.content);
+
+  function startEditing() {
+    if (!canEdit || !activeFile) return;
+    editing = true;
+    draftContent = activeFile.content;
+    saveError = null;
+    clearLspState();
+  }
+
+  function cancelEditing() {
+    editing = false;
+    draftContent = activeFile?.encoding === "utf8" ? activeFile.content : "";
+    saveError = null;
+  }
+
+  async function saveEditing() {
+    const target = activePath;
+    if (!target || !editing || saving) return;
+    saving = true;
+    saveError = null;
+    try {
+      const result = await writeFile(target, draftContent);
+      if (activePath === target) {
+        activeFile = result;
+        activeSize = result.size;
+        activeError = null;
+        editing = false;
+        draftContent = result.encoding === "utf8" ? result.content : "";
+        clearLspState();
+      }
+      void refreshDir(parentPath(target));
+    } catch (err) {
+      if (activePath === target) {
+        saveError = err instanceof Error ? err.message : String(err);
+      }
+    } finally {
+      if (activePath === target) saving = false;
+    }
+  }
+
+  function handleEditorKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void saveEditing();
+    }
+    if (event.key === "Escape" && !dirty) {
+      event.preventDefault();
+      cancelEditing();
+    }
+  }
+
+  function syncEditorScroll(event: Event) {
+    const target = event.currentTarget as HTMLTextAreaElement;
+    if (editorGutterEl) editorGutterEl.scrollTop = target.scrollTop;
+    if (editorHighlightEl) {
+      editorHighlightEl.scrollTop = target.scrollTop;
+      editorHighlightEl.scrollLeft = target.scrollLeft;
+    }
+  }
+
+  function clearLspState() {
+    selectedSymbol = null;
+    lspLoading = false;
+    lspError = null;
+    lspResult = null;
+    lspAnchor = null;
+  }
+
+  function identifierAt(line: string, character: number): string | null {
+    if (line.length === 0) return null;
+    let index = Math.max(0, Math.min(character, line.length - 1));
+    if (!isIdentifierChar(line[index] ?? "") && character > 0) {
+      index = Math.max(0, Math.min(character - 1, line.length - 1));
+    }
+    if (!isIdentifierChar(line[index] ?? "")) return null;
+    let start = index;
+    let end = index + 1;
+    while (start > 0 && isIdentifierChar(line[start - 1])) start -= 1;
+    while (end < line.length && isIdentifierChar(line[end])) end += 1;
+    const value = line.slice(start, end);
+    return value.length > 0 ? value : null;
+  }
+
+  function isIdentifierChar(ch: string): boolean {
+    return /[A-Za-z0-9_$]/.test(ch);
+  }
+
+  function lineHasSymbol(line: string, symbol: string | null): boolean {
+    if (!symbol) return false;
+    return line.includes(symbol);
+  }
+
+  function symbolCharacterAt(line: string, character: number): number {
+    if (line.length === 0) return 0;
+    const current = Math.max(0, Math.min(character, line.length - 1));
+    if (isIdentifierChar(line[current] ?? "")) return current;
+    if (character > 0) {
+      const previous = Math.max(0, Math.min(character - 1, line.length - 1));
+      if (isIdentifierChar(line[previous] ?? "")) return previous;
+    }
+    return current;
+  }
+
+  function clickCharacter(event: MouseEvent, line: string): number {
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const style = getComputedStyle(target);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return 0;
+    ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const charWidth = ctx.measureText("M").width || 7;
+    const raw = Math.floor((event.clientX - rect.left) / charWidth);
+    return Math.max(0, Math.min(raw, Math.max(0, line.length - 1)));
+  }
+
+  function lineCharacterFromOffset(content: string, offset: number): { line: number; character: number } {
+    const beforeCursor = content.slice(0, Math.max(0, Math.min(offset, content.length)));
+    const lines = beforeCursor.split("\n");
+    return {
+      line: lines.length - 1,
+      character: lines[lines.length - 1]?.length ?? 0
+    };
+  }
+
+  async function handleCodeClick(event: MouseEvent, lineIndex: number, line: string) {
+    if (!activePath || !activeFile || activeFile.encoding !== "utf8") return;
+    const character = clickCharacter(event, line);
+    const symbolCharacter = symbolCharacterAt(line, character);
+    const symbol = identifierAt(line, symbolCharacter);
+    if (!symbol) {
+      clearLspState();
+      return;
+    }
+    await inspectSymbol(lineIndex, symbolCharacter, symbol);
+  }
+
+  function handleCodeKeydown(event: KeyboardEvent, lineIndex: number, line: string) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const match = line.match(/[A-Za-z_$][A-Za-z0-9_$]*/);
+    if (!match || match.index === undefined) return;
+    event.preventDefault();
+    void inspectSymbol(lineIndex, match.index, match[0]);
+  }
+
+  function handleEditorCursorInspect(event: MouseEvent | KeyboardEvent) {
+    if (!editing || !activePath || !activeFile || activeFile.encoding !== "utf8") return;
+    const target = event.currentTarget as HTMLTextAreaElement;
+    const { line, character } = lineCharacterFromOffset(draftContent, target.selectionStart);
+    const sourceLine = draftLines[line] ?? "";
+    const symbolCharacter = symbolCharacterAt(sourceLine, character);
+    const symbol = identifierAt(sourceLine, symbolCharacter);
+    if (!symbol) {
+      clearLspState();
+      return;
+    }
+    void inspectSymbol(line, symbolCharacter, symbol);
+  }
+
+  function handleEditorKeyup(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === " " || event.key.startsWith("Arrow")) {
+      handleEditorCursorInspect(event);
+    }
+  }
+
+  async function inspectSymbol(lineIndex: number, character: number, symbol: string) {
+    if (!activePath || !activeFile || activeFile.encoding !== "utf8") return;
+    selectedSymbol = symbol;
+    lspAnchor = { line: lineIndex, character };
+    lspLoading = true;
+    lspError = null;
+    lspResult = null;
+    try {
+      lspResult = await lspInspect(activePath, root, lineIndex, character);
+    } catch (err) {
+      lspError = err instanceof Error ? err.message : String(err);
+    } finally {
+      lspLoading = false;
+    }
+  }
+
+  type LspLocation = {
+    label: string;
+    file: string;
+    line: number;
+    character: number;
+    kind: "definition" | "reference" | "incoming" | "outgoing";
+  };
+
+  type LspReferenceSection = {
+    title: string;
+    locations: LspLocation[];
+  };
+
+  function parseDefinitionLocations(result: LspInspectResult): LspLocation[] {
+    const text = result.operations.goToDefinition?.result ?? "";
+    return text
+      .split("\n")
+      .filter((line) => line.trim().startsWith("- "))
+      .map((line) => parsePathLocation(line.replace(/^\s*-\s*/, ""), "definition"))
+      .filter((value): value is LspLocation => value !== null);
+  }
+
+  function buildReferenceSections(result: LspInspectResult): LspReferenceSection[] {
+    const sections: LspReferenceSection[] = [];
+    const refs = parseGroupedReferences(result.operations.findReferences?.result ?? "");
+    if (refs.length > 0) sections.push({ title: "References", locations: refs });
+    const incoming = parseCallLocations(result.operations.incomingCalls?.result ?? "", "incoming");
+    if (incoming.length > 0) sections.push({ title: "Called by", locations: incoming });
+    const outgoing = parseCallLocations(result.operations.outgoingCalls?.result ?? "", "outgoing");
+    if (outgoing.length > 0) sections.push({ title: "Calls", locations: outgoing });
+    return sections;
+  }
+
+  function parseGroupedReferences(text: string): LspLocation[] {
+    const locations: LspLocation[] = [];
+    let file = "";
+    for (const raw of text.split("\n")) {
+      const line = raw.trimEnd();
+      if (!line.trim()) continue;
+      if (!line.startsWith(" ") && line.endsWith(":")) {
+        file = line.slice(0, -1);
+        continue;
+      }
+      const match = line.match(/-\s*line\s+(\d+):(\d+)/);
+      if (match && file) {
+        locations.push({
+          label: `${file}:${match[1]}:${match[2]}`,
+          file,
+          line: Number(match[1]),
+          character: Number(match[2]),
+          kind: "reference"
+        });
+      }
+    }
+    return locations;
+  }
+
+  function parseCallLocations(text: string, kind: "incoming" | "outgoing"): LspLocation[] {
+    return text
+      .split("\n")
+      .filter((line) => line.trim().startsWith("- "))
+      .map((line) => {
+        const body = line.replace(/^\s*-\s*/, "");
+        const [name, rest] = body.split(/\s+-\s+/, 2);
+        const loc = parsePathLocation(rest ?? body, kind);
+        return loc ? { ...loc, label: name && rest ? `${name} - ${loc.label}` : loc.label } : null;
+      })
+      .filter((value): value is LspLocation => value !== null);
+  }
+
+  function parsePathLocation(text: string, kind: LspLocation["kind"]): LspLocation | null {
+    const match = text.match(/^(.*):(\d+):(\d+)$/);
+    if (!match) return null;
+    return {
+      label: text,
+      file: match[1],
+      line: Number(match[2]),
+      character: Number(match[3]),
+      kind
+    };
+  }
+
+  function resolvedLocationPath(file: string): string {
+    if (file.startsWith("/")) return file;
+    return joinPath(root, file);
+  }
+
+  async function openLocation(location: LspLocation) {
+    const path = resolvedLocationPath(location.file);
+    await openFile(path, 0);
+  }
 
   type TreeRow = {
     path: string;
@@ -458,21 +774,129 @@
         {#if activeFile?.truncated}
           <span class="badge">truncated</span>
         {/if}
+        {#if saveError}
+          <span class="save-error mono">{saveError}</span>
+        {/if}
+        <div class="viewer-actions">
+          {#if editing}
+            <button
+              type="button"
+              class="file-action"
+              onclick={cancelEditing}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="file-action primary"
+              onclick={() => void saveEditing()}
+              disabled={saving || !dirty}
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="file-action"
+              onclick={startEditing}
+              disabled={!canEdit}
+              title={canEdit ? "Edit file" : "Only complete UTF-8 previews can be edited"}
+            >
+              Edit
+            </button>
+          {/if}
+        </div>
       </header>
       <div class="viewer-body">
         {#if activeLoading && !activeFile}
           <div class="viewer-msg sub">Loading...</div>
         {:else if activeError}
           <div class="viewer-msg err mono">{activeError}</div>
+        {:else if activeFile && activeFile.encoding === "utf8" && editing}
+          <div class="editor-shell">
+            <div class="editor-gutter" bind:this={editorGutterEl} aria-hidden="true">
+              {#each draftLineNumbers as lineNumber}
+                <span>{lineNumber}</span>
+              {/each}
+            </div>
+            <div class="editor-stack">
+              <pre class="editor-highlight" bind:this={editorHighlightEl} aria-hidden="true">{#each draftLines as line}<span class:symbol-line={lineHasSymbol(line, selectedSymbol)}><HighlightedLine text={line || " "} path={activePath} highlight={selectedSymbol} /></span>{/each}</pre>
+              <textarea
+                class="editor"
+                bind:value={draftContent}
+                spellcheck="false"
+                wrap="off"
+                onkeydown={handleEditorKeydown}
+                onkeyup={handleEditorKeyup}
+                onmouseup={handleEditorCursorInspect}
+                onscroll={syncEditorScroll}
+                aria-label="Edit file contents"
+              ></textarea>
+            </div>
+          </div>
         {:else if activeFile && activeFile.encoding === "utf8"}
           <pre class="code"><!--
             --><div class="gutter">{#each viewerLines as _line, i}<span class="gl">{i + 1}</span>{/each}</div><!--
-            --><div class="lines">{#each viewerLines as line}<span class="ln">{line || " "}</span>{/each}</div><!--
+            --><div class="lines">{#each viewerLines as line, i}<span class="ln" class:symbol-line={lineHasSymbol(line, selectedSymbol)} data-line={i + 1} role="button" tabindex="0" onclick={(event) => void handleCodeClick(event, i, line)} onkeydown={(event) => handleCodeKeydown(event, i, line)}><HighlightedLine text={line || " "} path={activePath} highlight={selectedSymbol} /></span>{/each}</div><!--
           --></pre>
         {:else if activeFile && activeFile.encoding === "base64"}
           <div class="viewer-msg">
             Binary file ({fmtSize(activeFile.size)}). Download is not supported yet.
           </div>
+        {/if}
+        {#if selectedSymbol}
+          <aside class="lsp-popup" aria-label="Symbol references">
+            <header>
+              <div>
+                <div class="eyebrow">Symbol</div>
+                <div class="symbol">{selectedSymbol}</div>
+              </div>
+              <button type="button" aria-label="Close symbol popup" onclick={clearLspState}>
+                <Icon name="x" size={12} />
+              </button>
+            </header>
+            {#if lspAnchor}
+              <div class="lsp-origin mono">line {lspAnchor.line + 1}:{lspAnchor.character + 1}</div>
+            {/if}
+            {#if lspLoading}
+              <div class="lsp-state">Loading language server results...</div>
+            {:else if lspError}
+              <div class="lsp-state danger">{lspError}</div>
+            {:else if lspResult}
+              {#if hoverText && !hoverText.startsWith("No hover")}
+                <section>
+                  <h3>Hover</h3>
+                  <pre>{hoverText}</pre>
+                </section>
+              {/if}
+              {#if definitionLocations.length > 0}
+                <section>
+                  <h3>Definition</h3>
+                  {#each definitionLocations as location, i (i)}
+                    <button type="button" class="lsp-location" onclick={() => void openLocation(location)}>
+                      <span class="kind">def</span>
+                      <span class="label">{location.label}</span>
+                    </button>
+                  {/each}
+                </section>
+              {/if}
+              {#each referenceSections as section (section.title)}
+                <section>
+                  <h3>{section.title}</h3>
+                  {#each section.locations as location, i (i)}
+                    <button type="button" class="lsp-location" onclick={() => void openLocation(location)}>
+                      <span class="kind">{location.kind === "reference" ? "ref" : location.kind === "incoming" ? "in" : "out"}</span>
+                      <span class="label">{location.label}</span>
+                    </button>
+                  {/each}
+                </section>
+              {/each}
+              {#if definitionLocations.length === 0 && referenceSections.length === 0 && (!hoverText || hoverText.startsWith("No hover"))}
+                <div class="lsp-state">{lspFallbackText}</div>
+              {/if}
+            {/if}
+          </aside>
         {/if}
       </div>
     {/if}
@@ -633,11 +1057,50 @@
     background: oklch(0.7 0.16 40);
     color: white;
   }
+  .viewer-head .save-error {
+    min-width: 0;
+    color: oklch(0.55 0.2 30);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .viewer-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .file-action {
+    height: 24px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0 9px;
+    background: var(--background);
+    color: var(--foreground);
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .file-action:hover:not(:disabled) {
+    background: var(--accent);
+  }
+  .file-action.primary {
+    background: var(--foreground);
+    border-color: var(--foreground);
+    color: var(--background);
+  }
+  .file-action:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 
   .viewer-body {
     flex: 1;
     min-height: 0;
     overflow: auto;
+    position: relative;
   }
   .viewer-empty {
     height: 100%;
@@ -664,6 +1127,78 @@
     font-family: var(--font-mono);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .editor-shell {
+    height: 100%;
+    min-height: 100%;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    background: var(--background);
+  }
+  .editor-gutter {
+    overflow: hidden;
+    padding: 10px 8px 10px 12px;
+    border-right: 1px solid var(--border);
+    background: color-mix(in oklab, var(--background) 97%, var(--muted));
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: right;
+    user-select: none;
+  }
+  .editor-gutter span {
+    display: block;
+    font-variant-numeric: tabular-nums;
+  }
+  .editor-stack {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--background);
+  }
+  .editor-highlight,
+  .editor {
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    tab-size: 2;
+    white-space: pre;
+    overflow: auto;
+  }
+  .editor-highlight {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    border: 0;
+    pointer-events: none;
+    color: var(--foreground);
+  }
+  .editor-highlight span {
+    display: block;
+    min-height: 1.5em;
+  }
+  .editor-highlight span.symbol-line {
+    background: color-mix(in oklab, var(--puffer-accent) 6%, transparent);
+  }
+  .editor {
+    position: relative;
+    z-index: 1;
+    border: 0;
+    resize: none;
+    outline: none;
+    background: transparent;
+    color: transparent;
+    caret-color: var(--foreground);
+    -webkit-text-fill-color: transparent;
+  }
+  .editor::selection {
+    background: color-mix(in oklab, var(--puffer-accent, #2563eb) 24%, transparent);
   }
 
   .code {
@@ -701,5 +1236,136 @@
   .code .lines .ln {
     display: block;
     white-space: pre;
+    cursor: text;
+    border-radius: 3px;
+  }
+  .code .lines .ln:hover {
+    background: color-mix(in oklab, var(--accent) 60%, transparent);
+  }
+  .code .lines .ln.symbol-line {
+    background: color-mix(in oklab, var(--puffer-accent) 6%, transparent);
+  }
+  .lsp-popup {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    width: min(440px, calc(100% - 32px));
+    max-height: min(620px, calc(100% - 24px));
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--background) 98%, var(--muted));
+    box-shadow: 0 18px 50px -28px rgba(0, 0, 0, 0.45);
+    z-index: 10;
+    font-size: 12px;
+  }
+  .lsp-popup header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--background) 98%, var(--muted));
+  }
+  .lsp-popup header button {
+    all: unset;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    color: var(--muted-foreground);
+    cursor: pointer;
+  }
+  .lsp-popup header button:hover {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+  .lsp-popup .eyebrow {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted-foreground);
+    font-weight: 700;
+  }
+  .lsp-popup .symbol {
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--foreground);
+  }
+  .lsp-origin {
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-size: 11px;
+  }
+  .lsp-popup section {
+    padding: 10px 12px;
+    border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  }
+  .lsp-popup section:last-child {
+    border-bottom: 0;
+  }
+  .lsp-popup h3 {
+    margin: 0 0 7px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted-foreground);
+  }
+  .lsp-popup pre,
+  .lsp-state {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--foreground);
+  }
+  .lsp-state {
+    padding: 12px;
+    color: var(--muted-foreground);
+  }
+  .lsp-state.danger {
+    color: oklch(0.55 0.2 30);
+  }
+  .lsp-location {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 7px;
+    align-items: baseline;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--foreground);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+  }
+  .lsp-location:hover {
+    background: var(--muted);
+  }
+  .lsp-location .kind {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+  }
+  .lsp-location .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
   }
 </style>

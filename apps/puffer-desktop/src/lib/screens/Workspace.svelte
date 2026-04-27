@@ -26,6 +26,8 @@
     /** User clicked the workspace-cwd chip in the header — the parent
      *  should open the WorkspacePicker. */
     onOpenWorkspacePicker?: () => void;
+    pinnedWorkspacePaths?: string[];
+    onToggleWorkspacePin?: (path: string, pinned: boolean) => void;
   };
 
   let {
@@ -36,7 +38,9 @@
     onOpenBoard,
     onNewAgent,
     onSessionReady,
-    onOpenWorkspacePicker
+    onOpenWorkspacePicker,
+    pinnedWorkspacePaths = [],
+    onToggleWorkspacePin
   }: Props = $props();
 
   let showConnect = $state(false);
@@ -143,16 +147,6 @@
       <button
         type="button"
         class="sc-btn"
-        data-variant="default"
-        data-size="sm"
-        onclick={() => handleNewAgent(defaultWorkspaceCwd)}
-        disabled={!onNewAgent}
-      >
-        <Icon name="plus" size={13} />New agent
-      </button>
-      <button
-        type="button"
-        class="sc-btn"
         data-variant="outline"
         data-size="sm"
         onclick={() => (showConnect = true)}
@@ -183,16 +177,6 @@
             {#if defaultWorkspaceCwd}<code>{defaultWorkspaceCwd}</code>{/if}
             — you'll land in a blank chat wired straight to Puffer.
           </p>
-          <button
-            type="button"
-            class="sc-btn"
-            data-variant="default"
-            data-size="sm"
-            onclick={() => handleNewAgent(defaultWorkspaceCwd)}
-            disabled={!onNewAgent}
-          >
-            <Icon name="plus" size={13} />New agent
-          </button>
         </div>
       </div>
     {/if}
@@ -200,9 +184,11 @@
       <ProjectRow
         project={p}
         agents={agents.filter((a) => a.project === p.id)}
+        pinned={pinnedWorkspacePaths.includes(p.path) || pinnedWorkspacePaths.includes(p.id)}
         {onOpenAgent}
         {onOpenBoard}
         onNewAgent={onNewAgent ? () => handleNewAgent(p.path) : undefined}
+        onTogglePin={onToggleWorkspacePin ? () => onToggleWorkspacePin(p.path, !(pinnedWorkspacePaths.includes(p.path) || pinnedWorkspacePaths.includes(p.id))) : undefined}
       />
     {/each}
   </div>

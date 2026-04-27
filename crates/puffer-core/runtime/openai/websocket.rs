@@ -1,6 +1,13 @@
+use super::super::openai_sse::OpenAISseResult;
+use super::super::openai_ws::{OpenAIWebSocket, WsApiError};
+use super::super::structured_output_support::{
+    openai_responses_text_config, openai_tool_definitions_for_request,
+};
+use super::super::system_prompt::render_runtime_system_prompt;
+use super::super::{run_turn_hooks, TurnStreamEvent};
 use super::conversation::{
-    append_reasoning_items, append_tool_results, compact_conversation,
-    inject_post_compact_context, items_to_responses_input, transcript_to_items, ConversationItem,
+    append_reasoning_items, append_tool_results, compact_conversation, inject_post_compact_context,
+    items_to_responses_input, transcript_to_items, ConversationItem,
 };
 use super::support::{
     apply_previous_response_id, is_openai_structured_output_error, openai_model_supports_reasoning,
@@ -12,17 +19,12 @@ use super::{
     parse_openai_text, parse_openai_text_fallback, resolve_openai_execution_config,
     OpenAIExecutionConfig,
 };
-use super::super::openai_sse::OpenAISseResult;
-use super::super::openai_ws::{OpenAIWebSocket, WsApiError};
-use super::super::structured_output_support::{
-    openai_responses_text_config, openai_tool_definitions_for_request,
-};
-use super::super::system_prompt::render_runtime_system_prompt;
-use super::super::{run_turn_hooks, TurnStreamEvent};
 use crate::permissions::load_runtime_permission_context;
 use crate::AppState;
 use anyhow::Result;
-use puffer_provider_openai::{codex_user_agent, refresh_oauth_token, OpenAIAuth, OpenAIRequestConfig};
+use puffer_provider_openai::{
+    codex_user_agent, refresh_oauth_token, OpenAIAuth, OpenAIRequestConfig,
+};
 use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
@@ -210,7 +212,10 @@ where
     let mut items = transcript_to_items(state, input);
 
     let context_reminder = build_context_reminder_message();
-    super::conversation::insert_context_reminder_preserving_legacy_leading_system(&mut items, &context_reminder);
+    super::conversation::insert_context_reminder_preserving_legacy_leading_system(
+        &mut items,
+        &context_reminder,
+    );
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
@@ -374,9 +379,7 @@ where
                         options, on_event,
                     );
                 }
-                return Err(error.context(
-                    "WebSocket error after tool calls were already executed",
-                ));
+                return Err(error.context("WebSocket error after tool calls were already executed"));
             }
         };
 
@@ -528,9 +531,7 @@ where
         match send_and_read_ws(ws, body, on_event) {
             Ok(result) => return Ok(result),
             Err(error) if attempt < max_attempts && is_retryable_ws_error(&error) => {
-                eprintln!(
-                    "[ws] retryable error on attempt {attempt}/{max_attempts}: {error:#}",
-                );
+                eprintln!("[ws] retryable error on attempt {attempt}/{max_attempts}: {error:#}",);
                 if !delay.is_zero() {
                     std::thread::sleep(delay);
                 }
@@ -663,7 +664,10 @@ mod tests {
     fn build_ws_url_only_replaces_scheme_prefix() {
         // Ensure replacen(..., 1) only swaps the leading scheme, not any
         // embedded "https://" in the path.
-        let url = build_ws_url("https://proxy.example.com/forward-to-https://api.openai.com", &[]);
+        let url = build_ws_url(
+            "https://proxy.example.com/forward-to-https://api.openai.com",
+            &[],
+        );
         assert!(url.starts_with("wss://proxy.example.com/"));
         // The embedded https:// in the path must NOT be replaced.
         assert!(url.contains("https://api.openai.com"));
@@ -724,10 +728,7 @@ mod tests {
         assert_eq!(find_header(&headers, "X-Custom"), Some("value"));
         // New: verify parity headers are present.
         assert!(find_header(&headers, "User-Agent").is_some());
-        assert_eq!(
-            find_header(&headers, "originator"),
-            Some("codex_cli_rs")
-        );
+        assert_eq!(find_header(&headers, "originator"), Some("codex_cli_rs"));
         assert_eq!(find_header(&headers, "session_id"), Some("sess-123"));
         assert_eq!(
             find_header(&headers, "x-client-request-id"),
@@ -757,10 +758,7 @@ mod tests {
             Some("acct-456")
         );
         assert!(find_header(&headers, "User-Agent").is_some());
-        assert_eq!(
-            find_header(&headers, "originator"),
-            Some("codex_cli_rs")
-        );
+        assert_eq!(find_header(&headers, "originator"), Some("codex_cli_rs"));
         // No session_id configured — headers should be absent.
         assert!(find_header(&headers, "session_id").is_none());
     }
@@ -781,10 +779,7 @@ mod tests {
         assert!(find_header(&headers, "Authorization").is_none());
         // Even without auth, User-Agent and originator must be present.
         assert!(find_header(&headers, "User-Agent").is_some());
-        assert_eq!(
-            find_header(&headers, "originator"),
-            Some("codex_cli_rs")
-        );
+        assert_eq!(find_header(&headers, "originator"), Some("codex_cli_rs"));
     }
 
     #[test]
@@ -882,18 +877,15 @@ mod tests {
         // T5: An IO TimedOut error wrapped in an anyhow chain should be
         // detected via the error chain walk, not just string matching.
         let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "read timed out");
-        let chained: anyhow::Error =
-            anyhow::Error::new(io_err).context("WebSocket read failed");
+        let chained: anyhow::Error = anyhow::Error::new(io_err).context("WebSocket read failed");
         assert!(is_retryable_ws_error(&chained));
     }
 
     #[test]
     fn is_retryable_ws_error_rejects_non_retryable_io() {
         // An IO PermissionDenied error should NOT be retryable.
-        let io_err =
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not allowed");
-        let chained: anyhow::Error =
-            anyhow::Error::new(io_err).context("WebSocket connect failed");
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not allowed");
+        let chained: anyhow::Error = anyhow::Error::new(io_err).context("WebSocket connect failed");
         assert!(!is_retryable_ws_error(&chained));
     }
 

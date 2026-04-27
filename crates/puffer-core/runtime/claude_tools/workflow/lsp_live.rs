@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 use url::Url;
@@ -29,7 +29,7 @@ use self::format::{
 use self::manager::with_lsp_session;
 use super::lsp_live_diagnostics::{diagnostics_for_file, record_publish_diagnostics};
 
-const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_LSP_FILE_SIZE_BYTES: u64 = 10_000_000;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -444,7 +444,14 @@ impl LspSession {
             let message = self
                 .messages
                 .recv_timeout(LSP_REQUEST_TIMEOUT)
-                .map_err(|_| anyhow!("timed out waiting for LSP response to `{method}`"))??;
+                .map_err(|error| match error {
+                    RecvTimeoutError::Timeout => {
+                        anyhow!("timed out waiting for LSP response to `{method}`")
+                    }
+                    RecvTimeoutError::Disconnected => {
+                        anyhow!("LSP server exited before responding to `{method}`")
+                    }
+                })??;
             if is_server_request(&message) {
                 self.respond_to_server_request(&message)?;
                 continue;
@@ -638,7 +645,7 @@ fn resolve_lsp_server(resources: &LoadedResources, file_path: &Path) -> LspServe
         let Some(command) = resolved_command(server.command.as_str()) else {
             continue;
         };
-        if command_exists(&command) {
+        if command_is_usable(&command) {
             return LspServerResolution::Available(ResolvedLspServer {
                 id: server.id.clone(),
                 command,
@@ -706,6 +713,26 @@ fn command_exists(command: &str) -> bool {
         let candidate = entry.join(command);
         candidate.is_file()
     })
+}
+
+fn command_is_usable(command: &str) -> bool {
+    if !command_exists(command) {
+        return false;
+    }
+    if Path::new(command)
+        .file_name()
+        .and_then(|value| value.to_str())
+        != Some("rust-analyzer")
+    {
+        return true;
+    }
+    Command::new(command)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn resolved_command(command: &str) -> Option<String> {
