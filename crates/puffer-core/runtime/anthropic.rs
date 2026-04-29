@@ -538,22 +538,37 @@ fn anthropic_system_blocks(
     blocks
 }
 
-/// Resolve whether the given model accepts the Anthropic-style
-/// `thinking` block. Consults declared `Model.compat` first; falls
-/// back to the historical URL/id heuristic
-/// (`provider.id == "anthropic"` || `base_url contains "anthropic.com"`).
+/// Resolve whether the model accepts the Anthropic-style `thinking`
+/// block. Decision is **family-based**, not id-based: this function
+/// only runs inside the Anthropic-Messages adapter, so by the time we
+/// get here the request is already going to an Anthropic-Messages
+/// endpoint. Per the Anthropic protocol, every compliant endpoint
+/// (canonical `api.anthropic.com`, Kimi `kimi-coding`, Bedrock /
+/// Vertex Anthropic relays, self-hosted proxies, …) accepts the
+/// `thinking` field — verified via curl against `kimi-coding/k2p5`,
+/// which returns full `thinking` content blocks when the request
+/// carries `thinking: { type: "enabled", … }`.
+///
+/// The `Model.supports_reasoning` flag still gates whether the field
+/// is actually sent, so non-reasoning models keep their cheap
+/// no-thinking path. To opt OUT for a relay that rejects the field
+/// despite the spec, set
+/// `Model.compat.AnthropicMessages.supports_thinking_api: false` on
+/// the descriptor.
+///
+/// Historical note: this used to gate on
+/// `provider.id == "anthropic" || base_url.contains("anthropic.com")`
+/// — too narrow, silently dropped reasoning for every third-party
+/// Anthropic-compatible reasoning model.
 fn anthropic_supports_thinking_api(provider: &ProviderDescriptor, model_id: &str) -> bool {
-    let declared = provider
+    provider
         .models
         .iter()
         .find(|m| m.id == model_id)
         .and_then(|m| m.compat.as_ref())
         .and_then(|c| c.as_anthropic_messages())
-        .and_then(|c| c.supports_thinking_api);
-    if let Some(value) = declared {
-        return value;
-    }
-    provider.id == "anthropic" || provider.base_url.contains("anthropic.com")
+        .and_then(|c| c.supports_thinking_api)
+        .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -795,5 +810,87 @@ fn append_anthropic_response_to_items(
                 ToolOutputPayload::error(inv.output.clone())
             },
         });
+    }
+}
+
+#[cfg(test)]
+mod thinking_gate_tests {
+    use super::anthropic_supports_thinking_api;
+    use puffer_provider_registry::{
+        AnthropicMessagesCompat, AuthMode, Modality, ModelCompat, ModelDescriptor,
+        ProviderDescriptor,
+    };
+
+    fn provider_with(id: &str, base_url: &str, model_compat: Option<ModelCompat>) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            base_url: base_url.to_string(),
+            default_api: "anthropic-messages".to_string(),
+            auth_modes: vec![AuthMode::ApiKey],
+            headers: Default::default(),
+            query_params: Default::default(),
+            discovery: None,
+            models: vec![ModelDescriptor {
+                id: "claude-sonnet-4-5".to_string(),
+                display_name: "Claude".to_string(),
+                provider: id.to_string(),
+                api: "anthropic-messages".to_string(),
+                context_window: 200_000,
+                max_output_tokens: 8192,
+                supports_reasoning: true,
+                input: vec![Modality::Text],
+                cost: None,
+                compat: model_compat,
+            }],
+        }
+    }
+
+    #[test]
+    fn canonical_anthropic_defaults_to_thinking_supported() {
+        let provider = provider_with("anthropic", "https://api.anthropic.com", None);
+        assert!(anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn third_party_anthropic_compatible_relay_defaults_to_supported() {
+        // Regression: kimi-coding/k2p5 returns full Anthropic-shaped
+        // `thinking` content blocks when the request carries the
+        // thinking field, but the previous heuristic gated on
+        // `provider.id == "anthropic" || base_url contains anthropic.com`
+        // and silently dropped reasoning for any non-anthropic.com URL.
+        // Verified via curl against api.kimi.com/coding before flipping
+        // the default.
+        let provider = provider_with("kimi-coding", "https://api.kimi.com/coding", None);
+        assert!(anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn explicit_compat_opt_out_wins_over_default() {
+        // For a relay that does NOT accept the thinking field, users
+        // can drop a workspace-level provider yaml with
+        // `compat: { kind: anthropic_messages, supports_thinking_api: false }`
+        // to keep the agent loop from sending it.
+        let compat = ModelCompat::AnthropicMessages(AnthropicMessagesCompat {
+            supports_thinking_api: Some(false),
+        });
+        let provider = provider_with("custom-anthropic", "http://1.2.3.4/", Some(compat));
+        assert!(!anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn explicit_compat_opt_in_wins_over_default() {
+        let compat = ModelCompat::AnthropicMessages(AnthropicMessagesCompat {
+            supports_thinking_api: Some(true),
+        });
+        let provider = provider_with("custom-anthropic", "http://1.2.3.4/", Some(compat));
+        assert!(anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn unknown_model_id_falls_back_to_default_supported() {
+        let provider = provider_with("kimi-coding", "https://api.kimi.com/coding", None);
+        // No model with id="not-a-model" → no compat to read → default true.
+        assert!(anthropic_supports_thinking_api(&provider, "not-a-model"));
     }
 }
