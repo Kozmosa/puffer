@@ -66,8 +66,13 @@ impl ObservationKind {
             Self::Turn => "turn",
             Self::ProviderCall => "provider_call",
             Self::Tool => "tool",
-            Self::Compaction => "compaction",
-            Self::Reflection => "reflection",
+            // `subagent.*` prefix flags spans that own their own LLM
+            // round-trip outside the main agent_loop → turn →
+            // provider_call path. Langfuse renders this as a distinct
+            // visual hierarchy in the trace tree (vs plain `compaction`
+            // / `reflection` siblings of `provider_call`).
+            Self::Compaction => "subagent.compaction_summary",
+            Self::Reflection => "subagent.reflection_judge",
         }
     }
 

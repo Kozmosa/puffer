@@ -312,10 +312,12 @@ pub fn start_tool_span(
     SpanGuard::active(span, parent_ctx, handle.clone())
 }
 
-/// Start a `reflection` child span. Wraps the per-batch reflection
-/// observation that may or may not fire an LLM judge call. When the
-/// judge does fire, callers should set `puffer.reflection.judge.fired`
-/// + token usage via `set_str` / `set_token_usage`.
+/// Start a `subagent.reflection_judge` child span. Wraps the per-batch
+/// reflection observation that may or may not fire an LLM judge call.
+/// Callers populate stage-by-stage attributes
+/// (`puffer.reflection.assessment.*`, `puffer.reflection.code_judge.*`,
+/// `puffer.reflection.llm_judge.*`, `puffer.reflection.final.*`) so a
+/// viewer can tell exactly which path the reflection pipeline took.
 pub fn start_reflection_span(
     handle: Option<&ObservabilityHandle>,
     parent: Option<&OtelContext>,
@@ -334,6 +336,7 @@ pub fn start_reflection_span(
                 LANGFUSE_OBSERVATION_TYPE,
                 ObservationKind::Reflection.langfuse_observation_type(),
             )
+            .str("puffer.subagent.kind", "reflection_judge")
             .build(),
     );
     let span = tracer.build_with_context(builder, &parent_ctx);
@@ -361,6 +364,7 @@ pub fn start_compaction_span(
                 LANGFUSE_OBSERVATION_TYPE,
                 ObservationKind::Compaction.langfuse_observation_type(),
             )
+            .str("puffer.subagent.kind", "compaction_summary")
             .build(),
     );
     let span = tracer.build_with_context(builder, &parent_ctx);

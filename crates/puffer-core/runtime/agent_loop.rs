@@ -456,17 +456,22 @@ pub(crate) fn run_streaming_loop(
             });
         }
 
-        // Reflection observation over THIS batch only. Wrapped in a
-        // `reflection` SPAN so the timing is visible in Langfuse; if
-        // the LLM judge fires (only on code-judge trigger), token
-        // usage from the returned trace events is attached so the
-        // span doubles as a generation observation for that judge
-        // call. Subagent-style: this is the only LLM round-trip puffer
-        // makes outside the main `agent_loop → turn → provider_call`
-        // path inside the runtime.
+        // Reflection is the only LLM round-trip puffer makes outside
+        // the main `agent_loop → turn → provider_call` path. Mark it
+        // as a subagent so the Langfuse tree visibly distinguishes it
+        // from regular provider calls (kind attribute + span-name
+        // prefix). Every stage of the reflection pipeline is mirrored
+        // onto attributes so a viewer can tell exactly what happened
+        // (config-disabled / judge-skipped / code-judge-fired /
+        // llm-judge-fired-with-decision-X / checkpoint-injected).
         let mut reflection_span = puffer_observability::start_reflection_span(
             inputs.observability.as_ref(),
             turn_span.context(),
+        );
+        reflection_span.set_str("puffer.subagent.kind", "reflection_judge");
+        reflection_span.set_str(
+            "puffer.reflection.config.enabled",
+            inputs.reflection_config.is_some().to_string(),
         );
         if let Some(observation) = reflection.as_mut().and_then(|tracker| {
             tracker.observe_batch_with_judge(
@@ -478,21 +483,152 @@ pub(crate) fn run_streaming_loop(
                 inputs.auth_store,
             )
         }) {
+            reflection_span.set_str("puffer.reflection.observed", "true");
             for trace_event in &observation.trace_events {
                 on_event(TurnStreamEvent::ReflectionTrace(trace_event.clone()));
-                if let ReflectionTraceEvent::LlmJudgeResponse {
-                    input_tokens,
-                    output_tokens,
-                    cached_input_tokens,
-                    ..
-                } = trace_event
-                {
-                    reflection_span.set_str("puffer.reflection.judge.fired", "true");
-                    reflection_span.set_token_usage(
-                        *input_tokens,
-                        *output_tokens,
-                        *cached_input_tokens,
-                    );
+                match trace_event {
+                    ReflectionTraceEvent::BatchObserved {
+                        evaluation_score,
+                        evaluation_threshold,
+                        should_evaluate,
+                        skip_reason,
+                        ..
+                    } => {
+                        reflection_span.set_str(
+                            "puffer.reflection.assessment.score",
+                            evaluation_score.to_string(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.assessment.threshold",
+                            evaluation_threshold.to_string(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.assessment.should_evaluate",
+                            should_evaluate.to_string(),
+                        );
+                        if let Some(reason) = skip_reason {
+                            reflection_span.set_str(
+                                "puffer.reflection.assessment.skip_reason",
+                                reason.clone(),
+                            );
+                        }
+                    }
+                    ReflectionTraceEvent::CodeJudgeDecision {
+                        triggered,
+                        score,
+                        threshold,
+                        ..
+                    } => {
+                        reflection_span.set_str(
+                            "puffer.reflection.code_judge.triggered",
+                            triggered.to_string(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.code_judge.score",
+                            score.to_string(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.code_judge.threshold",
+                            threshold.to_string(),
+                        );
+                    }
+                    ReflectionTraceEvent::LlmJudgeSkipped { mode, reason } => {
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.fired",
+                            "false",
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.skip_mode",
+                            mode.clone(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.skip_reason",
+                            reason.clone(),
+                        );
+                    }
+                    ReflectionTraceEvent::LlmJudgeRequest {
+                        provider,
+                        model,
+                        context_scope,
+                        prompt_chars,
+                        ..
+                    } => {
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.fired",
+                            "true",
+                        );
+                        if let Some(p) = provider {
+                            reflection_span
+                                .set_str("puffer.reflection.llm_judge.provider", p.clone());
+                        }
+                        if let Some(m) = model {
+                            reflection_span
+                                .set_str("puffer.reflection.llm_judge.model", m.clone());
+                        }
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.context_scope",
+                            context_scope.clone(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.prompt_chars",
+                            prompt_chars.to_string(),
+                        );
+                    }
+                    ReflectionTraceEvent::LlmJudgeResponse {
+                        decision,
+                        confidence,
+                        reason,
+                        next_action,
+                        input_tokens,
+                        output_tokens,
+                        cached_input_tokens,
+                        ..
+                    } => {
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.decision",
+                            decision.clone(),
+                        );
+                        if let Some(c) = confidence {
+                            reflection_span
+                                .set_str("puffer.reflection.llm_judge.confidence", c.clone());
+                        }
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.reason",
+                            reason.clone(),
+                        );
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.next_action",
+                            next_action.clone(),
+                        );
+                        reflection_span.set_token_usage(
+                            *input_tokens,
+                            *output_tokens,
+                            *cached_input_tokens,
+                        );
+                    }
+                    ReflectionTraceEvent::LlmJudgeError { stage, error, .. } => {
+                        reflection_span.set_str(
+                            "puffer.reflection.llm_judge.error_stage",
+                            stage.clone(),
+                        );
+                        reflection_span.mark_error(error.clone());
+                    }
+                    ReflectionTraceEvent::FinalDecision {
+                        selected_source,
+                        triggered_checkpoint,
+                        ..
+                    } => {
+                        if let Some(src) = selected_source {
+                            reflection_span.set_str(
+                                "puffer.reflection.final.signal_source",
+                                src.clone(),
+                            );
+                        }
+                        reflection_span.set_str(
+                            "puffer.reflection.final.checkpoint_triggered",
+                            triggered_checkpoint.to_string(),
+                        );
+                    }
                 }
             }
             reflection_traces.extend(observation.trace_events);
@@ -502,6 +638,8 @@ pub(crate) fn run_streaming_loop(
                 ));
                 items.push(ConversationItem::user_message(checkpoint.prompt));
             }
+        } else {
+            reflection_span.set_str("puffer.reflection.observed", "false");
         }
         reflection_span.end();
 
