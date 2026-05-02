@@ -18,6 +18,9 @@ pub enum GenAiSystem {
 }
 
 impl GenAiSystem {
+    /// Stable lowercase identifier used as the `gen_ai.system`
+    /// attribute on provider call spans. Stable across renames so
+    /// dashboards don't drift.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
@@ -120,10 +123,13 @@ pub struct AttributeBag {
 }
 
 impl AttributeBag {
+    /// New empty bag.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Push a string attribute, skipping empty values to avoid
+    /// noise on the span.
     pub fn str(mut self, key: &'static str, value: impl Into<String>) -> Self {
         let v = value.into();
         if !v.is_empty() {
@@ -132,6 +138,7 @@ impl AttributeBag {
         self
     }
 
+    /// Push a string attribute when present; no-op when `None`.
     pub fn opt_str(self, key: &'static str, value: Option<impl Into<String>>) -> Self {
         match value {
             Some(v) => self.str(key, v),
@@ -139,11 +146,13 @@ impl AttributeBag {
         }
     }
 
+    /// Push an integer attribute.
     pub fn int(mut self, key: &'static str, value: i64) -> Self {
         self.inner.push(KeyValue::new(key, value));
         self
     }
 
+    /// Push an integer attribute when present; no-op when `None`.
     pub fn opt_int(self, key: &'static str, value: Option<i64>) -> Self {
         match value {
             Some(v) => self.int(key, v),
@@ -151,18 +160,20 @@ impl AttributeBag {
         }
     }
 
+    /// Push a boolean attribute.
     pub fn bool(mut self, key: &'static str, value: bool) -> Self {
         self.inner.push(KeyValue::new(key, value));
         self
     }
 
-    /// Push an arbitrary pre-built `KeyValue` (e.g. an array-typed
-    /// attribute that the typed setters above don't cover).
+    /// Push an arbitrary pre-built `KeyValue` (for array-typed
+    /// attributes the typed setters above do not cover).
     pub fn kv(mut self, kv: KeyValue) -> Self {
         self.inner.push(kv);
         self
     }
 
+    /// Finalize the bag into a `Vec<KeyValue>` ready for span build.
     pub fn build(self) -> Vec<KeyValue> {
         self.inner
     }

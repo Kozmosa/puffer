@@ -35,6 +35,8 @@ pub struct RedactionPolicy {
 }
 
 impl RedactionPolicy {
+    /// Build a policy from explicit flag values + a denylist of tool
+    /// ids whose I/O is always redacted regardless of `include_tool_io`.
     pub fn from_config(
         include_prompts: bool,
         include_outputs: bool,
@@ -49,18 +51,23 @@ impl RedactionPolicy {
         }
     }
 
+    /// Whether the policy permits raw user-prompt content on spans.
     pub fn include_prompts(&self) -> bool {
         self.include_prompts
     }
 
+    /// Whether the policy permits raw assistant-output content on spans.
     pub fn include_outputs(&self) -> bool {
         self.include_outputs
     }
 
+    /// Whether the policy permits raw tool input/output content on spans.
     pub fn include_tool_io(&self) -> bool {
         self.include_tool_io
     }
 
+    /// Tool ids whose I/O is always redacted regardless of the
+    /// `include_tool_io` flag (e.g. credential-shaped tools).
     pub fn always_redact_tool_ids(&self) -> &[String] {
         &self.always_redact_tool_ids
     }

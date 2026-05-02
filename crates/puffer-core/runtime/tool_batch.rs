@@ -98,28 +98,41 @@ pub(super) fn execute_tool_batch(
             let registry = inputs.registry;
             let working_dirs_ref = &working_dirs;
             let provider_context_ref = &provider_context;
-            let tool_id_owned = tc.tool_id.clone();
-            let call_id_owned = tc.call_id.clone();
-            let input_str_owned = tc.input.clone();
-            let observability_handle = observability_handle.clone();
-            let parent_ctx_clone = parent_ctx_owned.clone();
+            // Observability-only clones are gated on a live handle so
+            // the disabled path does no per-tool string allocations
+            // (review v4 BLOCK #1).
+            let span_meta = observability_handle.as_ref().map(|h| {
+                (
+                    h.clone(),
+                    parent_ctx_owned.clone(),
+                    tc.tool_id.clone(),
+                    tc.call_id.clone(),
+                    tc.input.clone(),
+                )
+            });
             handles.push((
                 i,
                 s.spawn(move || {
-                    let mut tool_span = puffer_observability::start_tool_span(
-                        observability_handle.as_ref(),
-                        parent_ctx_clone.as_ref(),
-                        &tool_id_owned,
-                        &call_id_owned,
-                        true,
-                    );
-                    tool_span.set_content(
-                        "puffer.tool.input",
-                        puffer_observability::ContentKind::ToolInput {
-                            tool_id: tool_id_owned.clone(),
-                        },
-                        &input_str_owned,
-                    );
+                    let mut tool_span = match span_meta.as_ref() {
+                        Some((handle, parent_ctx, tool_id, call_id, input)) => {
+                            let mut span = puffer_observability::start_tool_span(
+                                Some(handle),
+                                parent_ctx.as_ref(),
+                                tool_id,
+                                call_id,
+                                true,
+                            );
+                            span.set_content(
+                                "puffer.tool.input",
+                                puffer_observability::ContentKind::ToolInput {
+                                    tool_id: tool_id.clone(),
+                                },
+                                input,
+                            );
+                            span
+                        }
+                        None => puffer_observability::SpanGuard::Disabled,
+                    };
                     let result = match claude_tools::execute_parallel_tool(
                         &definition,
                         cwd,
@@ -144,18 +157,20 @@ pub(super) fn execute_tool_batch(
                         }
                         Err(error) => (format!("Tool execution failed: {error}"), false, false),
                     };
-                    tool_span.set_content(
-                        "puffer.tool.output",
-                        puffer_observability::ContentKind::ToolOutput {
-                            tool_id: tool_id_owned.clone(),
-                        },
-                        &result.0,
-                    );
-                    tool_span.set_str("puffer.tool.success", result.1.to_string());
-                    if !result.1 {
-                        tool_span.mark_error("tool_failed".to_string());
+                    if let Some((_, _, tool_id, _, _)) = span_meta.as_ref() {
+                        tool_span.set_content(
+                            "puffer.tool.output",
+                            puffer_observability::ContentKind::ToolOutput {
+                                tool_id: tool_id.clone(),
+                            },
+                            &result.0,
+                        );
+                        tool_span.set_str("puffer.tool.success", result.1.to_string());
+                        if !result.1 {
+                            tool_span.mark_error("tool_failed".to_string());
+                        }
+                        tool_span.end();
                     }
-                    tool_span.end();
                     result
                 }),
             ));
@@ -181,20 +196,27 @@ pub(super) fn execute_tool_batch(
             ));
             continue;
         }
-        let mut tool_span = puffer_observability::start_tool_span(
-            inputs.observability.as_ref(),
-            parent_span_ctx,
-            &tc.tool_id,
-            &tc.call_id,
-            false,
-        );
-        tool_span.set_content(
-            "puffer.tool.input",
-            puffer_observability::ContentKind::ToolInput {
-                tool_id: tc.tool_id.clone(),
-            },
-            &tc.input,
-        );
+        // Span path is gated on a live handle so the disabled path
+        // does no per-call clones (review v4 BLOCK #1).
+        let mut tool_span = if let Some(handle) = inputs.observability.as_ref() {
+            let mut span = puffer_observability::start_tool_span(
+                Some(handle),
+                parent_span_ctx,
+                &tc.tool_id,
+                &tc.call_id,
+                false,
+            );
+            span.set_content(
+                "puffer.tool.input",
+                puffer_observability::ContentKind::ToolInput {
+                    tool_id: tc.tool_id.clone(),
+                },
+                &tc.input,
+            );
+            span
+        } else {
+            puffer_observability::SpanGuard::Disabled
+        };
         let backend = session.tool_execution_backend();
         let args: Value = serde_json::from_str(&tc.input).unwrap_or(Value::Null);
         let exec = match execute_tool_call(
@@ -223,18 +245,20 @@ pub(super) fn execute_tool_batch(
             }
             Err(error) => (format!("Tool execution failed: {error}"), false, false),
         };
-        tool_span.set_content(
-            "puffer.tool.output",
-            puffer_observability::ContentKind::ToolOutput {
-                tool_id: tc.tool_id.clone(),
-            },
-            &exec.0,
-        );
-        tool_span.set_str("puffer.tool.success", exec.1.to_string());
-        if !exec.1 {
-            tool_span.mark_error("tool_failed".to_string());
+        if inputs.observability.is_some() {
+            tool_span.set_content(
+                "puffer.tool.output",
+                puffer_observability::ContentKind::ToolOutput {
+                    tool_id: tc.tool_id.clone(),
+                },
+                &exec.0,
+            );
+            tool_span.set_str("puffer.tool.success", exec.1.to_string());
+            if !exec.1 {
+                tool_span.mark_error("tool_failed".to_string());
+            }
+            tool_span.end();
         }
-        tool_span.end();
         results[i] = Some(exec);
     }
 
@@ -272,20 +296,25 @@ fn execute_tool_batch_serial(
     let mut invocations = Vec::with_capacity(tool_calls.len());
 
     for call in tool_calls {
-        let mut tool_span = puffer_observability::start_tool_span(
-            inputs.observability.as_ref(),
-            parent_span_ctx,
-            &call.tool_id,
-            &call.call_id,
-            false,
-        );
-        tool_span.set_content(
-            "puffer.tool.input",
-            puffer_observability::ContentKind::ToolInput {
-                tool_id: call.tool_id.clone(),
-            },
-            &call.input,
-        );
+        let mut tool_span = if let Some(handle) = inputs.observability.as_ref() {
+            let mut span = puffer_observability::start_tool_span(
+                Some(handle),
+                parent_span_ctx,
+                &call.tool_id,
+                &call.call_id,
+                false,
+            );
+            span.set_content(
+                "puffer.tool.input",
+                puffer_observability::ContentKind::ToolInput {
+                    tool_id: call.tool_id.clone(),
+                },
+                &call.input,
+            );
+            span
+        } else {
+            puffer_observability::SpanGuard::Disabled
+        };
         let backend = session.tool_execution_backend();
         let input_value: Value =
             serde_json::from_str(&call.input).unwrap_or(Value::Null);
@@ -304,8 +333,10 @@ fn execute_tool_batch_serial(
         ) {
             Ok(exec) => exec,
             Err(error) => {
-                tool_span.mark_error(error.to_string());
-                tool_span.end();
+                if inputs.observability.is_some() {
+                    tool_span.mark_error(error.to_string());
+                    tool_span.end();
+                }
                 return Err(error);
             }
         };
@@ -322,18 +353,20 @@ fn execute_tool_batch_serial(
             MAX_TOOL_RESULT_CHARS,
             &inputs.state.session.id,
         );
-        tool_span.set_content(
-            "puffer.tool.output",
-            puffer_observability::ContentKind::ToolOutput {
-                tool_id: call.tool_id.clone(),
-            },
-            &output_text,
-        );
-        tool_span.set_str("puffer.tool.success", execution.success.to_string());
-        if !execution.success {
-            tool_span.mark_error("tool_failed".to_string());
+        if inputs.observability.is_some() {
+            tool_span.set_content(
+                "puffer.tool.output",
+                puffer_observability::ContentKind::ToolOutput {
+                    tool_id: call.tool_id.clone(),
+                },
+                &output_text,
+            );
+            tool_span.set_str("puffer.tool.success", execution.success.to_string());
+            if !execution.success {
+                tool_span.mark_error("tool_failed".to_string());
+            }
+            tool_span.end();
         }
-        tool_span.end();
         invocations.push(ToolInvocation {
             call_id: call.call_id.clone(),
             tool_id: call.tool_id.clone(),

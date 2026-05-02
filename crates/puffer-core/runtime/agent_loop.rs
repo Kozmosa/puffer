@@ -165,34 +165,40 @@ pub(crate) fn run_streaming_loop(
         .map(|config| ReflectionTracker::new(inputs.input, config));
 
     // Root span = `agent_loop`. All subsequent provider / tool /
-    // compaction spans hang under this. Disabled when no handle.
-    let mut agent_span = puffer_observability::start_agent_loop_span(
-        inputs.observability.as_ref(),
-        &inputs.state.session.id.to_string(),
-        cwd.to_string_lossy().as_ref(),
-    );
-    agent_span.set_str(puffer_observability::PUFFER_PROVIDER_ID, inputs.provider.id.clone());
-    // When this run is a spawned subagent (Agent / teammate tool),
-    // surface the parent's session id so Langfuse can render the
-    // pivot link. Also stamp the subagent kind so filtering works.
-    if let Some(parent_sid) = inputs.state.parent_session_id.clone() {
-        agent_span.set_str("puffer.parent.session_id", parent_sid);
-        agent_span.set_str("puffer.subagent.kind", "agent_tool");
-    }
-    // Langfuse renders the trace's Input/Output panes from the
-    // `langfuse.trace.input` / `langfuse.trace.output` keys (any other
-    // attribute lands in the metadata blob). Same content also keeps a
-    // `puffer.input` mirror for OTel-only consumers.
-    agent_span.set_content(
-        puffer_observability::LANGFUSE_TRACE_INPUT,
-        puffer_observability::ContentKind::Prompt,
-        inputs.input,
-    );
-    agent_span.set_content(
-        "puffer.input",
-        puffer_observability::ContentKind::Prompt,
-        inputs.input,
-    );
+    // compaction spans hang under this. The whole block is gated on
+    // `observability.is_some()` so the disabled path does not even
+    // allocate the session-id string or clone the provider id; review
+    // v4 BLOCK #1.
+    let mut agent_span = if let Some(handle) = inputs.observability.as_ref() {
+        let session_str = inputs.state.session.id.to_string();
+        let cwd_str = cwd.to_string_lossy();
+        let mut span = puffer_observability::start_agent_loop_span(
+            Some(handle),
+            &session_str,
+            &cwd_str,
+        );
+        span.set_str(
+            puffer_observability::PUFFER_PROVIDER_ID,
+            inputs.provider.id.clone(),
+        );
+        if let Some(parent_sid) = inputs.state.parent_session_id.clone() {
+            span.set_str("puffer.parent.session_id", parent_sid);
+            span.set_str("puffer.subagent.kind", "agent_tool");
+        }
+        span.set_content(
+            puffer_observability::LANGFUSE_TRACE_INPUT,
+            puffer_observability::ContentKind::Prompt,
+            inputs.input,
+        );
+        span.set_content(
+            "puffer.input",
+            puffer_observability::ContentKind::Prompt,
+            inputs.input,
+        );
+        span
+    } else {
+        puffer_observability::SpanGuard::Disabled
+    };
 
     // Pre-turn compaction. The summary closure wraps the actual
     // `session.generate_summary` LLM call in a `subagent.compaction_summary`
@@ -651,11 +657,21 @@ pub(crate) fn run_streaming_loop(
                             "puffer.reflection.prompt_chars",
                             prompt_chars.to_string(),
                         );
-                        span.set_content(
-                            puffer_observability::LANGFUSE_OBSERVATION_INPUT,
-                            puffer_observability::ContentKind::Prompt,
-                            prompt,
-                        );
+                        // Reflection's prompt embeds rendered tool
+                        // calls + outputs (`render_items`), so gating
+                        // on `include_prompts` alone would leak tool
+                        // I/O. Require BOTH flags before emitting the
+                        // raw prompt (review v4 BLOCK #3).
+                        if let Some(handle) = inputs.observability.as_ref() {
+                            let policy = handle.redaction();
+                            if policy.include_prompts() && policy.include_tool_io() {
+                                span.set_content(
+                                    puffer_observability::LANGFUSE_OBSERVATION_INPUT,
+                                    puffer_observability::ContentKind::Prompt,
+                                    prompt,
+                                );
+                            }
+                        }
                         judge_gen_span = Some(span);
                         reflection_span
                             .set_str("puffer.reflection.llm_judge.fired", "true");

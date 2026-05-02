@@ -42,25 +42,33 @@ pub(crate) fn run_blocking_loop(
     // #3 flagged the gap. Token usage isn't surfaced from
     // `one_turn_blocking` today — provider spans are duration-only
     // until the trait grows a usage return.
-    let mut agent_span = puffer_observability::start_agent_loop_span(
-        inputs.observability.as_ref(),
-        &inputs.state.session.id.to_string(),
-        cwd.to_string_lossy().as_ref(),
-    );
-    agent_span.set_str(puffer_observability::PUFFER_PROVIDER_ID, inputs.provider.id.clone());
-    if let Some(parent_sid) = inputs.state.parent_session_id.clone() {
-        agent_span.set_str("puffer.parent.session_id", parent_sid);
-        agent_span.set_str("puffer.subagent.kind", "agent_tool");
-    }
-    if let Some(handle) = inputs.observability.as_ref() {
+    let mut agent_span = if let Some(handle) = inputs.observability.as_ref() {
+        let session_str = inputs.state.session.id.to_string();
+        let cwd_str = cwd.to_string_lossy();
+        let mut span = puffer_observability::start_agent_loop_span(
+            Some(handle),
+            &session_str,
+            &cwd_str,
+        );
+        span.set_str(
+            puffer_observability::PUFFER_PROVIDER_ID,
+            inputs.provider.id.clone(),
+        );
+        if let Some(parent_sid) = inputs.state.parent_session_id.clone() {
+            span.set_str("puffer.parent.session_id", parent_sid);
+            span.set_str("puffer.subagent.kind", "agent_tool");
+        }
         if handle.redaction().include_prompts() {
-            agent_span.set_content(
+            span.set_content(
                 puffer_observability::LANGFUSE_TRACE_INPUT,
                 puffer_observability::ContentKind::Prompt,
                 inputs.input,
             );
         }
-    }
+        span
+    } else {
+        puffer_observability::SpanGuard::Disabled
+    };
 
     {
         let mut compaction_span = puffer_observability::start_compaction_span(
@@ -68,17 +76,40 @@ pub(crate) fn run_blocking_loop(
             agent_span.context(),
             0,
         );
-        let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
-        let did = compact_conversation_with(&mut items, inputs.provider, inputs.model_id, None, &summary_fn);
-        if did {
-            inject_post_compact_context(&mut items, &cwd);
-            let mut span = puffer_observability::start_subagent_generation_span(
-                inputs.observability.as_ref(),
-                compaction_span.context(),
+        // Wrap the actual `session.generate_summary` LLM call inside
+        // the closure so the `subagent.compaction_summary` GENERATION
+        // span bounds real LLM latency and any error — review v4 #2.
+        let observability = inputs.observability.as_ref();
+        let parent_ctx = compaction_span.context();
+        let summary_fn = |old: &str, mid: &str| -> Option<String> {
+            let mut gen_span = puffer_observability::start_subagent_generation_span(
+                observability,
+                parent_ctx,
                 "compaction_summary",
             );
-            span.set_str("puffer.compaction.phase", "0");
-            span.end();
+            gen_span.set_str("puffer.compaction.phase", "0");
+            let result = session.generate_summary(old, mid);
+            if let Some(ref text) = result {
+                gen_span.set_content(
+                    puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
+                    puffer_observability::ContentKind::Output,
+                    text,
+                );
+            } else {
+                gen_span.mark_error("summary_returned_none".to_string());
+            }
+            gen_span.end();
+            result
+        };
+        let did = compact_conversation_with(
+            &mut items,
+            inputs.provider,
+            inputs.model_id,
+            None,
+            &summary_fn,
+        );
+        if did {
+            inject_post_compact_context(&mut items, &cwd);
         } else {
             compaction_span.set_str("puffer.compaction.skipped", "true");
         }
@@ -212,8 +243,38 @@ pub(crate) fn run_blocking_loop(
             }
         }
 
+        // Post-iteration compaction. Mirrors the streaming loop:
+        // wrapper SPAN around the threshold check, inner GENERATION
+        // around the actual summary LLM call so latency/errors land
+        // on the right span (review v4 #2).
+        let mut post_compaction_span = puffer_observability::start_compaction_span(
+            inputs.observability.as_ref(),
+            turn_span.context(),
+            1,
+        );
         let compacted = {
-            let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
+            let observability = inputs.observability.as_ref();
+            let parent_ctx = post_compaction_span.context();
+            let summary_fn = |old: &str, mid: &str| -> Option<String> {
+                let mut gen_span = puffer_observability::start_subagent_generation_span(
+                    observability,
+                    parent_ctx,
+                    "compaction_summary",
+                );
+                gen_span.set_str("puffer.compaction.phase", "1");
+                let result = session.generate_summary(old, mid);
+                if let Some(ref text) = result {
+                    gen_span.set_content(
+                        puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
+                        puffer_observability::ContentKind::Output,
+                        text,
+                    );
+                } else {
+                    gen_span.mark_error("summary_returned_none".to_string());
+                }
+                gen_span.end();
+                result
+            };
             compact_conversation_with(
                 &mut items,
                 inputs.provider,
@@ -225,6 +286,9 @@ pub(crate) fn run_blocking_loop(
         if compacted {
             inject_post_compact_context(&mut items, &cwd);
             session.notify_compacted();
+        } else {
+            post_compaction_span.set_str("puffer.compaction.skipped", "true");
         }
+        post_compaction_span.end();
     }
 }
