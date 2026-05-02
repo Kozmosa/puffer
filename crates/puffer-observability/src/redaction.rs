@@ -49,6 +49,22 @@ impl RedactionPolicy {
         }
     }
 
+    pub fn include_prompts(&self) -> bool {
+        self.include_prompts
+    }
+
+    pub fn include_outputs(&self) -> bool {
+        self.include_outputs
+    }
+
+    pub fn include_tool_io(&self) -> bool {
+        self.include_tool_io
+    }
+
+    pub fn always_redact_tool_ids(&self) -> &[String] {
+        &self.always_redact_tool_ids
+    }
+
     /// Convenience: redact-everything policy used in tests.
     pub fn redact_all() -> Self {
         Self {

@@ -71,6 +71,15 @@ impl SpanGuard {
         }
     }
 
+    /// Add a numeric (f64) attribute. Use this for ratios / percentages
+    /// so backends like Langfuse can aggregate / filter numerically
+    /// instead of treating them as opaque strings.
+    pub fn set_f64(&mut self, key: &'static str, value: f64) {
+        if let Self::Active { span, .. } = self {
+            span.set_attribute(KeyValue::new(key, value));
+        }
+    }
+
     /// Records a redacted prompt/output blob on the span. Falls
     /// through to no-op when disabled or when the handle's redaction
     /// policy returns the redacted form for this kind.

@@ -371,6 +371,15 @@ fn execute_user_prompt_with_options(
     mut options: TurnRequestOptions<'_>,
 ) -> Result<TurnExecution> {
     apply_session_reflection_default(state, &mut options);
+    // Inject the process-wide observability handle so the
+    // non-streaming path (used by `execute_user_prompt`, in turn
+    // called by spawned agents / teammates / reflection judge / side
+    // questions) gets the same agent_loop / turn / provider_call span
+    // scaffolding as the streaming path. Review v3 #3 flagged the
+    // missing handle injection here.
+    if options.observability.is_none() {
+        options.observability = observability_handle();
+    }
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     let api = resolve_model_api(state, providers, provider, &model_id);
     let Some(adapter) = provider_adapter::adapter_for_api(&api) else {

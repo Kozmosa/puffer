@@ -198,14 +198,38 @@ pub(crate) fn run_streaming_loop(
         inputs.input,
     );
 
-    // Pre-turn compaction.
+    // Pre-turn compaction. The summary closure wraps the actual
+    // `session.generate_summary` LLM call in a `subagent.compaction_summary`
+    // GENERATION span so the trace captures the *real* latency and any
+    // error of the round-trip — not a post-hoc marker. Review v3 #4.
     let pre_compacted = {
         let mut compaction_span = puffer_observability::start_compaction_span(
             inputs.observability.as_ref(),
             agent_span.context(),
             0,
         );
-        let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
+        let observability = inputs.observability.as_ref();
+        let parent_ctx = compaction_span.context();
+        let summary_fn = |old: &str, mid: &str| -> Option<String> {
+            let mut gen_span = puffer_observability::start_subagent_generation_span(
+                observability,
+                parent_ctx,
+                "compaction_summary",
+            );
+            gen_span.set_str("puffer.compaction.phase", "0");
+            let result = session.generate_summary(old, mid);
+            if let Some(ref text) = result {
+                gen_span.set_content(
+                    puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
+                    puffer_observability::ContentKind::Output,
+                    text,
+                );
+            } else {
+                gen_span.mark_error("summary_returned_none".to_string());
+            }
+            gen_span.end();
+            result
+        };
         let did = compact_conversation_with(
             &mut items,
             inputs.provider,
@@ -215,16 +239,6 @@ pub(crate) fn run_streaming_loop(
         );
         if !did {
             compaction_span.set_str("puffer.compaction.skipped", "true");
-        } else {
-            // Summary LLM fired — child subagent GENERATION span so the
-            // LLM call shows up as an observation, not just a wrapper.
-            let mut span = puffer_observability::start_subagent_generation_span(
-                inputs.observability.as_ref(),
-                compaction_span.context(),
-                "compaction_summary",
-            );
-            span.set_str("puffer.compaction.phase", "0");
-            span.end();
         }
         did
     };
@@ -236,8 +250,13 @@ pub(crate) fn run_streaming_loop(
     let mut turn_index: u32 = 0;
     loop {
         // Cancel boundary: check before each turn's provider round-trip.
+        // Mark the root span cancelled before bailing so the trace
+        // closes with the right status (review v3 #5).
         if let Some(cancel) = inputs.cancel {
-            cancel.check()?;
+            if let Err(error) = cancel.check() {
+                agent_span.mark_cancelled();
+                return Err(error);
+            }
         }
 
         // Drain completed background tasks and inject as user messages.
@@ -271,57 +290,87 @@ pub(crate) fn run_streaming_loop(
             inputs.model_id,
         );
         // Langfuse renders the generation Input pane from
-        // `langfuse.observation.input`. Serialize the conversation
-        // items being sent to the LLM as a messages array (role +
-        // textual content). Non-message items (function calls, tool
-        // outputs, reasoning blobs) are projected to compact stubs so
-        // they're countable without ballooning the attribute.
-        let provider_input_json = serde_json::to_string(
-            &items
-                .iter()
-                .map(|item| match item {
-                    ConversationItem::Message { role, content } => {
-                        let text: String = content
-                            .iter()
-                            .filter_map(|p| match p {
-                                super::openai::conversation::ContentPart::Text { text } => {
-                                    Some(text.as_str())
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        serde_json::json!({ "role": role, "content": text })
-                    }
-                    ConversationItem::FunctionCall { name, arguments, .. } => {
-                        serde_json::json!({
-                            "role": "assistant",
-                            "tool_call": { "name": name, "arguments": arguments }
+        // `langfuse.observation.input`. Build the messages-array JSON
+        // ONLY when observability is on AND the redaction policy
+        // permits both prompts (envelope) and the tool-I/O (function
+        // call args + tool output text) we'd otherwise embed. This
+        // keeps the disabled path zero-cost and respects the split
+        // include flags so `INCLUDE_PROMPTS=1, INCLUDE_TOOL_IO=0`
+        // does not leak tool data through the LLM input pane.
+        if let Some(handle) = inputs.observability.as_ref() {
+            let policy = handle.redaction();
+            if policy.include_prompts() {
+                let include_tool_io = policy.include_tool_io();
+                let provider_input_json = serde_json::to_string(
+                    &items
+                        .iter()
+                        .map(|item| match item {
+                            ConversationItem::Message { role, content } => {
+                                let text: String = content
+                                    .iter()
+                                    .filter_map(|p| match p {
+                                        super::openai::conversation::ContentPart::Text { text } => {
+                                            Some(text.as_str())
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                serde_json::json!({ "role": role, "content": text })
+                            }
+                            ConversationItem::FunctionCall { name, arguments, .. } => {
+                                let args = if include_tool_io {
+                                    serde_json::Value::String(arguments.clone())
+                                } else {
+                                    serde_json::Value::String(format!(
+                                        "[redacted: {} bytes tool args]",
+                                        arguments.len()
+                                    ))
+                                };
+                                serde_json::json!({
+                                    "role": "assistant",
+                                    "tool_call": { "name": name, "arguments": args }
+                                })
+                            }
+                            ConversationItem::FunctionCallOutput { call_id, output } => {
+                                let body = if include_tool_io {
+                                    serde_json::Value::String(output.text.clone())
+                                } else {
+                                    serde_json::Value::String(format!(
+                                        "[redacted: {} bytes tool output]",
+                                        output.text.len()
+                                    ))
+                                };
+                                serde_json::json!({
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": body,
+                                    "is_error": output.is_error
+                                })
+                            }
+                            ConversationItem::Reasoning { redacted, .. } => {
+                                serde_json::json!({
+                                    "role": "assistant",
+                                    "reasoning": { "redacted": redacted }
+                                })
+                            }
+                            ConversationItem::Compaction { summary } => {
+                                serde_json::json!({
+                                    "role": "system",
+                                    "compaction_summary": summary
+                                })
+                            }
                         })
-                    }
-                    ConversationItem::FunctionCallOutput { call_id, output } => {
-                        serde_json::json!({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": output.text,
-                            "is_error": output.is_error
-                        })
-                    }
-                    ConversationItem::Reasoning { redacted, .. } => {
-                        serde_json::json!({ "role": "assistant", "reasoning": { "redacted": redacted } })
-                    }
-                    ConversationItem::Compaction { summary } => {
-                        serde_json::json!({ "role": "system", "compaction_summary": summary })
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".to_string());
-        provider_span.set_content(
-            puffer_observability::LANGFUSE_OBSERVATION_INPUT,
-            puffer_observability::ContentKind::Prompt,
-            &provider_input_json,
-        );
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".to_string());
+                provider_span.set_content(
+                    puffer_observability::LANGFUSE_OBSERVATION_INPUT,
+                    puffer_observability::ContentKind::Prompt,
+                    &provider_input_json,
+                );
+            }
+        }
         // We need to capture token usage from the streaming Usage
         // event without breaking the existing on_event signature for
         // other consumers. Wrap it.
@@ -355,10 +404,7 @@ pub(crate) fn run_streaming_loop(
             // the arithmetic.
             if u.input_tokens > 0 {
                 let ratio = u.cache_read_tokens as f64 / u.input_tokens as f64;
-                provider_span.set_str(
-                    "puffer.cache.hit_ratio",
-                    format!("{ratio:.2}"),
-                );
+                provider_span.set_f64("puffer.cache.hit_ratio", ratio);
             }
         }
         let turn = match result {
@@ -436,13 +482,20 @@ pub(crate) fn run_streaming_loop(
         }
 
         // Execute tools (sequential — parallel-safe batching is a follow-up).
-        let new_invocations = execute_tool_batch(
+        let new_invocations = match execute_tool_batch(
             inputs,
             session,
             &cwd,
             &turn.tool_calls,
             turn_span.context(),
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(error) => {
+                turn_span.mark_error(error.to_string());
+                agent_span.mark_error(error.to_string());
+                return Err(error);
+            }
+        };
 
         if !new_invocations.is_empty() {
             on_event(TurnStreamEvent::ToolInvocations(new_invocations.clone()));
@@ -645,10 +698,7 @@ pub(crate) fn run_streaming_loop(
                                 if *in_tok > 0 {
                                     let ratio = cached_input_tokens.unwrap_or(0) as f64
                                         / *in_tok as f64;
-                                    span.set_str(
-                                        "puffer.cache.hit_ratio",
-                                        format!("{ratio:.2}"),
-                                    );
+                                    span.set_f64("puffer.cache.hit_ratio", ratio);
                                 }
                             }
                         }
@@ -715,7 +765,28 @@ pub(crate) fn run_streaming_loop(
             1,
         );
         let compacted = {
-            let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
+            let observability = inputs.observability.as_ref();
+            let parent_ctx = post_compaction_span.context();
+            let summary_fn = |old: &str, mid: &str| -> Option<String> {
+                let mut gen_span = puffer_observability::start_subagent_generation_span(
+                    observability,
+                    parent_ctx,
+                    "compaction_summary",
+                );
+                gen_span.set_str("puffer.compaction.phase", "1");
+                let result = session.generate_summary(old, mid);
+                if let Some(ref text) = result {
+                    gen_span.set_content(
+                        puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
+                        puffer_observability::ContentKind::Output,
+                        text,
+                    );
+                } else {
+                    gen_span.mark_error("summary_returned_none".to_string());
+                }
+                gen_span.end();
+                result
+            };
             compact_conversation_with(
                 &mut items,
                 inputs.provider,
@@ -727,18 +798,6 @@ pub(crate) fn run_streaming_loop(
         if compacted {
             inject_post_compact_context(&mut items, &cwd);
             session.notify_compacted();
-            // The summary LLM actually fired — emit a child subagent
-            // GENERATION span so Langfuse shows it as an LLM
-            // observation. Token usage isn't surfaced from
-            // `compact_conversation_with` today, so the inner span is
-            // a duration-only marker that the call happened.
-            let mut span = puffer_observability::start_subagent_generation_span(
-                inputs.observability.as_ref(),
-                post_compaction_span.context(),
-                "compaction_summary",
-            );
-            span.set_str("puffer.compaction.phase", "1");
-            span.end();
         } else {
             post_compaction_span.set_str("puffer.compaction.skipped", "true");
         }
@@ -765,22 +824,98 @@ pub(crate) fn run_blocking_loop(
         .clone()
         .map(|config| ReflectionTracker::new(inputs.input, config));
 
-    {
-        let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
-        if compact_conversation_with(&mut items, inputs.provider, inputs.model_id, None, &summary_fn)
-        {
-            inject_post_compact_context(&mut items, &cwd);
+    // Span scaffolding parity with the streaming loop. Spawned agents
+    // / teammates / reflection judge route through this path, so
+    // without these spans they'd be invisible in Langfuse. Review v3
+    // #3 flagged the gap. Token usage isn't surfaced from
+    // `one_turn_blocking` today — provider spans are duration-only
+    // until the trait grows a usage return.
+    let mut agent_span = puffer_observability::start_agent_loop_span(
+        inputs.observability.as_ref(),
+        &inputs.state.session.id.to_string(),
+        cwd.to_string_lossy().as_ref(),
+    );
+    agent_span.set_str(puffer_observability::PUFFER_PROVIDER_ID, inputs.provider.id.clone());
+    if let Some(parent_sid) = inputs.state.parent_session_id.clone() {
+        agent_span.set_str("puffer.parent.session_id", parent_sid);
+        agent_span.set_str("puffer.subagent.kind", "agent_tool");
+    }
+    if let Some(handle) = inputs.observability.as_ref() {
+        if handle.redaction().include_prompts() {
+            agent_span.set_content(
+                puffer_observability::LANGFUSE_TRACE_INPUT,
+                puffer_observability::ContentKind::Prompt,
+                inputs.input,
+            );
         }
+    }
+
+    {
+        let mut compaction_span = puffer_observability::start_compaction_span(
+            inputs.observability.as_ref(),
+            agent_span.context(),
+            0,
+        );
+        let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
+        let did = compact_conversation_with(&mut items, inputs.provider, inputs.model_id, None, &summary_fn);
+        if did {
+            inject_post_compact_context(&mut items, &cwd);
+            let mut span = puffer_observability::start_subagent_generation_span(
+                inputs.observability.as_ref(),
+                compaction_span.context(),
+                "compaction_summary",
+            );
+            span.set_str("puffer.compaction.phase", "0");
+            span.end();
+        } else {
+            compaction_span.set_str("puffer.compaction.skipped", "true");
+        }
+        compaction_span.end();
     }
     session.notify_compacted();
 
+    let mut turn_index: u32 = 0;
     loop {
         if let Some(cancel) = inputs.cancel {
-            cancel.check()?;
+            if let Err(error) = cancel.check() {
+                agent_span.mark_cancelled();
+                return Err(error);
+            }
         }
-        let turn = session.one_turn_blocking(inputs.state, inputs.auth_store, &mut items)?;
+        let mut turn_span = puffer_observability::start_turn_span(
+            inputs.observability.as_ref(),
+            agent_span.context(),
+            turn_index,
+        );
+        turn_index += 1;
+        let mut provider_span = puffer_observability::start_provider_span(
+            inputs.observability.as_ref(),
+            turn_span.context(),
+            &inputs.provider.id,
+            &inputs.provider.default_api,
+            inputs.model_id,
+        );
+        let turn = match session.one_turn_blocking(inputs.state, inputs.auth_store, &mut items) {
+            Ok(t) => t,
+            Err(error) => {
+                provider_span.mark_error(error.to_string());
+                turn_span.mark_error(error.to_string());
+                agent_span.mark_error(error.to_string());
+                return Err(error);
+            }
+        };
+        provider_span.set_content(
+            puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
+            puffer_observability::ContentKind::Output,
+            &turn.assistant_text,
+        );
+        provider_span.end();
         if let Some(cancel) = inputs.cancel {
-            cancel.check()?;
+            if let Err(error) = cancel.check() {
+                turn_span.mark_cancelled();
+                agent_span.mark_cancelled();
+                return Err(error);
+            }
         }
 
         if turn.tool_calls.is_empty() {
@@ -789,6 +924,11 @@ pub(crate) fn run_blocking_loop(
                 &cwd,
                 &turn.assistant_text,
                 invocations.len(),
+            );
+            agent_span.set_content(
+                puffer_observability::LANGFUSE_TRACE_OUTPUT,
+                puffer_observability::ContentKind::Output,
+                &turn.assistant_text,
             );
             return Ok(TurnExecution {
                 assistant_text: turn.assistant_text,
@@ -799,7 +939,20 @@ pub(crate) fn run_blocking_loop(
 
         items.extend(turn.pre_tool_items);
 
-        let new_invocations = execute_tool_batch(inputs, session, &cwd, &turn.tool_calls, None)?;
+        let new_invocations = match execute_tool_batch(
+            inputs,
+            session,
+            &cwd,
+            &turn.tool_calls,
+            turn_span.context(),
+        ) {
+            Ok(v) => v,
+            Err(error) => {
+                turn_span.mark_error(error.to_string());
+                agent_span.mark_error(error.to_string());
+                return Err(error);
+            }
+        };
 
         for inv in &new_invocations {
             items.push(ConversationItem::FunctionCallOutput {
