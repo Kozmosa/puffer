@@ -17,6 +17,7 @@ mod daemon_ui_state;
 mod desktop_api;
 mod desktop_api_types;
 mod resource_fs;
+mod runner_selection;
 mod subscriptions;
 mod workflow_runtime;
 mod workflows;
@@ -82,7 +83,7 @@ fn main() -> Result<()> {
     let config = load_config(&paths)?;
     let auth_path = paths.user_config_dir.join("auth.json");
     let mut auth_store = AuthStore::load(&auth_path)?;
-    let mut resources = load_resources(&paths)?;
+    let mut resources = load_resources(&paths, &puffer_runner_local::LocalToolRunner::new())?;
 
     // Observability: opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (+ optional
     // LANGFUSE_PUBLIC_KEY/SECRET_KEY for Basic auth). When unset,
@@ -175,7 +176,9 @@ fn main() -> Result<()> {
         Some(Command::Install { target, force }) => {
             run_install_command(target.as_deref(), force, &cwd)
         }
-        Some(Command::Mcp { command }) => run_mcp_command(command, &paths, &resources),
+        Some(Command::Mcp { command }) => {
+            run_mcp_command(command, &paths, &config, &resources, &cwd)
+        }
         Some(Command::Plugin { command }) => run_plugin_command(command, &paths, &resources),
         Some(Command::Workflow { command }) => workflows::run_workflow_command(command, &paths),
         Some(Command::SetupToken {
@@ -411,7 +414,13 @@ fn main() -> Result<()> {
                 ),
                 ResumeLaunchResolution::Picker { query, .. } if cli.resume.is_some() => {
                     let session = session_store.create_session(cwd.clone())?;
-                    let mut state = AppState::new(config.clone(), cwd, session);
+                    let runner = crate::runner_selection::select_tool_runner(
+                        &config,
+                        &resources,
+                        cwd.clone(),
+                    );
+                    let mut state =
+                        AppState::new(config.clone(), cwd, session).with_tool_runner(runner);
                     if let Some(prompt) = cli.prompt {
                         state.queue_pending_query_prompt(prompt);
                     }
@@ -437,7 +446,13 @@ fn main() -> Result<()> {
                 }
                 _ => {
                     let session = session_store.create_session(cwd.clone())?;
-                    let mut state = AppState::new(config.clone(), cwd, session);
+                    let runner = crate::runner_selection::select_tool_runner(
+                        &config,
+                        &resources,
+                        cwd.clone(),
+                    );
+                    let mut state =
+                        AppState::new(config.clone(), cwd, session).with_tool_runner(runner);
                     puffer_tui::run_app(
                         &mut state,
                         &mut resources,
@@ -491,6 +506,9 @@ fn run_existing_session_tui(
         state.cwd = cwd.to_path_buf();
         state.session.cwd = cwd.to_path_buf();
     }
+    let runner =
+        crate::runner_selection::select_tool_runner(config, resources, state.cwd.clone());
+    state = state.with_tool_runner(runner);
     puffer_tui::run_app(
         &mut state,
         resources,

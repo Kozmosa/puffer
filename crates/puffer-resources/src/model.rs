@@ -268,6 +268,16 @@ pub struct PluginCommandSpec {
 }
 
 /// Declares an MCP server manifest or plugin MCP reference.
+///
+/// `transport` selects the wire protocol used to reach the server:
+///
+/// * `stdio` (default) — `target` is a shell-words command line, executed
+///   as a subprocess; the runner pipes JSON-RPC over stdin/stdout.
+/// * `http` (alias `streamable-http`) — `target` is the absolute URL of an
+///   rmcp streamable-HTTP endpoint. Optional `headers` are sent on every
+///   request; values support `${VAR}` / `$VAR` env-var expansion so users
+///   can put `Authorization: "Bearer ${GITHUB_TOKEN}"` in YAML without
+///   committing the token itself.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerSpec {
     pub id: String,
@@ -280,6 +290,105 @@ pub struct McpServerSpec {
     pub target: String,
     #[serde(default)]
     pub description: String,
+    /// Extra HTTP headers attached to every request when
+    /// `transport == "http"` / `"streamable-http"`. Ignored for other
+    /// transports. Values support `${VAR}` env-var expansion.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// OAuth 2.0 configuration for HTTP MCP servers (pass 1.5e).
+    ///
+    /// When set, the runner will discover OAuth metadata from the server,
+    /// dynamically register a client (RFC 7591), drive the
+    /// authorization-code-with-PKCE flow on demand, persist tokens under
+    /// `<config>/puffer/mcp-tokens/`, and refresh on expiry. Ignored for
+    /// non-HTTP transports.
+    ///
+    /// Three accepted YAML shapes:
+    ///
+    /// ```yaml
+    /// oauth: true
+    /// # or
+    /// oauth: { scope: "read write", client_name: "puffer" }
+    /// # or
+    /// oauth: { enabled: true }
+    /// ```
+    ///
+    /// `false` / `null` / absent all mean "no OAuth".
+    #[serde(default)]
+    pub oauth: Option<McpOAuthSpec>,
+}
+
+/// Per-server OAuth 2.0 client configuration.
+///
+/// All fields are optional so the bare `oauth: true` shape works (rmcp
+/// negotiates everything from the server's metadata document and dynamic
+/// client registration response).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum McpOAuthSpec {
+    /// `oauth: true` / `oauth: false` shorthand.
+    Bool(bool),
+    /// `oauth: { scope: ..., client_name: ... }` long form.
+    Detailed(McpOAuthDetail),
+}
+
+/// Long-form OAuth configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpOAuthDetail {
+    /// Explicit enable flag (defaults to `true` when the detailed form is
+    /// used at all — opting out is `oauth: false`).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Space- or array-separated OAuth scopes to request. Empty means
+    /// "use the auth server's default".
+    #[serde(default)]
+    pub scope: String,
+    /// Display name registered with the auth server during dynamic client
+    /// registration.
+    #[serde(default)]
+    pub client_name: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl McpOAuthSpec {
+    /// True when the spec opts the server into OAuth.
+    pub fn enabled(&self) -> bool {
+        match self {
+            McpOAuthSpec::Bool(b) => *b,
+            McpOAuthSpec::Detailed(d) => d.enabled,
+        }
+    }
+
+    /// Scopes to request, parsed from the long-form `scope` string. The
+    /// short-form `oauth: true` returns an empty list — rmcp falls back
+    /// to the auth server's default scope set in that case.
+    pub fn scopes(&self) -> Vec<String> {
+        match self {
+            McpOAuthSpec::Bool(_) => Vec::new(),
+            McpOAuthSpec::Detailed(d) => d
+                .scope
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect(),
+        }
+    }
+
+    /// Display name to register with the auth server during DCR.
+    pub fn client_name(&self) -> Option<String> {
+        match self {
+            McpOAuthSpec::Bool(_) => None,
+            McpOAuthSpec::Detailed(d) => {
+                if d.client_name.trim().is_empty() {
+                    None
+                } else {
+                    Some(d.client_name.clone())
+                }
+            }
+        }
+    }
 }
 
 /// Declares a declarative LSP server integration entry.

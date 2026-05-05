@@ -38,6 +38,47 @@ pub struct PufferConfig {
     pub copy_full_response: bool,
     pub mascot: MascotConfig,
     pub ui: UiConfig,
+    /// When set, the runtime constructs a remote `RemoteToolRunner` against
+    /// this endpoint instead of using the in-process `LocalToolRunner`. The
+    /// actual swap happens at `AppState` construction time in the binary;
+    /// this struct is only the on-disk representation.
+    #[serde(default)]
+    pub remote_runner: Option<RemoteRunnerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteRunnerConfig {
+    /// gRPC endpoint, e.g. `http://127.0.0.1:50051`.
+    pub endpoint: String,
+    /// Inline bearer token. Mutually exclusive with `auth_token_env`; if
+    /// both are set, `auth_token` wins.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    /// Environment variable to read the bearer token from. Lets the config
+    /// file stay free of secrets.
+    #[serde(default)]
+    pub auth_token_env: Option<String>,
+    /// Initial delay (ms) between startup `Ping` retries. Defaults to
+    /// 1000 ms when unset.
+    #[serde(default)]
+    pub initial_backoff_ms: Option<u64>,
+    /// Cap on the per-attempt backoff (ms). Defaults to 10_000 ms when
+    /// unset.
+    #[serde(default)]
+    pub max_backoff_ms: Option<u64>,
+}
+
+impl RemoteRunnerConfig {
+    /// Resolves the effective bearer token by consulting the env var when
+    /// `auth_token` is unset.
+    pub fn resolve_auth_token(&self) -> Option<String> {
+        if let Some(direct) = &self.auth_token {
+            return Some(direct.clone());
+        }
+        self.auth_token_env
+            .as_deref()
+            .and_then(|name| std::env::var(name).ok())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,6 +127,7 @@ impl Default for PufferConfig {
                 tmux_golden_mode: false,
                 status_line: None,
             },
+            remote_runner: None,
         }
     }
 }

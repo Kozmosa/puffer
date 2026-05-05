@@ -328,7 +328,7 @@ impl DaemonState {
     fn build_runtime_inputs(&self) -> Result<RuntimeInputs> {
         let auth_path = self.paths.user_config_dir.join("auth.json");
         let auth_store = AuthStore::load(&auth_path)?;
-        let resources = load_resources(&self.paths)?;
+        let resources = load_resources(&self.paths, &puffer_runner_local::LocalToolRunner::new())?;
         let mut providers = ProviderRegistry::new();
         for provider in &resources.providers {
             providers.register_with_source(
@@ -1192,6 +1192,8 @@ fn handle_add_mcp_server(state: &DaemonState, params: &Value) -> Result<Value> {
             .description
             .map(|value| value.trim().to_string())
             .unwrap_or_default(),
+        headers: Default::default(),
+        oauth: None,
     };
 
     let dir = match params.scope.as_deref().unwrap_or("local") {
@@ -1992,7 +1994,13 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
             None
         };
         let cfg_for_turn = setup_state.config.lock().unwrap().clone();
-        let mut app_state = AppState::from_session_record(cfg_for_turn, record);
+        let mut app_state = AppState::from_session_record(cfg_for_turn.clone(), record);
+        let runner = crate::runner_selection::select_tool_runner(
+            &cfg_for_turn,
+            &inputs.resources,
+            app_state.cwd.clone(),
+        );
+        app_state = app_state.with_tool_runner(runner);
         if let Some(title) = auto_title {
             if inputs
                 .session_store

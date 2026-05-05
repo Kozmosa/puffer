@@ -93,6 +93,8 @@ fn reload_plugins_reports_resource_counts() {
                 endpoint: String::new(),
                 target: "docs".to_string(),
                 description: "docs".to_string(),
+                headers: Default::default(),
+                oauth: None,
             },
             source_info: puffer_resources::SourceInfo {
                 path: PathBuf::from("mcp/docs.yaml"),

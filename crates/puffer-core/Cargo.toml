@@ -3,9 +3,30 @@ name = "puffer-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Disable test auto-discovery so the stub MCP server source under
+# `tests/mcp_stub/main.rs` (declared as a `[[bin]]` below) isn't also
+# picked up as an integration test. Real integration tests are listed
+# explicitly via `[[test]]` blocks.
+autotests = false
 
 [lib]
 path = "lib.rs"
+
+[[test]]
+name = "runner_mcp_stdio"
+path = "tests/runner_mcp_stdio.rs"
+
+[[test]]
+name = "runner_mcp_http"
+path = "tests/runner_mcp_http.rs"
+
+[[test]]
+name = "runner_mcp_oauth"
+path = "tests/runner_mcp_oauth.rs"
+
+[[test]]
+name = "runner_mcp_tool_advertising"
+path = "tests/runner_mcp_tool_advertising.rs"
 
 [dependencies]
 anyhow.workspace = true
@@ -17,6 +38,9 @@ html2text.workspace = true
 indexmap.workspace = true
 jsonschema.workspace = true
 reqwest.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+tracing = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -27,10 +51,12 @@ tungstenite.workspace = true
 url.workspace = true
 uuid.workspace = true
 puffer-config = { path = "../puffer-config" }
+puffer-mcp-oauth = { path = "../puffer-mcp-oauth" }
 puffer-observability = { path = "../puffer-observability" }
 puffer-provider-openai = { path = "../puffer-provider-openai" }
 puffer-provider-registry = { path = "../puffer-provider-registry" }
 puffer-resources = { path = "../puffer-resources" }
+puffer-runner-api = { path = "../puffer-runner-api" }
 puffer-session-store = { path = "../puffer-session-store" }
 puffer-subscriber-runtime = { path = "../puffer-subscriber-runtime" }
 puffer-subscriptions = { path = "../puffer-subscriptions" }
@@ -39,6 +65,19 @@ puffer-transport-anthropic = { path = "../puffer-transport-anthropic" }
 puffer-workflow = { path = "../puffer-workflow" }
 
 [dev-dependencies]
+axum = "0.8"
 base64.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
+tokio-util = "0.7"
 uuid.workspace = true
+
+# Stub MCP server used by `tests/runner_mcp_stdio.rs` and the cross-backend
+# test in `puffer-runner-grpc`. Available to integration tests via
+# `env!("CARGO_BIN_EXE_puffer-mcp-stub-server")`.
+[[bin]]
+name = "puffer-mcp-stub-server"
+path = "tests/mcp_stub/main.rs"
+test = false
+doctest = false
+bench = false

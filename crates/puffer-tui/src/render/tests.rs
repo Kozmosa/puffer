@@ -987,6 +987,8 @@ fn loaded_mcp(id: &str, display_name: &str) -> LoadedItem<puffer_resources::McpS
             endpoint: String::new(),
             target: "cargo run".to_string(),
             description: "mcp".to_string(),
+            headers: Default::default(),
+            oauth: None,
         },
         source_info: SourceInfo {
             path: PathBuf::from(format!("{id}.yaml")),

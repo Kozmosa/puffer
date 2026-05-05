@@ -145,6 +145,8 @@ pub(super) fn sample_resources() -> LoadedResources {
                     endpoint: String::new(),
                     target: "git".to_string(),
                     description: "Git bridge".to_string(),
+                    headers: Default::default(),
+                    oauth: None,
                 }],
                 lsp_servers: Vec::new(),
             },
@@ -158,6 +160,8 @@ pub(super) fn sample_resources() -> LoadedResources {
                 endpoint: String::new(),
                 target: "local".to_string(),
                 description: "Local tool bridge".to_string(),
+                headers: Default::default(),
+                oauth: None,
             },
         )],
         ides: vec![loaded_item(

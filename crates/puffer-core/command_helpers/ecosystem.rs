@@ -273,13 +273,8 @@ pub(crate) fn handle_ide_command(
 pub(crate) fn reload_resources_from_disk(state: &AppState) -> Result<LoadedResources> {
     let paths = ConfigPaths::discover(&state.cwd);
     ensure_workspace_dirs(&paths)?;
-    reload_resources_from_paths(&paths)
-}
-
-#[allow(dead_code)]
-fn reload_resources_from_paths(paths: &ConfigPaths) -> Result<LoadedResources> {
-    let mut resources = load_resources(paths)?;
-    apply_mcp_enablement_overrides(paths, &mut resources)?;
+    let mut resources = load_resources(&paths, state.tool_runner.as_ref())?;
+    apply_mcp_enablement_overrides(&paths, &mut resources)?;
     Ok(resources)
 }
 
@@ -838,6 +833,8 @@ mod tests {
                 endpoint: String::new(),
                 target: "docs".to_string(),
                 description: String::new(),
+                headers: Default::default(),
+                oauth: None,
             },
             source_info: SourceInfo {
                 path: root.join("resources/mcp_servers/docs.yaml"),
@@ -859,6 +856,8 @@ mod tests {
                     endpoint: String::new(),
                     target: "logs".to_string(),
                     description: String::new(),
+                    headers: Default::default(),
+                    oauth: None,
                 }],
                 lsp_servers: Vec::new(),
             },

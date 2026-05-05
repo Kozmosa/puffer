@@ -1,0 +1,372 @@
+syntax = "proto3";
+
+package puffer.runner.v1;
+
+service ToolRunner {
+  // Liveness probe: cheap RPC that always returns immediately when the
+  // server is up. Used by clients (and orchestrators) to gate startup on
+  // a confirmed-live runner instead of relying on TCP connect alone.
+  rpc Ping(Empty) returns (PingResponse);
+
+  // Capability + tool execution.
+  rpc Capabilities(Empty) returns (RunnerCapabilities);
+  rpc ExecuteTool(ToolRequest) returns (stream ToolEvent);
+
+  // Raw filesystem (runtime-internal, no model formatting).
+  rpc ReadFile(ReadFileRequest) returns (FileContent);
+  rpc ListDir(ListDirRequest) returns (DirListing);
+  rpc Glob(GlobRequest) returns (GlobResponse);
+
+  // MCP — Phase 2 stubs return UNIMPLEMENTED. Phase 1 fills these in.
+  rpc ListMcpServers(Empty) returns (McpServerList);
+  rpc ListMcpTools(McpServerRef) returns (McpToolList);
+  // Bidirectional stream so MCP server-initiated `elicitation/create`
+  // requests can flow client-ward mid-call and the user's response can
+  // flow server-ward without spinning up a second RPC.
+  //
+  // Protocol:
+  //   * Client's FIRST message MUST be `McpToolMessage.call` carrying the
+  //     `McpToolCall` payload. Sending anything else first is an
+  //     INVALID_ARGUMENT.
+  //   * Subsequent client messages are `McpToolMessage.elicitation_response`
+  //     keyed by `request_id` (the matching `elicitation_request.request_id`
+  //     the server emitted earlier on this stream). The server may also
+  //     send completion / failure events at any point.
+  //   * Server messages reuse the same `McpToolMessage` envelope; the
+  //     `stdout`, `stderr`, `event_json`, `elicitation_request`,
+  //     `completed`, and `failed` variants are server-to-client.
+  rpc CallMcpTool(stream McpToolMessage) returns (stream McpToolMessage);
+  rpc ListMcpResources(McpResourceQuery) returns (McpResourceList);
+  rpc ReadMcpResource(McpResourceRef) returns (McpResourceContent);
+  rpc ListMcpPrompts(McpServerRef) returns (McpPromptList);
+  rpc GetMcpPrompt(McpPromptRequest) returns (McpPromptContent);
+
+  // OAuth credential push (puffer-cli drives the browser flow). The
+  // runner is a credential storage + use surface; it never opens a
+  // browser. See `puffer mcp login` in `puffer-cli` for the matching
+  // call site.
+  rpc PushOAuthTokens(PushOAuthTokensRequest) returns (Empty);
+  rpc QueryOAuthStatus(OAuthServerRef) returns (OAuthStatusResponse);
+  rpc ClearOAuthTokens(OAuthServerRef) returns (Empty);
+}
+
+message Empty {}
+
+message PingResponse {
+  // Server's CARGO_PKG_VERSION at build time.
+  string version = 1;
+  // Seconds since the service was constructed.
+  uint64 uptime_seconds = 2;
+}
+
+message RunnerCapabilities {
+  string backend = 1;
+  string version = 2;
+  repeated string supported_tools = 3;
+  bool mcp_supported = 4;
+}
+
+message ToolRequest {
+  string tool_id = 1;
+  string cwd = 2;
+  repeated string working_dirs = 3;
+  bool allow_all_paths = 4;
+  // JSON-encoded tool input (matches the tool's input schema).
+  string input_json = 5;
+  optional string session_id = 6;
+}
+
+message StreamChunk {
+  bytes data = 1;
+}
+
+message ToolCompleted {
+  string tool_id = 1;
+  bool success = 2;
+  string stdout = 3;
+  string stderr = 4;
+  string metadata_json = 5;
+  repeated ReadStateUpdate read_state_updates = 6;
+}
+
+message ToolFailed {
+  string code = 1;
+  string message = 2;
+}
+
+message ReadStateUpdate {
+  string path = 1;
+  // u128 ms is non-trivial in proto; transmit as decimal string.
+  string timestamp_ms = 2;
+  bool is_partial_view = 3;
+}
+
+message ToolEvent {
+  oneof payload {
+    StreamChunk stdout = 1;
+    StreamChunk stderr = 2;
+    ToolCompleted completed = 3;
+    ToolFailed failed = 4;
+  }
+}
+
+message ReadFileRequest {
+  string path = 1;
+}
+
+message FileContent {
+  bytes data = 1;
+}
+
+message ListDirRequest {
+  string path = 1;
+}
+
+message DirEntry {
+  string path = 1;
+  bool is_dir = 2;
+  bool is_file = 3;
+  bool is_symlink = 4;
+}
+
+message DirListing {
+  repeated DirEntry entries = 1;
+}
+
+message GlobRequest {
+  string root = 1;
+  string pattern = 2;
+}
+
+message GlobResponse {
+  repeated string paths = 1;
+}
+
+message McpServerInfo {
+  string id = 1;
+  string display_name = 2;
+  string transport = 3;
+  string target = 4;
+  string description = 5;
+}
+
+message McpServerList {
+  repeated McpServerInfo servers = 1;
+}
+
+message McpServerRef {
+  string server = 1;
+}
+
+message McpTool {
+  string name = 1;
+  optional string description = 2;
+  optional string input_schema_json = 3;
+}
+
+message McpToolList {
+  repeated McpTool tools = 1;
+}
+
+message McpToolCall {
+  string server = 1;
+  string tool = 2;
+  string args_json = 3;
+}
+
+message McpToolEvent {
+  oneof payload {
+    StreamChunk stdout = 1;
+    StreamChunk stderr = 2;
+    McpToolResult completed = 3;
+    ToolFailed failed = 4;
+    // JSON-encoded event from `ChunkSink::event` — e.g. an MCP
+    // `notifications/progress` envelope minted by the connection
+    // manager. The shape is `{kind: "mcp/progress", progressToken,
+    // progress, total?, message?}` for progress; future event kinds
+    // may share this channel as long as they fit a single JSON value.
+    string event_json = 5;
+  }
+}
+
+// Single envelope used by both directions of the `CallMcpTool` bidi
+// stream. Only one variant is populated per message.
+message McpToolMessage {
+  oneof payload {
+    // Client-to-server: opens the call. MUST be the first message.
+    McpToolCall call = 1;
+    // Server-to-client: forwarded `ChunkSink::stdout`.
+    StreamChunk stdout = 2;
+    // Server-to-client: forwarded `ChunkSink::stderr`.
+    StreamChunk stderr = 3;
+    // Server-to-client: terminal success.
+    McpToolResult completed = 4;
+    // Server-to-client: terminal failure (typed via `code`).
+    ToolFailed failed = 5;
+    // Server-to-client: JSON-encoded `ChunkSink::event` payload (today
+    // an `{kind: "mcp/progress", ...}` envelope from the connection
+    // manager's progress wiring).
+    string event_json = 6;
+    // Server-to-client: server-initiated `elicitation/create` request.
+    McpElicitationRequest elicitation_request = 7;
+    // Client-to-server: user's response to `elicitation_request`,
+    // correlated by `request_id`.
+    McpElicitationResponse elicitation_response = 8;
+  }
+}
+
+message McpElicitationRequest {
+  // Stream-local correlation id minted by the server. Echoed back in
+  // the matching `McpElicitationResponse`.
+  string request_id = 1;
+  // MCP server id (matches `McpServerInfo.id`).
+  string server = 2;
+  // Tool that triggered the elicitation; empty when not known.
+  string tool = 3;
+  // Server's prompt for the user.
+  string message = 4;
+  // "form" or "url".
+  string mode = 5;
+  // JSON-encoded JSON Schema describing the expected response (form
+  // mode only). Empty for url mode.
+  string schema_json = 6;
+  // Optional URL the user is asked to visit (url mode only).
+  optional string url = 7;
+  // Optional server-minted correlation id (url mode only — distinct from
+  // the stream-local `request_id`).
+  optional string elicitation_id = 8;
+}
+
+message McpElicitationResponse {
+  // Matches the `request_id` of the originating `McpElicitationRequest`.
+  string request_id = 1;
+  // "accept" / "decline" / "cancel".
+  string action = 2;
+  // JSON-encoded payload for `accept`; empty for the other actions.
+  string content_json = 3;
+}
+
+message McpToolResult {
+  string server = 1;
+  string tool = 2;
+  bool success = 3;
+  string stdout = 4;
+  string stderr = 5;
+  string metadata_json = 6;
+}
+
+message McpResourceQuery {
+  optional string server = 1;
+}
+
+message McpResourceRecord {
+  string server = 1;
+  string uri = 2;
+  string name = 3;
+  optional string mime_type = 4;
+  optional string description = 5;
+}
+
+message McpResourceList {
+  repeated McpResourceRecord resources = 1;
+}
+
+message McpResourceRef {
+  string server = 1;
+  string uri = 2;
+}
+
+message McpResourceContentPart {
+  string kind = 1;       // "text" or "blob"
+  string uri = 2;
+  optional string mime_type = 3;
+  string text = 4;       // populated for kind="text"
+  bytes bytes = 5;       // populated for kind="blob"
+}
+
+message McpResourceContent {
+  string server = 1;
+  string uri = 2;
+  repeated McpResourceContentPart parts = 3;
+}
+
+message McpPromptArgument {
+  string name = 1;
+  optional string description = 2;
+  bool required = 3;
+}
+
+message McpPrompt {
+  string name = 1;
+  optional string description = 2;
+  repeated McpPromptArgument arguments = 3;
+}
+
+message McpPromptList {
+  repeated McpPrompt prompts = 1;
+}
+
+message McpPromptRequest {
+  string server = 1;
+  string name = 2;
+  string args_json = 3;
+}
+
+message McpPromptMessage {
+  string role = 1;
+  string text = 2;
+}
+
+message McpPromptContent {
+  string server = 1;
+  string name = 2;
+  repeated McpPromptMessage messages = 3;
+}
+
+// --- OAuth ----------------------------------------------------------------
+
+// Wire form of `puffer_runner_api::OAuthTokensPayload`. Mirrors
+// `PersistedTokens` 1:1 so the runner can persist the bundle through
+// the existing file-backed credential store without lossy translation.
+message OAuthTokensPayload {
+  string server_id = 1;
+  string server_url = 2;
+  string client_id = 3;
+  optional string client_secret = 4;
+  string access_token = 5;
+  string token_type = 6;
+  optional string refresh_token = 7;
+  repeated string scopes = 8;
+  // Wall-clock expiry in epoch milliseconds. `0` is a sentinel for "no
+  // expiry recorded" (proto3 `optional` cannot be empty for numerics in
+  // older clients; we round-trip None as 0 here and treat 0 specially
+  // on the server side).
+  optional uint64 expires_at_ms = 9;
+}
+
+message PushOAuthTokensRequest {
+  string server = 1;
+  OAuthTokensPayload tokens = 2;
+}
+
+// Used by both Query and Clear — the server is the only handle the
+// runner needs to find a stored bundle (it consults its own server
+// roster for the server_url).
+message OAuthServerRef {
+  string server_id = 1;
+}
+
+message OAuthStatusPresent {
+  optional uint64 expires_at_ms = 1;
+  bool has_refresh = 2;
+  repeated string scopes = 3;
+}
+
+message OAuthStatusResponse {
+  // Exactly one of these is populated; both empty == Absent.
+  oneof state {
+    Empty absent = 1;
+    OAuthStatusPresent present = 2;
+  }
+}
+

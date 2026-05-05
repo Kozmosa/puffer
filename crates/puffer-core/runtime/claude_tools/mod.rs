@@ -1,3 +1,4 @@
+use crate::runner_adapter;
 use crate::runtime::structured_output_support::StructuredOutputConfig;
 use crate::state::ClaudeReadState;
 use crate::workspace_paths;
@@ -5,26 +6,31 @@ use crate::AppState;
 use anyhow::{bail, Context, Result};
 use puffer_provider_openai::OpenAIRequestConfig;
 use puffer_resources::LoadedResources;
+use puffer_runner_api::{
+    check_read_freshness, NullChunkSink, ReadStateSnapshot, ReadStateUpdate, StalenessRejection,
+    ToolRequest as RunnerToolRequest, ToolRunner,
+};
 use puffer_tools::{ToolDefinition, ToolExecutionResult, ToolOutput, ToolRegistry};
 use puffer_transport_anthropic::AnthropicRequestConfig;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use uuid::Uuid;
 
-mod bash;
-mod edit;
-mod glob;
-mod grep;
+pub mod bash;
+pub mod edit;
+pub mod glob;
+pub mod grep;
 pub(super) mod mcp_resources;
-mod notebook_edit;
-mod read;
+pub mod notebook_edit;
+pub mod read;
 pub(crate) mod skill;
 pub(crate) mod tool_search;
-mod web_fetch;
-mod web_search;
+pub mod web_fetch;
+pub mod web_search;
 
 /// Retries a blocking HTTP send operation up to `max_attempts` times with 1s delay
 /// on transient connection/timeout errors.
@@ -56,7 +62,7 @@ fn is_retryable_send_error(error: &anyhow::Error) -> bool {
     })
 }
 pub(crate) mod workflow;
-mod write;
+pub mod write;
 
 /// Carries provider-specific execution context for runtime-backed tools.
 pub(crate) enum ProviderToolContext<'a> {
@@ -89,6 +95,12 @@ pub(crate) fn execute_tool(
     provider_context: ProviderToolContext<'_>,
 ) -> Result<ToolExecutionResult> {
     let allow_all_paths = workspace_paths::sandbox_allows_all_paths(&state.sandbox_mode);
+    if runner_adapter::is_runner_supported(definition.id.as_str()) {
+        if let Some(result) = try_runner_dispatch(state, definition, cwd, &input, allow_all_paths)?
+        {
+            return Ok(result);
+        }
+    }
     match definition.id.as_str() {
         "Bash" => {
             let execution = bash::execute_from_value(cwd, &state.session.id, input)?;
@@ -250,6 +262,14 @@ pub(crate) fn execute_tool(
 /// replicates the corresponding match arms from `execute_tool`. All data
 /// needed is passed by value/reference; no mutable application state is
 /// touched, enabling concurrent execution via `std::thread::scope`.
+///
+/// For tools in `runner_adapter::is_runner_supported(...)` (currently
+/// `Bash | Glob | Grep | WebFetch`), execution is routed through the supplied
+/// `Arc<dyn ToolRunner>` so a `RemoteToolRunner` can intercept parallel
+/// batches the same way it intercepts serial calls. The remaining
+/// parallel-safe tools (`WebSearch | ToolSearch | Skill`) intentionally stay
+/// on the in-process path: WebSearch needs provider context that isn't on
+/// the runner trait, and Skill / ToolSearch are local-only.
 pub(crate) fn execute_parallel_tool(
     definition: &ToolDefinition,
     cwd: &Path,
@@ -260,29 +280,40 @@ pub(crate) fn execute_parallel_tool(
     resources: &LoadedResources,
     registry: &ToolRegistry,
     provider_context: &ProviderToolContext<'_>,
+    runner: &Arc<dyn ToolRunner>,
 ) -> Result<ToolExecutionResult> {
+    if runner_adapter::is_runner_supported(definition.id.as_str()) {
+        let request = RunnerToolRequest {
+            tool_id: definition.id.clone(),
+            cwd: cwd.to_path_buf(),
+            working_dirs: working_dirs.to_vec(),
+            allow_all_paths,
+            input: input.clone(),
+            session_id: Some(session_id.to_string()),
+        };
+        let mut sink = NullChunkSink;
+        let outcome = runner
+            .execute_tool(request, &mut sink)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        // Parallel-safe tools never touch read-state (Read/Write/Edit/NotebookEdit
+        // are excluded by `is_parallel_safe_tool`), so any updates returned
+        // here would be a runner bug. Assert in debug, ignore in release.
+        debug_assert!(
+            outcome.read_state_updates.is_empty(),
+            "parallel-safe tool {} returned read_state_updates",
+            definition.id
+        );
+        return Ok(ToolExecutionResult {
+            tool_id: outcome.tool_id,
+            success: outcome.success,
+            output: ToolOutput {
+                stdout: outcome.stdout,
+                stderr: outcome.stderr,
+                metadata: outcome.metadata,
+            },
+        });
+    }
     match definition.id.as_str() {
-        "Bash" => {
-            let execution = bash::execute_from_value(cwd, session_id, input)?;
-            let output = serde_json::to_string_pretty(&execution.output)
-                .context("failed to serialize Bash output")?;
-            Ok(tool_result(definition, execution.success, output))
-        }
-        "Glob" => Ok(tool_result(
-            definition,
-            true,
-            glob::execute_claude_glob(cwd, working_dirs, allow_all_paths, input)?,
-        )),
-        "Grep" => Ok(tool_result(
-            definition,
-            true,
-            grep::execute_claude_grep(cwd, working_dirs, allow_all_paths, input)?,
-        )),
-        "WebFetch" => {
-            let output = serde_json::to_string_pretty(&web_fetch::execute_claude_web_fetch(input)?)
-                .context("failed to serialize WebFetch output")?;
-            Ok(tool_result(definition, true, output))
-        }
         "WebSearch" => {
             let output = match provider_context {
                 ProviderToolContext::OpenAI {
@@ -316,6 +347,116 @@ pub(crate) fn execute_parallel_tool(
             skill::execute_claude_skill_tool(resources, input)?,
         )),
         other => bail!("tool {other} is not parallel-safe"),
+    }
+}
+
+/// Tries dispatching the call through the active [`puffer_runner_api::ToolRunner`].
+///
+/// Returns `Ok(Some(result))` when the runner handled the call (success or
+/// pre-flight rejection), `Ok(None)` when the tool needs the legacy in-place
+/// path (e.g. WebSearch's provider context, or Read's "file unchanged"
+/// short-circuit), and `Err` when the underlying execution fails.
+fn try_runner_dispatch(
+    state: &mut AppState,
+    definition: &ToolDefinition,
+    cwd: &Path,
+    input: &Value,
+    allow_all_paths: bool,
+) -> Result<Option<ToolExecutionResult>> {
+    let tool_id = definition.id.as_str();
+
+    // Read keeps its "file_unchanged" short-circuit on the legacy path —
+    // the runner DTO doesn't model that bookkeeping yet.
+    if tool_id == "Read" && is_full_read_request(input) {
+        if let Some(path) = input_file_path(input, "file_path")? {
+            if let Some(snapshot) = state.claude_read_state.get(&path) {
+                let timestamp_ms = file_timestamp_ms(&path)?;
+                if !snapshot.is_partial_view && timestamp_ms == snapshot.timestamp_ms {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    // Pre-flight staleness gate, hoisted out of the per-tool implementations.
+    let needs_freshness_check = matches!(tool_id, "Write" | "NotebookEdit")
+        || (tool_id == "Edit" && edit::requires_prior_read(input));
+    if needs_freshness_check {
+        let path_field = if tool_id == "NotebookEdit" {
+            "notebook_path"
+        } else {
+            "file_path"
+        };
+        if let Some(path) = input_file_path(input, path_field)? {
+            let snapshot = state
+                .claude_read_state
+                .get(&path)
+                .map(|snap| ReadStateSnapshot {
+                    timestamp_ms: snap.timestamp_ms,
+                    is_partial_view: snap.is_partial_view,
+                });
+            // Only enforce when the file already exists; Write/Edit on a
+            // brand-new path are allowed without a prior Read.
+            if path.exists() {
+                let current_mtime = file_timestamp_ms(&path)?;
+                if let Err(rejection) = check_read_freshness(snapshot.as_ref(), current_mtime) {
+                    return Ok(Some(staleness_failure(definition, &rejection)));
+                }
+            }
+        }
+    }
+
+    let request = RunnerToolRequest {
+        tool_id: tool_id.to_string(),
+        cwd: cwd.to_path_buf(),
+        working_dirs: state.working_dirs.clone(),
+        allow_all_paths,
+        input: input.clone(),
+        session_id: Some(state.session.id.to_string()),
+    };
+    let runner = state.tool_runner.clone();
+    let mut sink = NullChunkSink;
+    let outcome = runner
+        .execute_tool(request, &mut sink)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    apply_read_state_updates(state, &outcome.read_state_updates);
+
+    Ok(Some(ToolExecutionResult {
+        tool_id: outcome.tool_id,
+        success: outcome.success,
+        output: ToolOutput {
+            stdout: outcome.stdout,
+            stderr: outcome.stderr,
+            metadata: outcome.metadata,
+        },
+    }))
+}
+
+fn apply_read_state_updates(state: &mut AppState, updates: &[ReadStateUpdate]) {
+    for update in updates {
+        state.claude_read_state.insert(
+            update.path.clone(),
+            ClaudeReadState {
+                timestamp_ms: update.timestamp_ms,
+                is_partial_view: update.is_partial_view,
+            },
+        );
+    }
+}
+
+fn staleness_failure(
+    definition: &ToolDefinition,
+    rejection: &StalenessRejection,
+) -> ToolExecutionResult {
+    ToolExecutionResult {
+        tool_id: definition.id.clone(),
+        success: false,
+        output: ToolOutput {
+            stdout: rejection.message().to_string(),
+            stderr: String::new(),
+            metadata: Value::Null,
+        },
     }
 }
 
@@ -552,7 +693,199 @@ impl<'a> ProviderToolContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puffer_runner_api::{
+        ChunkSink, DirEntry, McpPrompt, McpPromptContent, McpResourceContent, McpResourceRecord,
+        McpResult, McpServerInfo, McpTool, RunnerCapabilities, RunnerError, ToolRequest,
+        ToolResult, ToolRunner,
+    };
+    use puffer_resources::LoadedResources;
+    use puffer_tools::{
+        ToolDefinition, ToolDisplayHints, ToolInputSchema, ToolKind, ToolMetadata,
+        ToolPolicyHints, ToolRegistry,
+    };
     use serde_json::json;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    /// Records every `execute_tool` call and forwards execution to an inner
+    /// `LocalToolRunner`. Used to prove that the parallel-batch path actually
+    /// dispatches through the trait instead of bypassing it.
+    #[derive(Debug)]
+    struct RecordingRunner {
+        inner: Arc<dyn ToolRunner>,
+        execute_calls: AtomicUsize,
+    }
+
+    impl RecordingRunner {
+        fn new(inner: Arc<dyn ToolRunner>) -> Self {
+            Self {
+                inner,
+                execute_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn execute_calls(&self) -> usize {
+            self.execute_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ToolRunner for RecordingRunner {
+        fn ping(&self) -> Result<puffer_runner_api::RunnerPing, RunnerError> {
+            self.inner.ping()
+        }
+        fn capabilities(&self) -> RunnerCapabilities {
+            self.inner.capabilities()
+        }
+        fn execute_tool(
+            &self,
+            req: ToolRequest,
+            sink: &mut dyn ChunkSink,
+        ) -> Result<ToolResult, RunnerError> {
+            self.execute_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.execute_tool(req, sink)
+        }
+        fn read_file(&self, path: &Path) -> Result<Vec<u8>, RunnerError> {
+            self.inner.read_file(path)
+        }
+        fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>, RunnerError> {
+            self.inner.list_dir(path)
+        }
+        fn glob(
+            &self,
+            root: &Path,
+            pattern: &str,
+        ) -> Result<Vec<std::path::PathBuf>, RunnerError> {
+            self.inner.glob(root, pattern)
+        }
+        fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, RunnerError> {
+            self.inner.list_mcp_servers()
+        }
+        fn list_mcp_tools(&self, server: &str) -> Result<Vec<McpTool>, RunnerError> {
+            self.inner.list_mcp_tools(server)
+        }
+        fn call_mcp_tool(
+            &self,
+            server: &str,
+            tool: &str,
+            args: serde_json::Value,
+            sink: &mut dyn ChunkSink,
+        ) -> Result<McpResult, RunnerError> {
+            self.inner.call_mcp_tool(server, tool, args, sink)
+        }
+        fn list_mcp_resources(
+            &self,
+            server: Option<&str>,
+        ) -> Result<Vec<McpResourceRecord>, RunnerError> {
+            self.inner.list_mcp_resources(server)
+        }
+        fn read_mcp_resource(
+            &self,
+            server: &str,
+            uri: &str,
+        ) -> Result<McpResourceContent, RunnerError> {
+            self.inner.read_mcp_resource(server, uri)
+        }
+        fn list_mcp_prompts(&self, server: &str) -> Result<Vec<McpPrompt>, RunnerError> {
+            self.inner.list_mcp_prompts(server)
+        }
+        fn get_mcp_prompt(
+            &self,
+            server: &str,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<McpPromptContent, RunnerError> {
+            self.inner.get_mcp_prompt(server, name, args)
+        }
+    }
+
+    /// Verifies the parallel-tool path routes runner-supported tools through
+    /// `Arc<dyn ToolRunner>::execute_tool` instead of calling in-process
+    /// helpers directly. This is the regression test for the gap where a
+    /// parallel batch of two Bash calls bypassed `RemoteToolRunner` even
+    /// though a single serial Bash call went through it.
+    #[test]
+    fn parallel_path_dispatches_through_runner() {
+        let inner: Arc<dyn ToolRunner> = Arc::new(crate::runner_adapter::LocalToolRunner::new());
+        let recording = Arc::new(RecordingRunner::new(inner));
+        let runner: Arc<dyn ToolRunner> = recording.clone();
+
+        let resources = LoadedResources::default();
+        let registry = ToolRegistry::default();
+        let provider_context = ProviderToolContext::None;
+        let session_id = Uuid::new_v4();
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let cwd = workspace.path().to_path_buf();
+        let working_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+        // Claude-parity tools use capitalized ids that the dispatcher
+        // matches on; build minimal definitions directly so neither the
+        // builtin lowercase `bash` nor a `runtime:` handler mismatch
+        // perturbs the dispatch path under test.
+        fn claude_tool_def(id: &str, handler: &str) -> ToolDefinition {
+            ToolDefinition {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: id.to_string(),
+                handler: handler.to_string(),
+                aliases: Vec::new(),
+                handler_args: Vec::new(),
+                kind: ToolKind::Custom,
+                input_schema: ToolInputSchema::default(),
+                metadata: ToolMetadata::default(),
+                policy: ToolPolicyHints::default(),
+                shared_lib: None,
+                enabled_if: None,
+                display: ToolDisplayHints::default(),
+            }
+        }
+        let bash_def = claude_tool_def("Bash", "runtime:claude_bash");
+        let glob_def = claude_tool_def("Glob", "runtime:claude_glob");
+
+        let bash_input = json!({"command": "echo parallel-runner"});
+        let bash_result = execute_parallel_tool(
+            &bash_def,
+            &cwd,
+            &working_dirs,
+            true,
+            &session_id,
+            bash_input,
+            &resources,
+            &registry,
+            &provider_context,
+            &runner,
+        )
+        .expect("Bash through runner");
+        assert!(bash_result.success, "Bash should succeed");
+        assert!(
+            bash_result.output.stdout.contains("parallel-runner"),
+            "Bash stdout missing marker: {}",
+            bash_result.output.stdout
+        );
+
+        let glob_input = json!({"pattern": "*"});
+        let glob_result = execute_parallel_tool(
+            &glob_def,
+            &cwd,
+            &working_dirs,
+            true,
+            &session_id,
+            glob_input,
+            &resources,
+            &registry,
+            &provider_context,
+            &runner,
+        )
+        .expect("Glob through runner");
+        assert!(glob_result.success, "Glob should succeed");
+
+        assert_eq!(
+            recording.execute_calls(),
+            2,
+            "expected the runner to be invoked once per parallel-safe runner-supported tool",
+        );
+    }
 
     #[test]
     fn blank_pages_do_not_make_read_partial() {

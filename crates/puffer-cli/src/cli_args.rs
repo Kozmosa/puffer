@@ -572,6 +572,37 @@ pub(crate) enum McpCommand {
     ResetProjectChoices,
     /// Start the Puffer MCP server bridge.
     Serve,
+    /// Drive the OAuth interactive login for an HTTP MCP server.
+    ///
+    /// Runs RFC 8414 metadata discovery, RFC 7591 dynamic client
+    /// registration, the authorization-code-with-PKCE flow against the
+    /// server's authorization endpoint, captures the callback on a
+    /// localhost loopback port, and persists the resulting tokens under
+    /// `<config>/puffer/mcp-tokens/`. Tokens auto-refresh on expiry from
+    /// the runner the next time the server is contacted.
+    Login {
+        /// Stable MCP server id (must match a configured server with
+        /// `transport: http` and `oauth: true`).
+        name: String,
+        /// Skip the `webbrowser::open` attempt and just print the URL.
+        /// Useful for headless environments (SSH, container, CI). The
+        /// callback receiver still binds locally — pair this with a
+        /// reverse-tunnel or a manual paste-back of the redirect URL.
+        #[arg(long = "no-browser")]
+        no_browser: bool,
+    },
+    /// Print whether OAuth tokens exist on disk for an MCP server, and
+    /// where they live.
+    LoginStatus {
+        /// Stable MCP server id.
+        name: String,
+    },
+    /// Forget any persisted OAuth tokens for an MCP server. The next
+    /// connect will require a fresh `puffer mcp login`.
+    Logout {
+        /// Stable MCP server id.
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
