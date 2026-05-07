@@ -28,6 +28,7 @@ mod permission_prompt;
 mod status;
 mod support;
 mod tag;
+mod user_question;
 use support::*;
 
 fn puffer_home_lock() -> &'static Mutex<()> {

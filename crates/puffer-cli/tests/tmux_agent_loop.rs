@@ -382,3 +382,80 @@ fn tmux_agent_loop_drives_tool_round_trip_in_tui() {
 
     let _ = capture_tmux_visible_pane(&session);
 }
+
+#[test]
+fn tmux_agent_loop_answers_ask_user_question_with_keyboard_selection() {
+    if !tmux_available() {
+        return;
+    }
+
+    let final_text = "puffer-tmux-ask-user-question-ok";
+    let (_tempdir, workspace) = temp_workspace().unwrap();
+    link_repo_resources(workspace.as_path());
+
+    let final_text_owned = final_text.to_string();
+    let (mock_url, requests, server) = spawn_mock_anthropic(2, move |index| {
+        if index == 0 {
+            sse_tool_use_response(
+                "toolu_question_1",
+                "AskUserQuestion",
+                r#"{"questions":[{"question":"Pick one","header":"Mode","options":[{"label":"Fast","description":"Prioritize speed"},{"label":"Careful","description":"Prioritize review"}]}]}"#,
+            )
+        } else {
+            sse_text_response(&final_text_owned)
+        }
+    });
+
+    write_anthropic_override(workspace.as_path(), &mock_url);
+    write_config(workspace.as_path());
+
+    let binary = env!("CARGO_BIN_EXE_puffer");
+    let session = start_tmux_command_with_size(
+        "sh",
+        &[
+            "-lc",
+            &format!(
+                "HOME='{ws}' PUFFER_HTTP_TRACE_PATH='{ws}/wire.log' '{bin}'",
+                ws = workspace.display(),
+                bin = binary
+            ),
+        ],
+        Some(workspace.as_path()),
+        TerminalSize {
+            cols: 120,
+            rows: 36,
+        },
+    )
+    .unwrap();
+
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(20)).unwrap();
+    send_tmux_keys(&session, &["ask me to choose", "Enter"]).unwrap();
+    wait_for_tmux_text(&session, "Prioritize review", Duration::from_secs(30)).unwrap();
+    send_tmux_keys(&session, &["Down", "Enter"]).unwrap();
+    wait_for_tmux_text(&session, "Pick one: Careful", Duration::from_secs(30))
+        .expect("expected selected AskUserQuestion answer to render in tmux");
+
+    let capture = wait_for_tmux_text(&session, final_text, Duration::from_secs(40))
+        .expect("expected final text after answering AskUserQuestion in tmux");
+    assert!(
+        capture.contains(final_text),
+        "tmux pane missing final text:\n{capture}"
+    );
+
+    server.join().unwrap();
+    let captured = requests.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        2,
+        "mock should have received AskUserQuestion round trip requests"
+    );
+    let body2 = &captured[1];
+    assert!(
+        body2.contains("tool_result"),
+        "second request missing tool_result block: {body2}"
+    );
+    assert!(
+        body2.contains("Pick one") && body2.contains("Careful"),
+        "second request should carry the selected answer: {body2}"
+    );
+}

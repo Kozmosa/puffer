@@ -23,6 +23,7 @@ pub(super) fn overlay_selection(overlay: &OverlayState) -> Option<usize> {
         | OverlayState::OnboardingAuth { selection, .. }
         | OverlayState::OnboardingModel { selection, .. } => Some(*selection),
         OverlayState::PermissionPrompt { overlay } => Some(overlay.selection()),
+        OverlayState::UserQuestionPrompt { overlay } => Some(overlay.selection()),
         OverlayState::ApiKeyPrompt { .. }
         | OverlayState::Help
         | OverlayState::Btw(..)

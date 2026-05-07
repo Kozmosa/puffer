@@ -5,9 +5,10 @@ use crate::session_overlay::SessionOverlay;
 use crate::status_overlay::StatusOverlay;
 use crate::text_overlay::TextOverlay;
 use crate::usage::UsageOverlay;
+use crate::user_question_overlay::UserQuestionOverlay;
 use puffer_core::{
     CommandSpec, PermissionPromptAction, PermissionPromptRequest, ToolCallRequest, ToolInvocation,
-    TurnExecution, TurnUsageReport,
+    TurnExecution, TurnUsageReport, UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
 use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
@@ -62,6 +63,7 @@ pub(crate) struct TuiState {
     pub(crate) tool_details_expanded: bool,
     pub(crate) overlay: Option<OverlayState>,
     pub(crate) pending_permission_request: Option<PendingPermissionRequest>,
+    pub(crate) pending_user_question_request: Option<PendingUserQuestionRequest>,
     pub(crate) deferred_prompt: Option<String>,
     pub(crate) pending_submit: Option<PendingSubmit>,
     pub(crate) queued_prompts: VecDeque<String>,
@@ -111,6 +113,10 @@ pub(crate) enum PendingSubmitEvent {
     },
     Usage(TurnUsageReport),
     PermissionRequest(PermissionPromptRequest, Sender<PermissionPromptAction>),
+    UserQuestionRequest(
+        UserQuestionPromptRequest,
+        Sender<UserQuestionPromptResponse>,
+    ),
     Finished(PendingSubmitResult),
 }
 
@@ -138,6 +144,11 @@ pub(crate) struct PendingPermissionRequest {
     pub(crate) response_tx: Sender<PermissionPromptAction>,
 }
 
+/// Stores the response channel for the currently visible user question prompt.
+pub(crate) struct PendingUserQuestionRequest {
+    pub(crate) response_tx: Sender<UserQuestionPromptResponse>,
+}
+
 impl Default for TuiState {
     fn default() -> Self {
         Self {
@@ -149,6 +160,7 @@ impl Default for TuiState {
             tool_details_expanded: false,
             overlay: None,
             pending_permission_request: None,
+            pending_user_question_request: None,
             deferred_prompt: None,
             pending_submit: None,
             queued_prompts: VecDeque::new(),
@@ -308,8 +320,7 @@ impl TuiState {
         if let Some((start, placeholder)) = self.paste_placeholder_ending_at(self.cursor) {
             self.input.drain(start..self.cursor);
             self.cursor = start;
-            self.pending_pastes
-                .retain(|(name, _)| *name != placeholder);
+            self.pending_pastes.retain(|(name, _)| *name != placeholder);
             self.sync(commands);
             return;
         }
@@ -654,6 +665,9 @@ pub(crate) enum OverlayState {
     Status(StatusOverlay),
     Text(TextOverlay),
     Usage(UsageOverlay),
+    UserQuestionPrompt {
+        overlay: UserQuestionOverlay,
+    },
     OnboardingTheme {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
@@ -708,6 +722,7 @@ impl OverlayState {
             Self::Session(overlay) => overlay.scroll_up(),
             Self::Status(overlay) => overlay.scroll_up(),
             Self::Text(overlay) => overlay.scroll_up(),
+            Self::UserQuestionPrompt { overlay } => overlay.select_previous(),
             Self::Help
             | Self::ApiKeyPrompt { .. }
             | Self::Usage(..)
@@ -763,6 +778,7 @@ impl OverlayState {
             Self::Session(overlay) => overlay.scroll_down(),
             Self::Status(overlay) => overlay.scroll_down(),
             Self::Text(overlay) => overlay.scroll_down(),
+            Self::UserQuestionPrompt { overlay } => overlay.select_next(),
             Self::Help
             | Self::ApiKeyPrompt { .. }
             | Self::Usage(..)
@@ -778,6 +794,7 @@ impl OverlayState {
             Self::Session(overlay) => overlay.page_up(),
             Self::Status(overlay) => overlay.page_up(),
             Self::Text(overlay) => overlay.page_up(),
+            Self::UserQuestionPrompt { overlay } => overlay.page_up(),
             _ => {
                 for _ in 0..10 {
                     self.select_previous();
@@ -794,6 +811,7 @@ impl OverlayState {
             Self::Session(overlay) => overlay.page_down(),
             Self::Status(overlay) => overlay.page_down(),
             Self::Text(overlay) => overlay.page_down(),
+            Self::UserQuestionPrompt { overlay } => overlay.page_down(),
             _ => {
                 for _ in 0..10 {
                     self.select_next();
@@ -810,6 +828,7 @@ impl OverlayState {
                 | Self::Btw(..)
                 | Self::Session(..)
                 | Self::Status(..)
+                | Self::UserQuestionPrompt { .. }
                 | Self::PermissionPrompt { .. }
         )
     }
@@ -899,6 +918,7 @@ impl OverlayState {
             | Self::Status(..)
             | Self::Text(..)
             | Self::Usage(..)
+            | Self::UserQuestionPrompt { .. }
             | Self::OnboardingTheme { .. }
             | Self::OnboardingProvider { .. }
             | Self::OnboardingAuth { .. }
@@ -936,6 +956,7 @@ impl OverlayState {
             | Self::Session(..)
             | Self::Status(..)
             | Self::Text(..)
+            | Self::UserQuestionPrompt { .. }
             | Self::Usage(..)
             | Self::OnboardingTheme { .. } => None,
         }
@@ -1052,6 +1073,7 @@ impl OverlayState {
             | Self::Session(..)
             | Self::Status(..)
             | Self::Text(..) => {}
+            Self::UserQuestionPrompt { .. } => {}
             Self::AuthPicker {
                 entries, selection, ..
             } => {

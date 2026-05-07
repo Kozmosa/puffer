@@ -203,6 +203,7 @@ pub(crate) fn back_overlay(
         | OverlayState::CommandPicker { .. }
         | OverlayState::Help
         | OverlayState::PermissionPrompt { .. }
+        | OverlayState::UserQuestionPrompt { .. }
         | OverlayState::Btw(..)
         | OverlayState::Session(..)
         | OverlayState::Status(..)

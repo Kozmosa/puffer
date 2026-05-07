@@ -5,11 +5,12 @@ use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
     command_surface, dispatch_command, execute_user_turn,
     execute_user_turn_streaming_with_permissions_and_cancel, reload_runtime_resources,
-    render_config_summary,
-    render_context_panel, render_copy_actions, render_doctor_report, render_hooks_actions,
-    render_ide_actions, render_mcp_actions, render_permissions_panel, render_plugin_actions,
-    render_sandbox_actions, render_skills_panel, run_resource_hooks, AppState, MessageRole,
-    PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
+    render_config_summary, render_context_panel, render_copy_actions, render_doctor_report,
+    render_hooks_actions, render_ide_actions, render_mcp_actions, render_permissions_panel,
+    render_plugin_actions, render_sandbox_actions, render_skills_panel, run_resource_hooks,
+    with_user_question_prompt_handler, AppState, MessageRole, PermissionPromptAction,
+    PermissionPromptRequest, ToolInvocation, TurnStreamEvent, UserQuestionPromptRequest,
+    UserQuestionPromptResponse,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -27,8 +28,10 @@ use crate::onboarding;
 use crate::session_overlay::SessionOverlay;
 use crate::state::{
     PendingPermissionRequest, PendingSubmit, PendingSubmitEvent, PendingSubmitResult,
+    PendingUserQuestionRequest,
 };
 use crate::task_overlay::open_task_overlay;
+use crate::user_question_overlay::UserQuestionOverlay;
 use crate::{
     status_overlay::StatusOverlay, task_panels::task_text_overlay, text_overlay::TextOverlay,
 };
@@ -289,58 +292,77 @@ pub(crate) fn handle_prompt_submit(
     thread::spawn(move || {
         let event_sender = sender.clone();
         let permission_sender = sender.clone();
-        let outcome = execute_user_turn_streaming_with_permissions_and_cancel(
-            &mut worker_state,
-            &worker_resources,
-            &worker_providers,
-            &mut worker_auth_store,
-            &worker_prompt,
-            None,
-            &worker_cancel,
-            |event| match event {
-                TurnStreamEvent::ThinkingDelta(delta) => {
-                    let _ = event_sender.send(PendingSubmitEvent::ThinkingDelta(delta));
-                }
-                TurnStreamEvent::TextDelta(delta) => {
-                    let _ = event_sender.send(PendingSubmitEvent::TextDelta(delta));
-                }
-                TurnStreamEvent::ToolCallsRequested(requests) => {
-                    let _ = event_sender.send(PendingSubmitEvent::ToolCallsRequested(requests));
-                }
-                TurnStreamEvent::ToolInvocations(invocations) => {
-                    let _ = event_sender.send(PendingSubmitEvent::ToolInvocations(invocations));
-                }
-                TurnStreamEvent::ReflectionCheckpoint(summary) => {
-                    let _ = event_sender.send(PendingSubmitEvent::ReflectionCheckpoint(summary));
-                }
-                // Trace events ride the stream for incremental consumers
-                // but we drain them from `turn.reflection_traces` in the
-                // main thread below (persisting them requires `session_store`,
-                // which isn't moved into the worker thread). No persistence
-                // work on the stream side — avoids double-write.
-                TurnStreamEvent::ReflectionTrace(_) => {}
-                TurnStreamEvent::RetryAttempt {
-                    attempt,
-                    max_attempts,
-                    error,
-                } => {
-                    let _ = event_sender.send(PendingSubmitEvent::RetryAttempt {
+        let question_sender = sender.clone();
+        let on_user_question = move |request: UserQuestionPromptRequest| {
+            let (response_tx, response_rx) = mpsc::channel();
+            if question_sender
+                .send(PendingSubmitEvent::UserQuestionRequest(
+                    request,
+                    response_tx,
+                ))
+                .is_err()
+            {
+                return empty_user_question_response();
+            }
+            response_rx
+                .recv()
+                .unwrap_or_else(|_| empty_user_question_response())
+        };
+        let outcome = with_user_question_prompt_handler(on_user_question, || {
+            execute_user_turn_streaming_with_permissions_and_cancel(
+                &mut worker_state,
+                &worker_resources,
+                &worker_providers,
+                &mut worker_auth_store,
+                &worker_prompt,
+                None,
+                &worker_cancel,
+                |event| match event {
+                    TurnStreamEvent::ThinkingDelta(delta) => {
+                        let _ = event_sender.send(PendingSubmitEvent::ThinkingDelta(delta));
+                    }
+                    TurnStreamEvent::TextDelta(delta) => {
+                        let _ = event_sender.send(PendingSubmitEvent::TextDelta(delta));
+                    }
+                    TurnStreamEvent::ToolCallsRequested(requests) => {
+                        let _ = event_sender.send(PendingSubmitEvent::ToolCallsRequested(requests));
+                    }
+                    TurnStreamEvent::ToolInvocations(invocations) => {
+                        let _ = event_sender.send(PendingSubmitEvent::ToolInvocations(invocations));
+                    }
+                    TurnStreamEvent::ReflectionCheckpoint(summary) => {
+                        let _ =
+                            event_sender.send(PendingSubmitEvent::ReflectionCheckpoint(summary));
+                    }
+                    // Trace events ride the stream for incremental consumers
+                    // but we drain them from `turn.reflection_traces` in the
+                    // main thread below (persisting them requires `session_store`,
+                    // which isn't moved into the worker thread). No persistence
+                    // work on the stream side — avoids double-write.
+                    TurnStreamEvent::ReflectionTrace(_) => {}
+                    TurnStreamEvent::RetryAttempt {
                         attempt,
                         max_attempts,
                         error,
-                    });
-                }
-                TurnStreamEvent::Usage(report) => {
-                    let _ = event_sender.send(PendingSubmitEvent::Usage(report));
-                }
-            },
-            move |request: PermissionPromptRequest| {
-                let (response_tx, response_rx) = mpsc::channel();
-                let _ = permission_sender
-                    .send(PendingSubmitEvent::PermissionRequest(request, response_tx));
-                response_rx.recv().unwrap_or(PermissionPromptAction::Deny)
-            },
-        )
+                    } => {
+                        let _ = event_sender.send(PendingSubmitEvent::RetryAttempt {
+                            attempt,
+                            max_attempts,
+                            error,
+                        });
+                    }
+                    TurnStreamEvent::Usage(report) => {
+                        let _ = event_sender.send(PendingSubmitEvent::Usage(report));
+                    }
+                },
+                move |request: PermissionPromptRequest| {
+                    let (response_tx, response_rx) = mpsc::channel();
+                    let _ = permission_sender
+                        .send(PendingSubmitEvent::PermissionRequest(request, response_tx));
+                    response_rx.recv().unwrap_or(PermissionPromptAction::Deny)
+                },
+            )
+        })
         .map_err(|error| error.to_string());
         let _ = sender.send(PendingSubmitEvent::Finished(PendingSubmitResult {
             outcome,
@@ -479,6 +501,26 @@ pub(crate) fn poll_pending_submit(
                 });
                 break;
             }
+            PendingSubmitEvent::UserQuestionRequest(request, response_tx) => {
+                match UserQuestionOverlay::from_value(request.questions) {
+                    Ok(overlay) => {
+                        tui.pending_user_question_request =
+                            Some(PendingUserQuestionRequest { response_tx });
+                        tui.overlay = Some(OverlayState::UserQuestionPrompt { overlay });
+                        break;
+                    }
+                    Err(error) => {
+                        let _ = response_tx.send(empty_user_question_response());
+                        let message =
+                            format!("AskUserQuestion prompt could not be rendered: {error}");
+                        state.push_message(MessageRole::System, message.clone());
+                        session_store.append_event(
+                            state.session.id,
+                            TranscriptEvent::SystemMessage { text: message },
+                        )?;
+                    }
+                }
+            }
             PendingSubmitEvent::Finished(result) => {
                 completed = true;
                 let rendered_tool_invocations = pending.rendered_tool_invocations;
@@ -547,6 +589,26 @@ pub(crate) fn respond_to_permission_prompt(
     let _ = pending.response_tx.send(action);
     set_overlay_state(tui, None);
     true
+}
+
+/// Resolves the active user question prompt and unblocks the worker thread.
+pub(crate) fn respond_to_user_question(
+    tui: &mut TuiState,
+    response: UserQuestionPromptResponse,
+) -> bool {
+    let Some(pending) = tui.pending_user_question_request.take() else {
+        return false;
+    };
+    let _ = pending.response_tx.send(response);
+    set_overlay_state(tui, None);
+    true
+}
+
+fn empty_user_question_response() -> UserQuestionPromptResponse {
+    UserQuestionPromptResponse {
+        answers: serde_json::Map::new(),
+        annotations: serde_json::Map::new(),
+    }
 }
 
 /// Submits prompt/auth/shell input from the TUI prompt.

@@ -29,6 +29,7 @@ pub(super) fn overlay_title(overlay: &OverlayState) -> Cow<'_, str> {
         OverlayState::CommandPicker { title, .. } => Cow::Borrowed(title.as_str()),
         OverlayState::Help => Cow::Borrowed("Help"),
         OverlayState::PermissionPrompt { .. } => Cow::Borrowed("Permission Needed"),
+        OverlayState::UserQuestionPrompt { overlay } => Cow::Owned(overlay.title()),
         OverlayState::Btw(..) => Cow::Borrowed("BTW"),
         OverlayState::Session(..) => Cow::Borrowed("Session"),
         OverlayState::Status(..) => Cow::Borrowed("Status"),
@@ -119,6 +120,11 @@ pub(super) fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
                 text: format!("key  {}", masked_secret(input)),
             },
         ],
+        OverlayState::UserQuestionPrompt { overlay } => overlay
+            .rows()
+            .into_iter()
+            .map(|(selected, text)| OverlayRow { selected, text })
+            .collect(),
         OverlayState::PermissionPrompt { .. }
         | OverlayState::Help
         | OverlayState::Btw(..)

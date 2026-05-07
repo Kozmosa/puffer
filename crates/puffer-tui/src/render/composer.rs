@@ -57,6 +57,7 @@ pub(super) fn overlay_renders_inline_dropdown(overlay: &OverlayState) -> bool {
             | OverlayState::ThemePicker { .. }
             | OverlayState::CommandPicker { .. }
             | OverlayState::PermissionPrompt { .. }
+            | OverlayState::UserQuestionPrompt { .. }
             | OverlayState::OnboardingTheme { .. }
             | OverlayState::OnboardingProvider { .. }
             | OverlayState::OnboardingAuth { .. }

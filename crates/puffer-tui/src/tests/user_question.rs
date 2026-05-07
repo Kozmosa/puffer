@@ -1,0 +1,140 @@
+use super::*;
+use crate::state::{PendingSubmit, PendingSubmitEvent, PendingUserQuestionRequest};
+use crate::user_question_flow::handle_user_question_key;
+use crate::user_question_overlay::UserQuestionOverlay;
+use crossterm::event::{KeyCode, KeyEvent};
+use puffer_core::UserQuestionPromptRequest;
+use ratatui::backend::TestBackend;
+use serde_json::json;
+use std::sync::mpsc;
+use std::time::Duration;
+
+fn sample_question_payload() -> serde_json::Value {
+    json!([
+        {
+            "header": "Mode",
+            "question": "Pick one",
+            "options": [
+                {"label": "Fast", "description": "Prioritize speed"},
+                {"label": "Careful", "description": "Prioritize review"}
+            ]
+        }
+    ])
+}
+
+#[test]
+fn poll_pending_submit_opens_user_question_overlay() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let auth_path = paths.user_config_dir.join("auth.json");
+
+    let request = UserQuestionPromptRequest {
+        questions: sample_question_payload(),
+    };
+    let (event_tx, event_rx) = mpsc::channel();
+    let (response_tx, _response_rx) = mpsc::channel();
+    event_tx
+        .send(PendingSubmitEvent::UserQuestionRequest(
+            request.clone(),
+            response_tx,
+        ))
+        .unwrap();
+
+    let mut tui = TuiState {
+        pending_submit: Some(PendingSubmit {
+            prompt: "hi".to_string(),
+            receiver: event_rx,
+            rendered_tool_invocations: 0,
+            pending_tool_calls: Vec::new(),
+            started_at: std::time::Instant::now(),
+            thinking_active: false,
+            status_hint: None,
+            cancel: puffer_core::CancelToken::new(),
+        }),
+        ..TuiState::default()
+    };
+    let mut state = sample_state();
+    let mut auth_store = sample_auth_store();
+
+    let completed = poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap();
+
+    assert!(!completed);
+    assert!(tui.pending_user_question_request.is_some());
+    assert_eq!(
+        tui.overlay,
+        Some(OverlayState::UserQuestionPrompt {
+            overlay: UserQuestionOverlay::from_value(request.questions).unwrap(),
+        })
+    );
+}
+
+#[test]
+fn user_question_enter_sends_selected_answer() {
+    let (response_tx, response_rx) = mpsc::channel();
+    let mut tui = TuiState {
+        overlay: Some(OverlayState::UserQuestionPrompt {
+            overlay: UserQuestionOverlay::from_value(sample_question_payload()).unwrap(),
+        }),
+        pending_user_question_request: Some(PendingUserQuestionRequest { response_tx }),
+        ..TuiState::default()
+    };
+
+    assert!(handle_user_question_key(
+        KeyEvent::from(KeyCode::Down),
+        &mut tui
+    ));
+    assert!(handle_user_question_key(
+        KeyEvent::from(KeyCode::Enter),
+        &mut tui
+    ));
+    let response = response_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(response.answers["Pick one"], json!("Careful"));
+    assert!(response.annotations.is_empty());
+    assert!(tui.overlay.is_none());
+    assert!(tui.pending_user_question_request.is_none());
+}
+
+#[test]
+fn render_user_question_shows_list_options() {
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let state = sample_state();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let overlay = OverlayState::UserQuestionPrompt {
+        overlay: UserQuestionOverlay::from_value(sample_question_payload()).unwrap(),
+    };
+
+    terminal
+        .draw(|frame| {
+            render::set_active_overlay(Some(overlay.clone()));
+            render::render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &supported_commands(),
+            );
+            render::set_active_overlay(None);
+        })
+        .unwrap();
+    let rendered = buffer_to_string(terminal.backend().buffer());
+    assert!(rendered.contains("Mode: Pick one"));
+    assert!(rendered.contains("Fast  Prioritize speed"));
+    assert!(rendered.contains("Careful  Prioritize review"));
+}

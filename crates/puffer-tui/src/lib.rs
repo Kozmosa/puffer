@@ -19,6 +19,8 @@ mod task_overlay;
 mod task_panels;
 mod text_overlay;
 mod usage;
+mod user_question_flow;
+mod user_question_overlay;
 use crate::flow::{
     advance_loop_after_turn, allow_prompt_before_onboarding, apply_selected_provider,
     builtin_openai_base_url, builtin_openai_headers, builtin_openai_query_params,
@@ -29,6 +31,7 @@ use crate::flow::{
 use crate::permission_prompt_flow::handle_permission_prompt_key;
 use crate::render::initialize_top_panel_image_state;
 use crate::statusline::refresh_status_line;
+use crate::user_question_flow::handle_user_question_key;
 use anyhow::Result;
 use app_helpers::{
     apply_model_selection_preferences, apply_selected_model, help_pane_active_without_overlay,
@@ -665,6 +668,13 @@ fn handle_overlay_key(
         tui.overlay.as_ref(),
         Some(OverlayState::PermissionPrompt { .. })
     ) && handle_permission_prompt_key(key, tui)
+    {
+        return Ok(false);
+    }
+    if matches!(
+        tui.overlay.as_ref(),
+        Some(OverlayState::UserQuestionPrompt { .. })
+    ) && handle_user_question_key(key, tui)
     {
         return Ok(false);
     }
