@@ -612,17 +612,23 @@ fn allow_session_persists_runtime_bash_approval_for_the_session() {
 
     let prompts = prompts.lock().unwrap();
     assert_eq!(prompts.as_slice(), &["Bash".to_string()]);
+    let permission_context = crate::permissions::load_runtime_permission_context_with_inputs(
+        &cwd,
+        &resources,
+        &state,
+        crate::permissions::RuntimePermissionInputs::default(),
+    )
+    .unwrap();
     assert_eq!(
-        state
-            .session_tool_permissions
-            .get("bash")
-            .map(String::as_str),
-        Some("allow")
+        permission_context
+            .decision_for_tool_call(registry.definition("Bash").unwrap(), &json!({"command":"pwd"}))
+            .behavior,
+        crate::permissions::ToolPermissionBehavior::Allow
     );
 }
 
 #[test]
-fn allow_session_scopes_browser_approval_to_evaluate_actions() {
+fn allow_session_scopes_browser_approval_to_current_session_evaluate_only() {
     let mut tool = loaded_tool("Browser", "Managed browser", "runtime:browser");
     tool.value.approval_policy = Some("auto".to_string());
     tool.value.sandbox_policy = Some("workspace-write".to_string());
@@ -679,18 +685,36 @@ fn allow_session_scopes_browser_approval_to_evaluate_actions() {
                 &registry,
                 &cwd,
                 "Browser",
-                &json!({"action": "snapshot"}),
+                &json!({"action": "navigate", "url": "https://example.com"}),
                 None,
             )
             .unwrap();
             assert!(matches!(third, PermissionOutcome::Allowed(_)));
+
+            let fourth = resolve_tool_permission(
+                &mut state,
+                &resources,
+                &registry,
+                &cwd,
+                "Browser",
+                &json!({
+                    "action": "evaluate",
+                    "sessionId": "b4f239fd-1493-4be7-a3a1-9e58fe612576",
+                    "script": "document.title"
+                }),
+                None,
+            )
+            .unwrap();
+            assert!(matches!(fourth, PermissionOutcome::Allowed(_)));
         },
     );
 
     let prompts = prompts.lock().unwrap();
-    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts.len(), 3);
     assert!(prompts[0].contains("executes page JavaScript"));
-    assert!(!state.session_tool_permissions.contains_key("browser"));
+    assert!(prompts[1].contains("navigation and interaction require approval"));
+    assert!(prompts[2].contains("cross-session browser access"));
+    assert!(state.session_permission_state().has_browser_grant());
 }
 
 #[test]

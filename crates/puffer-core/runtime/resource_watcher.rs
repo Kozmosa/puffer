@@ -108,8 +108,8 @@ impl ResourceWatcher {
         let last_fired_clone = Arc::clone(&last_fired);
         let roots_clone: Vec<PathBuf> = roots.to_vec();
 
-        let mut watcher: RecommendedWatcher = notify::recommended_watcher(
-            move |result: notify::Result<Event>| {
+        let mut watcher: RecommendedWatcher =
+            notify::recommended_watcher(move |result: notify::Result<Event>| {
                 let Ok(event) = result else {
                     return;
                 };
@@ -133,9 +133,8 @@ impl ResourceWatcher {
                 }
                 *guard = Some(now);
                 signal_clone.store(true, Ordering::Release);
-            },
-        )
-        .context("construct filesystem watcher")?;
+            })
+            .context("construct filesystem watcher")?;
 
         let mut attached = Vec::new();
         for root in roots {

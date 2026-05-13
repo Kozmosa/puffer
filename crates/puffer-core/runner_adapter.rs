@@ -597,11 +597,7 @@ impl LocalToolRunner {
     /// connections) is dropped — their `kill_on_drop` child processes
     /// exit asynchronously, and the next MCP call lazily spawns the new
     /// roster.
-    pub fn replace_mcp_roster(
-        &self,
-        servers: Vec<McpServerSpec>,
-        workspace: Option<PathBuf>,
-    ) {
+    pub fn replace_mcp_roster(&self, servers: Vec<McpServerSpec>, workspace: Option<PathBuf>) {
         let (handler, fallback_workspace, oauth_dir) = {
             let host = self.mcp_host();
             (

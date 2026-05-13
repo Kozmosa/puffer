@@ -1249,7 +1249,10 @@ mod tests {
         // Embedded builtin skills get merged in too; verify the
         // workspace skill we wrote is present and addressable by
         // normalized names.
-        assert!(loaded.skills.iter().any(|s| s.value.name == "review-helper"));
+        assert!(loaded
+            .skills
+            .iter()
+            .any(|s| s.value.name == "review-helper"));
         assert!(skill_by_name(&loaded, "Review Helper ++").is_some());
         assert!(skill_by_name(&loaded, "review helper").is_some());
         assert!(skill_by_name(&loaded, "review-helper").is_some());
@@ -1324,8 +1327,7 @@ mod tests {
         let loaded = load_resources(&paths, &FsTestRunner).unwrap();
         // Embedded prompts also load; verify the `review` prompt
         // ultimately resolves to the workspace override.
-        let review = prompt_by_id(&loaded, "review")
-            .expect("review prompt should resolve");
+        let review = prompt_by_id(&loaded, "review").expect("review prompt should resolve");
         assert_eq!(review.value.description, "Workspace");
         assert!(review
             .source_info
@@ -1417,8 +1419,9 @@ mod tests {
             "echo workspace"
         );
         let tool_end_hooks = hooks_for_event(&loaded, "tool_end");
-        assert!(tool_end_hooks.iter().any(|h| h.value.id == "tool-end"
-            && h.value.command == "echo workspace"));
+        assert!(tool_end_hooks
+            .iter()
+            .any(|h| h.value.id == "tool-end" && h.value.command == "echo workspace"));
         assert!(loaded
             .diagnostics
             .iter()
@@ -1639,7 +1642,10 @@ mod tests {
         let loaded = load_resources(&paths, &FsTestRunner).unwrap();
         // Embedded MCP servers are also loaded; verify the
         // workspace-layer `enabled` survives but `disabled` is dropped.
-        assert!(loaded.mcp_servers.iter().any(|item| item.value.id == "enabled"));
+        assert!(loaded
+            .mcp_servers
+            .iter()
+            .any(|item| item.value.id == "enabled"));
         assert!(!loaded
             .mcp_servers
             .iter()

@@ -2347,7 +2347,7 @@ fn apply_turn_model_override(
 
 fn apply_daemon_yolo_mode(app_state: &mut AppState) {
     app_state.sandbox_mode = "danger-full-access".to_string();
-    app_state.set_session_allow_all();
+    app_state.grant_all_tools_for_session();
 }
 
 #[cfg(test)]
@@ -2468,7 +2468,7 @@ mod tests {
         apply_daemon_yolo_mode(&mut state);
 
         assert_eq!(state.sandbox_mode, "danger-full-access");
-        assert!(state.session_allow_all);
+        assert!(state.session_permission_state().allow_all_tools());
     }
 
     fn provider(id: &str, models: &[&str]) -> ProviderDescriptor {

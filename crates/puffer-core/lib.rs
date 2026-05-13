@@ -39,12 +39,12 @@ pub use model_preferences::{
 pub use permissions::SessionPermissionState;
 pub use runtime::background_tasks;
 pub use runtime::claude_tools::execute_workflow_tool;
-pub use runtime::resource_watcher;
-pub use runtime::resource_watcher::ResourceWatcher;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::install_subscription_manager;
 pub use runtime::mcp_discovery;
 pub use runtime::quota::{QuotaError, QuotaErrorKind, QUOTA_EXIT_CODE};
+pub use runtime::resource_watcher;
+pub use runtime::resource_watcher::ResourceWatcher;
 pub use runtime::subscription_manager;
 pub use runtime::teammate_loop;
 pub use runtime::{
@@ -369,9 +369,7 @@ fn apply_mcp_roster_to_runner(state: &AppState, resources: &LoadedResources) {
 /// deduplicating by id (case-insensitive). Mirrors the merge done at
 /// startup in `puffer_runner_local::local_runner_from_resources` so a
 /// hot-reload yields the same effective roster as a fresh start.
-fn collect_runner_mcp_roster(
-    resources: &LoadedResources,
-) -> Vec<puffer_resources::McpServerSpec> {
+fn collect_runner_mcp_roster(resources: &LoadedResources) -> Vec<puffer_resources::McpServerSpec> {
     let mut servers: Vec<puffer_resources::McpServerSpec> = resources
         .mcp_servers
         .iter()

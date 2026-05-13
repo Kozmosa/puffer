@@ -368,7 +368,6 @@ pub(crate) fn handle_prompt_submit(
             outcome,
             auth_store: worker_auth_store,
             session_permission_state: worker_state.session_permission_state().clone(),
-            session_allow_all: worker_state.session_allow_all,
         }));
     });
     tui.pending_submit = Some(PendingSubmit {
@@ -457,7 +456,6 @@ pub(crate) fn poll_pending_submit(
                 outcome: Err("background request disconnected".to_string()),
                 auth_store: auth_store.clone(),
                 session_permission_state: state.session_permission_state().clone(),
-                session_allow_all: false,
             }),
         };
         match event {
@@ -526,12 +524,9 @@ pub(crate) fn poll_pending_submit(
                 let rendered_tool_invocations = pending.rendered_tool_invocations;
                 let previous_auth_store = auth_store.clone();
                 *auth_store = result.auth_store;
-                // Sync the full typed session permission state from the worker
-                // clone so category grants survive the worker/UI round-trip.
-                // This also avoids depending on AppState's legacy rebuild path,
-                // where sync_session_permission_state() assumes
-                // session_allow_all was updated before reconstruction.
-                let _ = result.session_allow_all;
+                // Sync the full canonical typed session permission state from
+                // the worker clone so category grants survive the worker/UI
+                // round-trip exactly.
                 state.replace_session_permission_state(result.session_permission_state);
                 match result.outcome {
                     Ok(turn) => {

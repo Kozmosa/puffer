@@ -93,7 +93,7 @@ pub(super) fn execute_tool_call(
                     state.allow_permission_for_tool_call(&definition, &input);
                 }
                 PermissionPromptAction::AllowAllSession => {
-                    state.set_session_allow_all();
+                    state.grant_all_tools_for_session();
                 }
                 PermissionPromptAction::Deny => {
                     return Ok(blocked_runtime_tool(
@@ -245,7 +245,7 @@ pub(super) fn resolve_tool_permission(
                     )?))
                 }
                 PermissionPromptAction::AllowAllSession => {
-                    state.set_session_allow_all();
+                    state.grant_all_tools_for_session();
                     Ok(PermissionOutcome::Allowed(runtime_filesystem_policy(
                         cwd,
                         resources,

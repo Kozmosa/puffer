@@ -49,8 +49,8 @@ use crossterm::terminal::{
 };
 use crossterm::ExecutableCommand;
 use puffer_config::ConfigPaths;
-use puffer_core::{command_surface, shutdown_runtime_services, AppState, CommandSpec};
 use puffer_core::ResourceWatcher;
+use puffer_core::{command_surface, shutdown_runtime_services, AppState, CommandSpec};
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_session_store::SessionStore;
@@ -180,19 +180,17 @@ pub fn run_app(
     // Held to keep the watcher alive for the lifetime of `run_app`. The
     // underscore-prefixed binding signals intent: nothing else reads from
     // it — the watcher dispatches into `state.reload_signal()` directly.
-    let _resource_watcher = match ResourceWatcher::start(
-        &ConfigPaths::discover(&state.cwd),
-        state.reload_signal(),
-    ) {
-        Ok(watcher) => Some(watcher),
-        Err(err) => {
-            tracing::warn!(
-                target = "puffer::tui",
-                "resource hot-reload watcher failed to start: {err}"
-            );
-            None
-        }
-    };
+    let _resource_watcher =
+        match ResourceWatcher::start(&ConfigPaths::discover(&state.cwd), state.reload_signal()) {
+            Ok(watcher) => Some(watcher),
+            Err(err) => {
+                tracing::warn!(
+                    target = "puffer::tui",
+                    "resource hot-reload watcher failed to start: {err}"
+                );
+                None
+            }
+        };
 
     let mut viewport_height = if use_content_viewport {
         let (width, height) = terminal_size()?;

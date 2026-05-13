@@ -1,4 +1,4 @@
-use crate::permissions::{SessionPermissionGrants, SessionPermissionState};
+use crate::permissions::SessionPermissionState;
 use crate::runner_adapter::LocalToolRunner;
 use crate::runtime::ReflectionConfig;
 use puffer_config::PufferConfig;
@@ -205,10 +205,9 @@ pub struct AppState {
     /// [`AppState::take_reload_request`] before deciding to reload.
     pub resource_reload_signal: Arc<AtomicBool>,
     pub(crate) claude_read_state: HashMap<PathBuf, ClaudeReadState>,
+    /// Canonical in-memory session permission state used for current-turn
+    /// evaluation and worker/UI round-trips.
     pub(crate) session_permission_state: SessionPermissionState,
-    pub session_tool_permissions: HashMap<String, String>,
-    /// When true, all tool permission prompts are auto-allowed for the session.
-    pub session_allow_all: bool,
     pub(crate) native_structured_output_unsupported: HashSet<String>,
     pub(crate) status_line_signature: Option<String>,
     pending_query_prompt: Option<String>,
@@ -285,8 +284,6 @@ impl AppState {
             resource_reload_signal: Arc::new(AtomicBool::new(false)),
             claude_read_state: HashMap::new(),
             session_permission_state: SessionPermissionState::default(),
-            session_tool_permissions: HashMap::new(),
-            session_allow_all: false,
             native_structured_output_unsupported: HashSet::new(),
             status_line_signature: None,
             pending_query_prompt: None,
@@ -329,6 +326,12 @@ impl AppState {
     }
 
     /// Restores application state from a persisted session record.
+    ///
+    /// Session-store replay currently restores transcript content plus the
+    /// persisted UI/runtime snapshot fields carried by
+    /// [`TranscriptEvent::StateSnapshot`]. It does not restore
+    /// `session_permission_state`, because session permission state is not yet
+    /// part of the durable snapshot schema.
     pub fn from_session_record(config: PufferConfig, session: SessionRecord) -> Self {
         let cwd = session.metadata.cwd.clone();
         let mut state = Self::new(config, cwd, session.metadata);
@@ -383,6 +386,8 @@ impl AppState {
                     statusline_enabled,
                     working_dirs,
                     claude_read_state,
+                    session_allow_all,
+                    session_tool_permissions,
                 } => {
                     state.current_model = current_model;
                     state.current_provider = current_provider;
@@ -417,6 +422,11 @@ impl AppState {
                             )
                         })
                         .collect();
+                    state.session_permission_state =
+                        SessionPermissionState::from_legacy_snapshot_projection(
+                            session_allow_all,
+                            &session_tool_permissions,
+                        );
                 }
             }
         }
@@ -550,7 +560,15 @@ impl AppState {
     }
 
     /// Builds a persisted snapshot event for the current mutable session state.
+    ///
+    /// This persists a legacy-compatible projection of session permission
+    /// state so resume can restore the subset representable as session-wide
+    /// allow-all plus whole-tool approvals. Narrower typed grants such as
+    /// Browser action categories still remain in-memory only.
     pub fn snapshot_event(&self) -> TranscriptEvent {
+        let (session_allow_all, session_tool_permissions) = self
+            .session_permission_state
+            .legacy_snapshot_projection();
         TranscriptEvent::StateSnapshot {
             current_model: self.current_model.clone(),
             current_provider: self.current_provider.clone(),
@@ -586,6 +604,8 @@ impl AppState {
                     is_partial_view: snapshot.is_partial_view,
                 })
                 .collect(),
+            session_allow_all,
+            session_tool_permissions,
         }
     }
 
@@ -612,8 +632,7 @@ impl AppState {
         self.allow_permission_for_tool_call(&definition, &serde_json::Value::Null);
     }
 
-    /// Grants session-scoped permission for one tool call and refreshes the
-    /// legacy projection cache used by older callers.
+    /// Grants session-scoped permission for one tool call.
     pub fn allow_permission_for_tool_call(
         &mut self,
         definition: &puffer_tools::ToolDefinition,
@@ -624,49 +643,21 @@ impl AppState {
             input,
             &self.session.id,
         );
-        self.session_tool_permissions = self
-            .session_permission_state
-            .grants()
-            .legacy_tool_permissions();
     }
 
-    /// Rebuilds legacy session tool permissions from the typed session state.
-    pub fn sync_session_tool_permissions_from_state(&mut self) {
-        self.session_tool_permissions = self
-            .session_permission_state
-            .grants()
-            .legacy_tool_permissions();
-    }
-
-    /// Returns the typed session permission state.
+    /// Returns the canonical typed session permission state.
     pub fn session_permission_state(&self) -> &SessionPermissionState {
         &self.session_permission_state
     }
 
-    /// Replaces the typed session permission state and refreshes the legacy
-    /// projection cache so worker and UI threads stay in sync.
+    /// Replaces the canonical typed session permission state.
     pub fn replace_session_permission_state(&mut self, state: SessionPermissionState) {
         self.session_permission_state = state;
-        self.session_allow_all = self.session_permission_state.allow_all_tools();
-        self.sync_session_tool_permissions_from_state();
     }
 
     /// Grants all tool permissions for the current session.
-    pub fn set_session_allow_all(&mut self) {
-        self.session_allow_all = true;
+    pub fn grant_all_tools_for_session(&mut self) {
         self.session_permission_state.set_allow_all_tools(true);
-    }
-
-    /// Rebuilds the typed session permission state from legacy session fields.
-    ///
-    /// Callers must update `self.session_allow_all` before invoking this helper.
-    /// The typed `allow_all_tools` bit is sourced from that legacy flag and then
-    /// combined with grants projected from `self.session_tool_permissions`.
-    pub(crate) fn sync_session_permission_state(&mut self) {
-        self.session_permission_state = SessionPermissionState::new(
-            self.session_allow_all,
-            SessionPermissionGrants::from_legacy_tool_permissions(&self.session_tool_permissions),
-        );
     }
 
     pub(crate) fn native_structured_output_key(
@@ -797,6 +788,93 @@ mod tests {
             .map(|message| message.text.as_str())
             .collect::<Vec<_>>();
         assert_eq!(lines, vec!["before", "done"]);
+    }
+
+    #[test]
+    fn typed_browser_session_grants_remain_in_memory_only() {
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            PathBuf::from("."),
+            sample_metadata(),
+        );
+        let browser = puffer_tools::ToolDefinition {
+            id: "Browser".to_string(),
+            name: "Browser".to_string(),
+            description: String::new(),
+            handler: String::new(),
+            aliases: Vec::new(),
+            handler_args: Vec::new(),
+            kind: puffer_tools::ToolKind::Custom,
+            input_schema: puffer_tools::ToolInputSchema::default(),
+            metadata: puffer_tools::ToolMetadata::default(),
+            policy: puffer_tools::ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: puffer_tools::ToolDisplayHints::default(),
+        };
+        let input = serde_json::json!({
+            "action": "evaluate",
+            "script": "document.title"
+        });
+
+        state.allow_permission_for_tool_call(&browser, &input);
+
+        assert!(state.session_permission_state().has_browser_grant());
+    }
+
+    #[test]
+    fn session_restore_from_state_snapshot_restores_legacy_compatible_permissions() {
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            PathBuf::from("."),
+            sample_metadata(),
+        );
+        let browser = puffer_tools::ToolDefinition {
+            id: "Browser".to_string(),
+            name: "Browser".to_string(),
+            description: String::new(),
+            handler: String::new(),
+            aliases: Vec::new(),
+            handler_args: Vec::new(),
+            kind: puffer_tools::ToolKind::Custom,
+            input_schema: puffer_tools::ToolInputSchema::default(),
+            metadata: puffer_tools::ToolMetadata::default(),
+            policy: puffer_tools::ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: puffer_tools::ToolDisplayHints::default(),
+        };
+        state.allow_tool_for_session("Bash");
+        state.allow_permission_for_tool_call(
+            &browser,
+            &serde_json::json!({
+                "action": "evaluate",
+                "script": "document.title"
+            }),
+        );
+        state.grant_all_tools_for_session();
+
+        assert!(state.session_permission_state().allow_all_tools());
+        assert!(state.session_permission_state().has_browser_grant());
+
+        let record = SessionRecord {
+            metadata: state.session.clone(),
+            events: vec![state.snapshot_event()],
+        };
+        let restored = AppState::from_session_record(PufferConfig::default(), record);
+
+        assert!(restored.session_permission_state().allow_all_tools());
+        assert_eq!(
+            restored.session_permission_state(),
+            &SessionPermissionState::from_legacy_snapshot_projection(
+                true,
+                &std::collections::HashMap::from([(
+                    "bash".to_string(),
+                    "allow".to_string()
+                )])
+            )
+        );
+        assert!(!restored.session_permission_state().has_browser_grant());
     }
 
     #[test]

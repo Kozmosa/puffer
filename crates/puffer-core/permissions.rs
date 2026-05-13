@@ -17,13 +17,11 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) use self::execution::{
-    DerivedPermissionPolicy, FilesystemPermissionPolicy, LegacyExecutorPermissionBridge,
-};
+pub(crate) use self::execution::{DerivedPermissionPolicy, FilesystemPermissionPolicy};
 pub use profile::SessionPermissionState;
 pub(crate) use profile::{
     build_request_tool_filter, BrowserActionCategory, BrowserGrantCategory,
-    EffectivePermissionProfile, RequestToolFilter, SessionPermissionGrants,
+    EffectivePermissionProfile, RequestToolFilter,
 };
 
 /// Stores persisted workspace permission overrides for tool ids.
@@ -97,11 +95,6 @@ impl RuntimePermissionContext {
     /// Returns the executor-facing permission policies derived from the effective profile.
     pub(crate) fn derived_policy(&self) -> &DerivedPermissionPolicy {
         &self.derived_policy
-    }
-
-    /// Returns the compatibility bridge still consumed by legacy executor edges.
-    pub(crate) fn legacy_executor_bridge(&self) -> LegacyExecutorPermissionBridge {
-        self.derived_policy.legacy_bridge()
     }
 
     /// Returns true when the tool should stay visible in the provider tool list.
@@ -609,7 +602,8 @@ pub(crate) fn load_runtime_permission_context(
     )
 }
 
-/// Loads the effective permission context for one model turn with request-scoped inputs.
+/// Loads the effective permission context for one model turn with request-scoped
+/// inputs.
 pub(crate) fn load_runtime_permission_context_with_inputs(
     cwd: &Path,
     _resources: &LoadedResources,
@@ -625,14 +619,13 @@ pub(crate) fn load_runtime_permission_context_with_inputs(
         PermissionsSettings::default()
     };
     let sandbox = load_runtime_sandbox_settings(cwd, state)?;
-    let profile = EffectivePermissionProfile::from_legacy_sources(
+    let profile = EffectivePermissionProfile::from_session_state(
         cwd,
         &state.working_dirs,
         &permissions,
         &sandbox,
         &state.session.id,
-        state.session_allow_all,
-        state.session_permission_state.grants(),
+        state.session_permission_state(),
         state.plan_mode,
         active_plan_path.clone(),
         inputs.request_tool_filter,
