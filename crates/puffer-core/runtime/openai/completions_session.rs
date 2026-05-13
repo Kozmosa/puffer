@@ -316,7 +316,7 @@ pub(super) fn setup_completions_session(
                 )?,
                 managed_system_prompt_1_from_env(),
                 crate::plan_mode::take_plan_mode_context_message(state, resources)?,
-                build_system_reminder(&crate::runtime::git_status_context()),
+                build_system_reminder(state, &crate::runtime::git_status_context()),
             )
         };
 

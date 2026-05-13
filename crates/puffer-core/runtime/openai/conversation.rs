@@ -1134,15 +1134,16 @@ pub(crate) fn compact_conversation(
 
 /// Injects a context-restoration message after compaction.
 /// Previously only applied to Responses path — now shared by both.
-pub(crate) fn inject_post_compact_context(
-    items: &mut Vec<ConversationItem>,
-    cwd: &std::path::Path,
-) {
-    let reminder = format!(
+pub(crate) fn inject_post_compact_context(items: &mut Vec<ConversationItem>, state: &AppState) {
+    let mut reminder = format!(
         "[Context restored after compaction]\nCurrent working directory: {}\n\
          Continue the task from where you left off.",
-        cwd.display()
+        state.cwd.display()
     );
+    if let Some(project_memory) = crate::memory::project_memory_skill_reminder(state) {
+        reminder.push_str("\n\n");
+        reminder.push_str(&project_memory);
+    }
     let pos = 1.min(items.len());
     items.insert(pos, ConversationItem::user_message(reminder));
 }
@@ -1175,12 +1176,16 @@ fn find_valid_keep_boundary(items: &[ConversationItem], min_keep: usize) -> usiz
 /// Builds the system reminder text (currentDate + gitStatus).
 /// Previously only injected into Responses API `instructions` field.
 /// Now available to both paths via ConversationItem pipeline.
-pub(crate) fn build_system_reminder(git_status: &str) -> String {
+pub(crate) fn build_system_reminder(state: &AppState, git_status: &str) -> String {
     let now = time::OffsetDateTime::now_utc();
     let date_str = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
     let mut reminder = format!("# currentDate\nToday's date is {date_str}.");
     if !git_status.is_empty() {
         reminder.push_str(&format!("\n\n# gitStatus\n{git_status}"));
+    }
+    if let Some(project_memory) = crate::memory::project_memory_skill_reminder(state) {
+        reminder.push_str("\n\n");
+        reminder.push_str(&project_memory);
     }
     reminder
 }
@@ -1725,7 +1730,9 @@ mod tests {
             ConversationItem::user_message("summary"),
             ConversationItem::user_message("recent"),
         ];
-        inject_post_compact_context(&mut items, std::path::Path::new("/work"));
+        let mut state = crate::runtime::tests::state();
+        state.cwd = std::path::PathBuf::from("/work");
+        inject_post_compact_context(&mut items, &state);
         assert_eq!(items.len(), 3);
         let text = items[1].text_content().unwrap();
         assert!(text.contains("Context restored after compaction"));
@@ -1733,17 +1740,53 @@ mod tests {
     }
 
     #[test]
+    fn inject_post_compact_context_repeats_project_memory_skill_guidance() {
+        let mut items = vec![ConversationItem::user_message("summary")];
+        let mut state = crate::runtime::tests::state();
+        state.cwd = std::path::PathBuf::from("/work");
+        state.project_memory = Some(crate::memory::ProjectMemoryContext {
+            project_name: "demo".to_string(),
+            project_root: std::path::PathBuf::from("/work"),
+            memory_file: std::path::PathBuf::from("/tmp/MEMORY.md"),
+            char_limit: 6_000,
+        });
+
+        inject_post_compact_context(&mut items, &state);
+        let text = items[1].text_content().unwrap();
+        assert!(text.contains("skill: \"project-memory\""));
+        assert!(text.contains("/tmp/MEMORY.md"));
+    }
+
+    #[test]
     fn build_system_reminder_includes_date() {
-        let reminder = build_system_reminder("");
+        let state = crate::runtime::tests::state();
+        let reminder = build_system_reminder(&state, "");
         assert!(reminder.contains("currentDate"));
         assert!(reminder.contains("Today's date is"));
     }
 
     #[test]
     fn build_system_reminder_includes_git_status() {
-        let reminder = build_system_reminder("On branch main");
+        let state = crate::runtime::tests::state();
+        let reminder = build_system_reminder(&state, "On branch main");
         assert!(reminder.contains("gitStatus"));
         assert!(reminder.contains("On branch main"));
+    }
+
+    #[test]
+    fn build_system_reminder_includes_project_memory_skill_guidance() {
+        let mut state = crate::runtime::tests::state();
+        state.project_memory = Some(crate::memory::ProjectMemoryContext {
+            project_name: "demo".to_string(),
+            project_root: std::path::PathBuf::from("/workspace/demo"),
+            memory_file: std::path::PathBuf::from("/tmp/MEMORY.md"),
+            char_limit: 6_000,
+        });
+
+        let reminder = build_system_reminder(&state, "");
+        assert!(reminder.contains("projectMemory"));
+        assert!(reminder.contains("skill: \"project-memory\""));
+        assert!(reminder.contains("/tmp/MEMORY.md"));
     }
 
     #[test]

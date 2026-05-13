@@ -139,7 +139,7 @@ fn setup_anthropic_session(
     )?;
 
     let git_status = git_status_context();
-    let system_reminder = build_system_reminder(&git_status);
+    let system_reminder = build_system_reminder(state, &git_status);
 
     let model_supports_thinking = provider
         .models

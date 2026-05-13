@@ -269,6 +269,11 @@ pub(crate) fn execute_tool(
                 definition, true, stdout, metadata,
             ))
         }
+        _ if definition.handler == "runtime:project_memory" => Ok(tool_result(
+            definition,
+            true,
+            crate::memory::execute_memory_tool(state, input)?,
+        )),
         _ if super::local_tools::is_runtime_local_tool(definition) => Ok(tool_result(
             definition,
             true,

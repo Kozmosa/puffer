@@ -62,6 +62,10 @@ pub(super) struct OpenAIResponsesTurnSession {
     pub model_id: String,
     pub supports_reasoning: bool,
     pub supports_response_threading: bool,
+    /// Pre-rendered `<system-reminder>` text (currentDate + gitStatus +
+    /// optional project-memory skill guidance). Computed once at session
+    /// setup so `pre_loop_inject` does not need `&AppState`.
+    pub context_reminder: String,
     /// Server-side response identifier from the most recent turn. When
     /// set, the next request omits already-known prefix items.
     pub previous_response_id: Option<String>,
@@ -375,12 +379,13 @@ impl TurnSession for OpenAIResponsesTurnSession {
         if self.lightweight_context {
             return;
         }
-        // Pin per-turn dynamic context (currentDate + gitStatus) at
-        // the front so every Responses request includes it. Static
-        // instructions stay in `instructions` — only this dynamic part
-        // belongs in `input`.
-        let context_reminder = super::build_context_reminder_message();
-        insert_context_reminder_preserving_legacy_leading_system(items, &context_reminder);
+        // Pin per-turn dynamic context (currentDate + gitStatus + optional
+        // project-memory skill guidance) at the front so every Responses
+        // request includes it. Static instructions stay in `instructions`
+        // — only this dynamic part belongs in `input`. The reminder text
+        // was rendered once at session setup with `&AppState` access,
+        // since this trait method does not receive state.
+        insert_context_reminder_preserving_legacy_leading_system(items, &self.context_reminder);
     }
 
     fn notify_compacted(&mut self) {
@@ -450,6 +455,12 @@ pub(super) fn setup_responses_session(
     let supports_response_threading =
         openai_supports_response_threading(provider, &execution.request_config.base_url, model);
 
+    let context_reminder = if options.lightweight_context {
+        String::new()
+    } else {
+        super::build_context_reminder_message(state)
+    };
+
     Ok(OpenAIResponsesTurnSession {
         execution,
         instructions,
@@ -460,6 +471,7 @@ pub(super) fn setup_responses_session(
         model_id,
         supports_reasoning,
         supports_response_threading,
+        context_reminder,
         previous_response_id: None,
         continuation_start: None,
     })

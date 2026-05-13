@@ -1,3 +1,4 @@
+use crate::memory::ProjectMemoryContext;
 use crate::permissions::{SessionPermissionGrants, SessionPermissionState};
 use crate::runner_adapter::LocalToolRunner;
 use crate::runtime::ReflectionConfig;
@@ -187,6 +188,8 @@ pub struct AppState {
     pub active_team_name: Option<String>,
     pub statusline_enabled: bool,
     pub status_line_text: Option<String>,
+    pub project_memory: Option<ProjectMemoryContext>,
+    pub project_memory_review_turns: usize,
     pub vim_mode: bool,
     /// Session-scoped reflection policy toggled via `/reflect`; `None` means off.
     pub reflection_config: Option<ReflectionConfig>,
@@ -249,6 +252,13 @@ impl AppState {
             .clone()
             .unwrap_or_else(|| "auto".to_string());
         let fast_mode = config.fast_mode;
+        let project_memory = if config.memory.enabled {
+            ProjectMemoryContext::load(&cwd, config.memory.char_limit)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
         let vim_mode = config.editor_mode == "vim";
         Self {
             current_model,
@@ -277,6 +287,8 @@ impl AppState {
             active_team_name: None,
             statusline_enabled: true,
             status_line_text: None,
+            project_memory,
+            project_memory_review_turns: 0,
             vim_mode,
             reflection_config: None,
             session_goal: None,
@@ -495,6 +507,37 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Records one completed or failed task in the current runtime session state.
+    pub fn memory_enabled(&self) -> bool {
+        self.config.memory.enabled
+    }
+
+    pub fn memory_review_enabled(&self) -> bool {
+        self.config.memory.background_review
+    }
+
+    pub fn memory_flush_enabled(&self) -> bool {
+        self.config.memory.flush_on_compact
+    }
+
+    pub fn memory_review_nudge_interval(&self) -> usize {
+        self.config.memory.review_nudge_interval
+    }
+
+    pub fn memory_flush_min_turns(&self) -> usize {
+        self.config.memory.flush_min_turns
+    }
+
+    pub fn refresh_project_memory(&mut self) {
+        self.project_memory = if self.config.memory.enabled {
+            ProjectMemoryContext::load(&self.cwd, self.config.memory.char_limit)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
     }
 
     /// Records one completed or failed task in the current runtime session state.
