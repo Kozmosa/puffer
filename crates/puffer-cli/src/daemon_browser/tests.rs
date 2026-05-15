@@ -1,15 +1,18 @@
 use super::agent::{
-    checkable_state_expression, fill_expression, focus_expression, key_text, scroll_delta,
-    scroll_into_view_expression, select_expression,
+    key_text, scroll_delta,
 };
 use super::cursor::parse_cursor_response;
 use super::params::{parse_input_event, required_string_array};
 use super::screenshot::{
     parse_agent_screenshot_options, parse_capture_screenshot_response, BrowserScreenshotFormat,
+    BrowserElementRef,
 };
 use super::selection::parse_copy_selection_response;
+use super::ref_resolution::{
+    checkable_state_expression, fill_expression, focus_expression, scroll_into_view_expression,
+    select_expression, upload_input_handle_expression,
+};
 use super::upload::parse_upload_handle_response;
-use super::upload::upload_input_handle_expression;
 use super::*;
 use crate::daemon_browser::tabs::BrowserCurrentTabStatus;
 
@@ -423,23 +426,56 @@ fn parses_upload_handle_response_object_id() {
 }
 
 #[test]
-fn fill_expression_supports_label_controls() {
-    let expression = fill_expression(10.0, 20.0, "pufferfish").unwrap();
-    assert!(expression.contains("label.control"));
-    assert!(expression.contains("label.querySelector(editableSelector)"));
+fn fill_expression_uses_ref_resolution() {
+    let expression = fill_expression(
+        &BrowserElementRef {
+            ref_id: "@e1".to_string(),
+            role: "textbox".to_string(),
+            name: "Name".to_string(),
+            tag: "textarea".to_string(),
+            href: None,
+            x: 10.0,
+            y: 20.0,
+        },
+        "pufferfish",
+    )
+    .unwrap();
+    assert!(expression.contains("findTarget(refTarget)"));
+    assert!(expression.contains("Target is not editable"));
 }
 
 #[test]
 fn fill_expression_uses_native_value_setter() {
-    let expression = fill_expression(10.0, 20.0, "pufferfish").unwrap();
+    let expression = fill_expression(
+        &BrowserElementRef {
+            ref_id: "@e1".to_string(),
+            role: "textbox".to_string(),
+            name: "Name".to_string(),
+            tag: "textarea".to_string(),
+            href: None,
+            x: 10.0,
+            y: 20.0,
+        },
+        "pufferfish",
+    )
+    .unwrap();
     assert!(expression.contains("Object.getOwnPropertyDescriptor(prototype, 'value')"));
     assert!(expression.contains("descriptor.set.call(target"));
 }
 
 #[test]
 fn focus_expression_targets_focusable_elements() {
-    let expression = focus_expression(10.0, 20.0);
-    assert!(expression.contains("target.focus"));
+    let expression = focus_expression(&BrowserElementRef {
+        ref_id: "@e1".to_string(),
+        role: "button".to_string(),
+        name: "Submit".to_string(),
+        tag: "button".to_string(),
+        href: None,
+        x: 10.0,
+        y: 20.0,
+    })
+    .unwrap();
+    assert!(expression.contains("targetEl.focus"));
     assert!(expression.contains("Target is not focusable"));
 }
 
@@ -449,32 +485,68 @@ fn scroll_helpers_cover_alias_behaviour() {
     assert!(scroll_delta("diagonal", 480).is_err());
     assert_eq!(key_text("A").as_deref(), Some("A"));
     assert_eq!(key_text("Enter"), None);
-    let expression = scroll_into_view_expression(10.0, 20.0);
+    let expression = scroll_into_view_expression(&BrowserElementRef {
+        ref_id: "@e1".to_string(),
+        role: "button".to_string(),
+        name: "Save".to_string(),
+        tag: "button".to_string(),
+        href: None,
+        x: 10.0,
+        y: 20.0,
+    })
+    .unwrap();
+    assert!(expression.contains("findTarget(refTarget)"));
     assert!(expression.contains("scrollIntoView"));
-    assert!(expression.contains("behavior: 'instant'"));
 }
 
 #[test]
 fn select_expression_supports_label_bound_selects() {
-    let expression = select_expression(10.0, 20.0, "New York").unwrap();
-    assert!(expression.contains("label.control instanceof HTMLSelectElement"));
-    assert!(expression.contains("exact option value or label text"));
+    let expression = select_expression(
+        &BrowserElementRef {
+            ref_id: "@e1".to_string(),
+            role: "combobox".to_string(),
+            name: "State".to_string(),
+            tag: "select".to_string(),
+            href: None,
+            x: 10.0,
+            y: 20.0,
+        },
+        "New York",
+    )
+    .unwrap();
+    assert!(expression.contains("findTarget(refTarget)"));
     assert!(expression.contains("dispatchEvent(new Event('change'"));
 }
 
 #[test]
 fn upload_expression_supports_direct_inputs_and_labels() {
-    let expression = upload_input_handle_expression(10.0, 20.0);
-    assert!(expression.contains("node.closest('input[type=\"file\"]')"));
-    assert!(expression.contains("label.control instanceof HTMLInputElement"));
+    let expression = upload_input_handle_expression(&BrowserElementRef {
+        ref_id: "@e1".to_string(),
+        role: "file".to_string(),
+        name: "Upload".to_string(),
+        tag: "input".to_string(),
+        href: None,
+        x: 10.0,
+        y: 20.0,
+    })
+    .unwrap();
+    assert!(expression.contains("resolveFileInputTarget(refElement)"));
     assert!(expression.contains("Target is not a native file input"));
 }
 
 #[test]
 fn checkable_state_expression_supports_labels_and_roles() {
-    let expression = checkable_state_expression(10.0, 20.0);
-    assert!(expression.contains("label.control instanceof HTMLInputElement"));
-    assert!(expression.contains("[role=\"checkbox\"], [role=\"radio\"]"));
+    let expression = checkable_state_expression(&BrowserElementRef {
+        ref_id: "@e1".to_string(),
+        role: "checkbox".to_string(),
+        name: "Accept".to_string(),
+        tag: "input".to_string(),
+        href: None,
+        x: 10.0,
+        y: 20.0,
+    })
+    .unwrap();
+    assert!(expression.contains("resolveCheckableTarget(refElement)"));
     assert!(expression.contains("Target is not a checkbox or radio control"));
 }
 

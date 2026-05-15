@@ -24,6 +24,7 @@ mod cursor;
 mod devtools;
 mod input;
 mod params;
+mod ref_resolution;
 mod recording;
 mod rpc;
 mod screenshot;
