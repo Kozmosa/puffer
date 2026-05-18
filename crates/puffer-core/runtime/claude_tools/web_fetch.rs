@@ -1,7 +1,8 @@
 use super::retry_http_send;
 use anyhow::{bail, Context, Result};
 use html2text::from_read;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
+use reqwest::redirect::Policy;
 use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -84,11 +85,16 @@ pub fn claude_web_fetch_input_schema() -> Value {
 pub fn execute_claude_web_fetch(raw_input: Value) -> Result<Value> {
     let input: ClaudeWebFetchInput =
         serde_json::from_value(raw_input).context("invalid WebFetch input")?;
-    let client = Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .context("failed to build WebFetch HTTP client")?;
+    let client = web_fetch_http_client()?;
     execute_claude_web_fetch_internal(client, input)
+}
+
+fn web_fetch_http_client() -> Result<Client> {
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(Policy::none())
+        .build()
+        .context("failed to build WebFetch HTTP client")
 }
 
 fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput) -> Result<Value> {
@@ -117,16 +123,16 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
     let final_url = response.url().clone();
     let status_text = status_text(status).to_string();
 
-    if host_changed(&request_url, &final_url) {
+    if let Some(redirect_url) = redirect_target(&request_url, &response)? {
         let redirect_message =
-            build_redirect_message(&request_url, &final_url, status, &input.prompt);
+            build_redirect_message(&request_url, &redirect_url, status, &input.prompt);
         return Ok(json!({
             "bytes": redirect_message.len(),
             "code": status.as_u16(),
             "codeText": status_text,
             "result": redirect_message,
             "durationMs": start.elapsed().as_millis(),
-            "url": final_url.to_string(),
+            "url": redirect_url.to_string(),
         }));
     }
 
@@ -234,11 +240,20 @@ fn content_length_exceeds_limit(length: Option<u64>) -> bool {
     length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
 }
 
-fn host_changed(request_url: &Url, final_url: &Url) -> bool {
-    request_url
-        .host_str()
-        .zip(final_url.host_str())
-        .is_some_and(|(requested, actual)| !requested.eq_ignore_ascii_case(actual))
+fn redirect_target(request_url: &Url, response: &Response) -> Result<Option<Url>> {
+    if !response.status().is_redirection() {
+        return Ok(None);
+    }
+    let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+        return Ok(None);
+    };
+    let location = location
+        .to_str()
+        .context("redirect location header is not valid UTF-8")?;
+    let redirect_url = request_url
+        .join(location)
+        .with_context(|| format!("invalid redirect location `{location}`"))?;
+    Ok(Some(redirect_url))
 }
 
 fn status_text(status: StatusCode) -> &'static str {
@@ -466,6 +481,34 @@ mod tests {
         assert!(message.contains("REDIRECT DETECTED"));
         assert!(message.contains("use WebFetch again"));
         assert!(message.contains("https://new.example/page"));
+    }
+
+    #[test]
+    fn web_fetch_client_does_not_follow_redirects() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 1024];
+            let _ = stream.read(&mut buffer).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/metadata\r\nContent-Length: 0\r\n\r\n",
+                )
+                .unwrap();
+        });
+
+        let client = web_fetch_http_client().unwrap();
+        let request_url = Url::parse(&format!("http://{addr}/start")).unwrap();
+        let response = client.get(request_url.clone()).send().unwrap();
+
+        handle.join().unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let redirect = redirect_target(&request_url, &response).unwrap().unwrap();
+        assert_eq!(redirect.as_str(), "http://127.0.0.1:9/metadata");
     }
 
     #[test]

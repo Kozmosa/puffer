@@ -1791,12 +1791,14 @@ fn untracked_diff(root: &Path, files: &str) -> (String, String) {
     let mut stat = String::new();
     let mut patch = String::new();
     let mut skipped = 0usize;
+    let mut processed = 0usize;
     for rel in files
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .take(MAX_UNTRACKED_DIFF_FILES)
     {
+        processed += 1;
         let path = root.join(rel);
         let Ok(meta) = fs::metadata(&path) else {
             continue;
@@ -1835,6 +1837,9 @@ fn untracked_diff(root: &Path, files: &str) -> (String, String) {
         }
     }
     let total = files.lines().filter(|line| !line.trim().is_empty()).count();
+    if processed < total.min(MAX_UNTRACKED_DIFF_FILES) {
+        skipped += total.min(MAX_UNTRACKED_DIFF_FILES) - processed;
+    }
     if total > MAX_UNTRACKED_DIFF_FILES {
         skipped += total - MAX_UNTRACKED_DIFF_FILES;
     }
