@@ -28,9 +28,14 @@ const DEFAULT_PROVIDER: &str = "codex";
 const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_PUFFER_MODEL: &str = "default";
 const REMOTE_FILE_WRITE_MAX_BYTES: usize = 5 * 1024 * 1024;
+const MAX_GIT_CLONE_DEPTH: u64 = 10_000;
 const MAX_UNTRACKED_DIFF_FILES: usize = 128;
 const MAX_UNTRACKED_DIFF_FILE_BYTES: u64 = 256 * 1024;
 const MAX_UNTRACKED_DIFF_PATCH_BYTES: usize = 512 * 1024;
+const DEFAULT_PTY_COLS: u16 = 100;
+const DEFAULT_PTY_ROWS: u16 = 30;
+const MAX_PTY_COLS: u16 = 500;
+const MAX_PTY_ROWS: u16 = 200;
 
 pub(crate) struct BackendState {
     ptys: Arc<pty::PtyRegistry>,
@@ -626,9 +631,9 @@ impl BackendState {
     fn git_clone(&self, events: EventEmitter, params: Value) -> Result<Value> {
         let url = string_param(&params, &["url"])?;
         let dest_raw = string_param(&params, &["dest"])?;
-        let depth = params.get("depth").and_then(Value::as_u64);
+        let depth = parse_git_clone_depth(&params)?;
         let base = self.default_workspace()?;
-        let dest = absolutize(&base, Path::new(&dest_raw));
+        let dest = validate_git_clone_dest(&self.allowed_roots()?, &base, &dest_raw)?;
         let clone_id = Uuid::new_v4().to_string();
         let clone_id_thread = clone_id.clone();
         let dest_thread = dest.clone();
@@ -764,9 +769,9 @@ impl BackendState {
         let cwd = optional_string_param(&params, &["cwd"])
             .map(PathBuf::from)
             .unwrap_or(self.default_workspace()?);
-        let cwd = normalize_path(&cwd);
-        let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(100) as u16;
-        let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(30) as u16;
+        let cwd = validate_pty_cwd(&self.allowed_roots()?, &cwd)?;
+        let cols = bounded_u16_param(&params, "cols", DEFAULT_PTY_COLS, MAX_PTY_COLS)?;
+        let rows = bounded_u16_param(&params, "rows", DEFAULT_PTY_ROWS, MAX_PTY_ROWS)?;
         let title = optional_string_param(&params, &["title"]);
         let pty_id = self
             .ptys
@@ -801,8 +806,8 @@ impl BackendState {
 
     fn pty_resize(&self, params: Value) -> Result<Value> {
         let pty_id = string_param(&params, &["ptyId", "pty_id"])?;
-        let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(100) as u16;
-        let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(30) as u16;
+        let cols = bounded_u16_param(&params, "cols", DEFAULT_PTY_COLS, MAX_PTY_COLS)?;
+        let rows = bounded_u16_param(&params, "rows", DEFAULT_PTY_ROWS, MAX_PTY_ROWS)?;
         self.ptys.resize(&pty_id, cols, rows)?;
         Ok(json!({}))
     }
@@ -1902,6 +1907,70 @@ mod tests {
 
         assert_eq!(fs::read_to_string(target).unwrap(), "ok");
     }
+
+    #[test]
+    fn validate_git_clone_dest_rejects_paths_outside_allowed_roots() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![allowed.path().canonicalize().unwrap()];
+
+        let err = validate_git_clone_dest(
+            &roots,
+            allowed.path(),
+            outside.path().join("repo").to_str().unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("path escapes allowed roots"));
+    }
+
+    #[test]
+    fn validate_git_clone_dest_rejects_relative_traversal() {
+        let allowed = tempfile::tempdir().unwrap();
+        let roots = vec![allowed.path().canonicalize().unwrap()];
+
+        let err = validate_git_clone_dest(&roots, allowed.path(), "../repo").unwrap_err();
+
+        assert!(err.to_string().contains("path escapes allowed roots"));
+    }
+
+    #[test]
+    fn validate_pty_cwd_rejects_paths_outside_allowed_roots() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![allowed.path().canonicalize().unwrap()];
+
+        let err = validate_pty_cwd(&roots, outside.path()).unwrap_err();
+
+        assert!(err.to_string().contains("path escapes allowed roots"));
+    }
+
+    #[test]
+    fn parse_git_clone_depth_rejects_zero_and_extreme_values() {
+        assert!(parse_git_clone_depth(&json!({"depth": 0})).is_err());
+        assert!(parse_git_clone_depth(&json!({"depth": MAX_GIT_CLONE_DEPTH + 1})).is_err());
+        assert_eq!(
+            parse_git_clone_depth(&json!({"depth": 1})).unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn bounded_u16_param_rejects_zero_and_overflow_values() {
+        assert!(bounded_u16_param(&json!({"cols": 0}), "cols", 100, 500).is_err());
+        assert!(bounded_u16_param(&json!({"cols": 65_536}), "cols", 100, 500).is_err());
+        assert_eq!(
+            bounded_u16_param(&json!({"cols": 120}), "cols", 100, 500).unwrap(),
+            120
+        );
+    }
+
+    #[test]
+    fn file_tabs_file_rejects_path_components_in_session_id() {
+        let err = file_tabs_file("../outside").unwrap_err();
+
+        assert!(err.to_string().contains("simple identifier"));
+    }
 }
 
 fn emit_backend_event(events: &EventEmitter, event: &str, payload: Value) {
@@ -2161,12 +2230,38 @@ fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn absolutize(base: &Path, raw: &Path) -> PathBuf {
-    if raw.is_absolute() {
-        normalize_path(raw)
+fn validate_git_clone_dest(allowed_roots: &[PathBuf], base: &Path, raw: &str) -> Result<PathBuf> {
+    let raw_path = Path::new(raw);
+    let candidate = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
     } else {
-        normalize_path(&base.join(raw))
+        base.join(raw_path)
+    };
+    files::validate_write_path(allowed_roots, &candidate.display().to_string())
+}
+
+fn validate_pty_cwd(allowed_roots: &[PathBuf], cwd: &Path) -> Result<PathBuf> {
+    files::validate_path(allowed_roots, &cwd.display().to_string())
+}
+
+fn parse_git_clone_depth(params: &Value) -> Result<Option<u64>> {
+    let Some(depth) = params.get("depth").and_then(Value::as_u64) else {
+        return Ok(None);
+    };
+    if depth == 0 || depth > MAX_GIT_CLONE_DEPTH {
+        bail!("clone depth must be between 1 and {MAX_GIT_CLONE_DEPTH}");
     }
+    Ok(Some(depth))
+}
+
+fn bounded_u16_param(params: &Value, key: &str, default: u16, max: u16) -> Result<u16> {
+    let Some(value) = params.get(key).and_then(Value::as_u64) else {
+        return Ok(default);
+    };
+    if value == 0 || value > max as u64 {
+        bail!("{key} must be between 1 and {max}");
+    }
+    Ok(value as u16)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -2313,9 +2408,21 @@ fn permissions_file() -> Result<PathBuf> {
 }
 
 fn file_tabs_file(session_id: &str) -> Result<PathBuf> {
+    validate_state_file_id(session_id, "session_id")?;
     Ok(app_home()?
         .join("file-tabs")
         .join(format!("{session_id}.json")))
+}
+
+fn validate_state_file_id(value: &str, field: &str) -> Result<()> {
+    if value.trim().is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("{field} must be a simple identifier");
+    }
+    Ok(())
 }
 
 fn now_ms() -> u64 {
