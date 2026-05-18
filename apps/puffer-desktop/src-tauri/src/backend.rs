@@ -1949,6 +1949,7 @@ mod tests {
     fn parse_git_clone_depth_rejects_zero_and_extreme_values() {
         assert!(parse_git_clone_depth(&json!({"depth": 0})).is_err());
         assert!(parse_git_clone_depth(&json!({"depth": MAX_GIT_CLONE_DEPTH + 1})).is_err());
+        assert!(parse_git_clone_depth(&json!({"depth": "1"})).is_err());
         assert_eq!(
             parse_git_clone_depth(&json!({"depth": 1})).unwrap(),
             Some(1)
@@ -1959,6 +1960,7 @@ mod tests {
     fn bounded_u16_param_rejects_zero_and_overflow_values() {
         assert!(bounded_u16_param(&json!({"cols": 0}), "cols", 100, 500).is_err());
         assert!(bounded_u16_param(&json!({"cols": 65_536}), "cols", 100, 500).is_err());
+        assert!(bounded_u16_param(&json!({"cols": "120"}), "cols", 100, 500).is_err());
         assert_eq!(
             bounded_u16_param(&json!({"cols": 120}), "cols", 100, 500).unwrap(),
             120
@@ -2245,8 +2247,11 @@ fn validate_pty_cwd(allowed_roots: &[PathBuf], cwd: &Path) -> Result<PathBuf> {
 }
 
 fn parse_git_clone_depth(params: &Value) -> Result<Option<u64>> {
-    let Some(depth) = params.get("depth").and_then(Value::as_u64) else {
+    let Some(value) = params.get("depth") else {
         return Ok(None);
+    };
+    let Some(depth) = value.as_u64() else {
+        bail!("clone depth must be an unsigned integer");
     };
     if depth == 0 || depth > MAX_GIT_CLONE_DEPTH {
         bail!("clone depth must be between 1 and {MAX_GIT_CLONE_DEPTH}");
@@ -2255,8 +2260,11 @@ fn parse_git_clone_depth(params: &Value) -> Result<Option<u64>> {
 }
 
 fn bounded_u16_param(params: &Value, key: &str, default: u16, max: u16) -> Result<u16> {
-    let Some(value) = params.get(key).and_then(Value::as_u64) else {
+    let Some(raw) = params.get(key) else {
         return Ok(default);
+    };
+    let Some(value) = raw.as_u64() else {
+        bail!("{key} must be an unsigned integer");
     };
     if value == 0 || value > max as u64 {
         bail!("{key} must be between 1 and {max}");
