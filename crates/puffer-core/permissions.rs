@@ -604,12 +604,13 @@ pub(crate) fn load_runtime_permission_context_with_inputs(
     };
     let browser_policy = loaded_permissions.browser;
     let sandbox = load_runtime_sandbox_settings(cwd, state)?;
+    let browser_root_session_id = state.browser_root_session_id();
     let profile = EffectivePermissionProfile::from_session_state(
         cwd,
         &state.working_dirs,
         &permissions,
         &sandbox,
-        &state.session.id,
+        &browser_root_session_id,
         state.session_permission_state(),
         state.plan_mode,
         active_plan_path.clone(),

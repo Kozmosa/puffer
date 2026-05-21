@@ -4,10 +4,12 @@ mod command_helpers;
 mod command_summary;
 mod config_settings;
 mod hooks;
+mod memory;
 mod model_preferences;
 mod permissions;
 mod plan_mode;
 mod plans;
+pub mod recap;
 pub mod runner_adapter;
 pub mod runner_mcp;
 mod runtime;
@@ -30,8 +32,12 @@ pub use command_helpers::PluginActionEntry;
 pub use command_helpers::ResumeLaunchResolution;
 pub use command_helpers::SessionOverlayView;
 pub use command_helpers::TaskActionEntry;
-pub(crate) use command_summary::{render_buddy_summary, render_cost_summary, render_usage_summary};
+pub use command_summary::render_cost_summary;
+pub(crate) use command_summary::{render_buddy_summary, render_usage_summary};
 pub use hooks::run_resource_hooks;
+pub use memory::{
+    flush_project_memory, project_memory_turn_completed, spawn_project_memory_review,
+};
 pub use model_preferences::{
     default_effort_level, effort_level_is_supported, normalized_effort_level,
     provider_preference_family, supported_effort_levels, ModelPreferenceFamily,
@@ -61,11 +67,9 @@ pub use runtime::{
     execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
     runtime_work_active, shutdown_runtime_services, with_permission_prompt_handler,
     with_user_question_prompt_handler, BrowserAutoReviewActionSet, BrowserAutoReviewRawAction,
-    BrowserAutoReviewRequest, BrowserAutoReviewRuntimeResult,
-    BrowserAutoReviewSessionTargeting, BrowserAutoReviewSource,
-    BrowserAutoReviewSuggestedGrantScope, BrowserAutoReviewTargetClass,
-    BrowserAutoReviewUrlSource,
-    BrowserPermissionPromptActionSet, BrowserPermissionPromptPayload,
+    BrowserAutoReviewRequest, BrowserAutoReviewRuntimeResult, BrowserAutoReviewSessionTargeting,
+    BrowserAutoReviewSource, BrowserAutoReviewSuggestedGrantScope, BrowserAutoReviewTargetClass,
+    BrowserAutoReviewUrlSource, BrowserPermissionPromptActionSet, BrowserPermissionPromptPayload,
     BrowserPermissionPromptSource, BrowserPermissionPromptTargetClass, CancelToken,
     CodeJudgeConfig, LlmJudgeConfig, LlmJudgeContextScope, LlmJudgeMode, LlmJudgePromptCacheMode,
     PermissionPromptAction, PermissionPromptRequest, PermissionPromptReviewPayload,

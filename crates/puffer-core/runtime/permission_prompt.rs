@@ -1,11 +1,11 @@
+use super::browser_auto_review::{
+    BrowserAutoReviewRuntimeResult, BrowserAutoReviewSessionTargeting,
+};
 use crate::permissions::browser_action::browser_permission_value_for_tool_call;
 use crate::permissions::browser_target::{
     browser_permission_context_for_tool, BrowserActionCategory, BrowserTargetClass,
 };
 use crate::tool_names::canonical_tool_name;
-use super::browser_auto_review::{
-    BrowserAutoReviewRuntimeResult, BrowserAutoReviewSessionTargeting,
-};
 use puffer_tools::ToolDefinition;
 use serde_json::{Map, Value};
 use std::cell::RefCell;
@@ -31,6 +31,7 @@ pub struct BrowserPermissionPromptPayload {
     pub host: Option<String>,
     pub target_class: BrowserPermissionPromptTargetClass,
     pub tab_id: Option<String>,
+    pub is_cross_session: bool,
 }
 
 /// Carries the reviewer conclusion shown when Browser approval falls back to the user.
@@ -223,6 +224,7 @@ fn browser_prompt_payload(
         host,
         target_class,
         tab_id: context.tab_id.clone(),
+        is_cross_session: context.root_session_id != current_session_id,
     })
 }
 

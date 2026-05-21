@@ -186,6 +186,9 @@ pub(crate) fn execute_compact_prompt_command(
     rendered: &str,
     tool_filter: Option<&RequestToolFilter>,
 ) -> Result<()> {
+    if state.memory_flush_enabled() {
+        let _ = crate::flush_project_memory(state, resources, providers, auth_store);
+    }
     record_specialized_prompt_request(state, session_store, rendered)?;
     match crate::runtime::execute_user_prompt_with_tool_filter(
         state,
@@ -218,6 +221,7 @@ fn record_specialized_prompt_request(
         state.session.id,
         TranscriptEvent::UserMessage {
             text: rendered.to_string(),
+            actor: Some(state.user_actor()),
         },
     )?;
     Ok(())
@@ -240,7 +244,10 @@ pub(crate) fn finalize_compact_prompt_command(
     state.push_message(MessageRole::User, boundary.clone());
     session_store.append_event(
         state.session.id,
-        puffer_session_store::TranscriptEvent::UserMessage { text: boundary },
+        puffer_session_store::TranscriptEvent::UserMessage {
+            text: boundary,
+            actor: Some(state.user_actor()),
+        },
     )?;
     emit_system(
         state,

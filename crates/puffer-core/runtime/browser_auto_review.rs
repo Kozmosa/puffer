@@ -1,7 +1,9 @@
-use super::agents::{build_agent_system_prompt, combine_agent_prompt, filter_resources_for_agent};
+use super::agent_support::{
+    build_agent_system_prompt, combine_agent_prompt, filter_resources_for_agent,
+};
 use super::permission_prompt::{
-    BrowserPermissionPromptActionSet, BrowserPermissionPromptPayload, BrowserPermissionPromptSource,
-    BrowserPermissionPromptTargetClass,
+    BrowserPermissionPromptActionSet, BrowserPermissionPromptPayload,
+    BrowserPermissionPromptSource, BrowserPermissionPromptTargetClass,
 };
 use crate::permissions::browser_grants::BrowserGrantScopeKind;
 use crate::tool_names::canonical_tool_name;
@@ -408,19 +410,17 @@ fn browser_url_facts(url: Option<&str>) -> (Option<String>, Option<String>, bool
     };
     let scheme = Some(parsed.scheme().to_ascii_lowercase());
     let host = parsed.host_str().map(|value| value.to_ascii_lowercase());
-    let registrable_domain = host
-        .as_deref()
-        .and_then(|candidate| {
-            if candidate.eq_ignore_ascii_case("localhost")
-                || candidate.ends_with(".localhost")
-                || candidate.parse::<std::net::IpAddr>().is_ok()
-            {
-                None
-            } else {
-                psl::domain_str(candidate)
-                    .map(|domain| domain.trim_end_matches('.').to_ascii_lowercase())
-            }
-        });
+    let registrable_domain = host.as_deref().and_then(|candidate| {
+        if candidate.eq_ignore_ascii_case("localhost")
+            || candidate.ends_with(".localhost")
+            || candidate.parse::<std::net::IpAddr>().is_ok()
+        {
+            None
+        } else {
+            psl::domain_str(candidate)
+                .map(|domain| domain.trim_end_matches('.').to_ascii_lowercase())
+        }
+    });
     let has_non_default_port = match (parsed.port(), parsed.scheme()) {
         (Some(port), "http") => port != 80,
         (Some(port), "https") => port != 443,
@@ -433,11 +433,9 @@ fn browser_url_facts(url: Option<&str>) -> (Option<String>, Option<String>, bool
 fn is_local_like_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host.ends_with(".localhost")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| {
-            match ip {
-                std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_unspecified(),
-                std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
-            }
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_unspecified(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
         })
 }
 
@@ -493,22 +491,26 @@ fn browser_requested_url(tool_id: &str, input: &Value) -> Option<String> {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string),
-        "bash" | "powershell" => crate::permissions::browser_action::browser_permission_value_for_tool_call(
-            tool_id, input,
-        )
-        .and_then(|value| {
-            value.get("url")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|candidate| !candidate.is_empty())
-                .map(ToString::to_string)
-        }),
+        "bash" | "powershell" => {
+            crate::permissions::browser_action::browser_permission_value_for_tool_call(
+                tool_id, input,
+            )
+            .and_then(|value| {
+                value
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|candidate| !candidate.is_empty())
+                    .map(ToString::to_string)
+            })
+        }
         _ => None,
     }
 }
 
 fn review_metadata_requested_url(input: &Value) -> Option<String> {
-    input.get(BROWSER_REVIEW_METADATA_KEY)
+    input
+        .get(BROWSER_REVIEW_METADATA_KEY)
         .and_then(|value| value.get("requestedUrl"))
         .and_then(Value::as_str)
         .map(str::trim)
@@ -532,7 +534,8 @@ fn review_metadata_url_source(input: &Value) -> Option<BrowserAutoReviewUrlSourc
 }
 
 fn review_metadata_current_tab_url(input: &Value) -> Option<String> {
-    input.get(BROWSER_REVIEW_METADATA_KEY)
+    input
+        .get(BROWSER_REVIEW_METADATA_KEY)
         .and_then(|value| value.get("currentTabUrl"))
         .and_then(Value::as_str)
         .map(str::trim)
@@ -555,8 +558,9 @@ fn browser_url_source(
 }
 
 fn browser_raw_action(tool_id: &str, input: &Value) -> BrowserAutoReviewRawAction {
-    let browser_input = crate::permissions::browser_action::browser_permission_value_for_tool_call(tool_id, input)
-        .unwrap_or_else(|| input.clone());
+    let browser_input =
+        crate::permissions::browser_action::browser_permission_value_for_tool_call(tool_id, input)
+            .unwrap_or_else(|| input.clone());
     let Some(action) = browser_input.get("action").and_then(Value::as_str) else {
         return BrowserAutoReviewRawAction::Unknown;
     };
@@ -660,9 +664,7 @@ fn approval_reviewer_agent(
     resources: &LoadedResources,
 ) -> Result<&puffer_resources::LoadedItem<puffer_resources::AgentSpec>> {
     agent_by_id(resources, APPROVAL_REVIEWER_AGENT_ID).ok_or_else(|| {
-        anyhow!(
-            "required approval reviewer agent `{APPROVAL_REVIEWER_AGENT_ID}` is not available"
-        )
+        anyhow!("required approval reviewer agent `{APPROVAL_REVIEWER_AGENT_ID}` is not available")
     })
 }
 
@@ -860,7 +862,10 @@ mod tests {
         assert_eq!(value["session_targeting"], json!("explicit_session"));
         assert_eq!(value["suggested_grant_scope"], json!("allow_tab_session"));
         assert_eq!(value["url_source"], json!("explicit"));
-        assert_eq!(value["requested_url"], json!("https://docs.example.com/page"));
+        assert_eq!(
+            value["requested_url"],
+            json!("https://docs.example.com/page")
+        );
         assert_eq!(value["current_tab_url"], Value::Null);
         assert_eq!(value["tab_management"], json!(false));
     }
@@ -875,6 +880,7 @@ mod tests {
             host: Some("docs.example.com".to_string()),
             target_class: BrowserPermissionPromptTargetClass::OpenWeb,
             tab_id: Some("t1".to_string()),
+            is_cross_session: false,
         };
         let request = build_browser_auto_review_request(
             "Browser",
@@ -951,24 +957,20 @@ mod tests {
     #[test]
     fn run_browser_auto_review_returns_known_dispositions() {
         for (decision, expected) in [
-            (
-                "allow_once",
-                BrowserAutoReviewRuntimeResult::AllowOnce,
-            ),
+            ("allow_once", BrowserAutoReviewRuntimeResult::AllowOnce),
             (
                 "allow_session",
                 BrowserAutoReviewRuntimeResult::AllowSession,
             ),
             ("deny", BrowserAutoReviewRuntimeResult::Deny),
-            (
-                "needs_user",
-                BrowserAutoReviewRuntimeResult::NeedsUser,
-            ),
+            ("needs_user", BrowserAutoReviewRuntimeResult::NeedsUser),
         ] {
             let decision = decision.to_string();
             let result = run_browser_auto_review_executor_with_timeout(
                 Duration::from_millis(100),
-                move |_cancel| browser_auto_review_runtime_result_from_json(&format!("\"{decision}\"")),
+                move |_cancel| {
+                    browser_auto_review_runtime_result_from_json(&format!("\"{decision}\""))
+                },
             );
             assert_eq!(result, expected);
         }

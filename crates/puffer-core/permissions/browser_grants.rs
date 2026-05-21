@@ -237,10 +237,19 @@ fn browser_target_is_high_risk(target: &super::browser_target::BrowserTarget) ->
     if target.target_class != super::browser_target::BrowserTargetClass::OpenWeb {
         return true;
     }
-    if target.scheme == "http" && target.host.as_deref().is_some_and(|host| !is_local_like_host(host)) {
+    if target.scheme == "http"
+        && target
+            .host
+            .as_deref()
+            .is_some_and(|host| !is_local_like_host(host))
+    {
         return true;
     }
-    if target.host.as_deref().is_some_and(|host| host.parse::<std::net::IpAddr>().is_ok()) {
+    if target
+        .host
+        .as_deref()
+        .is_some_and(|host| host.parse::<std::net::IpAddr>().is_ok())
+    {
         return true;
     }
     if target.port.is_some_and(|port| {

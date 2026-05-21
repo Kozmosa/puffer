@@ -28,7 +28,8 @@ use super::conversation::{
     items_to_responses_input, managed_system_prompt_1_from_env, ConversationItem,
 };
 use super::support::{
-    apply_previous_response_id, build_codex_openai_request_body, openai_responses_path,
+    apply_previous_response_id, build_codex_openai_request_body,
+    is_openai_include_validation_error, openai_responses_path,
 };
 use super::support::{openai_model_supports_reasoning, openai_supports_response_threading};
 use super::{
@@ -62,12 +63,31 @@ pub(super) struct OpenAIResponsesTurnSession {
     pub model_id: String,
     pub supports_reasoning: bool,
     pub supports_response_threading: bool,
+    /// Pre-rendered `<system-reminder>` text (currentDate + gitStatus +
+    /// optional project-memory skill guidance). Computed once at session
+    /// setup so `pre_loop_inject` does not need `&AppState`.
+    pub context_reminder: String,
     /// Server-side response identifier from the most recent turn. When
     /// set, the next request omits already-known prefix items.
     pub previous_response_id: Option<String>,
     /// First index of items NOT yet known to the API. When threading is
     /// active, the next request only sends `items[continuation_start..]`.
     pub continuation_start: Option<usize>,
+}
+
+fn request_builder_from_body(
+    body_value: Value,
+) -> impl Fn(&OpenAIRequestConfig) -> Result<puffer_provider_openai::BuiltOpenAIRequest> {
+    let body_str = body_value.to_string();
+    move |request_config: &OpenAIRequestConfig| {
+        let body: Value = serde_json::from_str(&body_str)
+            .map_err(|e| anyhow::anyhow!("body re-parse failed: {e}"))?;
+        build_json_post_request(
+            request_config,
+            openai_responses_path(&request_config.base_url),
+            &body,
+        )
+    }
 }
 
 impl OpenAIResponsesTurnSession {
@@ -88,13 +108,24 @@ impl OpenAIResponsesTurnSession {
     /// Constructs the JSON request body for one turn (streaming flag
     /// flips the `stream: true` field plus internal SSE expectations).
     fn build_request_body(&self, wire_input: Value, state: &AppState, stream: bool) -> Value {
+        self.build_request_body_with_reasoning(wire_input, state, stream, self.supports_reasoning)
+    }
+
+    fn build_request_body_with_reasoning(
+        &self,
+        wire_input: Value,
+        state: &AppState,
+        stream: bool,
+        supports_reasoning: bool,
+    ) -> Value {
         let mut body = build_codex_openai_request_body(
             state,
+            &self.execution.request_config.base_url,
             &self.model_id,
             &self.instructions,
             wire_input,
             &self.tools,
-            self.supports_reasoning,
+            supports_reasoning,
             self.text.clone(),
             stream,
         );
@@ -140,24 +171,35 @@ impl TurnSession for OpenAIResponsesTurnSession {
         // Pre-render the body so the per-attempt closure stays cheap
         // and avoids re-borrowing `state` mutably from inside a nested
         // closure (which the borrow checker rejects).
-        let body_value = self.build_request_body(wire_input, state, true);
-        let body_str = body_value.to_string();
-        let body_for_each_attempt = move |request_config: &OpenAIRequestConfig| {
-            let body: Value = serde_json::from_str(&body_str)
-                .map_err(|e| anyhow::anyhow!("body re-parse failed: {e}"))?;
-            build_json_post_request(
-                request_config,
-                openai_responses_path(&request_config.base_url),
-                &body,
-            )
-        };
+        let primary_body = self.build_request_body(wire_input.clone(), state, true);
         let mut sized = |event: TurnStreamEvent| on_event(event);
         let response = send_openai_request_with_refresh_streaming(
             auth_store,
             &mut self.execution,
-            body_for_each_attempt,
+            request_builder_from_body(primary_body),
             &mut sized,
-        )?;
+        )
+        .or_else(|error| {
+            if !self.supports_reasoning || !is_openai_include_validation_error(&error) {
+                return Err(error);
+            }
+            self.supports_reasoning = false;
+            sized(TurnStreamEvent::RetryAttempt {
+                attempt: 1,
+                max_attempts: 2,
+                error:
+                    "OpenAI rejected the reasoning include selector; retrying without reasoning."
+                        .to_string(),
+            });
+            let fallback_body =
+                self.build_request_body_with_reasoning(wire_input, state, true, false);
+            send_openai_request_with_refresh_streaming(
+                auth_store,
+                &mut self.execution,
+                request_builder_from_body(fallback_body),
+                &mut sized,
+            )
+        })?;
 
         // Update threading state.
         if self.supports_response_threading {
@@ -257,22 +299,25 @@ impl TurnSession for OpenAIResponsesTurnSession {
         let items_len_at_request = items.len();
         let wire_input = self.build_wire_input(items);
 
-        let body_value = self.build_request_body(wire_input, state, false);
-        let body_str = body_value.to_string();
-        let body_for_each_attempt = move |request_config: &OpenAIRequestConfig| {
-            let body: Value = serde_json::from_str(&body_str)
-                .map_err(|e| anyhow::anyhow!("body re-parse failed: {e}"))?;
-            build_json_post_request(
-                request_config,
-                openai_responses_path(&request_config.base_url),
-                &body,
-            )
-        };
+        let primary_body = self.build_request_body(wire_input.clone(), state, false);
         let response_value = send_openai_request_with_refresh(
             auth_store,
             &mut self.execution,
-            body_for_each_attempt,
-        )?;
+            request_builder_from_body(primary_body),
+        )
+        .or_else(|error| {
+            if !self.supports_reasoning || !is_openai_include_validation_error(&error) {
+                return Err(error);
+            }
+            self.supports_reasoning = false;
+            let fallback_body =
+                self.build_request_body_with_reasoning(wire_input, state, false, false);
+            send_openai_request_with_refresh(
+                auth_store,
+                &mut self.execution,
+                request_builder_from_body(fallback_body),
+            )
+        })?;
 
         // Typed parsing (re-uses paths from the legacy non-streaming code).
         let input_tokens = response_value
@@ -375,12 +420,13 @@ impl TurnSession for OpenAIResponsesTurnSession {
         if self.lightweight_context {
             return;
         }
-        // Pin per-turn dynamic context (currentDate + gitStatus) at
-        // the front so every Responses request includes it. Static
-        // instructions stay in `instructions` — only this dynamic part
-        // belongs in `input`.
-        let context_reminder = super::build_context_reminder_message();
-        insert_context_reminder_preserving_legacy_leading_system(items, &context_reminder);
+        // Pin per-turn dynamic context (currentDate + gitStatus + optional
+        // project-memory skill guidance) at the front so every Responses
+        // request includes it. Static instructions stay in `instructions`
+        // — only this dynamic part belongs in `input`. The reminder text
+        // was rendered once at session setup with `&AppState` access,
+        // since this trait method does not receive state.
+        insert_context_reminder_preserving_legacy_leading_system(items, &self.context_reminder);
     }
 
     fn notify_compacted(&mut self) {
@@ -450,6 +496,12 @@ pub(super) fn setup_responses_session(
     let supports_response_threading =
         openai_supports_response_threading(provider, &execution.request_config.base_url, model);
 
+    let context_reminder = if options.lightweight_context {
+        String::new()
+    } else {
+        super::build_context_reminder_message(state)
+    };
+
     Ok(OpenAIResponsesTurnSession {
         execution,
         instructions,
@@ -460,6 +512,7 @@ pub(super) fn setup_responses_session(
         model_id,
         supports_reasoning,
         supports_response_threading,
+        context_reminder,
         previous_response_id: None,
         continuation_start: None,
     })

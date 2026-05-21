@@ -14,6 +14,11 @@ pub(crate) struct FilesystemPermissionPolicy {
 }
 
 impl FilesystemPermissionPolicy {
+    /// Returns true when the filesystem sandbox grants access to all paths.
+    pub(crate) fn allow_all_paths(&self) -> bool {
+        matches!(self.sandbox_mode, EffectiveSandboxMode::DangerFullAccess)
+    }
+
     /// Converts the policy into the runner transport DTO.
     pub(crate) fn runner_policy(&self) -> FilesystemExecutionPolicy {
         FilesystemExecutionPolicy {

@@ -170,11 +170,14 @@ pub(super) fn target_point_expression(target: &BrowserElementRef) -> Result<Stri
 
 /// Builds a script that focuses one resolved ref.
 pub(super) fn focus_expression(target: &BrowserElementRef) -> Result<String> {
-    ref_script(target, r#"  const targetEl = refElement;
+    ref_script(
+        target,
+        r#"  const targetEl = refElement;
   if (typeof targetEl.focus !== 'function') throw new Error('Target is not focusable');
   targetEl.focus({ preventScroll: false });
   return true;
-"#)
+"#,
+    )
 }
 
 /// Builds a script that clicks one resolved ref.

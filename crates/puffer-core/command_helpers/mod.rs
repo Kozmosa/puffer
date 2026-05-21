@@ -7,10 +7,12 @@ mod common;
 mod config;
 mod doctor;
 mod ecosystem;
+mod genskill;
 mod goal;
 mod model;
 mod plugins;
 pub(crate) mod prompt;
+mod recap;
 mod reflect;
 mod resume;
 mod session;
@@ -44,6 +46,7 @@ pub(crate) use ecosystem::{
     handle_ide_command, handle_mcp_command, reload_resources_from_disk, render_ide_actions,
     render_mcp_actions, render_mcp_summary,
 };
+pub(crate) use genskill::handle_genskill_command;
 pub(crate) use goal::handle_goal_command;
 pub(crate) use model::{
     apply_model_preferences, handle_effort_command, handle_fast_command, handle_model_command,
@@ -53,6 +56,7 @@ pub(crate) use plugins::{
     handle_plugin_command, reload_plugins_summary, render_plugin_actions, render_plugin_summary,
 };
 pub(crate) use prompt::handle_plan_command;
+pub(crate) use recap::handle_recap_command;
 pub(crate) use reflect::handle_reflect_command;
 pub(crate) use resume::handle_resume_command;
 pub(crate) use resume::resumable_sessions_for_picker;

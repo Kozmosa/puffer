@@ -192,6 +192,22 @@ impl SessionPermissionGrants {
         }
     }
 
+    /// Grants access to a filesystem path prefix for the current session.
+    pub(crate) fn grant_path_prefix(&mut self, path: PathBuf) {
+        self.granted.insert(SessionGrantTarget::PathPrefix(path));
+    }
+
+    /// Returns legacy whole-tool allow entries for compatibility snapshots.
+    pub(crate) fn legacy_tool_permissions(&self) -> HashMap<String, String> {
+        self.granted
+            .iter()
+            .filter_map(|grant| match grant {
+                SessionGrantTarget::Tool(tool) => Some((tool.clone(), "allow".to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn profile_view(&self, allow_all_tools: bool) -> SessionGrantProfile {
         let mut profile = SessionGrantProfile {
             allow_all_tools,
@@ -223,16 +239,6 @@ impl SessionPermissionGrants {
         profile.path_prefix_grants.sort();
         profile.path_prefix_grants.dedup();
         profile
-    }
-
-    pub(crate) fn legacy_tool_permissions(&self) -> HashMap<String, String> {
-        self.granted
-            .iter()
-            .filter_map(|grant| match grant {
-                SessionGrantTarget::Tool(tool) => Some((tool.clone(), "allow".to_string())),
-                _ => None,
-            })
-            .collect()
     }
 
     fn touches_surface(&self, surface: PermissionSurface) -> bool {
@@ -371,6 +377,7 @@ impl EffectivePermissionProfile {
             current_session_id: current_session_id.to_string(),
             workspace_roots: std::iter::once(cwd.to_path_buf())
                 .chain(working_dirs.iter().cloned())
+                .chain(grants.path_prefix_grants.iter().cloned())
                 .map(canonical_workspace_root)
                 .collect(),
             surfaces,

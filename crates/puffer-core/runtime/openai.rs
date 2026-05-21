@@ -204,7 +204,7 @@ where
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern).
     if !options.lightweight_context {
-        let context_reminder = build_context_reminder_message();
+        let context_reminder = build_context_reminder_message(state);
         super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(
             &mut items,
             &context_reminder,
@@ -261,6 +261,7 @@ where
                     |request_config| {
                         let mut body = build_codex_openai_request_body(
                             state,
+                            &request_config.base_url,
                             &model_id,
                             &instructions,
                             wire_input.clone(),
@@ -417,7 +418,7 @@ where
         if compacted {
             previous_response_id = None;
             continuation_start = None;
-            inject_post_compact_context(&mut items, &cwd);
+            inject_post_compact_context(&mut items, state);
         }
     }
 }
@@ -478,7 +479,6 @@ pub(super) fn execute_openai_tool_calls(
 
     // ---------- Phase 2: Execute tools ----------
     // Clone immutable data needed by parallel tools.
-    let working_dirs = state.working_dirs.clone();
     let provider_context = super::claude_tools::ProviderToolContext::OpenAI {
         request_config,
         model_id,
@@ -516,7 +516,6 @@ pub(super) fn execute_openai_tool_calls(
                 }
             };
             let args = tc.arguments.clone();
-            let wd = &working_dirs;
             let pc = &provider_context;
             let sid = &state.session.id;
             let runner_clone = runner.clone();
@@ -526,7 +525,7 @@ pub(super) fn execute_openai_tool_calls(
                     match super::claude_tools::execute_parallel_tool(
                         &definition,
                         cwd,
-                        wd,
+                        &filesystem_policy.workspace_roots,
                         &filesystem_policy,
                         sid,
                         args,
@@ -781,20 +780,11 @@ pub(super) fn openai_request_instructions(
 /// (in `instructions`) from dynamic context (in `input` messages).
 /// The `<system-reminder>` XML tag helps the model distinguish
 /// system-injected context from user-authored messages.
-pub(super) fn build_context_reminder_message() -> String {
-    let now = time::OffsetDateTime::now_utc();
-    let date_str = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
-    let git_status = super::git_status_context();
-
-    let mut parts = Vec::new();
-    parts.push(format!("# currentDate\nToday's date is {date_str}."));
-    if !git_status.is_empty() {
-        parts.push(format!("# gitStatus\n{git_status}"));
-    }
-
+pub(super) fn build_context_reminder_message(state: &AppState) -> String {
+    let reminder = self::conversation::build_system_reminder(state, &super::git_status_context());
     format!(
         "<system-reminder>\n{}\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>",
-        parts.join("\n\n")
+        reminder
     )
 }
 

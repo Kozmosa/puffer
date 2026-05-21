@@ -40,16 +40,35 @@ pub(crate) fn handle_browser_agent(state: &Arc<DaemonState>, params: &Value) -> 
             state.browsers.list_tabs(&root_session_id),
         )?),
         "open" => {
-            if let Some(tab_id) = optional_string(params, "tabId") {
-                arm_agent_recording(state, &root_session_id, &tab_id);
-            }
-            let tab = open_agent_tab(state, &root_session_id, params, width, height, true)?;
+            let tab_id =
+                resolve_open_target_tab_id(&state.browsers, &root_session_id, params, true);
+            arm_agent_recording(state, &root_session_id, &tab_id);
+            let tab = open_agent_tab(
+                state,
+                &root_session_id,
+                params,
+                width,
+                height,
+                true,
+                Some(tab_id),
+            )?;
             state.browsers.arm_agent_recording(&tab.backend_session_id);
             publish_tabs(state, &root_session_id);
             Ok(serde_json::to_value(tab)?)
         }
         "new" => {
-            let tab = open_agent_tab(state, &root_session_id, params, width, height, false)?;
+            let tab_id =
+                resolve_open_target_tab_id(&state.browsers, &root_session_id, params, false);
+            arm_agent_recording(state, &root_session_id, &tab_id);
+            let tab = open_agent_tab(
+                state,
+                &root_session_id,
+                params,
+                width,
+                height,
+                false,
+                Some(tab_id),
+            )?;
             state.browsers.arm_agent_recording(&tab.backend_session_id);
             publish_tabs(state, &root_session_id);
             Ok(serde_json::to_value(tab)?)
@@ -290,8 +309,9 @@ fn open_agent_tab(
     width: u32,
     height: u32,
     reuse_existing: bool,
+    resolved_tab_id: Option<String>,
 ) -> Result<BrowserTabInfo> {
-    if let Some(tab_id) = optional_string(params, "tabId") {
+    if let Some(tab_id) = resolved_tab_id.or_else(|| optional_string(params, "tabId")) {
         return state.browsers.open_tab(
             state.event_sender(),
             root_session_id.to_string(),
@@ -335,11 +355,29 @@ fn open_agent_tab(
     )
 }
 
+fn resolve_open_target_tab_id(
+    browsers: &BrowserRegistry,
+    root_session_id: &str,
+    params: &Value,
+    reuse_existing: bool,
+) -> String {
+    if let Some(tab_id) = optional_string(params, "tabId") {
+        return tab_id;
+    }
+    if reuse_existing {
+        if let Some(tab) = active_or_first(&browsers.list_tabs(root_session_id)) {
+            return tab.tab_id;
+        }
+    }
+    browsers.tabs.lock().unwrap().next_tab_id(root_session_id)
+}
+
 impl BrowserRegistry {
     /// Clicks an element ref from the last agent snapshot.
     pub(crate) fn agent_click(&self, backend_session_id: &str, ref_id: &str) -> Result<()> {
         let target = self.lookup_ref(backend_session_id, ref_id)?;
-        self.get(backend_session_id)?.evaluate(click_expression(&target)?)?;
+        self.get(backend_session_id)?
+            .evaluate(click_expression(&target)?)?;
         Ok(())
     }
 
@@ -354,14 +392,16 @@ impl BrowserRegistry {
     /// Moves the pointer over an element ref from the last agent snapshot.
     pub(crate) fn agent_hover(&self, backend_session_id: &str, ref_id: &str) -> Result<()> {
         let target = self.lookup_ref(backend_session_id, ref_id)?;
-        self.get(backend_session_id)?.evaluate(hover_expression(&target)?)?;
+        self.get(backend_session_id)?
+            .evaluate(hover_expression(&target)?)?;
         Ok(())
     }
 
     /// Focuses an element ref from the last agent snapshot.
     pub(crate) fn agent_focus(&self, backend_session_id: &str, ref_id: &str) -> Result<()> {
         let target = self.lookup_ref(backend_session_id, ref_id)?;
-        self.get(backend_session_id)?.evaluate(focus_expression(&target)?)?;
+        self.get(backend_session_id)?
+            .evaluate(focus_expression(&target)?)?;
         Ok(())
     }
 
@@ -488,7 +528,6 @@ impl BrowserRegistry {
             .and_then(|refs| refs.iter().find(|item| item.ref_id == ref_id).cloned())
             .with_context(|| format!("no browser ref `{ref_id}`; run snapshot again"))
     }
-
 }
 
 fn ensure_target_tab(
@@ -636,4 +675,60 @@ fn key_code(key: &str) -> String {
         _ => key,
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::BrowserState;
+    use super::*;
+
+    fn test_browser_state(url: &str) -> BrowserState {
+        BrowserState {
+            url: url.to_string(),
+            title: String::new(),
+            loading: false,
+            width: INITIAL_WIDTH,
+            height: INITIAL_HEIGHT,
+        }
+    }
+
+    #[test]
+    fn open_target_resolution_reserves_first_new_tab() {
+        let profile = tempfile::tempdir().unwrap();
+        let browsers = BrowserRegistry::new(profile.path().to_path_buf(), false);
+        let params = json!({});
+
+        let tab_id = resolve_open_target_tab_id(&browsers, "root", &params, true);
+        assert_eq!(tab_id, "t1");
+        let backend_id = backend_session_id("root", &tab_id);
+        let tab = browsers.tabs.lock().unwrap().open_tab(
+            "root",
+            Some(tab_id.clone()),
+            None,
+            backend_id.clone(),
+            test_browser_state("about:blank"),
+            true,
+        );
+
+        assert_eq!(tab.backend_session_id, backend_id);
+        assert_eq!(browsers.tabs.lock().unwrap().next_tab_id("root"), "t2");
+    }
+
+    #[test]
+    fn open_target_resolution_reuses_active_tab() {
+        let profile = tempfile::tempdir().unwrap();
+        let browsers = BrowserRegistry::new(profile.path().to_path_buf(), false);
+        browsers.tabs.lock().unwrap().open_tab(
+            "root",
+            Some("existing".to_string()),
+            None,
+            backend_session_id("root", "existing"),
+            test_browser_state("https://example.com"),
+            true,
+        );
+
+        let tab_id = resolve_open_target_tab_id(&browsers, "root", &json!({}), true);
+
+        assert_eq!(tab_id, "existing");
+    }
 }

@@ -1,17 +1,15 @@
-use super::agent::{
-    key_text, scroll_delta,
-};
+use super::agent::{key_text, scroll_delta};
 use super::cursor::parse_cursor_response;
 use super::params::{parse_input_event, required_string_array};
-use super::screenshot::{
-    parse_agent_screenshot_options, parse_capture_screenshot_response, BrowserScreenshotFormat,
-    BrowserElementRef,
-};
-use super::selection::parse_copy_selection_response;
 use super::ref_resolution::{
     checkable_state_expression, fill_expression, focus_expression, scroll_into_view_expression,
     select_expression, upload_input_handle_expression,
 };
+use super::screenshot::{
+    parse_agent_screenshot_options, parse_capture_screenshot_response, BrowserElementRef,
+    BrowserScreenshotFormat,
+};
+use super::selection::parse_copy_selection_response;
 use super::upload::parse_upload_handle_response;
 use super::*;
 use crate::daemon_browser::tabs::BrowserCurrentTabStatus;

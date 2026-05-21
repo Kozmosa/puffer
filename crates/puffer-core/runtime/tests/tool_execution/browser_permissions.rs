@@ -1,14 +1,13 @@
 use super::*;
-use crate::runtime::{
-    BrowserAutoReviewActionSet, BrowserAutoReviewRawAction,
-    BrowserAutoReviewRuntimeResult, BrowserAutoReviewSessionTargeting,
-    BrowserAutoReviewSource, BrowserAutoReviewSuggestedGrantScope,
-    BrowserAutoReviewTargetClass, BrowserAutoReviewUrlSource,
-    BrowserPermissionPromptActionSet, BrowserPermissionPromptSource,
-    BrowserPermissionPromptTargetClass, PermissionPromptRequest,
-};
 use crate::runtime::browser_auto_review::{
     with_browser_auto_review_test_handler, BrowserAutoReviewRequest,
+};
+use crate::runtime::{
+    BrowserAutoReviewActionSet, BrowserAutoReviewRawAction, BrowserAutoReviewRuntimeResult,
+    BrowserAutoReviewSessionTargeting, BrowserAutoReviewSource,
+    BrowserAutoReviewSuggestedGrantScope, BrowserAutoReviewTargetClass, BrowserAutoReviewUrlSource,
+    BrowserPermissionPromptActionSet, BrowserPermissionPromptSource,
+    BrowserPermissionPromptTargetClass, PermissionPromptRequest,
 };
 
 fn browser_resources() -> LoadedResources {
@@ -288,10 +287,16 @@ fn browser_permission_prompt_carries_context_without_scope_choices() {
         .clone()
         .expect("browser payload");
     assert_eq!(browser.source, BrowserPermissionPromptSource::BrowserTool);
-    assert_eq!(browser.action_set, BrowserPermissionPromptActionSet::Navigate);
+    assert_eq!(
+        browser.action_set,
+        BrowserPermissionPromptActionSet::Navigate
+    );
     assert_eq!(browser.origin.as_deref(), Some("https://docs.example.com"));
     assert_eq!(browser.host.as_deref(), Some("docs.example.com"));
-    assert_eq!(browser.target_class, BrowserPermissionPromptTargetClass::OpenWeb);
+    assert_eq!(
+        browser.target_class,
+        BrowserPermissionPromptTargetClass::OpenWeb
+    );
 }
 
 #[test]
@@ -640,7 +645,10 @@ fn browser_ask_reviewer_allow_session_reuses_grant_without_human_prompt() {
     assert_eq!(reviews[0].source, BrowserAutoReviewSource::BrowserTool);
     assert_eq!(reviews[0].action_set, BrowserAutoReviewActionSet::Navigate);
     assert_eq!(reviews[0].raw_action, BrowserAutoReviewRawAction::Navigate);
-    assert_eq!(reviews[0].target_class, BrowserAutoReviewTargetClass::OpenWeb);
+    assert_eq!(
+        reviews[0].target_class,
+        BrowserAutoReviewTargetClass::OpenWeb
+    );
     assert_eq!(reviews[0].url_source, BrowserAutoReviewUrlSource::Explicit);
     assert_eq!(
         reviews[0].requested_url.as_deref(),
@@ -672,24 +680,28 @@ fn browser_ask_reviewer_deny_returns_denied_without_human_prompt() {
     with_browser_auto_review_test_handler(
         move |_request| BrowserAutoReviewRuntimeResult::Deny,
         || {
-            capture_permission_prompts(Arc::clone(&prompts), PermissionPromptAction::AllowOnce, || {
-                let outcome = resolve_tool_permission(
-                    &mut state,
-                    &resources,
-                    &providers,
-                    &mut auth_store,
-                    &registry,
-                    &cwd,
-                    "Browser",
-                    &json!({"action":"navigate","url":"https://docs.example.com/a"}),
-                    None,
-                )
-                .unwrap();
-                let PermissionOutcome::Denied(result) = outcome else {
-                    panic!("expected denied result");
-                };
-                assert!(result.output.stdout.contains("permission denied by user"));
-            });
+            capture_permission_prompts(
+                Arc::clone(&prompts),
+                PermissionPromptAction::AllowOnce,
+                || {
+                    let outcome = resolve_tool_permission(
+                        &mut state,
+                        &resources,
+                        &providers,
+                        &mut auth_store,
+                        &registry,
+                        &cwd,
+                        "Browser",
+                        &json!({"action":"navigate","url":"https://docs.example.com/a"}),
+                        None,
+                    )
+                    .unwrap();
+                    let PermissionOutcome::Denied(result) = outcome else {
+                        panic!("expected denied result");
+                    };
+                    assert!(result.output.stdout.contains("permission denied by user"));
+                },
+            );
         },
     );
 
@@ -909,8 +921,14 @@ fn browser_tab_management_low_risk_actions_can_be_auto_reviewed_without_user_pro
     let reviews = review_requests.lock().unwrap();
     assert_eq!(reviews.len(), 4);
     assert_eq!(reviews[0].raw_action, BrowserAutoReviewRawAction::New);
-    assert_eq!(reviews[0].url_source, BrowserAutoReviewUrlSource::CurrentTab);
-    assert_eq!(reviews[0].current_tab_url.as_deref(), Some("https://docs.example.com/page"));
+    assert_eq!(
+        reviews[0].url_source,
+        BrowserAutoReviewUrlSource::CurrentTab
+    );
+    assert_eq!(
+        reviews[0].current_tab_url.as_deref(),
+        Some("https://docs.example.com/page")
+    );
     assert_eq!(reviews[1].raw_action, BrowserAutoReviewRawAction::Open);
     assert_eq!(reviews[2].raw_action, BrowserAutoReviewRawAction::Focus);
     assert_eq!(reviews[3].raw_action, BrowserAutoReviewRawAction::List);
@@ -1061,24 +1079,28 @@ fn browser_evaluator_deny_does_not_enter_reviewer() {
             BrowserAutoReviewRuntimeResult::AllowSession
         },
         || {
-            capture_permission_prompts(Arc::clone(&prompts), PermissionPromptAction::AllowOnce, || {
-                let outcome = resolve_tool_permission(
-                    &mut state,
-                    &resources,
-                    &providers,
-                    &mut auth_store,
-                    &registry,
-                    &cwd,
-                    "Browser",
-                    &json!({"action":"navigate","url":"https://docs.example.com/a"}),
-                    None,
-                )
-                .unwrap();
-                let PermissionOutcome::Denied(result) = outcome else {
-                    panic!("expected denied result");
-                };
-                assert!(result.output.stdout.contains("denies domain"));
-            });
+            capture_permission_prompts(
+                Arc::clone(&prompts),
+                PermissionPromptAction::AllowOnce,
+                || {
+                    let outcome = resolve_tool_permission(
+                        &mut state,
+                        &resources,
+                        &providers,
+                        &mut auth_store,
+                        &registry,
+                        &cwd,
+                        "Browser",
+                        &json!({"action":"navigate","url":"https://docs.example.com/a"}),
+                        None,
+                    )
+                    .unwrap();
+                    let PermissionOutcome::Denied(result) = outcome else {
+                        panic!("expected denied result");
+                    };
+                    assert!(result.output.stdout.contains("denies domain"));
+                },
+            );
         },
     );
 
@@ -1095,6 +1117,7 @@ fn resolve_and_execute_browser_permission_stay_in_sync() {
     let mut state = temp_state();
     let cwd = state.cwd.clone();
     let session_id = state.session.id.to_string();
+    let mut execute_state = state.clone();
     let input = json!({
         "action": "navigate",
         "url": "https://docs.example.com/a",
@@ -1173,7 +1196,7 @@ fn resolve_and_execute_browser_permission_stay_in_sync() {
                         PermissionPromptAction::AllowSession,
                         || {
                             execute_tool_call(
-                                &mut temp_state(),
+                                &mut execute_state,
                                 &resources,
                                 &providers,
                                 &mut AuthStore::default(),
