@@ -685,19 +685,17 @@ fn queued_empty_model_command_opens_picker_after_turn_finishes() {
     );
 
     tui.pending_submit = None;
-    assert!(
-        submit_next_queued_prompt(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            true,
-        )
-        .unwrap()
-    );
+    assert!(submit_next_queued_prompt(
+        &mut state,
+        &mut resources,
+        &mut providers,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+        true,
+    )
+    .unwrap());
 
     match tui.overlay {
         Some(OverlayState::ModelPicker {
@@ -710,12 +708,10 @@ fn queued_empty_model_command_opens_picker_after_turn_finishes() {
         }
         other => panic!("expected model picker, got {other:?}"),
     }
-    assert!(
-        !state
-            .transcript
-            .iter()
-            .any(|message| message.text.contains("Current model"))
-    );
+    assert!(!state
+        .transcript
+        .iter()
+        .any(|message| message.text.contains("Current model")));
 }
 
 #[test]

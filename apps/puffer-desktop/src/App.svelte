@@ -3034,6 +3034,9 @@
         turnThinking = false;
         turnStatusHint = "Awaiting approval";
         const id = livePermissionId(ev.turnId, ev.requestId);
+        const choices = ev.browser
+          ? ["Allow once", "Allow browser access for this session", "Deny"]
+          : ["Allow once", "Always allow", "Deny"];
         appendLive({
           id,
           kind: "permission",
@@ -3049,10 +3052,10 @@
             summary: ev.summary,
             inputText: null,
             toolName: ev.toolId,
-            choices: ["Allow once", "Always allow", "Deny"]
+            choices
           },
           scopeLabel: null,
-          choices: ["Allow once", "Always allow", "Deny"]
+          choices
         });
         turnPermissionLookup = {
           ...turnPermissionLookup,

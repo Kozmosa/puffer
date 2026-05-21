@@ -37,8 +37,9 @@ use puffer_config::{
 use puffer_core::{
     default_effort_level, execute_user_turn_streaming_with_permissions_and_cancel,
     provider_preference_family, supported_effort_levels, with_user_question_prompt_handler,
-    AppState, CancelToken, MessageRole, ModelPreferenceFamily, PermissionPromptAction,
-    PermissionPromptRequest, TurnStreamEvent, UserQuestionPromptRequest,
+    AppState, BrowserPermissionPromptActionSet, BrowserPermissionPromptSource,
+    BrowserPermissionPromptTargetClass, CancelToken, MessageRole, ModelPreferenceFamily,
+    PermissionPromptAction, PermissionPromptRequest, TurnStreamEvent, UserQuestionPromptRequest,
     UserQuestionPromptResponse,
 };
 use puffer_provider_openai::{
@@ -748,6 +749,9 @@ async fn dispatch_request(
         "browser_recording" => respond!(detached!(|s, p| {
             crate::daemon_browser::handle_browser_recording(&s, &p)
         })),
+        "browser_current_tab" => respond!(detached!(|s, p| {
+            crate::daemon_browser::handle_browser_current_tab(&s, &p)
+        })),
         "browser_agent" => respond!(detached!(|s, p| {
             crate::daemon_browser::handle_browser_agent(&s, &p)
         })),
@@ -1441,12 +1445,33 @@ fn effort_label(effort: &str) -> &'static str {
 }
 
 /// Workspace permissions are stored as a TOML map of `tool_id → policy`
-/// (e.g. `bash = "ask"`). We read the file directly so we don't have to
-/// plumb the `pub(crate)` type through puffer-core.
+/// (e.g. `bash = "ask"`) plus a `[browser]` policy section. We read the
+/// file directly so we don't have to plumb the `pub(crate)` type through
+/// puffer-core, while preserving browser policy fields on round-trip.
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+struct BrowserPolicyFileDto {
+    #[serde(default)]
+    deny_target_classes: Vec<String>,
+    #[serde(default)]
+    deny_origins: Vec<String>,
+    #[serde(default)]
+    deny_domains: Vec<String>,
+    #[serde(default)]
+    deny_evaluate_target_classes: Vec<String>,
+    #[serde(default)]
+    allow_target_classes: Vec<String>,
+    #[serde(default)]
+    allow_origins: Vec<String>,
+    #[serde(default)]
+    allow_domains: Vec<String>,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Default)]
 struct PermissionsFileDto {
     #[serde(default)]
     tools: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    browser: BrowserPolicyFileDto,
 }
 
 fn permissions_file_path(state: &DaemonState) -> std::path::PathBuf {
@@ -1462,9 +1487,14 @@ fn handle_list_permissions(state: &DaemonState) -> Result<Value> {
     } else {
         PermissionsFileDto::default()
     };
+    let tools = loaded
+        .tools
+        .into_iter()
+        .filter(|(tool, _)| !puffer_core::is_browser_tool_selector(tool))
+        .collect::<std::collections::BTreeMap<_, _>>();
     Ok(json!({
         "path": path.display().to_string(),
-        "tools": loaded.tools,
+        "tools": tools,
     }))
 }
 
@@ -1480,14 +1510,29 @@ fn handle_save_permissions(state: &DaemonState, params: &Value) -> Result<Value>
         if t.is_empty() {
             continue;
         }
+        if puffer_core::is_browser_tool_selector(&t) {
+            continue;
+        }
         let p = policy.trim().to_ascii_lowercase();
         if !matches!(p.as_str(), "allow" | "ask" | "deny" | "disabled") {
             anyhow::bail!("invalid policy `{policy}` for `{t}` — expected allow|ask|deny|disabled");
         }
         normalized.insert(t, p);
     }
-    let dto = PermissionsFileDto { tools: normalized };
     let path = permissions_file_path(state);
+    let browser = if path.exists() {
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        toml::from_str::<PermissionsFileDto>(&text)
+            .with_context(|| format!("parse {}", path.display()))?
+            .browser
+    } else {
+        BrowserPolicyFileDto::default()
+    };
+    let dto = PermissionsFileDto {
+        tools: normalized,
+        browser,
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -2090,17 +2135,7 @@ fn handle_resolve_permission(state: &DaemonState, params: &Value) -> Result<Valu
         .or_else(|| params.get("request_id"))
         .and_then(|v| v.as_str())
         .context("missing requestId")?;
-    let action_str = params
-        .get("action")
-        .and_then(|v| v.as_str())
-        .context("missing action")?;
-    let action = match action_str {
-        "allow_once" => PermissionPromptAction::AllowOnce,
-        "allow_session" => PermissionPromptAction::AllowSession,
-        "allow_all_session" => PermissionPromptAction::AllowAllSession,
-        "deny" => PermissionPromptAction::Deny,
-        other => anyhow::bail!("unknown action `{other}`"),
-    };
+    let action = parse_permission_action(params)?;
     let responder = {
         let mut turns = state.turns.lock().unwrap();
         turns
@@ -2113,6 +2148,67 @@ fn handle_resolve_permission(state: &DaemonState, params: &Value) -> Result<Valu
         .send(action)
         .map_err(|_| anyhow::anyhow!("worker already released the permission channel"))?;
     Ok(json!({"ok": true}))
+}
+
+fn parse_permission_action(params: &Value) -> Result<PermissionPromptAction> {
+    let action_str = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .context("missing action")?;
+    Ok(match action_str {
+        "allow_once" => PermissionPromptAction::AllowOnce,
+        "allow_session" => PermissionPromptAction::AllowSession,
+        "allow_all_session" => PermissionPromptAction::AllowAllSession,
+        "deny" => PermissionPromptAction::Deny,
+        other => anyhow::bail!("unknown action `{other}`"),
+    })
+}
+
+fn browser_permission_payload_json(payload: &puffer_core::BrowserPermissionPromptPayload) -> Value {
+    json!({
+        "source": match payload.source {
+            BrowserPermissionPromptSource::BrowserTool => "browser_tool",
+            BrowserPermissionPromptSource::BrowserCliViaShell => "browser_cli_via_shell",
+        },
+        "actionSet": match payload.action_set {
+            BrowserPermissionPromptActionSet::Inspect => "inspect",
+            BrowserPermissionPromptActionSet::Navigate => "navigate",
+            BrowserPermissionPromptActionSet::Interact => "interact",
+            BrowserPermissionPromptActionSet::Evaluate => "evaluate",
+        },
+        "url": payload.url,
+        "origin": payload.origin,
+        "host": payload.host,
+        "targetClass": match payload.target_class {
+            BrowserPermissionPromptTargetClass::LocalDev => "local_dev",
+            BrowserPermissionPromptTargetClass::WorkspaceFile => "workspace_file",
+            BrowserPermissionPromptTargetClass::NonWorkspaceFile => "non_workspace_file",
+            BrowserPermissionPromptTargetClass::DataUrl => "data_url",
+            BrowserPermissionPromptTargetClass::OpenWeb => "open_web",
+            BrowserPermissionPromptTargetClass::Unknown => "unknown",
+        },
+        "tabId": payload.tab_id,
+        "isCrossSession": payload.is_cross_session,
+    })
+}
+
+fn permission_review_payload_json(payload: &puffer_core::PermissionPromptReviewPayload) -> Value {
+    json!({
+        "decision": match payload.decision {
+            puffer_core::BrowserAutoReviewRuntimeResult::AllowOnce => "allow_once",
+            puffer_core::BrowserAutoReviewRuntimeResult::AllowSession => "allow_session",
+            puffer_core::BrowserAutoReviewRuntimeResult::Deny => "deny",
+            puffer_core::BrowserAutoReviewRuntimeResult::NeedsUser => "needs_user",
+            puffer_core::BrowserAutoReviewRuntimeResult::Unavailable => "unavailable",
+        },
+        "risk": payload.risk,
+        "rationale": payload.rationale,
+        "resolvedRootSessionId": payload.resolved_root_session_id,
+        "sessionTargeting": match payload.session_targeting {
+            puffer_core::BrowserAutoReviewSessionTargeting::CurrentSession => "current_session",
+            puffer_core::BrowserAutoReviewSessionTargeting::ExplicitSession => "explicit_session",
+        },
+    })
 }
 
 fn handle_resolve_user_question(state: &DaemonState, params: &Value) -> Result<Value> {
@@ -2602,6 +2698,8 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                         "toolId": req.tool_id,
                         "summary": req.summary,
                         "reason": req.reason,
+                        "browser": req.browser.as_ref().map(browser_permission_payload_json),
+                        "review": req.review.as_ref().map(permission_review_payload_json),
                     }),
                     &perm_actor,
                 ),
@@ -3074,16 +3172,18 @@ fn apply_turn_permission_mode(app_state: &mut AppState, permission_mode: &str) {
 
 fn apply_daemon_yolo_mode(app_state: &mut AppState) {
     app_state.sandbox_mode = "danger-full-access".to_string();
-    app_state.set_session_allow_all();
+    app_state.grant_all_tools_for_session();
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         apply_daemon_yolo_mode, apply_turn_model_override, apply_turn_request_options,
-        handle_create_session, handle_import_external_credential, handle_list_provider_models,
-        handle_login_with_api_key, handle_logout_provider, model_descriptor_dto,
-        resolve_create_session_model_id, run_off_runtime, DaemonState, TurnRequestOptions,
+        browser_permission_payload_json, handle_create_session, handle_import_external_credential,
+        handle_list_permissions, handle_list_provider_models, handle_login_with_api_key,
+        handle_logout_provider, handle_save_permissions, model_descriptor_dto,
+        permission_review_payload_json, resolve_create_session_model_id, run_off_runtime,
+        DaemonState, TurnRequestOptions,
     };
     use indexmap::IndexMap;
     use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
@@ -3962,7 +4062,96 @@ mod tests {
         apply_daemon_yolo_mode(&mut state);
 
         assert_eq!(state.sandbox_mode, "danger-full-access");
-        assert!(state.session_allow_all);
+        assert!(state.session_permission_state().allow_all_tools());
+    }
+
+    #[test]
+    fn desktop_generic_permissions_preserve_browser_section() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        std::fs::write(
+            paths.workspace_config_dir.join("permissions.toml"),
+            "[tools]\nbrowser = \"allow\"\nbash = \"ask\"\n\n[browser]\ndeny_domains = [\"example.com\"]\n",
+        )
+        .expect("write permissions");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+
+        let listed = handle_list_permissions(&state).expect("list permissions");
+        assert_eq!(listed["tools"]["bash"], "ask");
+        assert!(listed["tools"].get("browser").is_none());
+
+        let saved = handle_save_permissions(
+            &state,
+            &json!({
+                "tools": {
+                    "browser": "deny",
+                    "bash": "allow"
+                }
+            }),
+        )
+        .expect("save permissions");
+        assert_eq!(saved["tools"]["bash"], "allow");
+        assert!(saved["tools"].get("browser").is_none());
+        let stored: toml::Value = toml::from_str(
+            &std::fs::read_to_string(state.paths.workspace_config_dir.join("permissions.toml"))
+                .expect("read saved permissions"),
+        )
+        .expect("parse saved permissions");
+        assert_eq!(
+            stored["browser"]["deny_domains"][0].as_str(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn browser_permission_payload_json_exposes_context_only() {
+        let payload =
+            browser_permission_payload_json(&puffer_core::BrowserPermissionPromptPayload {
+                source: puffer_core::BrowserPermissionPromptSource::BrowserTool,
+                action_set: puffer_core::BrowserPermissionPromptActionSet::Navigate,
+                url: Some("https://docs.example.com/a".to_string()),
+                origin: Some("https://docs.example.com".to_string()),
+                host: Some("docs.example.com".to_string()),
+                target_class: puffer_core::BrowserPermissionPromptTargetClass::OpenWeb,
+                tab_id: Some("tab-1".to_string()),
+                is_cross_session: false,
+            });
+
+        assert_eq!(payload["source"], "browser_tool");
+        assert_eq!(payload["actionSet"], "navigate");
+        assert_eq!(payload["host"], "docs.example.com");
+        assert_eq!(payload["isCrossSession"], false);
+        assert!(payload.get("availableScopes").is_none());
+        assert!(payload.get("suggestedScope").is_none());
+    }
+
+    #[test]
+    fn permission_review_payload_json_exposes_reviewer_conclusion() {
+        let payload = permission_review_payload_json(&puffer_core::PermissionPromptReviewPayload {
+            decision: puffer_core::BrowserAutoReviewRuntimeResult::NeedsUser,
+            risk: "medium".to_string(),
+            rationale: "Session targeting is explicit but the destination is ambiguous."
+                .to_string(),
+            resolved_root_session_id: "root-1".to_string(),
+            session_targeting: puffer_core::BrowserAutoReviewSessionTargeting::ExplicitSession,
+        });
+
+        assert_eq!(payload["decision"], "needs_user");
+        assert_eq!(payload["risk"], "medium");
+        assert_eq!(
+            payload["rationale"],
+            "Session targeting is explicit but the destination is ambiguous."
+        );
+        assert_eq!(payload["resolvedRootSessionId"], "root-1");
+        assert_eq!(payload["sessionTargeting"], "explicit_session");
     }
 
     fn provider(id: &str, models: &[&str]) -> ProviderDescriptor {

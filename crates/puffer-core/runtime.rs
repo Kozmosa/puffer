@@ -26,6 +26,7 @@ mod anthropic;
 mod anthropic_sse;
 pub mod background_tasks;
 mod blocking_loop;
+mod browser_auto_review;
 pub mod claude_tools;
 mod context_usage;
 pub mod errors;
@@ -110,6 +111,12 @@ impl Drop for RuntimeWorkGuard {
 
 #[cfg(test)]
 use self::anthropic::{anthropic_tool_schema, execute_anthropic_tool_calls};
+pub use self::browser_auto_review::{
+    browser_auto_review_runtime_result_from_json, BrowserAutoReviewActionSet,
+    BrowserAutoReviewRawAction, BrowserAutoReviewRequest, BrowserAutoReviewRuntimeResult,
+    BrowserAutoReviewSessionTargeting, BrowserAutoReviewSource,
+    BrowserAutoReviewSuggestedGrantScope, BrowserAutoReviewTargetClass, BrowserAutoReviewUrlSource,
+};
 pub(crate) use self::context_usage::render_context_usage_summary;
 pub(crate) use self::debug_context::render_debug_context;
 pub(crate) use self::hook_support::run_turn_hooks;
@@ -120,8 +127,11 @@ use self::openai::{
 };
 use self::openai::{is_event_stream, parse_openai_sse_response};
 pub use self::permission_prompt::{
-    with_permission_prompt_handler, with_user_question_prompt_handler, PermissionPromptAction,
-    PermissionPromptRequest, UserQuestionPromptRequest, UserQuestionPromptResponse,
+    with_permission_prompt_handler, with_user_question_prompt_handler,
+    BrowserPermissionPromptActionSet, BrowserPermissionPromptPayload,
+    BrowserPermissionPromptSource, BrowserPermissionPromptTargetClass, PermissionPromptAction,
+    PermissionPromptRequest, PermissionPromptReviewPayload, UserQuestionPromptRequest,
+    UserQuestionPromptResponse,
 };
 pub use self::reflection::{
     CodeJudgeConfig, LlmJudgeConfig, LlmJudgeContextScope, LlmJudgeMode, LlmJudgePromptCacheMode,

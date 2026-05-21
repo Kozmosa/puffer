@@ -5,6 +5,23 @@ type StreamActorFields = {
   actor?: MessageActor | null;
 };
 
+export type BrowserPermissionDisplayPayload = {
+  source: "browser_tool" | "browser_cli_via_shell";
+  actionSet: "inspect" | "navigate" | "interact" | "evaluate";
+  url: string | null;
+  origin: string | null;
+  host: string | null;
+  targetClass:
+    | "local_dev"
+    | "workspace_file"
+    | "non_workspace_file"
+    | "data_url"
+    | "open_web"
+    | "unknown";
+  tabId: string | null;
+  isCrossSession: boolean;
+};
+
 /** Any session event may arrive with `replay: true` when the daemon is
  *  catching up a newly-connected client via the replay ring buffer. UIs
  *  that already dedupe by stable id (tool cards by callId) don't need to
@@ -65,6 +82,7 @@ export type SessionStreamEvent =
       toolId: string;
       summary: string;
       reason: string | null;
+      browser?: BrowserPermissionDisplayPayload | null;
       replay?: boolean;
     } & StreamActorFields)
   | ({

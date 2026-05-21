@@ -537,7 +537,13 @@ mod tests {
         let yaml = include_str!("../../../resources/providers/openai.yaml");
         let pack: ProviderPack = serde_yaml::from_str(yaml).expect("openai.yaml parses");
         assert_eq!(pack.id, "openai");
-        assert_eq!(pack.discovery.as_ref().expect("discovery").max_output_tokens, 128_000);
+        assert_eq!(
+            pack.discovery
+                .as_ref()
+                .expect("discovery")
+                .max_output_tokens,
+            128_000
+        );
         let first = pack.models.first().expect("at least one fallback model");
         assert_eq!(first.id, "gpt-5.5");
         assert_eq!(first.max_output_tokens, 128_000);

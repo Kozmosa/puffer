@@ -91,7 +91,7 @@ pub(crate) fn run_non_interactive_command(
             crate::runner_selection::select_tool_runner(config, resources, cwd.to_path_buf()),
         );
     apply_model_overrides(&mut state, providers, &args)?;
-    state.session_allow_all = true;
+    state.grant_all_tools_for_session();
     state.sandbox_mode = "danger-full-access".to_string();
 
     let mut text_context = String::new();
@@ -802,6 +802,7 @@ mod tests {
             auth_modes: Vec::new(),
             headers: IndexMap::new(),
             query_params: IndexMap::new(),
+            chat_completions_path: None,
             discovery: None,
             models: vec![ModelDescriptor {
                 id: "gpt-5.4".to_string(),

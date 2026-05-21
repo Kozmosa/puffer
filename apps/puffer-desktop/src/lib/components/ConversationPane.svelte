@@ -489,6 +489,7 @@
     font-size: 0.72rem;
   }
 
+
   .thread {
     min-height: 0;
     overflow: auto;

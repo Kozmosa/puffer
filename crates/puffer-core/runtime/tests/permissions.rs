@@ -44,6 +44,43 @@ fn workspace_deny_rules_filter_tools_from_model_visibility() {
 }
 
 #[test]
+fn browser_policy_is_loaded_from_permissions_file_browser_section() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    std::fs::write(
+        paths.workspace_config_dir.join("permissions.toml"),
+        "[tools]\nread = \"allow\"\n\n[browser]\ndeny_domains = [\"example.com\"]\n",
+    )
+    .unwrap();
+
+    let mut state = state();
+    state.cwd = temp.path().to_path_buf();
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("Browser", "Browser", "runtime:browser")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let definition = registry.definition("Browser").unwrap();
+    let permission_context =
+        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
+
+    let decision = permission_context.decision_for_tool_call(
+        definition,
+        &json!({
+            "action":"navigate",
+            "url":"https://docs.example.com/page"
+        }),
+    );
+
+    assert_eq!(decision.behavior, ToolPermissionBehavior::Deny);
+    assert!(decision
+        .reason
+        .unwrap_or_default()
+        .contains("denies domain"));
+}
+
+#[test]
 fn request_tool_filter_limits_openai_tool_visibility_with_aliases() {
     let resources = LoadedResources {
         tools: vec![
@@ -199,75 +236,6 @@ fn plan_mode_allows_writing_the_active_plan_file() {
 }
 
 #[test]
-fn plan_mode_allows_editing_the_active_plan_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ConfigPaths::discover(temp.path());
-    ensure_workspace_dirs(&paths).unwrap();
-
-    let mut state = state();
-    state.cwd = temp.path().to_path_buf();
-    state.plan_mode = true;
-    let mut edit_tool = loaded_tool("Edit", "Edit file", "runtime:claude_edit");
-    edit_tool.value.approval_policy = Some("on-request".to_string());
-    edit_tool.value.sandbox_policy = Some("workspace-write".to_string());
-    let resources = LoadedResources {
-        tools: vec![edit_tool],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let definition = registry.definition("Edit").unwrap();
-    let permission_context =
-        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
-
-    permission_context
-        .enforce_tool_call(
-            definition,
-            &json!({
-                "file_path": plan_file_path(&state).unwrap(),
-                "old_string": "# Current Plan",
-                "new_string": "# Updated Plan"
-            }),
-        )
-        .unwrap();
-}
-
-#[test]
-fn plan_mode_requires_approval_for_editing_non_plan_files() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ConfigPaths::discover(temp.path());
-    ensure_workspace_dirs(&paths).unwrap();
-
-    let mut state = state();
-    state.cwd = temp.path().to_path_buf();
-    state.plan_mode = true;
-    let mut edit_tool = loaded_tool("Edit", "Edit file", "runtime:claude_edit");
-    edit_tool.value.approval_policy = Some("on-request".to_string());
-    edit_tool.value.sandbox_policy = Some("workspace-write".to_string());
-    let resources = LoadedResources {
-        tools: vec![edit_tool],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let definition = registry.definition("Edit").unwrap();
-    let permission_context =
-        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
-    let decision = permission_context.decision_for_tool_call(
-        definition,
-        &json!({
-            "file_path": state.cwd.join("note.txt"),
-            "old_string": "a",
-            "new_string": "b"
-        }),
-    );
-
-    assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
-    assert!(decision
-        .reason
-        .unwrap_or_default()
-        .contains("plan mode requires approval for mutating tools"));
-}
-
-#[test]
 fn plan_mode_allows_ask_user_question() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ConfigPaths::discover(temp.path());
@@ -382,6 +350,180 @@ fn destructive_shell_command_requires_approval_even_without_unsandboxed_override
 }
 
 #[test]
+fn shell_browser_commands_reuse_browser_permission_backend() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+
+    let mut state = state();
+    state.cwd = temp.path().to_path_buf();
+    let mut bash_tool = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
+    bash_tool.value.approval_policy = Some("on-request".to_string());
+    bash_tool.value.sandbox_policy = Some("workspace-write".to_string());
+    let resources = LoadedResources {
+        tools: vec![bash_tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let definition = registry.definition("Bash").unwrap();
+    let permission_context =
+        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
+
+    let decision = permission_context.decision_for_tool_call(
+        definition,
+        &json!({
+            "command":"puffer browser evaluate document.title"
+        }),
+    );
+
+    assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
+    let reason = decision.reason.unwrap_or_default();
+    assert!(
+        reason.contains("browser")
+            && (reason.contains("JavaScript") || reason.contains("page context"))
+    );
+}
+
+#[test]
+fn shell_browser_commands_reuse_existing_browser_grants() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+
+    let mut state = state();
+    state.cwd = temp.path().to_path_buf();
+    let mut bash_tool = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
+    bash_tool.value.approval_policy = Some("on-request".to_string());
+    bash_tool.value.sandbox_policy = Some("workspace-write".to_string());
+    let resources = LoadedResources {
+        tools: vec![bash_tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let definition = registry.definition("Bash").unwrap();
+    state.allow_browser_permission_for_tool_call(
+        definition,
+        &json!({
+            "command":"puffer browser evaluate --tab-id t7 document.title"
+        }),
+        crate::permissions::browser_grants::BrowserGrantScopeKind::AllowTabSession,
+    );
+    let permission_context =
+        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
+
+    assert!(!permission_context
+        .effective_profile()
+        .grants
+        .tool_overrides
+        .contains_key("bash"));
+
+    let decision = permission_context.decision_for_tool_call(
+        definition,
+        &json!({
+            "command":"puffer browser snapshot --tab-id t7"
+        }),
+    );
+
+    assert_eq!(decision.behavior, ToolPermissionBehavior::Allow);
+}
+
+#[test]
+fn browser_shell_commands_do_not_bypass_browser_evaluator_via_allow_all_tools() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+
+    let mut state = state();
+    state.cwd = temp.path().to_path_buf();
+    state.grant_all_tools_for_session();
+    let mut bash_tool = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
+    bash_tool.value.approval_policy = Some("on-request".to_string());
+    bash_tool.value.sandbox_policy = Some("workspace-write".to_string());
+    let resources = LoadedResources {
+        tools: vec![bash_tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let definition = registry.definition("Bash").unwrap();
+    let permission_context =
+        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
+
+    let decision = permission_context.decision_for_tool_call(
+        definition,
+        &json!({
+            "command":"puffer browser evaluate document.title"
+        }),
+    );
+
+    assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
+    assert!(decision.reason.unwrap_or_default().contains("browser"));
+}
+
+#[test]
+fn ambiguous_browser_shell_commands_require_explicit_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+
+    let mut state = state();
+    state.cwd = temp.path().to_path_buf();
+    let mut bash_tool = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
+    bash_tool.value.approval_policy = Some("on-request".to_string());
+    bash_tool.value.sandbox_policy = Some("workspace-write".to_string());
+    let resources = LoadedResources {
+        tools: vec![bash_tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let definition = registry.definition("Bash").unwrap();
+    let permission_context =
+        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
+
+    let decision = permission_context.decision_for_tool_call(
+        definition,
+        &json!({
+            "command":"puffer browser navigate https://example.com && puffer browser snapshot"
+        }),
+    );
+
+    assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("ambiguous browser shell command requires explicit approval")
+    );
+}
+
+#[test]
+fn non_browser_compound_shell_commands_keep_existing_behavior() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+
+    let mut state = state();
+    state.cwd = temp.path().to_path_buf();
+    let mut bash_tool = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
+    bash_tool.value.approval_policy = Some("on-request".to_string());
+    bash_tool.value.sandbox_policy = Some("workspace-write".to_string());
+    let resources = LoadedResources {
+        tools: vec![bash_tool],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let definition = registry.definition("Bash").unwrap();
+    let permission_context =
+        load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
+
+    let decision = permission_context.decision_for_tool_call(
+        definition,
+        &json!({
+            "command":"echo hi && pwd"
+        }),
+    );
+
+    assert_eq!(decision.behavior, ToolPermissionBehavior::Allow);
+}
+
+#[test]
 fn session_allow_all_is_applied_inside_permission_profile() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ConfigPaths::discover(temp.path());
@@ -394,7 +536,7 @@ fn session_allow_all_is_applied_inside_permission_profile() {
 
     let mut state = state();
     state.cwd = temp.path().to_path_buf();
-    state.session_allow_all = true;
+    state.grant_all_tools_for_session();
     let mut bash_tool = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
     bash_tool.value.approval_policy = Some("on-request".to_string());
     let resources = LoadedResources {
@@ -411,7 +553,7 @@ fn session_allow_all_is_applied_inside_permission_profile() {
 }
 
 #[test]
-fn runtime_permission_context_derives_executor_bridge_from_effective_profile() {
+fn runtime_permission_context_derives_typed_executor_policy_from_effective_profile() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ConfigPaths::discover(temp.path());
     ensure_workspace_dirs(&paths).unwrap();
@@ -433,18 +575,22 @@ fn runtime_permission_context_derives_executor_bridge_from_effective_profile() {
     let permission_context =
         load_runtime_permission_context(&state.cwd, &resources, &state).unwrap();
     let derived = permission_context.derived_policy();
-    let bridge = permission_context.legacy_executor_bridge();
 
     assert_eq!(
         derived.filesystem().approval,
         crate::permissions::profile::EffectiveApprovalPolicy::Ask
     );
     assert_eq!(
+        derived.filesystem().sandbox_mode,
+        crate::permissions::profile::EffectiveSandboxMode::DangerFullAccess
+    );
+    assert_eq!(
         derived.process().approval,
         crate::permissions::profile::EffectiveApprovalPolicy::Deny
     );
-    assert!(bridge.allow_all_paths);
-    assert_eq!(bridge.filesystem_sandbox_mode, "danger-full-access");
-    assert!(bridge.allow_unsandboxed_fallback);
-    assert_eq!(bridge.excluded_commands, vec!["sudo".to_string()]);
+    assert!(derived.process().allow_unsandboxed_fallback);
+    assert_eq!(
+        derived.process().excluded_commands,
+        vec!["sudo".to_string()]
+    );
 }

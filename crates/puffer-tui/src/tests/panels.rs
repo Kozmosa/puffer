@@ -575,7 +575,10 @@ fn pending_turn_queues_diff_instead_of_mutating_transcript() {
     .unwrap();
 
     assert!(tui.overlay.is_none());
-    assert_eq!(tui.queued_prompts.front().map(String::as_str), Some("/diff"));
+    assert_eq!(
+        tui.queued_prompts.front().map(String::as_str),
+        Some("/diff")
+    );
     assert_eq!(state.transcript.len(), transcript_len);
     assert_eq!(
         state.transcript.last().map(|message| message.text.as_str()),

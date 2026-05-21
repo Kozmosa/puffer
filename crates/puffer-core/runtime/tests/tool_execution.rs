@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 #[path = "tool_execution/agent_team_e2e.rs"]
 mod agent_team_e2e;
+#[path = "tool_execution/browser_permissions.rs"]
+mod browser_permissions;
 #[path = "tool_execution/legacy_alias_permissions.rs"]
 mod legacy_alias_permissions;
 #[path = "tool_execution/multi_agent_e2e.rs"]
@@ -33,6 +35,10 @@ fn temp_state() -> AppState {
         note: None,
     };
     AppState::new(PufferConfig::default(), cwd, session)
+}
+
+fn empty_providers() -> ProviderRegistry {
+    ProviderRegistry::default()
 }
 
 fn outside_workspace_tempdir(cwd: &Path) -> tempfile::TempDir {
@@ -322,6 +328,8 @@ fn allow_session_external_path_access_is_reused() {
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
+    let providers = empty_providers();
+    let mut auth_store = AuthStore::default();
     let prompts = Arc::new(Mutex::new(Vec::<String>::new()));
     let prompt_log = prompts.clone();
     let outside_path = outside.path().display().to_string();
@@ -336,6 +344,8 @@ fn allow_session_external_path_access_is_reused() {
             let first = resolve_tool_permission(
                 &mut state,
                 &resources,
+                &providers,
+                &mut auth_store,
                 &registry,
                 &cwd,
                 "Glob",
@@ -351,6 +361,8 @@ fn allow_session_external_path_access_is_reused() {
             let second = resolve_tool_permission(
                 &mut state,
                 &resources,
+                &providers,
+                &mut auth_store,
                 &registry,
                 &cwd,
                 "Glob",
@@ -390,6 +402,8 @@ fn agent_cwd_external_path_uses_manual_approval() {
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
+    let providers = empty_providers();
+    let mut auth_store = AuthStore::default();
     let prompts = Arc::new(Mutex::new(Vec::<String>::new()));
     let prompt_log = prompts.clone();
 
@@ -406,6 +420,8 @@ fn agent_cwd_external_path_uses_manual_approval() {
             resolve_tool_permission(
                 &mut state,
                 &resources,
+                &providers,
+                &mut auth_store,
                 &registry,
                 &cwd,
                 "Agent",
@@ -836,123 +852,21 @@ fn allow_session_persists_runtime_bash_approval_for_the_session() {
 
     let prompts = prompts.lock().unwrap();
     assert_eq!(prompts.as_slice(), &["Bash".to_string()]);
+    let permission_context = crate::permissions::load_runtime_permission_context_with_inputs(
+        &cwd,
+        &resources,
+        &state,
+        crate::permissions::RuntimePermissionInputs::default(),
+    )
+    .unwrap();
     assert_eq!(
-        state
-            .session_tool_permissions
-            .get("bash")
-            .map(String::as_str),
-        Some("allow")
-    );
-}
-
-#[test]
-fn allow_session_scopes_browser_approval_to_evaluate_actions() {
-    let mut tool = loaded_tool("Browser", "Managed browser", "runtime:browser");
-    tool.value.approval_policy = Some("auto".to_string());
-    tool.value.sandbox_policy = Some("workspace-write".to_string());
-    let resources = LoadedResources {
-        tools: vec![tool],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let mut providers = ProviderRegistry::new();
-    providers.register(openai_provider("http://127.0.0.1".to_string()));
-    let mut state = temp_state();
-    let cwd = state.cwd.clone();
-    let prompts = Arc::new(Mutex::new(Vec::<String>::new()));
-    let prompt_log = prompts.clone();
-
-    with_permission_prompt_handler(
-        move |request| {
-            prompt_log.lock().unwrap().push(
-                request
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| request.tool_id.clone()),
-            );
-            PermissionPromptAction::AllowSession
-        },
-        || {
-            let first = resolve_tool_permission(
-                &mut state,
-                &resources,
-                &registry,
-                &cwd,
-                "Browser",
-                &json!({"action": "evaluate", "script": "document.title"}),
-                None,
+        permission_context
+            .decision_for_tool_call(
+                registry.definition("Bash").unwrap(),
+                &json!({"command":"pwd"})
             )
-            .unwrap();
-            assert!(matches!(first, PermissionOutcome::Allowed(_)));
-
-            let second = resolve_tool_permission(
-                &mut state,
-                &resources,
-                &registry,
-                &cwd,
-                "Browser",
-                &json!({"action": "evaluate", "script": "window.location.href"}),
-                None,
-            )
-            .unwrap();
-            assert!(matches!(second, PermissionOutcome::Allowed(_)));
-
-            let third = resolve_tool_permission(
-                &mut state,
-                &resources,
-                &registry,
-                &cwd,
-                "Browser",
-                &json!({"action": "snapshot"}),
-                None,
-            )
-            .unwrap();
-            assert!(matches!(third, PermissionOutcome::Allowed(_)));
-        },
-    );
-
-    let prompts = prompts.lock().unwrap();
-    assert_eq!(prompts.len(), 1);
-    assert!(prompts[0].contains("executes page JavaScript"));
-    assert!(!state.session_tool_permissions.contains_key("browser"));
-}
-
-#[test]
-fn cross_session_browser_evaluate_can_be_denied_at_prompt_time() {
-    let mut tool = loaded_tool("Browser", "Managed browser", "runtime:browser");
-    tool.value.approval_policy = Some("auto".to_string());
-    tool.value.sandbox_policy = Some("workspace-write".to_string());
-    let resources = LoadedResources {
-        tools: vec![tool],
-        ..LoadedResources::default()
-    };
-    let registry = ToolRegistry::from_resources(&resources);
-    let mut state = temp_state();
-    let cwd = state.cwd.clone();
-    let other_session = "b4f239fd-1493-4be7-a3a1-9e58fe612576";
-
-    with_permission_prompt_handler(
-        move |_request| PermissionPromptAction::Deny,
-        || {
-            let first = resolve_tool_permission(
-                &mut state,
-                &resources,
-                &registry,
-                &cwd,
-                "Browser",
-                &json!({
-                    "action": "evaluate",
-                    "sessionId": other_session,
-                    "script": "document.title"
-                }),
-                None,
-            )
-            .unwrap();
-            let PermissionOutcome::Denied(result) = first else {
-                panic!("expected denied browser permission outcome");
-            };
-            assert!(result.output.stdout.contains("permission denied by user"));
-        },
+            .behavior,
+        crate::permissions::ToolPermissionBehavior::Allow
     );
 }
 

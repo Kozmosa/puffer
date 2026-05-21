@@ -158,6 +158,13 @@ pub(crate) fn handle_permissions_command(
                     "Usage: /permissions allow <tool-id>".to_string(),
                 );
             }
+            if crate::tool_names::canonical_tool_name(tool) == "browser" {
+                return emit_system(
+                    state,
+                    session_store,
+                    browser_section_message(&permissions_path),
+                );
+            }
             set_permission_level(&mut settings, tool, "allow");
             write_permissions(&permissions_path, &settings)?;
             emit_system(
@@ -173,6 +180,13 @@ pub(crate) fn handle_permissions_command(
                     state,
                     session_store,
                     "Usage: /permissions deny <tool-id>".to_string(),
+                );
+            }
+            if crate::tool_names::canonical_tool_name(tool) == "browser" {
+                return emit_system(
+                    state,
+                    session_store,
+                    browser_section_message(&permissions_path),
                 );
             }
             set_permission_level(&mut settings, tool, "deny");
@@ -192,6 +206,13 @@ pub(crate) fn handle_permissions_command(
                     "Usage: /permissions ask <tool-id>".to_string(),
                 );
             }
+            if crate::tool_names::canonical_tool_name(tool) == "browser" {
+                return emit_system(
+                    state,
+                    session_store,
+                    browser_section_message(&permissions_path),
+                );
+            }
             set_permission_level(&mut settings, tool, "ask");
             write_permissions(&permissions_path, &settings)?;
             emit_system(
@@ -207,6 +228,13 @@ pub(crate) fn handle_permissions_command(
                     state,
                     session_store,
                     "Usage: /permissions remove <tool-id>".to_string(),
+                );
+            }
+            if crate::tool_names::canonical_tool_name(tool) == "browser" {
+                return emit_system(
+                    state,
+                    session_store,
+                    browser_section_message(&permissions_path),
                 );
             }
             settings.tools.remove(&permission_file_tool_key(tool));
@@ -517,6 +545,9 @@ pub(crate) fn render_hooks_actions(
 }
 
 fn set_permission_level(settings: &mut PermissionsSettings, tool: &str, level: &str) {
+    if crate::tool_names::canonical_tool_name(tool) == "browser" {
+        return;
+    }
     settings
         .tools
         .insert(permission_file_tool_key(tool), level.to_string());
@@ -537,14 +568,31 @@ fn permission_file_tool_key(tool: &str) -> String {
 
 fn render_permissions_summary(path: &PathBuf, settings: &PermissionsSettings) -> String {
     let mut body = String::from("Tool rules:\n");
-    if settings.tools.is_empty() {
+    let visible_tools = settings
+        .tools
+        .iter()
+        .filter(|(tool, _)| crate::tool_names::canonical_tool_name(tool) != "browser")
+        .collect::<Vec<_>>();
+    if visible_tools.is_empty() {
         body.push_str("- <none>\n");
     } else {
-        for (tool, level) in &settings.tools {
+        for (tool, level) in visible_tools {
             let _ = writeln!(&mut body, "- {tool}: {level}");
         }
     }
-    format!("Permissions file: {}\n{}", path.display(), body.trim_end())
+    format!(
+        "Permissions file: {}\n{}\n{}",
+        path.display(),
+        body.trim_end(),
+        browser_section_message(path)
+    )
+}
+
+fn browser_section_message(path: &PathBuf) -> String {
+    format!(
+        "Browser rules live under the `[browser]` section in {}.",
+        path.display()
+    )
 }
 
 /// Shows or updates the workspace sandbox configuration file.
@@ -803,5 +851,31 @@ mod tests {
         let loaded: PermissionsSettings =
             toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.tools.get("read").map(String::as_str), Some("allow"));
+    }
+
+    #[test]
+    fn browser_is_not_written_into_generic_permissions() {
+        let mut settings = PermissionsSettings::default();
+        set_permission_level(&mut settings, "browser", "allow");
+        assert!(settings.tools.is_empty());
+    }
+
+    #[test]
+    fn write_permissions_preserves_browser_section() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("permissions.toml");
+        fs::write(
+            &path,
+            "[tools]\nread = \"ask\"\n\n[browser]\ndeny_domains = [\"example.com\"]\n",
+        )
+        .unwrap();
+
+        let mut settings = PermissionsSettings::default();
+        set_permission_level(&mut settings, "read", "allow");
+        write_permissions(&path, &settings).unwrap();
+
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("[browser]"));
+        assert!(stored.contains("example.com"));
     }
 }
