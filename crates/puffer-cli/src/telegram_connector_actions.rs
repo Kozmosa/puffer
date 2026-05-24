@@ -33,13 +33,20 @@ impl ConnectionAuthChecker for TelegramConnectionAuthChecker {
             return Ok(None);
         }
         let command = SubscriberCommand::TelegramAuthOk;
-        let envelope = manager.send_command_and_wait(
+        let envelope = match manager.send_command_and_wait(
             connection_slug,
             connection_slug,
             &command,
             &["auth_ok", "login_error"],
             TELEGRAM_AUTH_TIMEOUT,
-        )?;
+        ) {
+            Ok(envelope) => envelope,
+            Err(_) => {
+                // A subscriber restart or command timeout says the probe was
+                // unavailable, not that Telegram rejected the saved session.
+                return Ok(None);
+            }
+        };
         Ok(Some(
             envelope.event.kind == "auth_ok"
                 && envelope
