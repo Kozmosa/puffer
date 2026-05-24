@@ -282,3 +282,67 @@ printf '%s\n' '{"topic":"wait-topic","kind":"login_error","text":"terminal","pay
 
     manager.shutdown();
 }
+
+#[test]
+fn send_command_and_wait_resends_after_subscriber_restart() {
+    let temp = tempdir().unwrap();
+    let subscriber_dir = temp.path().join("subscriber");
+    std::fs::create_dir_all(&subscriber_dir).unwrap();
+    std::fs::write(
+        subscriber_dir.join("manifest.toml"),
+        r#"manifest_version = 1
+id = "restart-subscriber"
+kind = "subscriber"
+topic = "restart-topic"
+
+[run]
+cmd = ["sh", "run.sh"]
+
+[state]
+dir = "state"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        subscriber_dir.join("run.sh"),
+        r#"mkdir -p "$PUFFER_SKILL_STATE_DIR"
+count_file="$PUFFER_SKILL_STATE_DIR/count"
+count="$(cat "$count_file" 2>/dev/null || printf 0)"
+IFS= read -r _line || exit 0
+if [ "$count" = "0" ]; then
+  printf 1 > "$count_file"
+  exit 0
+fi
+printf '%s\n' '{"topic":"restart-topic","kind":"done","text":"retried"}'
+"#,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let manager = SubscriptionManagerBuilder::new(temp.path().join("subscriptions.json"))
+        .build(runtime.handle().clone())
+        .unwrap();
+    let manifest = Manifest::load(&subscriber_dir).unwrap();
+
+    manager.start_subscriber(manifest).unwrap();
+    let envelope = manager
+        .send_command_and_wait(
+            "restart-subscriber",
+            "restart-topic",
+            &SubscriberCommand::Custom {
+                op: "ping".into(),
+                args: Value::Null,
+            },
+            &["done"],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(envelope.event.kind, "done");
+    assert_eq!(envelope.event.text, "retried");
+
+    manager.shutdown();
+}

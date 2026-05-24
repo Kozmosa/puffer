@@ -11,6 +11,7 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 
@@ -241,6 +242,7 @@ pub struct SendMediaAttachment {
 #[derive(Clone)]
 pub struct CommandSender {
     inner: std::sync::Arc<Mutex<Option<ChildStdin>>>,
+    generation: std::sync::Arc<AtomicU64>,
 }
 
 impl CommandSender {
@@ -248,6 +250,7 @@ impl CommandSender {
     pub fn new(stdin: ChildStdin) -> Self {
         Self {
             inner: std::sync::Arc::new(Mutex::new(Some(stdin))),
+            generation: std::sync::Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -257,6 +260,7 @@ impl CommandSender {
     pub fn disconnected() -> Self {
         Self {
             inner: std::sync::Arc::new(Mutex::new(None)),
+            generation: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -264,6 +268,17 @@ impl CommandSender {
     pub async fn replace(&self, stdin: Option<ChildStdin>) {
         let mut guard = self.inner.lock().await;
         *guard = stdin;
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Returns a monotonically increasing value for stdin replacement.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Returns whether a child stdin handle is currently connected.
+    pub async fn is_connected(&self) -> bool {
+        self.inner.lock().await.is_some()
     }
 
     /// Sends one command to the subscriber. Returns an error when the

@@ -20,8 +20,8 @@ use crate::spec::ActionSpec;
 use crate::store::SubscriptionStore;
 use anyhow::Result;
 use puffer_subscriber_runtime::{
-    EventBus, EventEnvelope, Manifest, SubscriberCommand, SubscriberHandle, SubscriberSupervisor,
-    SupervisorConfig,
+    CommandSender, EventBus, EventEnvelope, Manifest, SubscriberCommand, SubscriberHandle,
+    SubscriberSupervisor, SupervisorConfig,
 };
 use std::collections::HashMap;
 use std::future::Future;
@@ -31,6 +31,8 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 
 const CONNECTOR_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const COMMAND_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const COMMAND_RESTART_RESENDS: usize = 2;
 
 /// Host-provided auth checker for built-in connectors whose credentials are
 /// owned by the embedding process instead of a connector subprocess.
@@ -555,22 +557,36 @@ impl SubscriptionManager {
         let terminal_kinds: Vec<String> =
             terminal_kinds.iter().map(|kind| kind.to_string()).collect();
         block_on_manager_handle(&self.handle, async move {
-            sender.send(&command).await?;
             let deadline = tokio::time::Instant::now() + timeout;
+            let mut sent_generation =
+                send_command_before_deadline(&sender, &command, deadline).await?;
+            let mut resend_count = 0usize;
             loop {
                 let remaining = deadline
                     .checked_duration_since(tokio::time::Instant::now())
                     .ok_or_else(|| anyhow::anyhow!("timed out waiting for subscriber event"))?;
-                let envelope = tokio::time::timeout(remaining, rx.recv())
-                    .await
-                    .map_err(|_| anyhow::anyhow!("timed out waiting for subscriber event"))?
-                    .ok_or_else(|| anyhow::anyhow!("subscriber event bus closed"))?;
-                if terminal_kinds
-                    .iter()
-                    .any(|kind| kind == &envelope.event.kind)
-                    && command_matches_terminal_event(&command, &envelope)
-                {
-                    return Ok(envelope);
+                let poll_interval = remaining.min(COMMAND_RESTART_POLL_INTERVAL);
+                match tokio::time::timeout(poll_interval, rx.recv()).await {
+                    Ok(Some(envelope)) => {
+                        if terminal_kinds
+                            .iter()
+                            .any(|kind| kind == &envelope.event.kind)
+                            && command_matches_terminal_event(&command, &envelope)
+                        {
+                            return Ok(envelope);
+                        }
+                    }
+                    Ok(None) => anyhow::bail!("subscriber event bus closed"),
+                    Err(_) => {}
+                }
+                let current_generation = sender.generation();
+                if current_generation != sent_generation {
+                    if resend_count >= COMMAND_RESTART_RESENDS {
+                        anyhow::bail!("subscriber restarted while waiting for subscriber event");
+                    }
+                    resend_count += 1;
+                    sent_generation =
+                        send_command_before_deadline(&sender, &command, deadline).await?;
                 }
             }
         })
@@ -630,6 +646,34 @@ where
         return handle.block_on(future);
     }
     tokio::task::block_in_place(|| handle.block_on(future))
+}
+
+async fn send_command_before_deadline(
+    sender: &CommandSender,
+    command: &SubscriberCommand,
+    deadline: tokio::time::Instant,
+) -> Result<u64> {
+    loop {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .ok_or_else(|| anyhow::anyhow!("timed out waiting for subscriber event"))?;
+        let attempt_generation = sender.generation();
+        match sender.send(command).await {
+            Ok(()) => return Ok(attempt_generation),
+            Err(_) if !sender.is_connected().await => {
+                let sleep_for = remaining.min(COMMAND_RESTART_POLL_INTERVAL);
+                tokio::time::sleep(sleep_for).await;
+            }
+            Err(error) => {
+                let sleep_for = remaining.min(COMMAND_RESTART_POLL_INTERVAL);
+                tokio::time::sleep(sleep_for).await;
+                if !sender.is_connected().await || sender.generation() != attempt_generation {
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
 }
 
 struct ManagerConnectorEventProcessor {
