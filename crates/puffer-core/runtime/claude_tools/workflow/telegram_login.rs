@@ -620,7 +620,7 @@ pub fn execute_telegram_login_submit_code(
         "login_awaiting_password" => Ok(json!({
             "status": "awaiting_password",
             "connection_slug": connection_slug,
-            "next": "Telegram requires the user's 2FA cloud password. Ask the user for it, then run `telegram --connection <connection_slug> login-submit-password --password-stdin`.",
+            "next": "Telegram requires the user's 2FA cloud password. Ask for it with AskUserQuestion, then call Telegram action `login_submit_password` with the same connection_slug.",
             "payload": event.event.payload,
         })
         .to_string()),

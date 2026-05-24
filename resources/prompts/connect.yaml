@@ -1,0 +1,91 @@
+id: connect
+description: Configure a named connector connection
+allowed_tools:
+  - AskUserQuestion
+  - ConnectorList
+  - ConnectionList
+  - ConnectionCreate
+  - Telegram
+  - Slack
+  - Lark
+  - Email
+variables:
+  - name: ARGUMENTS
+    description: Raw arguments passed to /connect.
+  - name: CONNECTOR_SLUG
+    description: First parsed token from /connect.
+  - name: CONNECTION_NAME
+    description: Second parsed token from /connect.
+  - name: CONNECT_EXTRA_ARGUMENTS
+    description: Tokens after the connection name.
+  - name: CONNECT_PARSE_STATUS
+    description: Deterministic parse status for the /connect invocation.
+template: |
+  Configure a Puffer connector connection.
+
+  Invocation: /connect $ARGUMENTS
+  Parsed connector slug: $CONNECTOR_SLUG
+  Parsed connection name: $CONNECTION_NAME
+  Extra arguments: $CONNECT_EXTRA_ARGUMENTS
+  Parse status: $CONNECT_PARSE_STATUS
+
+  Deterministic argument contract:
+  - The connector slug is the first parsed token.
+  - The connection name is the second parsed token. Treat it as the stable connection slug passed to connector tools and ConnectionCreate.
+  - Do not silently replace the connection name with a default such as telegram-user, slack-app, slack-login, lark-app, lark-login, or email.
+  - If either parsed value is empty, use AskUserQuestion to collect the missing value before doing anything else.
+  - If extra arguments are present, use AskUserQuestion to confirm the exact connection name before doing anything else.
+
+  Hard rules:
+  - Do not use Bash, WriteStdin, shell stdin, or connector `--*-stdin` flags for this flow.
+  - Do not ask the user to pipe secrets through stdin.
+  - Use AskUserQuestion for every missing auth method, credential, phone number, login code, password, local passcode, workspace URL, server host, or sender list.
+  - Use AskUserQuestion `type: "choice"` for method selection, such as import versus phone number.
+  - Use AskUserQuestion `type: "input"` for typed values, such as phone numbers, login codes, passwords, local passcodes, workspace URLs, hosts, tokens, and sender lists.
+  - Ask at most four questions in one AskUserQuestion call.
+  - Treat tokens, passwords, login codes, local passcodes, API hashes, and browser cookies as secrets. Do not echo them in the final answer and do not write them to project files.
+  - Use ConnectorList when the connector slug is unfamiliar or you need to verify whether the connector requires auth.
+  - Use the connector runtime tools below with connection_slug/account_slug set to the parsed connection name.
+  - Use ConnectionCreate only when the connector tool did not already register the connection.
+
+  Supported auth flows:
+
+  telegram-login:
+  - Ask the user to choose Telegram Desktop import, QR login, or phone number login.
+  - For Telegram Desktop import, ask for account index and optional tdata path, key file, and local passcode only when needed. Call Telegram with action `import_desktop`.
+  - For QR login, call Telegram with action `login_qr`, show the returned login URL, ask the user to approve it from a logged-in Telegram app, then call `login_qr_wait`. Repeat if a refreshed URL is returned.
+  - For phone login, ask for the E.164 phone number. Call Telegram with action `login_start`. If Telegram asks for a code, use AskUserQuestion for the code and call `login_submit_code`. If Telegram asks for 2FA, use AskUserQuestion for the cloud password and call `login_submit_password`.
+  - Only ask for api_id/api_hash if the user explicitly wants to use their own Telegram app credentials.
+
+  slack-app:
+  - Ask for Slack bot token, app-level token, and optional workspace name.
+  - Call Slack with action `configure_app`.
+
+  slack-login:
+  - Ask the user to choose OAuth token, local Slack app import, or browser cookie/token login.
+  - OAuth token: ask for the token and optional token type, then call Slack with action `login_token`.
+  - Local import: ask for optional local data path and workspace URL, then call Slack with action `import_local`.
+  - Browser login: ask for workspace URL, xoxd cookie, and xoxc token, then call Slack with action `login_browser`.
+
+  lark-app:
+  - Ask the user to choose manual app credentials or environment import.
+  - Manual credentials: ask for brand, app_id, and app_secret, then call Lark with action `configure_app`.
+  - Environment import: ask for brand if needed, then call Lark with action `import_env`.
+
+  lark-login:
+  - Ask for brand, user_access_token, and optional app_id.
+  - Call Lark with action `login_token`.
+
+  email:
+  - Collect values in multiple AskUserQuestion calls if needed: IMAP host and port, SMTP host and port, username, password or app password, from address, and optional allowed senders.
+  - Call Email with action `configure`.
+  - Then register the connection with ConnectionCreate using connector_slug `email` and the parsed connection name if the email tool did not register it.
+
+  Unknown connector slugs:
+  - Call ConnectorList.
+  - If the connector does not require auth, use ConnectionCreate with the parsed connector slug and connection name.
+  - If it requires auth but has no supported runtime auth flow above, explain that /connect does not yet have a typed auth helper for that connector and stop without inventing a shell or stdin flow.
+
+  Final response:
+  - Keep it concise.
+  - Include connector slug, connection name, selected method, whether auth completed, and whether a ConnectionCreate record was created or already existed.

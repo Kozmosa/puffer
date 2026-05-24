@@ -9,8 +9,17 @@ use serde_json::{Map, Value};
 pub(crate) struct UserQuestion {
     header: String,
     question: String,
+    question_type: UserQuestionType,
     options: Vec<UserQuestionOption>,
     multi_select: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum UserQuestionType {
+    #[default]
+    Choice,
+    Input,
 }
 
 /// One selectable answer option in an `AskUserQuestion` prompt.
@@ -50,6 +59,7 @@ impl UserQuestionOverlay {
             .map(|raw| UserQuestion {
                 header: raw.header,
                 question: raw.question,
+                question_type: raw.question_type,
                 options: raw
                     .options
                     .into_iter()
@@ -81,7 +91,10 @@ impl UserQuestionOverlay {
             .collect::<Vec<_>>();
         let selected_multi = vec![Vec::new(); questions.len()];
         let custom_answers = vec![String::new(); questions.len()];
-        let custom_answer_active = vec![false; questions.len()];
+        let custom_answer_active = questions
+            .iter()
+            .map(|question| question.question_type == UserQuestionType::Input)
+            .collect::<Vec<_>>();
         Ok(Self {
             questions,
             question_index: 0,
@@ -128,6 +141,14 @@ impl UserQuestionOverlay {
         };
         let selection = self.selection();
         let custom_answer = self.current_custom_answer().trim();
+        if question.question_type == UserQuestionType::Input {
+            let body = if custom_answer.is_empty() {
+                "Type answer".to_string()
+            } else {
+                custom_answer.to_string()
+            };
+            return vec![(true, format!("Input  {body}"))];
+        }
         let custom_active = self.is_custom_answer_active();
         let custom_selected =
             custom_active || (!question.multi_select && !custom_answer.is_empty());
@@ -175,6 +196,9 @@ impl UserQuestionOverlay {
     /// Returns the preview for the active single-select option.
     pub(crate) fn selected_preview(&self) -> Option<&str> {
         let question = self.current_question()?;
+        if question.question_type == UserQuestionType::Input {
+            return None;
+        }
         if question.multi_select {
             return None;
         }
@@ -191,6 +215,10 @@ impl UserQuestionOverlay {
 
     /// Moves the selection upward.
     pub(crate) fn select_previous(&mut self) {
+        if self.current_question_type() == Some(UserQuestionType::Input) {
+            self.set_custom_answer_active(true);
+            return;
+        }
         if self.is_custom_answer_active() {
             if let Some(list) = self.current_list_mut() {
                 list.select_last();
@@ -205,6 +233,10 @@ impl UserQuestionOverlay {
 
     /// Moves the selection downward.
     pub(crate) fn select_next(&mut self) {
+        if self.current_question_type() == Some(UserQuestionType::Input) {
+            self.set_custom_answer_active(true);
+            return;
+        }
         if self.is_custom_answer_active() {
             return;
         }
@@ -220,6 +252,10 @@ impl UserQuestionOverlay {
 
     /// Moves the selection upward by one page.
     pub(crate) fn page_up(&mut self) {
+        if self.current_question_type() == Some(UserQuestionType::Input) {
+            self.set_custom_answer_active(true);
+            return;
+        }
         self.set_custom_answer_active(false);
         if let Some(list) = self.current_list_mut() {
             list.page_up();
@@ -228,6 +264,10 @@ impl UserQuestionOverlay {
 
     /// Moves the selection downward by one page.
     pub(crate) fn page_down(&mut self) {
+        if self.current_question_type() == Some(UserQuestionType::Input) {
+            self.set_custom_answer_active(true);
+            return;
+        }
         if self.is_custom_answer_active() {
             return;
         }
@@ -247,7 +287,7 @@ impl UserQuestionOverlay {
         let Some(question) = self.current_question() else {
             return;
         };
-        if !question.multi_select {
+        if question.question_type == UserQuestionType::Input || !question.multi_select {
             return;
         }
         if self.is_custom_answer_active() {
@@ -296,7 +336,12 @@ impl UserQuestionOverlay {
             .get(question_index)
             .map(|answer| answer.trim().to_string())
             .unwrap_or_default();
-        let answer = if question.multi_select {
+        let answer = if question.question_type == UserQuestionType::Input {
+            if custom.is_empty() {
+                return None;
+            }
+            Value::String(custom)
+        } else if question.multi_select {
             if self.selected_multi[question_index].is_empty() && custom.is_empty() {
                 if self
                     .custom_answer_active
@@ -345,6 +390,11 @@ impl UserQuestionOverlay {
         self.questions.get(self.question_index)
     }
 
+    fn current_question_type(&self) -> Option<UserQuestionType> {
+        self.current_question()
+            .map(|question| question.question_type)
+    }
+
     fn current_list(&self) -> Option<&ListSelectionView> {
         self.lists.get(self.question_index)
     }
@@ -383,6 +433,15 @@ impl UserQuestionOverlay {
         self.is_custom_answer_active()
     }
 
+    /// Returns the composer placeholder for the active answer field.
+    pub(crate) fn prompt_placeholder(&self) -> &'static str {
+        if self.current_question_type() == Some(UserQuestionType::Input) {
+            "Type answer"
+        } else {
+            "Type custom answer"
+        }
+    }
+
     fn current_custom_answer(&self) -> &str {
         self.custom_answers
             .get(self.question_index)
@@ -414,6 +473,9 @@ impl UserQuestionOverlay {
 struct RawUserQuestion {
     question: String,
     header: String,
+    #[serde(default, rename = "type")]
+    question_type: UserQuestionType,
+    #[serde(default)]
     options: Vec<RawUserQuestionOption>,
     #[serde(default, rename = "multiSelect")]
     multi_select: bool,

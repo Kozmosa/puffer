@@ -1,9 +1,10 @@
 use super::{
     execute_compact_prompt_command, handle_plan_command, plan_mode_context_message,
     prepare_btw_prompt_command, prepare_commit_prompt_command, prepare_compact_prompt_command,
-    prepare_plan_prompt_command, prepare_pr_comments_prompt_command,
-    prepare_prompt_command_specialization, prepare_security_review_prompt_command,
-    prepare_statusline_prompt_command, PromptCommandPreparation,
+    prepare_connect_prompt_command, prepare_plan_prompt_command,
+    prepare_pr_comments_prompt_command, prepare_prompt_command_specialization,
+    prepare_security_review_prompt_command, prepare_statusline_prompt_command,
+    resources_for_prompt_command, PromptCommandPreparation,
 };
 use crate::plans::{ensure_plan_file, persist_plan_output, plan_file_path};
 use crate::{AppState, MessageRole};
@@ -558,6 +559,64 @@ fn dispatcher_helper_routes_known_prompt_specializations() {
 }
 
 #[test]
+fn connect_specialization_parses_connector_and_connection_tokens() {
+    match prepare_connect_prompt_command("telegram-login tg-main ignored") {
+        PromptCommandPreparation::VariableOverrides(variables) => {
+            assert_eq!(
+                variables.get("CONNECTOR_SLUG").map(String::as_str),
+                Some("telegram-login")
+            );
+            assert_eq!(
+                variables.get("CONNECTION_NAME").map(String::as_str),
+                Some("tg-main")
+            );
+            assert_eq!(
+                variables.get("CONNECT_EXTRA_ARGUMENTS").map(String::as_str),
+                Some("ignored")
+            );
+            assert_eq!(
+                variables.get("CONNECT_PARSE_STATUS").map(String::as_str),
+                Some("extra arguments were provided after the connection name")
+            );
+        }
+        _ => panic!("expected connect prompt variable overrides"),
+    }
+}
+
+#[test]
+fn connect_prompt_scopes_connector_internal_tools_as_model_tools() {
+    let resources = LoadedResources {
+        tools: vec![tool_resource(
+            "AskUserQuestion",
+            "runtime:workflow:ask_user_question",
+        )],
+        internal_tools: vec![
+            tool_resource("Telegram", "runtime:workflow:telegram"),
+            tool_resource("Browser", "runtime:browser"),
+        ],
+        ..LoadedResources::default()
+    };
+
+    let scoped = resources_for_prompt_command(&resources, "connect");
+    assert!(scoped
+        .tools
+        .iter()
+        .any(|tool| tool.value.id == "AskUserQuestion"));
+    assert!(scoped.tools.iter().any(|tool| tool.value.id == "Telegram"));
+    assert!(!scoped.tools.iter().any(|tool| tool.value.id == "Browser"));
+    assert!(!resources
+        .tools
+        .iter()
+        .any(|tool| tool.value.id == "Telegram"));
+
+    let ordinary = resources_for_prompt_command(&resources, "review");
+    assert!(!ordinary
+        .tools
+        .iter()
+        .any(|tool| tool.value.id == "Telegram"));
+}
+
+#[test]
 fn plan_mode_context_does_not_create_a_default_plan_file() {
     let fixture = sample_state();
     let mut state = fixture.state;
@@ -601,6 +660,24 @@ fn loaded_prompt(path: &str, contents: &str) -> LoadedItem<PromptTemplate> {
         value: serde_yaml::from_str::<PromptTemplate>(contents).unwrap(),
         source_info: SourceInfo {
             path: PathBuf::from(path),
+            kind: SourceKind::Builtin,
+        },
+    }
+}
+
+fn tool_resource(id: &str, handler: &str) -> LoadedItem<ToolSpec> {
+    LoadedItem {
+        value: ToolSpec {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: format!("{id} tool"),
+            handler: handler.to_string(),
+            approval_policy: Some("auto".to_string()),
+            sandbox_policy: Some("read-only".to_string()),
+            ..ToolSpec::default()
+        },
+        source_info: SourceInfo {
+            path: PathBuf::from(format!("{id}.yaml")),
             kind: SourceKind::Builtin,
         },
     }

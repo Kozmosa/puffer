@@ -287,7 +287,10 @@ pub fn execute_connection_list(
         "auth_notices": auth_notices.iter().map(|connection| json!({
             "slug": connection.slug,
             "connector_slug": connection.connector_slug,
-            "message": "Connection auth is no longer functioning; re-run the connector skill to repair it."
+            "message": format!(
+                "Connection auth is no longer functioning; run `/connect {} {}` to repair it.",
+                connection.connector_slug, connection.slug
+            )
         })).collect::<Vec<_>>(),
     }))?)
 }
@@ -315,8 +318,10 @@ pub fn execute_connection_create(
     };
     if template.requires_auth && auth_ok == Some(false) {
         anyhow::bail!(
-            "connector `{}` reported auth is not ready; finish the connector skill first",
-            parsed.connector_slug
+            "connector `{}` reported auth is not ready; run `/connect {} {}` first",
+            parsed.connector_slug,
+            parsed.connector_slug,
+            parsed.slug
         );
     }
     let mut record =
@@ -391,7 +396,7 @@ fn synthetic_envelope(topic: &str, payload: &Value) -> EventEnvelope {
 
 fn connector_skill_template(template: &ConnectorTemplate) -> String {
     format!(
-        "# {}\n\nUse this connector skill to authenticate `{}` and explain its filter, output, action, and permission shapes.\n\n- Auth: run the connector authentication flow before creating a connection.\n- Auth check: call `auth-ok` for the connection slug before registering it.\n- Subscribe: emit JSONL event frames with cursors.\n- Act: accept one action JSON payload on stdin and return one JSON object.\n",
+        "# {}\n\nUse this connector guide to authenticate `{}` and explain its filter, output, action, and permission shapes.\n\n- Auth: use AskUserQuestion for user-provided auth inputs before creating a connection.\n- Auth check: call `auth-ok` for the connection slug before registering it.\n- Subscribe: emit JSONL event frames with cursors.\n- Act: accept one action JSON payload on stdin and return one JSON object.\n",
         template.description, template.slug
     )
 }

@@ -9,10 +9,13 @@ use anyhow::Result;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{SessionStore, TranscriptEvent};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
+
+const CONNECT_SCOPED_INTERNAL_TOOLS: &[&str] = &["Telegram", "Slack", "Lark", "Email"];
 
 /// Describes how a prompt command should be handled after specialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,11 +51,40 @@ pub(crate) fn prepare_prompt_command_specialization(
             args,
         )?)),
         "commit" => Ok(Some(prepare_commit_prompt_command(state)?)),
+        "connect" => Ok(Some(prepare_connect_prompt_command(args))),
         "pr-comments" => Ok(Some(prepare_pr_comments_prompt_command(args))),
         "security-review" => Ok(Some(prepare_security_review_prompt_command(state)?)),
         "statusline" => Ok(Some(prepare_statusline_prompt_command(args)?)),
         _ => Ok(None),
     }
+}
+
+/// Returns resources adjusted for prompt-command-only tool exposure.
+pub(crate) fn resources_for_prompt_command<'a>(
+    resources: &'a LoadedResources,
+    command_name: &str,
+) -> Cow<'a, LoadedResources> {
+    if command_name != "connect" {
+        return Cow::Borrowed(resources);
+    }
+    let mut scoped = resources.clone();
+    for internal_tool in &resources.internal_tools {
+        if !CONNECT_SCOPED_INTERNAL_TOOLS
+            .iter()
+            .any(|tool| internal_tool.value.id == *tool || internal_tool.value.name == *tool)
+        {
+            continue;
+        }
+        if scoped
+            .tools
+            .iter()
+            .any(|tool| tool.value.id == internal_tool.value.id)
+        {
+            continue;
+        }
+        scoped.tools.push(internal_tool.clone());
+    }
+    Cow::Owned(scoped)
 }
 
 /// Prepares `/btw` side-question handling without appending a user prompt to the main transcript.
@@ -97,6 +129,11 @@ pub(crate) fn prepare_commit_prompt_command(state: &AppState) -> Result<PromptCo
     Ok(PromptCommandPreparation::VariableOverrides(
         build_commit_prompt_variables(&state.cwd)?,
     ))
+}
+
+/// Prepares deterministic connector and connection variables for `/connect`.
+pub(crate) fn prepare_connect_prompt_command(args: &str) -> PromptCommandPreparation {
+    PromptCommandPreparation::VariableOverrides(build_connect_prompt_variables(args))
 }
 
 /// Handles `/plan` local behaviors using Claude-style plan-mode semantics.
@@ -319,6 +356,27 @@ fn build_pr_comments_prompt_variables(args: &str) -> BTreeMap<String, String> {
             format!("Additional user input: {trimmed}")
         },
     )])
+}
+
+fn build_connect_prompt_variables(args: &str) -> BTreeMap<String, String> {
+    let mut parts = args.split_whitespace();
+    let connector_slug = parts.next().unwrap_or_default().to_string();
+    let connection_name = parts.next().unwrap_or_default().to_string();
+    let extra_arguments = parts.collect::<Vec<_>>().join(" ");
+    let parse_status = if connector_slug.is_empty() || connection_name.is_empty() {
+        "missing required connector slug or connection name"
+    } else if extra_arguments.is_empty() {
+        "ok"
+    } else {
+        "extra arguments were provided after the connection name"
+    };
+
+    BTreeMap::from([
+        ("CONNECTOR_SLUG".to_string(), connector_slug),
+        ("CONNECTION_NAME".to_string(), connection_name),
+        ("CONNECT_EXTRA_ARGUMENTS".to_string(), extra_arguments),
+        ("CONNECT_PARSE_STATUS".to_string(), parse_status.to_string()),
+    ])
 }
 
 fn build_commit_prompt_variables(cwd: &Path) -> Result<BTreeMap<String, String>> {

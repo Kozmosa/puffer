@@ -3,10 +3,10 @@ name: Telegram
 aliases:
   - telegram
 description: |-
-  Internal CLI-only Telegram personal-account login, Telegram Desktop
-  import, and peer lookup surface.
-  Agents should use the `telegram` skill and run `telegram ...` through Bash
-  instead of receiving this as a provider tool call.
+  Telegram personal-account login, Telegram Desktop import, and peer lookup
+  surface. `/connect telegram-login <connection>` may expose this as a scoped
+  runtime tool for auth; the `telegram` skill exposes the same operations
+  through the internal CLI for lookup-oriented work.
 
   The internal CLI sends execution back to the parent Puffer runtime so the
   selected supervised subscriber process keeps the in-flight login token

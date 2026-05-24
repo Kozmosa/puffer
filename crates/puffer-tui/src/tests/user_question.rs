@@ -57,6 +57,16 @@ fn sample_preview_payload() -> serde_json::Value {
     ])
 }
 
+fn sample_input_payload() -> serde_json::Value {
+    json!([
+        {
+            "type": "input",
+            "header": "Phone",
+            "question": "What phone number should Telegram use?"
+        }
+    ])
+}
+
 #[test]
 fn poll_pending_submit_opens_user_question_overlay() {
     let tempdir = tempdir().unwrap();
@@ -318,6 +328,58 @@ fn user_question_custom_answer_sends_other_text() {
 }
 
 #[test]
+fn user_question_input_answer_sends_typed_text() {
+    let (response_tx, response_rx) = mpsc::channel();
+    let mut tui = TuiState {
+        overlay: Some(OverlayState::UserQuestionPrompt {
+            overlay: UserQuestionOverlay::from_value(sample_input_payload()).unwrap(),
+        }),
+        pending_user_question_request: Some(PendingUserQuestionRequest { response_tx }),
+        ..TuiState::default()
+    };
+
+    for ch in "+15551234567".chars() {
+        assert!(handle_user_question_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            &mut tui
+        ));
+    }
+    assert!(handle_user_question_key(
+        KeyEvent::from(KeyCode::Enter),
+        &mut tui
+    ));
+    let response = response_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        response.answers["What phone number should Telegram use?"],
+        json!("+15551234567")
+    );
+    assert!(tui.overlay.is_none());
+}
+
+#[test]
+fn user_question_input_empty_answer_waits_for_text() {
+    let (response_tx, response_rx) = mpsc::channel();
+    let mut tui = TuiState {
+        overlay: Some(OverlayState::UserQuestionPrompt {
+            overlay: UserQuestionOverlay::from_value(sample_input_payload()).unwrap(),
+        }),
+        pending_user_question_request: Some(PendingUserQuestionRequest { response_tx }),
+        ..TuiState::default()
+    };
+
+    assert!(handle_user_question_key(
+        KeyEvent::from(KeyCode::Enter),
+        &mut tui
+    ));
+
+    assert!(response_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::UserQuestionPrompt { .. })
+    ));
+}
+
+#[test]
 fn user_question_other_row_accepts_numeric_custom_answer() {
     let (response_tx, response_rx) = mpsc::channel();
     let mut tui = TuiState {
@@ -488,6 +550,42 @@ fn render_user_question_shows_list_options() {
     assert!(rendered.contains("Fast  Prioritize speed"));
     assert!(rendered.contains("Careful  Prioritize review"));
     assert!(rendered.contains("Other  Type a custom answer"));
+}
+
+#[test]
+fn render_user_question_input_shows_input_row() {
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let state = sample_state();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let overlay = OverlayState::UserQuestionPrompt {
+        overlay: UserQuestionOverlay::from_value(sample_input_payload()).unwrap(),
+    };
+
+    terminal
+        .draw(|frame| {
+            render::set_active_overlay(Some(overlay.clone()));
+            render::render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &supported_commands(),
+            );
+            render::set_active_overlay(None);
+        })
+        .unwrap();
+    let rendered = buffer_to_string(terminal.backend().buffer());
+    assert!(rendered.contains("Phone: What phone number should Telegram use?"));
+    assert!(rendered.contains("Input  Type answer"));
+    assert!(!rendered.contains("Other  Type a custom answer"));
 }
 
 #[test]

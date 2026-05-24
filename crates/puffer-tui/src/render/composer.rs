@@ -118,7 +118,7 @@ pub(super) fn overlay_prompt_placeholder(overlay: Option<&OverlayState>) -> &'st
         Some(OverlayState::ApiKeyPrompt { .. } | OverlayState::OnboardingApiKey { .. }) => {
             "Paste API key"
         }
-        Some(OverlayState::UserQuestionPrompt { .. }) => "Type custom answer",
+        Some(OverlayState::UserQuestionPrompt { overlay }) => overlay.prompt_placeholder(),
         Some(overlay) if !overlay.accepts_filter_input() => "Overlay open",
         _ => "Type to jump",
     }

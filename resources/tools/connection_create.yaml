@@ -1,8 +1,8 @@
 id: ConnectionCreate
 name: ConnectionCreate
 description: |-
-  Register an authorized connection after the connector skill has completed
-  authentication.
+  Register an authorized connection after `/connect` or a connector auth
+  helper has completed authentication.
 
   This does not perform the interactive login itself. It records the connection
   so chat delivery and workflows can consume the stream.

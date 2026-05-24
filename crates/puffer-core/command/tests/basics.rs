@@ -41,6 +41,70 @@ fn btw_stays_local_and_compact_runs_as_provider_prompt() {
 }
 
 #[test]
+fn connect_command_is_registered_as_prompt_command() {
+    let commands = supported_commands();
+    let connect = find_command(&commands, "connect").expect("connect command");
+    assert_eq!(connect.kind, CommandKind::Prompt);
+    assert_eq!(
+        connect.argument_hint.as_deref(),
+        Some("<connector-slug> <connection-name>")
+    );
+}
+
+#[test]
+fn connect_command_renders_deterministic_connection_variables() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let resources = LoadedResources {
+        prompts: vec![LoadedItem {
+            value: serde_yaml::from_str::<PromptTemplate>(include_str!(
+                "../../../../resources/prompts/connect.yaml"
+            ))
+            .unwrap(),
+            source_info: SourceInfo {
+                path: PathBuf::from("resources/prompts/connect.yaml"),
+                kind: SourceKind::Builtin,
+            },
+        }],
+        ..LoadedResources::default()
+    };
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/connect telegram-login tg-main",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.first(),
+        Some(RenderedMessage {
+            role: MessageRole::User,
+            text,
+            ..
+        }) if text.contains("Parsed connector slug: telegram-login")
+            && text.contains("Parsed connection name: tg-main")
+            && text.contains("Parse status: ok")
+            && text.contains("Do not use Bash, WriteStdin, shell stdin")
+            && text.contains("Use AskUserQuestion")
+    ));
+}
+
+#[test]
 fn command_surface_includes_user_invocable_skills_and_skill_aliases() {
     let resources = LoadedResources {
         skills: vec![

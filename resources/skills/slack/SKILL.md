@@ -1,6 +1,6 @@
 ---
 name: slack
-description: Configure SlackApp or SlackLogin connections, resolve Slack users/channels, and search/read Slack messages through the internal CLI.
+description: Configure SlackApp or SlackLogin with /connect, then resolve Slack users/channels and search/read Slack messages through the internal CLI.
 allowed-tools:
   - Bash
 argument-hint: "[Slack task]"
@@ -9,10 +9,13 @@ user-invocable: true
 disable-model-invocation: false
 ---
 
-Use Bash to run the Slack internal CLI when the user needs Slack connector
-setup, account setup, or Slack id lookup. Slack is not a model tool and must
-not be requested as a provider tool call. Run Slack commands as `slack ...`
-inside Bash.
+Use `/connect slack-app <connection>` or `/connect slack-login <connection>`
+when the user needs Slack connector setup, account setup, or auth repair. That
+flow uses AskUserQuestion for method choices and secrets.
+
+Use Bash to run the Slack internal CLI only after auth exists, when the user
+needs Slack id lookup or message search/read workflows. Run Slack lookup
+commands as `slack ...` inside Bash.
 
 Target: $target
 
@@ -35,14 +38,13 @@ workspaces or accounts, use a distinct kebab-case connection slug and pass it
 to every Slack CLI command with `--connection` or `--account`.
 
 ```bash
-slack --connection work-app configure-app --bot-token-stdin --app-token-stdin
-slack --connection work-login import-local --workspace-url https://example.slack.com
-slack --account side-workspace login-browser --workspace-url https://side.slack.com --xoxd-stdin --xoxc-stdin
+slack --connection work-login search-conversations "deploys"
+slack --connection work-login search-users "Tony"
 ```
 
-After auth completes, the internal tool automatically registers the connection
-with either `connector_slug="slack-app"` or `connector_slug="slack-login"`.
-Use the same connection slug in `ConnectorAct`.
+After `/connect` auth completes, the auth tool automatically registers the
+connection with either `connector_slug="slack-app"` or
+`connector_slug="slack-login"`. Use the same connection slug in `ConnectorAct`.
 
 Lookup workflow:
 

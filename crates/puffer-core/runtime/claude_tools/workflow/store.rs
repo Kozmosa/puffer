@@ -314,9 +314,20 @@ pub(super) struct AskUserQuestionInput {
 pub(super) struct AskUserQuestionItem {
     pub(super) question: String,
     pub(super) header: String,
+    #[serde(default, rename = "type")]
+    pub(super) question_type: AskUserQuestionType,
+    #[serde(default)]
     pub(super) options: Vec<AskUserQuestionOption>,
     #[serde(default, rename = "multiSelect")]
     pub(super) multi_select: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum AskUserQuestionType {
+    #[default]
+    Choice,
+    Input,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -923,7 +934,7 @@ pub(super) fn validate_cron_expression(cron: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validates the bounded multiple-choice shape used by `AskUserQuestion`.
+/// Validates the bounded question shape used by `AskUserQuestion`.
 pub(super) fn validate_ask_user_questions(items: &[AskUserQuestionItem]) -> Result<()> {
     if items.is_empty() || items.len() > 4 {
         bail!("AskUserQuestion requires between 1 and 4 questions");
@@ -939,31 +950,49 @@ pub(super) fn validate_ask_user_questions(items: &[AskUserQuestionItem]) -> Resu
         if item.header.trim().is_empty() {
             bail!("AskUserQuestion headers must not be empty");
         }
-        if item.options.len() < 2 || item.options.len() > 4 {
-            bail!(
-                "AskUserQuestion question `{}` must provide between 2 and 4 options",
-                item.header
-            );
-        }
-        let mut seen_labels = std::collections::BTreeSet::new();
-        if item.multi_select && item.options.iter().any(|option| option.preview.is_some()) {
-            bail!(
-                "AskUserQuestion question `{}` cannot use previews with multiSelect",
-                item.header
-            );
-        }
-        for option in &item.options {
-            if option.label.trim().is_empty() || option.description.trim().is_empty() {
-                bail!(
-                    "AskUserQuestion question `{}` has an option with empty label or description",
-                    item.header
-                );
+        match item.question_type {
+            AskUserQuestionType::Choice => {
+                if item.options.len() < 2 || item.options.len() > 4 {
+                    bail!(
+                        "AskUserQuestion choice question `{}` must provide between 2 and 4 options",
+                        item.header
+                    );
+                }
+                let mut seen_labels = std::collections::BTreeSet::new();
+                if item.multi_select && item.options.iter().any(|option| option.preview.is_some()) {
+                    bail!(
+                        "AskUserQuestion question `{}` cannot use previews with multiSelect",
+                        item.header
+                    );
+                }
+                for option in &item.options {
+                    if option.label.trim().is_empty() || option.description.trim().is_empty() {
+                        bail!(
+                            "AskUserQuestion question `{}` has an option with empty label or description",
+                            item.header
+                        );
+                    }
+                    if !seen_labels.insert(option.label.to_ascii_lowercase()) {
+                        bail!(
+                            "AskUserQuestion question `{}` has duplicate option labels",
+                            item.header
+                        );
+                    }
+                }
             }
-            if !seen_labels.insert(option.label.to_ascii_lowercase()) {
-                bail!(
-                    "AskUserQuestion question `{}` has duplicate option labels",
-                    item.header
-                );
+            AskUserQuestionType::Input => {
+                if item.multi_select {
+                    bail!(
+                        "AskUserQuestion input question `{}` cannot use multiSelect",
+                        item.header
+                    );
+                }
+                if !item.options.is_empty() {
+                    bail!(
+                        "AskUserQuestion input question `{}` must not provide options",
+                        item.header
+                    );
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 ---
 name: lark
-description: Configure LarkApp or LarkLogin connections, resolve Lark chats/users, and search/read Lark messages through the internal CLI.
+description: Configure LarkApp or LarkLogin with /connect, then resolve Lark chats/users and search/read Lark messages through the internal CLI.
 allowed-tools:
   - Bash
 argument-hint: "[Lark task]"
@@ -9,10 +9,13 @@ user-invocable: true
 disable-model-invocation: false
 ---
 
-Use Bash to run the Lark internal CLI when the user needs Lark connector
-setup, account setup, or Lark id lookup. Lark is not a model tool and must
-not be requested as a provider tool call. Run Lark commands as `lark ...`
-inside Bash.
+Use `/connect lark-app <connection>` or `/connect lark-login <connection>`
+when the user needs Lark connector setup, account setup, or auth repair. That
+flow uses AskUserQuestion for method choices and secrets.
+
+Use Bash to run the Lark internal CLI only after auth exists, when the user
+needs Lark id lookup or message search/read workflows. Run Lark lookup
+commands as `lark ...` inside Bash.
 
 Target: $target
 
@@ -36,18 +39,17 @@ these first-party templates. Do not create Lark workflows that rely on inbound
 Lark events until a typed Lark subscribe runtime exists.
 
 ```bash
-lark --connection work-app configure-app --app-id cli_xxx --app-secret-stdin --brand lark
-lark --connection work-login login-token --user-access-token-stdin --brand lark
-lark --connection work-app import-env
+lark --connection work-login search-chats "deploys"
+lark --connection work-login search-users --query "Tony" --has-chatted
 ```
 
-`import-env` reads `LARK_APP_ID` plus `LARK_APP_SECRET` for `lark-app`, or
-`LARK_USER_ACCESS_TOKEN` for `lark-login`. It honors `LARK_BRAND` unless an
-explicit `--brand` is supplied.
+When `/connect` uses the environment import method, it reads `LARK_APP_ID`
+plus `LARK_APP_SECRET` for `lark-app`, or `LARK_USER_ACCESS_TOKEN` for
+`lark-login`. It honors `LARK_BRAND` unless an explicit brand is supplied.
 
-After auth completes, the internal tool automatically registers the connection
-with either `connector_slug="lark-app"` or `connector_slug="lark-login"`.
-Use the same connection slug in `ConnectorAct`.
+After `/connect` auth completes, the auth tool automatically registers the
+connection with either `connector_slug="lark-app"` or
+`connector_slug="lark-login"`. Use the same connection slug in `ConnectorAct`.
 
 Lookup workflow:
 

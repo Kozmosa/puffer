@@ -3,9 +3,10 @@ name: Lark
 aliases:
   - lark
 description: |-
-  Internal CLI-only Lark app/login configuration and lookup surface.
-  Agents should use the `lark` skill and run `lark ...` through Bash
-  instead of receiving this as a provider tool call.
+  Lark app/login configuration and lookup surface. `/connect lark-app
+  <connection>` or `/connect lark-login <connection>` may expose this as a
+  scoped runtime tool for auth; the `lark` skill exposes the same operations
+  through the internal CLI for lookup-oriented work.
 
   This tool stores Lark app credentials or user access token credentials under
   a named connection. It also lists/searches chats, users, and messages so

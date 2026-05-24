@@ -177,8 +177,8 @@ fn run_auth_monitor_tick(manager: &SubscriptionManager, paths: &ConfigPaths) -> 
     manager.refresh_connection_consumers()?;
     for connection in notices {
         eprintln!(
-            "connection `{}` ({}) auth is no longer functioning; re-run the connector skill to repair it",
-            connection.slug, connection.connector_slug
+            "connection `{}` ({}) auth is no longer functioning; run `/connect {} {}` to repair it",
+            connection.slug, connection.connector_slug, connection.connector_slug, connection.slug
         );
     }
     Ok(())

@@ -3,9 +3,10 @@ name: Slack
 aliases:
   - slack
 description: |-
-  Internal CLI-only Slack app/login configuration and lookup surface.
-  Agents should use the `slack` skill and run `slack ...` through Bash
-  instead of receiving this as a provider tool call.
+  Slack app/login configuration and lookup surface. `/connect slack-app
+  <connection>` or `/connect slack-login <connection>` may expose this as a
+  scoped runtime tool for auth; the `slack` skill exposes the same operations
+  through the internal CLI for lookup-oriented work.
 
   This tool stores Slack app credentials, OAuth/browser credentials, or
   browser tokens imported from a local Slack app profile under a named

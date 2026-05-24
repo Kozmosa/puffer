@@ -1,6 +1,6 @@
 ---
 name: telegram
-description: Log in the Telegram personal-account connector, resolve Telegram user/group ids, and search Telegram messages through the internal CLI.
+description: Configure Telegram with /connect, then resolve Telegram user/group ids and search Telegram messages through the internal CLI.
 allowed-tools:
   - Bash
 argument-hint: "[Telegram login task]"
@@ -9,10 +9,14 @@ user-invocable: true
 disable-model-invocation: false
 ---
 
-Use Bash to run the Telegram internal CLI when the user needs Telegram
-personal-account workflows or asks to log in to Telegram. Telegram is not
-a model tool and must not be requested as a provider tool call. Run Telegram
-commands as `telegram ...` inside Bash.
+Use `/connect telegram-login <connection>` when the user needs to authenticate
+or repair a Telegram personal-account connection. That flow uses
+AskUserQuestion for method choices and secrets.
+
+Use Bash to run the Telegram internal CLI only after auth exists, when the
+user needs Telegram peer lookup, message search, or other lookup-oriented
+personal-account workflows. Run Telegram lookup commands as `telegram ...`
+inside Bash.
 
 Target: $target
 
@@ -26,14 +30,12 @@ session file. `--account-index` is only the local import-time picker for
 Telegram Desktop/native storage slots; it is not the stable account identity.
 
 ```bash
-telegram --connection tg-main import-desktop --account-index 0
-telegram --account tg-alt import-desktop --account-index 1
 telegram --account tg-alt search-peers "C & Jason" --kind group
 ```
 
-After a login or import completes, the internal tool registers that
-connection automatically with `connector_slug="telegram-login"`. Use the
-same connection slug in `WorkflowCreate` and `ConnectorAct`.
+After `/connect` login or import completes, the auth tool registers that
+connection automatically with `connector_slug="telegram-login"`. Use the same
+connection slug in `WorkflowCreate` and `ConnectorAct`.
 
 Peer lookup workflow:
 
@@ -134,90 +136,19 @@ Supported action slugs include `vote_poll`, `edit_message`, `delete_messages`,
 `update_group_photo`, and `send_story`. Telegram may reject an action if the
 account lacks the required admin rights or the peer type does not support it.
 
-QR login workflow:
+Authentication workflow:
 
-If the user has any logged-in Telegram app, prefer QR login before asking for
-a phone code:
+For Telegram Desktop import, QR login, phone login, login codes, local
+passcodes, and 2FA passwords, route the user through:
 
-```bash
-telegram login-qr
+```text
+/connect telegram-login <connection>
 ```
 
-Show the returned `tg://login?token=...` URL to the user. They should open it
-from a logged-in Telegram app and approve the login. Then run:
-
-```bash
-telegram login-qr-wait
-```
-
-If `login-qr-wait` returns a refreshed QR URL instead of `complete`, show the
-new URL and run `telegram login-qr-wait` again after approval.
-
-Desktop import workflow:
-
-If the user has Telegram Desktop with a `tdata` directory, or native macOS
-Telegram.app local storage on this machine, importing that local session can
-avoid QR/phone login:
-
-```bash
-telegram import-desktop
-```
-
-Use `--path /path/to/tdata` when Telegram Desktop uses a non-default data
-directory. On macOS, omitting `--path` can import native Telegram.app storage
-if Telegram Desktop `tdata` is absent. Use `--account-index N` for a
-secondary account. When importing multiple local accounts, also pass a unique
-connection slug:
-
-```bash
-telegram --connection tg-main import-desktop --account-index 0
-telegram --connection tg-alt import-desktop --account-index 1
-```
-
-If Telegram Desktop has a local passcode, ask for it and prefer:
-
-```bash
-telegram import-desktop --passcode-stdin
-```
-
-The passcode is the Telegram Desktop local app passcode, not the Telegram
-cloud 2FA password.
-
-Login workflow:
-
-If QR login and Telegram Desktop import are unavailable or fail, fall back to
-the interactive login:
-
-1. Ask the user for their phone number in E.164 format, including the leading
-   `+`, then run:
-
-```bash
-telegram login-start +15551234567
-```
-
-2. Telegram sends a numeric code to the user's Telegram apps. Ask the user for
-   that code, then run:
-
-```bash
-telegram login-submit-code 12345
-```
-
-3. If the command reports that Telegram requires a 2FA cloud password, ask the
-   user for it and run:
-
-```bash
-telegram login-submit-password --password '<2FA password>'
-```
-
-Only pass `--api-id` and `--api-hash` to `telegram login-qr` or
-`telegram login-start` if the user explicitly provides their own Telegram
-application credentials. Puffer uses a built-in public Telegram Desktop
-credential pair otherwise.
-
-Treat login codes, local passcodes, and 2FA passwords as secrets. Prefer
-stdin-based flags when a secret source can be piped into the command;
-otherwise use the direct flag for a single non-interactive Bash call. Do not
-echo secrets in the final answer, and do not write them to project files.
+The `/connect` prompt asks the user to choose import, QR, or phone login with
+AskUserQuestion, gathers any required input there, and calls the typed
+Telegram auth helper directly. Do not reproduce the auth flow with Bash or
+stdin flags from this skill.
 After login or import completes, use the returned `connection_slug` in
 workflows and connector actions when the user wants ongoing monitoring or
 outbound side effects.

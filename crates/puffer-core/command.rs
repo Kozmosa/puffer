@@ -117,6 +117,13 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             CommandKind::Ui,
         ),
         cmd(
+            "connect",
+            &[],
+            "Configure a named connector connection",
+            Some("<connector-slug> <connection-name>"),
+            CommandKind::Prompt,
+        ),
+        cmd(
             "context",
             &[],
             "Show current context usage",
@@ -615,6 +622,9 @@ fn execute_prompt_command(
     command: &CommandSpec,
     args: &str,
 ) -> Result<()> {
+    let scoped_resources =
+        crate::command_helpers::prompt::resources_for_prompt_command(resources, &command.name);
+    let resources = scoped_resources.as_ref();
     let preparation = crate::command_helpers::prompt::prepare_prompt_command_specialization(
         state,
         session_store,

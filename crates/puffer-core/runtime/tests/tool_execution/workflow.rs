@@ -319,6 +319,69 @@ fn ask_user_question_rejects_duplicate_question_text() {
 }
 
 #[test]
+fn ask_user_question_accepts_input_question_without_options() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let output = crate::runtime::with_user_question_prompt_handler(
+        |_request| crate::runtime::UserQuestionPromptResponse {
+            answers: serde_json::Map::from_iter([(
+                "What phone number should Telegram use?".to_string(),
+                json!("+15551234567"),
+            )]),
+            annotations: serde_json::Map::new(),
+        },
+        || {
+            crate::runtime::claude_tools::workflow::ask_user_question::execute_ask_user_question(
+                &mut state,
+                &cwd,
+                json!({
+                    "questions": [
+                        {
+                            "type": "input",
+                            "question": "What phone number should Telegram use?",
+                            "header": "Phone"
+                        }
+                    ]
+                }),
+            )
+        },
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["pending"], false);
+    assert_eq!(
+        parsed["answers"]["What phone number should Telegram use?"],
+        "+15551234567"
+    );
+    assert_eq!(parsed["questions"][0]["type"], "input");
+}
+
+#[test]
+fn ask_user_question_rejects_input_question_options() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let error =
+        crate::runtime::claude_tools::workflow::ask_user_question::execute_ask_user_question(
+            &mut state,
+            &cwd,
+            json!({
+                "questions": [
+                    {
+                        "type": "input",
+                        "question": "What phone number should Telegram use?",
+                        "header": "Phone",
+                        "options": [
+                            {"label": "Other", "description": "Type the value"}
+                        ]
+                    }
+                ]
+            }),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("must not provide options"));
+}
+
+#[test]
 fn ask_user_question_uses_prompt_handler_answers() {
     let mut state = temp_state();
     let cwd = state.cwd.clone();
