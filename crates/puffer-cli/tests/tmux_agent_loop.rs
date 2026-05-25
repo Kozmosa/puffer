@@ -15,6 +15,7 @@ use puffer_test_support::{
     capture_tmux_visible_pane, require_tmux_or_skip, send_tmux_keys, start_tmux_command_with_size,
     temp_workspace, wait_for_tmux_text, TerminalSize,
 };
+use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -134,6 +135,28 @@ fn content_length(headers: &[u8]) -> Option<usize> {
             .then(|| value.trim().parse().ok())
             .flatten()
     })
+}
+
+fn request_json_body(raw: &str) -> Value {
+    let body = raw
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("");
+    serde_json::from_str(body).unwrap_or_else(|error| {
+        panic!("request body is not valid JSON: {error}\n--- body ---\n{body}")
+    })
+}
+
+fn request_tool_schema<'a>(request: &'a Value, tool_name: &str) -> &'a Value {
+    request["tools"]
+        .as_array()
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name))
+        })
+        .and_then(|tool| tool.get("input_schema"))
+        .unwrap_or_else(|| panic!("request is missing `{tool_name}` input schema: {request}"))
 }
 
 fn sse_text_response(text: &str) -> String {
@@ -582,6 +605,109 @@ fn tmux_agent_loop_drives_tool_round_trip_in_tui() {
     );
 
     let _ = capture_tmux_visible_pane(&session);
+}
+
+#[test]
+fn tmux_agent_loop_validates_workflow_shorthand_in_tui() {
+    if !require_tmux_or_skip("tmux_agent_loop_validates_workflow_shorthand_in_tui") {
+        return;
+    }
+
+    let final_text = "puffer-tmux-workflow-validate-ok";
+    let action_yaml = r#"steps:
+  - write_file:
+      path: /tmp/hi
+      content: "{{ event.text }}\n"
+"#;
+    let tool_input = json!({ "yaml_action": action_yaml }).to_string();
+    let final_text_owned = final_text.to_string();
+    let (mock_url, requests, server) = spawn_mock_anthropic(2, move |index| {
+        if index == 0 {
+            sse_tool_use_response("toolu_workflow_1", "WorkflowValidate", &tool_input)
+        } else {
+            sse_text_response(&final_text_owned)
+        }
+    });
+
+    let (_tempdir, workspace) = temp_workspace().unwrap();
+    link_repo_resources(workspace.as_path());
+    write_anthropic_override(workspace.as_path(), &mock_url);
+    write_config(workspace.as_path());
+
+    let binary = env!("CARGO_BIN_EXE_puffer");
+    let session = start_tmux_command_with_size(
+        "sh",
+        &[
+            "-lc",
+            &format!(
+                "HOME='{ws}' PUFFER_HTTP_TRACE_PATH='{ws}/wire.log' '{bin}'",
+                ws = workspace.display(),
+                bin = binary
+            ),
+        ],
+        Some(workspace.as_path()),
+        TerminalSize {
+            cols: 120,
+            rows: 40,
+        },
+    )
+    .unwrap();
+
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(20)).unwrap();
+    send_tmux_keys(
+        &session,
+        &[
+            "create a pipeline that on any message containing hi, save it to /tmp/hi",
+            "Enter",
+        ],
+    )
+    .unwrap();
+
+    let capture = match wait_for_tmux_text(&session, final_text, Duration::from_secs(40)) {
+        Ok(capture) => capture,
+        Err(error) => {
+            let pane = capture_tmux_visible_pane(&session)
+                .unwrap_or_else(|_| "<failed to capture pane>".to_string());
+            let wire = std::fs::read_to_string(workspace.join("wire.log"))
+                .unwrap_or_else(|_| "<no wire log>".to_string());
+            panic!(
+                "expected final text after workflow validation: {error}\n--- pane ---\n{pane}\n--- wire ---\n{wire}"
+            );
+        }
+    };
+    assert!(
+        capture.contains(final_text),
+        "tmux pane missing final text:\n{capture}"
+    );
+
+    server.join().unwrap();
+    let captured = requests.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        2,
+        "mock should have received workflow tool round trip requests"
+    );
+
+    let first_body = request_json_body(&captured[0]);
+    let workflow_create_schema = request_tool_schema(&first_body, "WorkflowCreate");
+    assert_eq!(
+        workflow_create_schema.get("type").and_then(Value::as_str),
+        Some("object")
+    );
+    assert!(
+        workflow_create_schema.get("anyOf").is_none(),
+        "WorkflowCreate schema must not expose top-level anyOf: {workflow_create_schema}"
+    );
+
+    let second_raw = &captured[1];
+    assert!(
+        second_raw.contains("tool_result"),
+        "second request missing workflow tool_result block: {second_raw}"
+    );
+    assert!(
+        second_raw.contains("file_append") && second_raw.contains("/tmp/hi"),
+        "workflow validation result should include normalized file_append action: {second_raw}"
+    );
 }
 
 #[test]
