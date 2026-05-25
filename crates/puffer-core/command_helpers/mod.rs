@@ -20,6 +20,7 @@ mod session;
 mod tasks;
 mod telegram;
 mod terminal_setup;
+mod workflows;
 
 pub use actions::CommandActionEntry;
 pub(crate) use agents::handle_agents_command;
@@ -78,6 +79,7 @@ pub(crate) use terminal_setup::{
     handle_terminal_setup_command, should_hide_terminal_setup_command,
     terminal_setup_command_description,
 };
+pub(crate) use workflows::handle_workflows_command;
 
 use crate::AppState;
 use anyhow::Result;

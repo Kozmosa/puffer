@@ -52,6 +52,75 @@ fn connect_command_is_registered_as_local_command() {
 }
 
 #[test]
+fn workflows_command_is_registered_as_local_command() {
+    let commands = supported_commands();
+    let workflows = find_command(&commands, "workflows").expect("workflows command");
+    assert_eq!(workflows.kind, CommandKind::Local);
+    assert_eq!(
+        workflows.argument_hint.as_deref(),
+        Some("[list|connections|connectors|runs]")
+    );
+    assert_eq!(
+        find_command(&commands, "pipelines").map(|command| command.name.as_str()),
+        Some("workflows")
+    );
+}
+
+#[test]
+fn workflows_command_summarizes_native_workflows() {
+    use puffer_workflow::{RegisterOptions, TriggerSpec, WorkflowStore};
+    use serde_json::json;
+
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    WorkflowStore::new(&paths.workspace_config_dir)
+        .register_json(
+            json!({
+                "name": "Message triage",
+                "nodes": [{"id": "triage", "prompt": "Summarize the incoming message."}]
+            }),
+            RegisterOptions {
+                slug: Some("message-triage".to_string()),
+                trigger: Some(TriggerSpec::Connection {
+                    connection_slug: "telegram-user".to_string(),
+                    filter: None,
+                    pattern: Some("hi".to_string()),
+                    classify_prompt: None,
+                }),
+            },
+        )
+        .unwrap();
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/workflows",
+    )
+    .unwrap();
+
+    let text = &state.transcript.last().unwrap().text;
+    assert!(text.contains("Workflow dashboard"));
+    assert!(text.contains("message-triage"));
+    assert!(text.contains("trigger=connection:telegram-user"));
+    assert!(text.contains("none configured; run /connect"));
+    assert!(text.contains("telegram-login"));
+}
+
+#[test]
 fn telegram_command_is_registered_as_local_command() {
     let commands = supported_commands();
     let telegram = find_command(&commands, "telegram").expect("telegram command");
