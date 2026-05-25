@@ -5,8 +5,8 @@ use crate::AppState;
 use anyhow::{Context, Result};
 use puffer_subscriber_runtime::{Event, EventEnvelope};
 use puffer_subscriptions::{
-    ActionDispatcher, ActionSpec, BuiltinActionDispatcher, ConnectionRecord, ConnectionState,
-    ConnectorActionRequest, ConnectorTemplate,
+    suggested_connection_slug, ActionDispatcher, ActionSpec, BuiltinActionDispatcher,
+    ConnectionRecord, ConnectionState, ConnectorActionRequest, ConnectorTemplate,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -82,23 +82,29 @@ pub fn execute_connector_list(_state: &mut AppState, _cwd: &Path, _input: Value)
         .connector_store()
         .list_with_builtins()
         .into_iter()
-        .map(|template| {
-            json!({
-                "connector_slug": template.slug,
-                "description": template.description,
-                "skill": template.skill,
-                "binary": template.binary,
-                "command": template.command,
-                "requires_auth": template.requires_auth,
-                "can_subscribe": template.can_subscribe,
-                "can_proxy_agent": template.can_proxy_agent,
-                "actions": template.actions,
-            })
-        })
+        .map(connector_list_row)
         .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(
         &json!({ "connectors": connectors }),
     )?)
+}
+
+fn connector_list_row(template: ConnectorTemplate) -> Value {
+    let suggested_connection = suggested_connection_slug(&template.slug);
+    let connect_command = format!("/connect {} {}", template.slug, suggested_connection);
+    json!({
+        "connector_slug": template.slug,
+        "description": template.description,
+        "skill": template.skill,
+        "binary": template.binary,
+        "command": template.command,
+        "requires_auth": template.requires_auth,
+        "can_subscribe": template.can_subscribe,
+        "can_proxy_agent": template.can_proxy_agent,
+        "suggested_connection_slug": suggested_connection,
+        "connect_command": connect_command,
+        "actions": template.actions,
+    })
 }
 
 /// Executes `ConnectorCreation`.
@@ -447,4 +453,30 @@ if __name__ == "__main__":
 "#,
         connector = template.slug
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connector_list_row_includes_connect_hints() {
+        let row = connector_list_row(starter_template("telegram-login"));
+
+        assert_eq!(row["connector_slug"], "telegram-login");
+        assert_eq!(row["suggested_connection_slug"], "telegram-user");
+        assert_eq!(
+            row["connect_command"],
+            "/connect telegram-login telegram-user"
+        );
+    }
+
+    #[test]
+    fn connector_list_row_defaults_custom_connection_to_connector_slug() {
+        let row = connector_list_row(starter_template("custom-feed"));
+
+        assert_eq!(row["connector_slug"], "custom-feed");
+        assert_eq!(row["suggested_connection_slug"], "custom-feed");
+        assert_eq!(row["connect_command"], "/connect custom-feed custom-feed");
+    }
 }
