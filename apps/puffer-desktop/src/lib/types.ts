@@ -397,6 +397,8 @@ export type WorkflowConnector = {
   requires_auth: boolean;
   can_subscribe: boolean;
   can_proxy_agent: boolean;
+  suggested_connection_slug?: string;
+  connect_command?: string;
   action_slugs: string[];
 };
 

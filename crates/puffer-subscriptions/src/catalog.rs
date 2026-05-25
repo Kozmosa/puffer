@@ -114,6 +114,21 @@ pub fn builtin_connector_template(slug: &str) -> Option<ConnectorTemplate> {
         .find(|template| template.slug == slug)
 }
 
+/// Returns the deterministic default connection slug for a connector template.
+pub fn suggested_connection_slug(connector_slug: &str) -> String {
+    match connector_slug {
+        "telegram-login" => "telegram-user".to_string(),
+        "email" => "email".to_string(),
+        "lark-app" => "lark-app".to_string(),
+        "lark-login" => "lark-login".to_string(),
+        "slack-app" => "slack-app".to_string(),
+        "slack-login" => "slack-login".to_string(),
+        "telegram-bot" => "telegram-bot".to_string(),
+        "slack-bot" => "slack-bot".to_string(),
+        _ => connector_slug.to_string(),
+    }
+}
+
 fn telegram_login_template() -> ConnectorTemplate {
     ConnectorTemplate {
         slug: "telegram-login".to_string(),
@@ -880,6 +895,15 @@ mod tests {
         assert!(slugs.contains(&"slack-login".to_string()));
         assert!(slugs.contains(&"slack-bot".to_string()));
         assert!(slugs.contains(&"email".to_string()));
+    }
+
+    #[test]
+    fn suggested_connection_slugs_match_connect_defaults() {
+        assert_eq!(suggested_connection_slug("telegram-login"), "telegram-user");
+        assert_eq!(suggested_connection_slug("email"), "email");
+        assert_eq!(suggested_connection_slug("lark-app"), "lark-app");
+        assert_eq!(suggested_connection_slug("slack-login"), "slack-login");
+        assert_eq!(suggested_connection_slug("custom-feed"), "custom-feed");
     }
 
     #[test]

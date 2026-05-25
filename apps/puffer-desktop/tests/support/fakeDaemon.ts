@@ -347,6 +347,8 @@ export class FakeDaemon {
         requires_auth: true,
         can_subscribe: true,
         can_proxy_agent: false,
+        suggested_connection_slug: "telegram-user",
+        connect_command: "/connect telegram-login telegram-user",
         action_slugs: ["send_message"]
       },
       {
@@ -356,6 +358,8 @@ export class FakeDaemon {
         requires_auth: true,
         can_subscribe: true,
         can_proxy_agent: false,
+        suggested_connection_slug: "email",
+        connect_command: "/connect email email",
         action_slugs: ["send_message"]
       }
     ],

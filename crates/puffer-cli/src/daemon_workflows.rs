@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use puffer_config::ConfigPaths;
 use puffer_core::subscription_manager;
+use puffer_subscriptions::suggested_connection_slug;
 use puffer_workflow::WorkflowStore;
 use serde_json::{json, Value};
 
@@ -51,13 +52,18 @@ fn add_connector_context(snapshot: &mut Value) {
                 .into_iter()
                 .map(|template| {
                     let action_slugs = template.actions.keys().cloned().collect::<Vec<_>>();
+                    let slug = template.slug.clone();
+                    let suggested_connection = suggested_connection_slug(&slug);
+                    let connect_command = format!("/connect {slug} {suggested_connection}");
                     json!({
-                        "connector_slug": template.slug,
+                        "connector_slug": slug,
                         "description": template.description,
                         "skill": template.skill,
                         "requires_auth": template.requires_auth,
                         "can_subscribe": template.can_subscribe,
                         "can_proxy_agent": template.can_proxy_agent,
+                        "suggested_connection_slug": suggested_connection,
+                        "connect_command": connect_command,
                         "action_slugs": action_slugs,
                     })
                 })

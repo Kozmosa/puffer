@@ -38,8 +38,9 @@ pub use action::{
     ActionResult, BuiltinActionDispatcher, ConnectorActionExecutor, Outbound, WorkflowActionRunner,
 };
 pub use catalog::{
-    builtin_connector_template, builtin_connector_templates, ConnectorActionDefinition,
-    ConnectorPermissionDefinition, ConnectorSlug, ConnectorSubscriberTemplate, ConnectorTemplate,
+    builtin_connector_template, builtin_connector_templates, suggested_connection_slug,
+    ConnectorActionDefinition, ConnectorPermissionDefinition, ConnectorSlug,
+    ConnectorSubscriberTemplate, ConnectorTemplate,
 };
 pub use catalog_store::{ConnectorCatalogStore, ConnectorCatalogStoreError};
 pub use classify::{Classifier, ClassifyDecision, NullClassifier, RemoteClassifier};

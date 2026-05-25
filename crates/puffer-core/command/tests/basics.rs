@@ -58,7 +58,7 @@ fn workflows_command_is_registered_as_local_command() {
     assert_eq!(workflows.kind, CommandKind::Local);
     assert_eq!(
         workflows.argument_hint.as_deref(),
-        Some("[list|connections|connectors|runs]")
+        Some("[list|connections|connectors|runs] [query]")
     );
     assert_eq!(
         find_command(&commands, "pipelines").map(|command| command.name.as_str()),
@@ -118,6 +118,38 @@ fn workflows_command_summarizes_native_workflows() {
     assert!(text.contains("trigger=connection:telegram-user"));
     assert!(text.contains("none configured; run /connect"));
     assert!(text.contains("telegram-login"));
+}
+
+#[test]
+fn workflows_connectors_filter_shows_connect_commands() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/workflows connectors telegram",
+    )
+    .unwrap();
+
+    let text = &state.transcript.last().unwrap().text;
+    assert!(text.contains("telegram-login"));
+    assert!(text.contains("connect=/connect telegram-login telegram-user"));
+    assert!(!text.contains("- email ["));
 }
 
 #[test]

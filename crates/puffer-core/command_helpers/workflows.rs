@@ -1,7 +1,9 @@
 use crate::{subscription_manager, AppState};
 use anyhow::Result;
 use puffer_config::ConfigPaths;
-use puffer_subscriptions::{builtin_connector_templates, ConnectionRecord, ConnectorTemplate};
+use puffer_subscriptions::{
+    builtin_connector_templates, suggested_connection_slug, ConnectionRecord, ConnectorTemplate,
+};
 use puffer_workflow::{TriggerSpec, WorkflowDefinition, WorkflowRun, WorkflowStore};
 use std::fmt::Write as _;
 
@@ -12,31 +14,33 @@ pub(crate) fn handle_workflows_command(state: &AppState, args: &str) -> Result<S
     let workflows = store.list()?;
     let runs = store.list_runs()?;
     let connector_context = connector_context();
-    let mode = args.trim();
+    let mut parts = args.split_whitespace();
+    let mode = parts.next().unwrap_or_default();
+    let query = parts.collect::<Vec<_>>().join(" ");
 
     let mut out = String::new();
     match mode {
         "" | "show" | "list" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
             write_workflows(&mut out, &workflows, &runs);
-            write_connections(&mut out, &connector_context);
-            write_connectors(&mut out, &connector_context, false);
+            write_connections(&mut out, &connector_context, "");
+            write_connectors(&mut out, &connector_context, false, "");
         }
         "connections" | "connection" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
-            write_connections(&mut out, &connector_context);
+            write_connections(&mut out, &connector_context, &query);
         }
         "connectors" | "connector" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
-            write_connectors(&mut out, &connector_context, true);
+            write_connectors(&mut out, &connector_context, true, &query);
         }
         "runs" | "run" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
-            write_runs(&mut out, &runs);
+            write_runs(&mut out, &runs, &query);
         }
         _ => {
             out.push_str(
-                "Usage: /workflows [list|connections|connectors|runs]\n\
+                "Usage: /workflows [list|connections|connectors|runs] [query]\n\
                  Tip: use /connect to add a connector connection, then select it as a workflow trigger.",
             );
         }
@@ -123,13 +127,31 @@ fn write_workflows(out: &mut String, workflows: &[WorkflowDefinition], runs: &[W
     }
 }
 
-fn write_connections(out: &mut String, context: &ConnectorContext) {
+fn write_connections(out: &mut String, context: &ConnectorContext, query: &str) {
     out.push_str("\nConnections\n");
-    if context.connections.is_empty() {
+    let connections = context
+        .connections
+        .iter()
+        .filter(|connection| {
+            matches_query(
+                query,
+                [
+                    connection.slug.as_str(),
+                    connection.connector_slug.as_str(),
+                    connection.description.as_str(),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    if connections.is_empty() && context.connections.is_empty() {
         out.push_str("- none configured; run /connect <connector-slug> <connection-name>\n");
         return;
     }
-    for connection in &context.connections {
+    if connections.is_empty() {
+        out.push_str("- no matching connections\n");
+        return;
+    }
+    for connection in connections {
         let consumer = if connection.has_consumer {
             "consumer=active"
         } else {
@@ -147,15 +169,29 @@ fn write_connections(out: &mut String, context: &ConnectorContext) {
     }
 }
 
-fn write_connectors(out: &mut String, context: &ConnectorContext, include_all: bool) {
+fn write_connectors(out: &mut String, context: &ConnectorContext, include_all: bool, query: &str) {
     out.push_str("\nConnectors\n");
     let connectors = context
         .connectors
         .iter()
         .filter(|connector| include_all || connector.can_subscribe)
+        .filter(|connector| {
+            matches_query(
+                query,
+                [
+                    connector.slug.as_str(),
+                    connector.description.as_str(),
+                    connector.skill.as_str(),
+                ],
+            )
+        })
         .collect::<Vec<_>>();
-    if connectors.is_empty() {
+    if connectors.is_empty() && context.connectors.is_empty() {
         out.push_str("- none available\n");
+        return;
+    }
+    if connectors.is_empty() {
+        out.push_str("- no matching connectors\n");
         return;
     }
     for connector in connectors {
@@ -174,21 +210,40 @@ fn write_connectors(out: &mut String, context: &ConnectorContext, include_all: b
         }
         let _ = writeln!(
             out,
-            "- {} [{}] {}",
+            "- {} [{}] {} connect=/connect {} {}",
             connector.slug,
             capabilities.join(","),
-            connector.description
+            connector.description,
+            connector.slug,
+            suggested_connection_slug(&connector.slug)
         );
     }
 }
 
-fn write_runs(out: &mut String, runs: &[WorkflowRun]) {
+fn write_runs(out: &mut String, runs: &[WorkflowRun], query: &str) {
     out.push_str("\nRuns\n");
-    if runs.is_empty() {
+    let matching = runs
+        .iter()
+        .filter(|run| {
+            matches_query(
+                query,
+                [
+                    run.workflow_slug.as_str(),
+                    run.run_id.as_str(),
+                    run.error.as_deref().unwrap_or_default(),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    if matching.is_empty() && runs.is_empty() {
         out.push_str("- none recorded\n");
         return;
     }
-    for run in runs.iter().take(20) {
+    if matching.is_empty() {
+        out.push_str("- no matching runs\n");
+        return;
+    }
+    for run in matching.into_iter().take(20) {
         let _ = writeln!(
             out,
             "- #{} {} {:?} nodes={}{}",
@@ -216,4 +271,12 @@ fn trigger_label(trigger: &TriggerSpec) -> String {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or(text)
+}
+
+fn matches_query<'a>(query: &str, values: impl IntoIterator<Item = &'a str>) -> bool {
+    let needle = query.trim().to_ascii_lowercase();
+    needle.is_empty()
+        || values
+            .into_iter()
+            .any(|value| value.to_ascii_lowercase().contains(&needle))
 }

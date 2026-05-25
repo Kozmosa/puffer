@@ -71,6 +71,23 @@ test("pipeline connector search selects a connection trigger", async ({ page }) 
   await expect(page.locator(".pf-pipe-graph").getByRole("button", { name: /telegram-user/ })).toBeVisible();
 });
 
+test("pipeline connector catalog stages a deterministic connect command", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
+
+  await page.getByLabel("Search connectors").fill("email");
+  await page.getByRole("button", { name: "Plan email workflow trigger" }).click();
+
+  await expect(page.getByLabel("Trigger type")).toHaveValue("connection");
+  await expect(page.getByLabel("Workflow connection")).toHaveValue("email");
+  await expect(page.locator(".pf-pipe-graph").getByRole("button", { name: /email/ })).toBeVisible();
+  await expect(page.getByLabel("Selected connector command")).toContainText("/connect email email");
+  await expect(page.locator(".pf-connector-row", { hasText: "email" })).toHaveAttribute("data-selected", "true");
+});
+
 test("pipeline refresh is disabled while the workflow snapshot loads", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.delayFailure("workflow_list", () => true, "slow workflow snapshot", 250);
