@@ -6,12 +6,13 @@ use anyhow::{Context, Result};
 use puffer_config::ConfigPaths;
 use puffer_subscriptions::{
     connection_subscriber_manifest, connection_subscriber_manifest_exists, validate_action_spec,
-    ActionSpec, ConnectionRecord, ConnectorTemplate, FilterSpec, SubscriberManifestRoots,
-    TaggedFilterSpec, WorkflowBindingRun, WorkflowBindingSpec, WorkflowBindingStatus,
+    ActionGraphNode, ActionSpec, ConnectionRecord, ConnectorTemplate, FilterSpec,
+    SubscriberManifestRoots, TaggedFilterSpec, WorkflowBindingRun, WorkflowBindingSpec,
+    WorkflowBindingStatus,
 };
 use puffer_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStore};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -193,11 +194,9 @@ pub fn execute_workflow_validate(
         serde_json::from_value(input).context("invalid WorkflowValidate input")?;
     let action = match (parsed.action, parsed.yaml_action) {
         (Some(action), None) => {
-            serde_json::from_value::<ActionSpec>(action).context("invalid workflow action JSON")?
+            parse_action_json(action).context("invalid workflow action JSON")?
         }
-        (None, Some(yaml)) => {
-            serde_yaml::from_str::<ActionSpec>(&yaml).context("invalid workflow action YAML")?
-        }
+        (None, Some(yaml)) => parse_action_yaml(&yaml).context("invalid workflow action YAML")?,
         (Some(_), Some(_)) => anyhow::bail!("provide only one of `action` or `yaml_action`"),
         (None, None) => anyhow::bail!("provide `action` JSON or `yaml_action`"),
     };
@@ -430,14 +429,189 @@ fn workflow_status(enabled: bool) -> WorkflowBindingStatus {
 
 fn parse_create_action(action: Option<Value>, yaml_action: Option<String>) -> Result<ActionSpec> {
     match (action, yaml_action) {
-        (Some(action), None) => {
-            serde_json::from_value::<ActionSpec>(action).context("invalid workflow action JSON")
-        }
-        (None, Some(yaml)) => {
-            serde_yaml::from_str::<ActionSpec>(&yaml).context("invalid workflow action YAML")
-        }
+        (Some(action), None) => parse_action_json(action).context("invalid workflow action JSON"),
+        (None, Some(yaml)) => parse_action_yaml(&yaml).context("invalid workflow action YAML"),
         (Some(_), Some(_)) => anyhow::bail!("provide only one of `action` or `yaml_action`"),
         (None, None) => anyhow::bail!("provide `action` JSON or `yaml_action`"),
+    }
+}
+
+fn parse_action_json(value: Value) -> Result<ActionSpec> {
+    match serde_json::from_value::<ActionSpec>(value.clone()) {
+        Ok(action) => Ok(action),
+        Err(strict_error) => parse_action_shorthand(value).map_err(|shorthand_error| {
+            anyhow::anyhow!("{shorthand_error}; strict action parse failed: {strict_error}")
+        }),
+    }
+}
+
+fn parse_action_yaml(yaml: &str) -> Result<ActionSpec> {
+    match serde_yaml::from_str::<ActionSpec>(yaml) {
+        Ok(action) => Ok(action),
+        Err(strict_error) => {
+            let value = serde_yaml::from_str::<Value>(yaml)
+                .with_context(|| format!("strict action parse failed: {strict_error}"))?;
+            parse_action_shorthand(value).map_err(|shorthand_error| {
+                anyhow::anyhow!("{shorthand_error}; strict action parse failed: {strict_error}")
+            })
+        }
+    }
+}
+
+fn parse_action_shorthand(value: Value) -> Result<ActionSpec> {
+    match value {
+        Value::Array(items) => parse_step_graph(items),
+        Value::Object(mut map) => {
+            if let Some(steps) = map.remove("steps") {
+                return parse_step_graph_value(steps);
+            }
+            if let Some(nodes) = map.remove("nodes") {
+                if map.is_empty() {
+                    return parse_step_graph_value(nodes);
+                }
+                map.insert("nodes".to_string(), nodes);
+            }
+            parse_named_action_object(map)
+        }
+        _ => anyhow::bail!("workflow action shorthand must be an object or list"),
+    }
+}
+
+fn parse_step_graph_value(value: Value) -> Result<ActionSpec> {
+    let Value::Array(items) = value else {
+        anyhow::bail!("workflow action steps must be a list");
+    };
+    parse_step_graph(items)
+}
+
+fn parse_step_graph(items: Vec<Value>) -> Result<ActionSpec> {
+    if items.is_empty() {
+        anyhow::bail!("workflow action steps must not be empty");
+    }
+    let mut nodes = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        nodes.push(parse_step_node(index, item)?);
+    }
+    Ok(ActionSpec::Graph { nodes })
+}
+
+fn parse_step_node(index: usize, value: Value) -> Result<ActionGraphNode> {
+    let mut map = value_object(value, "workflow action step")?;
+    let id = optional_string(&mut map, "id")?.unwrap_or_else(|| format!("step-{}", index + 1));
+    let depends_on = optional_string_list(&mut map, "depends_on")?
+        .or(optional_string_list(&mut map, "dependsOn")?)
+        .unwrap_or_default();
+    let action = if map.contains_key("type") {
+        parse_action_json(Value::Object(map))?
+    } else {
+        parse_named_action_object(map)?
+    };
+    Ok(ActionGraphNode {
+        id,
+        depends_on,
+        action,
+    })
+}
+
+fn parse_named_action_object(map: Map<String, Value>) -> Result<ActionSpec> {
+    if map.len() != 1 {
+        anyhow::bail!(
+            "workflow action shorthand must contain exactly one action key, such as `file_append`"
+        );
+    }
+    let (name, params) = map.into_iter().next().expect("map length checked");
+    parse_named_action(&name, params)
+}
+
+fn parse_named_action(name: &str, params: Value) -> Result<ActionSpec> {
+    match name {
+        "file_append" | "append_file" | "write_file" | "write" => parse_file_append_action(params),
+        _ => anyhow::bail!("unsupported workflow action shorthand `{name}`"),
+    }
+}
+
+fn parse_file_append_action(params: Value) -> Result<ActionSpec> {
+    let mut map = value_object(params, "file_append action")?;
+    let path = required_string(&mut map, "path")?;
+    if let Some(content) = optional_string(&mut map, "content")? {
+        validate_event_text_content_template(&content)?;
+    }
+    let mut action = json!({
+        "type": "file_append",
+        "path": path,
+    });
+    if let Some(format) = optional_string(&mut map, "format")? {
+        validate_file_append_format(&format)?;
+        action["format"] = json!(format);
+    }
+    serde_json::from_value::<ActionSpec>(action).context("normalized file_append action")
+}
+
+fn validate_file_append_format(format: &str) -> Result<()> {
+    match format {
+        "text" | "jsonl" => Ok(()),
+        _ => anyhow::bail!("file_append.format must be `text` or `jsonl`"),
+    }
+}
+
+fn validate_event_text_content_template(content: &str) -> Result<()> {
+    let normalized = content
+        .trim()
+        .replace(' ', "")
+        .replace('\n', "")
+        .replace('\r', "");
+    if matches!(normalized.as_str(), "{{text}}" | "{{event.text}}") {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "write_file shorthand only supports event text content; use `{{{{ text }}}}` or omit content"
+    )
+}
+
+fn value_object(value: Value, label: &str) -> Result<Map<String, Value>> {
+    match value {
+        Value::Object(map) => Ok(map),
+        _ => anyhow::bail!("{label} must be an object"),
+    }
+}
+
+fn required_string(map: &mut Map<String, Value>, key: &str) -> Result<String> {
+    optional_string(map, key)?.ok_or_else(|| anyhow::anyhow!("{key} is required"))
+}
+
+fn optional_string(map: &mut Map<String, Value>, key: &str) -> Result<Option<String>> {
+    let Some(value) = map.remove(key) else {
+        return Ok(None);
+    };
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                anyhow::bail!("{key} must not be empty");
+            }
+            Ok(Some(value.to_string()))
+        }
+        _ => anyhow::bail!("{key} must be a string"),
+    }
+}
+
+fn optional_string_list(map: &mut Map<String, Value>, key: &str) -> Result<Option<Vec<String>>> {
+    let Some(value) = map.remove(key) else {
+        return Ok(None);
+    };
+    match value {
+        Value::Array(items) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::String(value) if !value.trim().is_empty() => Ok(value.trim().to_string()),
+                _ => anyhow::bail!("{key} must be a list of non-empty strings"),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        Value::String(value) if !value.trim().is_empty() => {
+            Ok(Some(vec![value.trim().to_string()]))
+        }
+        _ => anyhow::bail!("{key} must be a string or list of strings"),
     }
 }
 
@@ -456,12 +630,80 @@ fn create_filter(filter: Option<Value>, pattern: Option<String>) -> Result<Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{subscriber_manifest_roots, workflow_trigger_supported};
+    use super::{parse_action_yaml, subscriber_manifest_roots, workflow_trigger_supported};
     use puffer_subscriptions::{
-        find_subscriber_manifest, ConnectionRecord, ConnectorSubscriberTemplate, ConnectorTemplate,
+        find_subscriber_manifest, ActionSpec, ConnectionRecord, ConnectorSubscriberTemplate,
+        ConnectorTemplate,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn workflow_action_yaml_accepts_step_style_write_file_event_text() {
+        let action = parse_action_yaml(
+            r#"
+steps:
+  - write_file:
+      path: /tmp/hi
+      content: "{{ event.text }}\n"
+"#,
+        )
+        .unwrap();
+
+        let ActionSpec::Graph { nodes } = action else {
+            panic!("expected action graph");
+        };
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, "step-1");
+        assert!(nodes[0].depends_on.is_empty());
+        assert!(matches!(
+            &nodes[0].action,
+            ActionSpec::FileAppend {
+                path,
+                ..
+            } if path == "/tmp/hi"
+        ));
+    }
+
+    #[test]
+    fn workflow_action_yaml_accepts_named_file_append_shorthand() {
+        let action = parse_action_yaml(
+            r#"
+file_append:
+  path: /tmp/hi
+  format: jsonl
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &action,
+            ActionSpec::FileAppend {
+                path,
+                ..
+            } if path == "/tmp/hi"
+        ));
+        assert_eq!(
+            serde_json::to_value(action).unwrap()["format"],
+            json!("jsonl")
+        );
+    }
+
+    #[test]
+    fn workflow_action_yaml_rejects_write_file_static_content() {
+        let error = parse_action_yaml(
+            r#"
+write_file:
+  path: /tmp/hi
+  content: static
+"#,
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("only supports event text content"));
+    }
 
     #[test]
     fn subscriber_manifest_dir_finds_workspace_manifest() {
