@@ -1863,7 +1863,8 @@
                       {@const visibleActions = actions.slice(0, 2)}
                       {@const hiddenActions = Math.max(0, actions.length - visibleActions.length)}
                       {@const reasons = monitorTaskIgnoreReasons(task)}
-                      {@const defaultReason = reasons[0]}
+                      {@const visibleReasons = reasons.slice(0, 2)}
+                      {@const hiddenReasons = Math.max(0, reasons.length - visibleReasons.length)}
                       <div class="pf-monitor-task-row" data-status={task.status}>
                         <button
                           type="button"
@@ -1876,6 +1877,9 @@
                           <span class="pf-connector-main">
                             <strong>{task.subject || task.task_id}</strong>
                             <small>{task.task_id}{task.monitor_connection ? ` - ${task.monitor_connection}` : ""}</small>
+                            {#if task.description}
+                              <span class="pf-monitor-task-detail">{task.description}</span>
+                            {/if}
                           </span>
                           <span class="pf-connector-tags">
                             <span>{task.status || "pending"}</span>
@@ -1898,17 +1902,35 @@
                               <Icon name="play" size={11} />{action.name}
                             </button>
                           {/each}
-                          <button
-                            type="button"
-                            class="pf-monitor-action-btn"
-                            aria-label={`Ignore ${task.task_id}`}
-                            title={defaultReason ? monitorTaskIgnoreCommand(task, defaultReason) : monitorTaskIgnoreCommand(task)}
-                            aria-busy={monitorTaskCommandRunningFor === task.task_id}
-                            disabled={connectorCommandRunnerBusy() || !onRunWorkflowCommand}
-                            onclick={() => runMonitorTaskIgnoreCommand(task, defaultReason)}
-                          >
-                            <Icon name="eyeOff" size={11} />Ignore
-                          </button>
+                          {#each visibleReasons as reason (reason)}
+                            <button
+                              type="button"
+                              class="pf-monitor-action-btn"
+                              aria-label={`Ignore ${task.task_id} ${reason}`}
+                              title={monitorTaskIgnoreCommand(task, reason)}
+                              aria-busy={monitorTaskCommandRunningFor === task.task_id}
+                              disabled={connectorCommandRunnerBusy() || !onRunWorkflowCommand}
+                              onclick={() => runMonitorTaskIgnoreCommand(task, reason)}
+                            >
+                              <Icon name="eyeOff" size={11} />{reason}
+                            </button>
+                          {/each}
+                          {#if hiddenReasons > 0}
+                            <span class="pf-monitor-task-more">+{hiddenReasons} ignores</span>
+                          {/if}
+                          {#if reasons.length === 0}
+                            <button
+                              type="button"
+                              class="pf-monitor-action-btn"
+                              aria-label={`Ignore ${task.task_id}`}
+                              title={monitorTaskIgnoreCommand(task)}
+                              aria-busy={monitorTaskCommandRunningFor === task.task_id}
+                              disabled={connectorCommandRunnerBusy() || !onRunWorkflowCommand}
+                              onclick={() => runMonitorTaskIgnoreCommand(task)}
+                            >
+                              <Icon name="eyeOff" size={11} />Ignore
+                            </button>
+                          {/if}
                         </div>
                       </div>
                     {/each}
@@ -2756,6 +2778,17 @@
     cursor: default;
   }
 
+  .pf-monitor-task-detail {
+    color: var(--muted-foreground);
+    font-size: 10.7px;
+    line-height: 1.35;
+    overflow: hidden;
+    display: -webkit-box;
+    line-clamp: 2;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
   .pf-monitor-task-actions {
     display: flex;
     align-items: center;
@@ -2793,6 +2826,13 @@
   .pf-monitor-action-btn:disabled {
     opacity: 0.56;
     cursor: default;
+  }
+
+  .pf-monitor-task-more {
+    align-self: center;
+    color: var(--muted-foreground);
+    font-size: 10.5px;
+    font-weight: 700;
   }
 
   .pf-connection-row-group,

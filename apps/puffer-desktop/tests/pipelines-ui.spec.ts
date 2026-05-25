@@ -635,11 +635,14 @@ test("pipeline monitor task panel exposes task actions", async ({ page }) => {
   const tasks = page.getByLabel("Monitor tasks");
   await expect(tasks).toContainText("Reply to Telegram support ping");
   await expect(tasks).toContainText("telegram-user");
+  await expect(tasks).toContainText("Alice asked whether the deployment is finished.");
 
   await page.getByLabel("Search connectors").fill("support ping");
   await expect(tasks).toContainText("1/1");
   await expect(page.getByLabel("Monitor task search results")).toHaveText("1/1 monitor tasks");
   await expect(tasks).toContainText("Draft reply");
+  await expect(tasks).toContainText("Open context");
+  await expect(tasks).toContainText("already answered in thread");
 
   await tasks.getByRole("button", { name: "Run monitor action monitor-1 Draft reply" }).click();
   const actionRequest = await daemon.waitForRequest(
@@ -659,7 +662,12 @@ test("pipeline monitor task panel can start ignore flows", async ({ page }) => {
   await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
 
   const tasks = page.getByLabel("Monitor tasks");
-  await tasks.getByRole("button", { name: "Ignore monitor-1" }).click();
+  await page.getByLabel("Search connectors").fill("already answered");
+  await expect(page.getByLabel("Monitor task search results")).toHaveText("1/1 monitor tasks");
+  await expect(tasks.getByRole("button", { name: "Ignore monitor-1 already answered in thread" })).toBeVisible();
+
+  await page.getByLabel("Search connectors").fill("support ping");
+  await tasks.getByRole("button", { name: "Ignore monitor-1 duplicate support ping" }).click();
   const ignoreRequest = await daemon.waitForRequest(
     "run_agent_turn",
     (candidate) => candidate.params.message === "/tasks ignore monitor-1 duplicate support ping"

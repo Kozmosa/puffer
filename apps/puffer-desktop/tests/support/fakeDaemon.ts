@@ -555,9 +555,13 @@ export class FakeDaemon {
           {
             name: "Draft reply",
             prompt: "Draft a concise reply to Alice with the deployment status."
+          },
+          {
+            name: "Open context",
+            prompt: "Open the Telegram thread and summarize the latest deployment question."
           }
         ],
-        possible_ignore_reasons: ["duplicate support ping"],
+        possible_ignore_reasons: ["duplicate support ping", "already answered in thread"],
         started_at_ms: now - 15_000,
         updated_at_ms: now - 5_000
       }
