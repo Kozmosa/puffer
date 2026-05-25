@@ -3,10 +3,12 @@
 use crate::runtime::subscription_manager;
 use crate::AppState;
 use anyhow::{Context, Result};
+use puffer_config::ConfigPaths;
 use puffer_subscriber_runtime::{Event, EventEnvelope};
 use puffer_subscriptions::{
-    suggested_connection_slug, ActionDispatcher, ActionSpec, BuiltinActionDispatcher,
-    ConnectionRecord, ConnectionState, ConnectorActionRequest, ConnectorTemplate,
+    connector_workflow_trigger_supported, suggested_connection_slug, ActionDispatcher, ActionSpec,
+    BuiltinActionDispatcher, ConnectionRecord, ConnectionState, ConnectorActionRequest,
+    ConnectorTemplate, SubscriberManifestRoots,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -76,22 +78,24 @@ struct ConnectionDeleteInput {
 }
 
 /// Executes `ConnectorList`.
-pub fn execute_connector_list(_state: &mut AppState, _cwd: &Path, _input: Value) -> Result<String> {
+pub fn execute_connector_list(_state: &mut AppState, cwd: &Path, _input: Value) -> Result<String> {
     let manager = subscription_manager()?;
+    let roots = subscriber_manifest_roots(cwd);
     let connectors = manager
         .connector_store()
         .list_with_builtins()
         .into_iter()
-        .map(connector_list_row)
+        .map(|template| connector_list_row(template, &roots))
         .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(
         &json!({ "connectors": connectors }),
     )?)
 }
 
-fn connector_list_row(template: ConnectorTemplate) -> Value {
+fn connector_list_row(template: ConnectorTemplate, roots: &SubscriberManifestRoots) -> Value {
     let suggested_connection = suggested_connection_slug(&template.slug);
     let connect_command = format!("/connect {} {}", template.slug, suggested_connection);
+    let can_trigger_workflow = connector_workflow_trigger_supported(roots, &template);
     json!({
         "connector_slug": template.slug,
         "description": template.description,
@@ -103,8 +107,18 @@ fn connector_list_row(template: ConnectorTemplate) -> Value {
         "can_proxy_agent": template.can_proxy_agent,
         "suggested_connection_slug": suggested_connection,
         "connect_command": connect_command,
+        "can_trigger_workflow": can_trigger_workflow,
         "actions": template.actions,
     })
+}
+
+fn subscriber_manifest_roots(cwd: &Path) -> SubscriberManifestRoots {
+    let paths = ConfigPaths::discover(cwd);
+    SubscriberManifestRoots::new(
+        paths.workspace_config_dir,
+        paths.user_config_dir,
+        paths.builtin_resources_dir,
+    )
 }
 
 /// Executes `ConnectorCreation`.
@@ -461,7 +475,9 @@ mod tests {
 
     #[test]
     fn connector_list_row_includes_connect_hints() {
-        let row = connector_list_row(starter_template("telegram-login"));
+        let temp = tempfile::tempdir().unwrap();
+        let template = puffer_subscriptions::builtin_connector_template("telegram-login").unwrap();
+        let row = connector_list_row(template, &subscriber_manifest_roots(temp.path()));
 
         assert_eq!(row["connector_slug"], "telegram-login");
         assert_eq!(row["suggested_connection_slug"], "telegram-user");
@@ -469,14 +485,20 @@ mod tests {
             row["connect_command"],
             "/connect telegram-login telegram-user"
         );
+        assert_eq!(row["can_trigger_workflow"], false);
     }
 
     #[test]
     fn connector_list_row_defaults_custom_connection_to_connector_slug() {
-        let row = connector_list_row(starter_template("custom-feed"));
+        let temp = tempfile::tempdir().unwrap();
+        let row = connector_list_row(
+            starter_template("custom-feed"),
+            &subscriber_manifest_roots(temp.path()),
+        );
 
         assert_eq!(row["connector_slug"], "custom-feed");
         assert_eq!(row["suggested_connection_slug"], "custom-feed");
         assert_eq!(row["connect_command"], "/connect custom-feed custom-feed");
+        assert_eq!(row["can_trigger_workflow"], true);
     }
 }

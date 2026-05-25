@@ -3,7 +3,10 @@
 use anyhow::{Context, Result};
 use puffer_config::ConfigPaths;
 use puffer_core::subscription_manager;
-use puffer_subscriptions::suggested_connection_slug;
+use puffer_subscriptions::{
+    connection_workflow_trigger_supported, connector_workflow_trigger_supported,
+    suggested_connection_slug, SubscriberManifestRoots,
+};
 use puffer_workflow::WorkflowStore;
 use serde_json::{json, Value};
 
@@ -11,7 +14,7 @@ use serde_json::{json, Value};
 pub(crate) fn handle_workflow_list(paths: &ConfigPaths) -> Result<Value> {
     let store = WorkflowStore::new(&paths.workspace_config_dir);
     let mut snapshot = serde_json::to_value(store.snapshot()?)?;
-    add_connector_context(&mut snapshot);
+    add_connector_context(paths, &mut snapshot);
     Ok(snapshot)
 }
 
@@ -36,12 +39,13 @@ pub(crate) fn handle_workflow_run_show(paths: &ConfigPaths, params: &Value) -> R
     Ok(serde_json::to_value(store.get_run(idx)?)?)
 }
 
-fn add_connector_context(snapshot: &mut Value) {
+fn add_connector_context(paths: &ConfigPaths, snapshot: &mut Value) {
     let Some(object) = snapshot.as_object_mut() else {
         return;
     };
     let (connectors, connections, connector_error) = match subscription_manager() {
         Ok(manager) => {
+            let roots = subscriber_manifest_roots(paths);
             let refresh_error = manager
                 .refresh_connection_consumers()
                 .err()
@@ -55,6 +59,8 @@ fn add_connector_context(snapshot: &mut Value) {
                     let slug = template.slug.clone();
                     let suggested_connection = suggested_connection_slug(&slug);
                     let connect_command = format!("/connect {slug} {suggested_connection}");
+                    let can_trigger_workflow =
+                        connector_workflow_trigger_supported(&roots, &template);
                     json!({
                         "connector_slug": slug,
                         "description": template.description,
@@ -64,6 +70,7 @@ fn add_connector_context(snapshot: &mut Value) {
                         "can_proxy_agent": template.can_proxy_agent,
                         "suggested_connection_slug": suggested_connection,
                         "connect_command": connect_command,
+                        "can_trigger_workflow": can_trigger_workflow,
                         "action_slugs": action_slugs,
                     })
                 })
@@ -73,6 +80,12 @@ fn add_connector_context(snapshot: &mut Value) {
                 .list()
                 .into_iter()
                 .map(|connection| {
+                    let can_trigger_workflow = manager
+                        .connector_store()
+                        .get(&connection.connector_slug)
+                        .is_some_and(|template| {
+                            connection_workflow_trigger_supported(&roots, &connection, &template)
+                        });
                     json!({
                         "slug": connection.slug,
                         "connector_slug": connection.connector_slug,
@@ -80,6 +93,7 @@ fn add_connector_context(snapshot: &mut Value) {
                         "state": connection.state,
                         "has_consumer": connection.has_consumer,
                         "auth_failure_notified": connection.auth_failure_notified,
+                        "can_trigger_workflow": can_trigger_workflow,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -93,4 +107,12 @@ fn add_connector_context(snapshot: &mut Value) {
         "connector_error".to_string(),
         connector_error.map(Value::String).unwrap_or(Value::Null),
     );
+}
+
+fn subscriber_manifest_roots(paths: &ConfigPaths) -> SubscriberManifestRoots {
+    SubscriberManifestRoots::new(
+        paths.workspace_config_dir.clone(),
+        paths.user_config_dir.clone(),
+        paths.builtin_resources_dir.clone(),
+    )
 }

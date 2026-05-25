@@ -347,8 +347,21 @@ export class FakeDaemon {
         requires_auth: true,
         can_subscribe: true,
         can_proxy_agent: false,
+        can_trigger_workflow: true,
         suggested_connection_slug: "telegram-user",
         connect_command: "/connect telegram-login telegram-user",
+        action_slugs: ["send_message"]
+      },
+      {
+        connector_slug: "slack-app",
+        description: "Slack app connector for bot-token Web API actions",
+        skill: "slack",
+        requires_auth: true,
+        can_subscribe: false,
+        can_proxy_agent: false,
+        can_trigger_workflow: false,
+        suggested_connection_slug: "slack-app",
+        connect_command: "/connect slack-app slack-app",
         action_slugs: ["send_message"]
       },
       {
@@ -358,6 +371,7 @@ export class FakeDaemon {
         requires_auth: true,
         can_subscribe: true,
         can_proxy_agent: false,
+        can_trigger_workflow: true,
         suggested_connection_slug: "email",
         connect_command: "/connect email email",
         action_slugs: ["send_message"]
@@ -370,7 +384,17 @@ export class FakeDaemon {
         description: "Personal Telegram",
         state: "authenticated",
         has_consumer: false,
-        auth_failure_notified: false
+        auth_failure_notified: false,
+        can_trigger_workflow: true
+      },
+      {
+        slug: "slack-app",
+        connector_slug: "slack-app",
+        description: "Workspace Slack",
+        state: "authenticated",
+        has_consumer: false,
+        auth_failure_notified: false,
+        can_trigger_workflow: false
       }
     ],
     connector_error: null

@@ -399,6 +399,10 @@
   function useConnectionTrigger(connectionSlug: string) {
     if (!connectionSlug) return;
     const connection = connections.find((item) => item.slug === connectionSlug);
+    if (connection && !connectionTriggerSupported(connection)) {
+      saveNotice = `${connection.slug} cannot start workflow triggers. Choose an event-capable connection.`;
+      return;
+    }
     selectedConnectorSlug = connection?.connector_slug ?? selectedConnectorSlug;
     updateCurrentWorkflow((item) => ({
       ...item,
@@ -408,6 +412,10 @@
 
   function useConnectorTemplate(connector: WorkflowConnector) {
     selectedConnectorSlug = connector.connector_slug;
+    if (!connectorTriggerSupported(connector)) {
+      saveNotice = `${connector.connector_slug} cannot start workflow triggers yet. Use an event-capable connector.`;
+      return;
+    }
     const existingConnection = connectionsForConnector(connector.connector_slug)[0];
     const connectionSlug = existingConnection?.slug ?? connectorConnectionHint(connector);
     updateCurrentWorkflow((item) => ({
@@ -430,6 +438,15 @@
   function connectorBySlug(slug: string | null | undefined): WorkflowConnector | undefined {
     if (!slug) return undefined;
     return connectors.find((connector) => connector.connector_slug === slug);
+  }
+
+  function connectorTriggerSupported(connector: WorkflowConnector | undefined): boolean {
+    if (!connector) return false;
+    return connector.can_trigger_workflow ?? connector.can_subscribe;
+  }
+
+  function connectionTriggerSupported(connection: WorkflowConnection): boolean {
+    return connection.can_trigger_workflow ?? connectorTriggerSupported(connectorBySlug(connection.connector_slug));
   }
 
   function connectionsForConnector(slug: string): WorkflowConnection[] {
@@ -997,18 +1014,24 @@
                   {/if}
                   {#each filteredConnections as connection (connection.slug)}
                     {@const connector = connectorBySlug(connection.connector_slug)}
+                    {@const canTrigger = connectionTriggerSupported(connection)}
                     <button
                       type="button"
                       class="pf-connection-row"
                       data-selected={activeConnectionSlug(workflow) === connection.slug}
-                      aria-label="Use {connection.slug} as workflow trigger"
+                      data-supported={canTrigger}
+                      aria-label={canTrigger ? `Use ${connection.slug} as workflow trigger` : `${connection.slug} cannot start workflow triggers`}
+                      disabled={!canTrigger}
                       onclick={() => useConnectionTrigger(connection.slug)}
                     >
                       <span class="pf-connector-main">
                         <strong>{connection.slug}</strong>
                         <small>{(connector?.description ?? connection.description) || connection.connector_slug}</small>
                       </span>
-                      <span class="pf-connection-state" data-state={connection.state}>{connection.state}</span>
+                      <span class="pf-connector-tags">
+                        <span class="pf-connection-state" data-state={connection.state}>{connection.state}</span>
+                        {#if !canTrigger}<span>no trigger</span>{/if}
+                      </span>
                     </button>
                   {/each}
                 </div>
@@ -1019,11 +1042,14 @@
                   {/if}
                   {#each filteredConnectors as connector (connector.connector_slug)}
                     {@const connectorConnections = connectionsForConnector(connector.connector_slug)}
+                    {@const canTrigger = connectorTriggerSupported(connector)}
                     <button
                       type="button"
                       class="pf-connector-row"
                       data-selected={selectedConnectorSlug === connector.connector_slug}
-                      aria-label="Plan {connector.connector_slug} workflow trigger"
+                      data-supported={canTrigger}
+                      aria-label={canTrigger ? `Plan ${connector.connector_slug} workflow trigger` : `${connector.connector_slug} cannot start workflow triggers`}
+                      disabled={!canTrigger}
                       onclick={() => useConnectorTemplate(connector)}
                     >
                       <span class="pf-connector-main">
@@ -1033,6 +1059,7 @@
                       <span class="pf-connector-tags">
                         {#if connector.requires_auth}<span>auth</span>{/if}
                         {#if connector.can_subscribe}<span>events</span>{/if}
+                        {#if canTrigger}<span>trigger</span>{:else}<span>no trigger</span>{/if}
                         {#if connector.can_proxy_agent}<span>proxy</span>{/if}
                         {#if connectorConnections.length > 0}<span>{connectorConnections.length} conn</span>{/if}
                       </span>
@@ -1648,6 +1675,18 @@
   .pf-connection-row[data-selected="true"] {
     border-color: transparent;
     background: var(--pf-selected-bg-hover);
+  }
+
+  .pf-connection-row:disabled,
+  .pf-connector-row:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
+
+  .pf-connection-row:disabled:hover,
+  .pf-connector-row:disabled:hover {
+    border-color: var(--border);
+    background: var(--card);
   }
 
   .pf-connection-row[data-selected="true"] {

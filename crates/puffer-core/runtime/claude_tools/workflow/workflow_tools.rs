@@ -5,7 +5,7 @@ use crate::AppState;
 use anyhow::{Context, Result};
 use puffer_config::ConfigPaths;
 use puffer_subscriptions::{
-    connection_subscriber_manifest, connection_subscriber_manifest_exists, validate_action_spec,
+    connection_subscriber_manifest, connection_workflow_trigger_supported, validate_action_spec,
     ActionGraphNode, ActionSpec, ConnectionRecord, ConnectorTemplate, FilterSpec,
     SubscriberManifestRoots, TaggedFilterSpec, WorkflowBindingRun, WorkflowBindingSpec,
     WorkflowBindingStatus,
@@ -253,12 +253,7 @@ fn workflow_trigger_supported(
     connection: &ConnectionRecord,
     template: &ConnectorTemplate,
 ) -> bool {
-    connector_stream_supported(template)
-        || connection_subscriber_manifest_exists(
-            &subscriber_manifest_roots(cwd),
-            connection,
-            template,
-        )
+    connection_workflow_trigger_supported(&subscriber_manifest_roots(cwd), connection, template)
 }
 
 fn connector_stream_supported(template: &ConnectorTemplate) -> bool {

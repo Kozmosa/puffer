@@ -63,6 +63,28 @@ pub fn connection_subscriber_manifest_exists(
     connection_subscriber_source(roots, connection, template).is_some()
 }
 
+/// Returns whether a connector template can start workflow trigger events.
+pub fn connector_workflow_trigger_supported(
+    roots: &SubscriberManifestRoots,
+    template: &ConnectorTemplate,
+) -> bool {
+    (template.can_subscribe && template.command_argv().is_some())
+        || template.subscriber.as_ref().is_some_and(|subscriber| {
+            find_subscriber_manifest(roots, &subscriber.manifest_slug).is_some()
+        })
+        || find_subscriber_manifest(roots, &template.slug).is_some()
+}
+
+/// Returns whether a concrete connection can start workflow trigger events.
+pub fn connection_workflow_trigger_supported(
+    roots: &SubscriberManifestRoots,
+    connection: &ConnectionRecord,
+    template: &ConnectorTemplate,
+) -> bool {
+    (template.can_subscribe && template.command_argv().is_some())
+        || connection_subscriber_manifest_exists(roots, connection, template)
+}
+
 /// Loads the subscriber manifest for a connection, instantiating shared
 /// connector metadata as a connection-scoped subscriber when needed.
 pub fn connection_subscriber_manifest(
@@ -281,6 +303,64 @@ mod tests {
 
         assert_eq!(manifest.spec.id, "email");
         assert_eq!(manifest.topic(), "email");
+    }
+
+    #[test]
+    fn connector_workflow_trigger_support_accepts_command_or_manifest_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(temp.path());
+        let mut command_template = template("custom-feed");
+        command_template.command = vec!["custom-feed".to_string()];
+        let manifest_template = template("email");
+        write_manifest(
+            &roots.builtin_resources_dir.join("subscribers/email"),
+            "email",
+            "email",
+            Some("Email"),
+        );
+
+        assert!(connector_workflow_trigger_supported(
+            &roots,
+            &command_template
+        ));
+        assert!(connector_workflow_trigger_supported(
+            &roots,
+            &manifest_template
+        ));
+    }
+
+    #[test]
+    fn connector_workflow_trigger_support_rejects_commandless_placeholders() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(temp.path());
+        let template = template("telegram-bot");
+
+        assert!(!connector_workflow_trigger_supported(&roots, &template));
+    }
+
+    #[test]
+    fn connection_workflow_trigger_support_accepts_shared_subscriber() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(temp.path());
+        write_manifest(
+            &roots.builtin_resources_dir.join("subscribers/shared-login"),
+            "shared-login",
+            "shared-login",
+            Some("Shared"),
+        );
+        let connection = ConnectionRecord::authenticated("personal", "shared", "Personal");
+        let mut template = template("shared");
+        template.subscriber = Some(ConnectorSubscriberTemplate {
+            manifest_slug: "shared-login".to_string(),
+            state_root: Some("shared-accounts".to_string()),
+            display_name: Some("Shared".to_string()),
+        });
+
+        assert!(connection_workflow_trigger_supported(
+            &roots,
+            &connection,
+            &template
+        ));
     }
 
     fn roots(root: &Path) -> SubscriberManifestRoots {

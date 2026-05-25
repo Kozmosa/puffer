@@ -397,6 +397,7 @@ export type WorkflowConnector = {
   requires_auth: boolean;
   can_subscribe: boolean;
   can_proxy_agent: boolean;
+  can_trigger_workflow?: boolean;
   suggested_connection_slug?: string;
   connect_command?: string;
   action_slugs: string[];
@@ -409,6 +410,7 @@ export type WorkflowConnection = {
   state: string;
   has_consumer: boolean;
   auth_failure_notified?: boolean;
+  can_trigger_workflow?: boolean;
 };
 
 export type WorkflowSnapshot = {

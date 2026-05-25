@@ -2,7 +2,9 @@ use crate::{subscription_manager, AppState};
 use anyhow::Result;
 use puffer_config::ConfigPaths;
 use puffer_subscriptions::{
-    builtin_connector_templates, suggested_connection_slug, ConnectionRecord, ConnectorTemplate,
+    builtin_connector_templates, connection_workflow_trigger_supported,
+    connector_workflow_trigger_supported, suggested_connection_slug, ConnectionRecord,
+    ConnectorTemplate, SubscriberManifestRoots,
 };
 use puffer_workflow::{TriggerSpec, WorkflowDefinition, WorkflowRun, WorkflowStore};
 use std::fmt::Write as _;
@@ -14,6 +16,7 @@ pub(crate) fn handle_workflows_command(state: &AppState, args: &str) -> Result<S
     let workflows = store.list()?;
     let runs = store.list_runs()?;
     let connector_context = connector_context();
+    let roots = subscriber_manifest_roots(&paths);
     let mut parts = args.split_whitespace();
     let mode = parts.next().unwrap_or_default();
     let query = parts.collect::<Vec<_>>().join(" ");
@@ -23,16 +26,16 @@ pub(crate) fn handle_workflows_command(state: &AppState, args: &str) -> Result<S
         "" | "show" | "list" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
             write_workflows(&mut out, &workflows, &runs);
-            write_connections(&mut out, &connector_context, "");
-            write_connectors(&mut out, &connector_context, false, "");
+            write_connections(&mut out, &connector_context, &roots, "");
+            write_connectors(&mut out, &connector_context, &roots, false, "");
         }
         "connections" | "connection" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
-            write_connections(&mut out, &connector_context, &query);
+            write_connections(&mut out, &connector_context, &roots, &query);
         }
         "connectors" | "connector" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
-            write_connectors(&mut out, &connector_context, true, &query);
+            write_connectors(&mut out, &connector_context, &roots, true, &query);
         }
         "runs" | "run" => {
             write_header(&mut out, &paths, &workflows, &runs, &connector_context);
@@ -127,7 +130,12 @@ fn write_workflows(out: &mut String, workflows: &[WorkflowDefinition], runs: &[W
     }
 }
 
-fn write_connections(out: &mut String, context: &ConnectorContext, query: &str) {
+fn write_connections(
+    out: &mut String,
+    context: &ConnectorContext,
+    roots: &SubscriberManifestRoots,
+    query: &str,
+) {
     out.push_str("\nConnections\n");
     let connections = context
         .connections
@@ -157,24 +165,36 @@ fn write_connections(out: &mut String, context: &ConnectorContext, query: &str) 
         } else {
             "consumer=idle"
         };
+        let trigger = if connection_trigger_supported(context, roots, connection) {
+            "trigger=ready"
+        } else {
+            "trigger=unavailable"
+        };
         let _ = writeln!(
             out,
-            "- {} connector={} state={:?} {} {}",
+            "- {} connector={} state={:?} {} {} {}",
             connection.slug,
             connection.connector_slug,
             connection.state,
             consumer,
+            trigger,
             connection.description
         );
     }
 }
 
-fn write_connectors(out: &mut String, context: &ConnectorContext, include_all: bool, query: &str) {
+fn write_connectors(
+    out: &mut String,
+    context: &ConnectorContext,
+    roots: &SubscriberManifestRoots,
+    include_all: bool,
+    query: &str,
+) {
     out.push_str("\nConnectors\n");
     let connectors = context
         .connectors
         .iter()
-        .filter(|connector| include_all || connector.can_subscribe)
+        .filter(|connector| include_all || connector_workflow_trigger_supported(roots, connector))
         .filter(|connector| {
             matches_query(
                 query,
@@ -205,6 +225,9 @@ fn write_connectors(out: &mut String, context: &ConnectorContext, include_all: b
         if connector.can_proxy_agent {
             capabilities.push("proxy");
         }
+        if connector_workflow_trigger_supported(roots, connector) {
+            capabilities.push("trigger");
+        }
         if !connector.actions.is_empty() {
             capabilities.push("actions");
         }
@@ -218,6 +241,18 @@ fn write_connectors(out: &mut String, context: &ConnectorContext, include_all: b
             suggested_connection_slug(&connector.slug)
         );
     }
+}
+
+fn connection_trigger_supported(
+    context: &ConnectorContext,
+    roots: &SubscriberManifestRoots,
+    connection: &ConnectionRecord,
+) -> bool {
+    context
+        .connectors
+        .iter()
+        .find(|template| template.slug == connection.connector_slug)
+        .is_some_and(|template| connection_workflow_trigger_supported(roots, connection, template))
 }
 
 fn write_runs(out: &mut String, runs: &[WorkflowRun], query: &str) {
@@ -279,4 +314,12 @@ fn matches_query<'a>(query: &str, values: impl IntoIterator<Item = &'a str>) -> 
         || values
             .into_iter()
             .any(|value| value.to_ascii_lowercase().contains(&needle))
+}
+
+fn subscriber_manifest_roots(paths: &ConfigPaths) -> SubscriberManifestRoots {
+    SubscriberManifestRoots::new(
+        paths.workspace_config_dir.clone(),
+        paths.user_config_dir.clone(),
+        paths.builtin_resources_dir.clone(),
+    )
 }

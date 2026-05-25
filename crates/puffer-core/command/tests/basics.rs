@@ -74,6 +74,15 @@ fn workflows_command_summarizes_native_workflows() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
+    let telegram_manifest = paths
+        .builtin_resources_dir
+        .join("subscribers/telegram-user");
+    std::fs::create_dir_all(&telegram_manifest).unwrap();
+    std::fs::write(
+        telegram_manifest.join("manifest.toml"),
+        "manifest_version = 1\nid = \"telegram-user\"\nkind = \"subscriber\"\ntopic = \"telegram-user\"\n[run]\ncmd = [\"true\"]\n",
+    )
+    .unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
     let session = session_store
         .create_session(tempdir.path().to_path_buf())
@@ -118,6 +127,7 @@ fn workflows_command_summarizes_native_workflows() {
     assert!(text.contains("trigger=connection:telegram-user"));
     assert!(text.contains("none configured; run /connect"));
     assert!(text.contains("telegram-login"));
+    assert!(!text.contains("telegram-bot"));
 }
 
 #[test]

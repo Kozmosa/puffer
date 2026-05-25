@@ -88,6 +88,28 @@ test("pipeline connector catalog stages a deterministic connect command", async 
   await expect(page.locator(".pf-connector-row", { hasText: "email" })).toHaveAttribute("data-selected", "true");
 });
 
+test("pipeline connector picker disables connections that cannot trigger workflows", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
+
+  await page.getByLabel("Search connectors").fill("slack");
+
+  const connection = page
+    .locator('[aria-label="Connections"]')
+    .getByRole("button", { name: "slack-app cannot start workflow triggers" });
+  const connector = page
+    .locator('[aria-label="Connector catalog"]')
+    .getByRole("button", { name: "slack-app cannot start workflow triggers" });
+
+  await expect(connection).toBeDisabled();
+  await expect(connector).toBeDisabled();
+  await expect(connector).toContainText("no trigger");
+  await expect(page.getByLabel("Trigger type")).toHaveValue("subscription");
+});
+
 test("pipeline refresh is disabled while the workflow snapshot loads", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.delayFailure("workflow_list", () => true, "slow workflow snapshot", 250);
