@@ -6,6 +6,8 @@
   import Icon, { type IconName } from "../design/Icon.svelte";
   import Puffer from "../design/Puffer.svelte";
   import type {
+    WorkflowConnection,
+    WorkflowConnector,
     WorkflowDefinition,
     WorkflowPipelineNode,
     WorkflowRun,
@@ -15,6 +17,7 @@
   } from "../types";
 
   type AgentProvider = "codex" | "claude" | "puffer";
+  type TriggerMode = "subscription" | "connection" | "cron";
   type EditablePipelineNode = WorkflowPipelineNode & { type: AgentProvider };
   type EditableWorkflow = Omit<WorkflowDefinition, "pipeline"> & {
     pipeline: Omit<WorkflowDefinition["pipeline"], "nodes"> & { nodes: EditablePipelineNode[] };
@@ -81,10 +84,17 @@
   const PAD_L = 18;
   const PAD_T = 22;
 
-  let snapshot = $state<WorkflowSnapshot>({ workflows: [], runs: [] });
+  let snapshot = $state<WorkflowSnapshot>({
+    workflows: [],
+    runs: [],
+    connectors: [],
+    connections: [],
+    connector_error: null
+  });
   let editorWorkflows = $state<EditableWorkflow[]>([starterWorkflow()]);
   let workflowSlug = $state("agent-review-pipeline");
   let selectedNodeId = $state<string | null>("codex-implement");
+  let connectorQuery = $state("");
   let runIdx = $state<number | null>(null);
   let stepIdx = $state<number | null>(null);
   let loading = $state(false);
@@ -94,6 +104,10 @@
   let saveNotice = $state("Draft changes are local until workflow save lands in the daemon.");
 
   let workflows = $derived(editorWorkflows);
+  let connectors = $derived(snapshot.connectors ?? []);
+  let connections = $derived(snapshot.connections ?? []);
+  let filteredConnections = $derived(filterConnections(connections, connectors, connectorQuery));
+  let filteredConnectors = $derived(filterConnectors(connectors, connectorQuery));
   let workflow = $derived(
     workflows.find((item) => item.slug === workflowSlug) ?? workflows[0] ?? null
   );
@@ -260,7 +274,10 @@
       }
       snapshot = {
         workflows: next.workflows,
-        runs: [...next.runs].sort((a, b) => b.idx - a.idx)
+        runs: [...next.runs].sort((a, b) => b.idx - a.idx),
+        connectors: next.connectors ?? [],
+        connections: next.connections ?? [],
+        connector_error: next.connector_error ?? null
       };
       editorWorkflows = merged;
       if (!workflowSlug || !editorWorkflows.some((item) => item.slug === workflowSlug)) {
@@ -322,9 +339,19 @@
     if (field === "slug") workflowSlug = String(value || oldSlug);
   }
 
-  function updateTriggerField(field: "source_topic" | "pattern" | "cron", value: string) {
+  function updateTriggerField(field: "source_topic" | "connection_slug" | "pattern" | "cron", value: string) {
     updateCurrentWorkflow((item) => {
       if (item.trigger.type === "cron") return { ...item, trigger: { type: "cron", cron: value || "0 * * * *" } };
+      if (item.trigger.type === "connection") {
+        const key = field === "connection_slug" ? "connection_slug" : field === "pattern" ? "pattern" : "connection_slug";
+        return {
+          ...item,
+          trigger: {
+            ...item.trigger,
+            [key]: value
+          }
+        };
+      }
       return {
         ...item,
         trigger: {
@@ -335,14 +362,87 @@
     });
   }
 
-  function setTriggerType(type: "subscription" | "cron") {
+  function setTriggerType(type: TriggerMode) {
     updateCurrentWorkflow((item) => ({
       ...item,
       trigger:
         type === "cron"
           ? { type: "cron", cron: "0 9 * * 1-5" }
-          : { type: "subscription", source_topic: "workspace.task.created", pattern: "*" }
+          : type === "connection"
+            ? { type: "connection", connection_slug: defaultConnectionSlug(item), pattern: defaultPattern(item) }
+            : { type: "subscription", source_topic: sourceTopicFor(item), pattern: defaultPattern(item) }
     }));
+  }
+
+  function defaultPattern(item: EditableWorkflow): string {
+    return item.trigger.type === "connection" || item.trigger.type === "subscription"
+      ? item.trigger.pattern ?? "*"
+      : "*";
+  }
+
+  function defaultConnectionSlug(item: EditableWorkflow): string {
+    if (item.trigger.type === "connection") return item.trigger.connection_slug;
+    if (connections.length > 0) return connections[0].slug;
+    if (item.trigger.type === "subscription") return item.trigger.source_topic;
+    return "telegram-user";
+  }
+
+  function sourceTopicFor(item: EditableWorkflow): string {
+    if (item.trigger.type === "subscription") return item.trigger.source_topic;
+    if (item.trigger.type === "connection") return item.trigger.connection_slug;
+    return "workspace.task.created";
+  }
+
+  function useConnectionTrigger(connectionSlug: string) {
+    if (!connectionSlug) return;
+    updateCurrentWorkflow((item) => ({
+      ...item,
+      trigger: { type: "connection", connection_slug: connectionSlug, pattern: defaultPattern(item) }
+    }));
+  }
+
+  function connectorBySlug(slug: string | null | undefined): WorkflowConnector | undefined {
+    if (!slug) return undefined;
+    return connectors.find((connector) => connector.connector_slug === slug);
+  }
+
+  function connectionsForConnector(slug: string): WorkflowConnection[] {
+    return connections.filter((connection) => connection.connector_slug === slug);
+  }
+
+  function activeConnectionSlug(item: EditableWorkflow | null): string | null {
+    if (!item || item.trigger.type !== "connection") return null;
+    return item.trigger.connection_slug;
+  }
+
+  function matchesConnectorQuery(query: string, parts: Array<string | null | undefined>): boolean {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return parts.some((part) => (part ?? "").toLowerCase().includes(needle));
+  }
+
+  function filterConnections(items: WorkflowConnection[], catalog: WorkflowConnector[], query: string): WorkflowConnection[] {
+    return items.filter((connection) => {
+      const connector = catalog.find((item) => item.connector_slug === connection.connector_slug);
+      return matchesConnectorQuery(query, [
+        connection.slug,
+        connection.description,
+        connection.connector_slug,
+        connector?.description,
+        connector?.skill
+      ]);
+    });
+  }
+
+  function filterConnectors(items: WorkflowConnector[], query: string): WorkflowConnector[] {
+    return items.filter((connector) =>
+      matchesConnectorQuery(query, [
+        connector.connector_slug,
+        connector.description,
+        connector.skill,
+        connector.action_slugs.join(" ")
+      ])
+    );
   }
 
   function updateNode(id: string, patch: Partial<EditablePipelineNode>) {
@@ -513,6 +613,7 @@
 
   function triggerTitle(item: EditableWorkflow | WorkflowDefinition): string {
     if (item.trigger.type === "cron") return item.trigger.cron;
+    if (item.trigger.type === "connection") return item.trigger.connection_slug;
     return item.trigger.source_topic;
   }
 
@@ -599,7 +700,9 @@
 
   function nodeIcon(node: GraphNode): IconName {
     if (node.type === "trigger") {
-      return workflow?.trigger.type === "cron" ? "clock" : "bolt";
+      if (workflow?.trigger.type === "cron") return "clock";
+      if (workflow?.trigger.type === "connection") return "plug";
+      return "bolt";
     }
     return "panel";
   }
@@ -800,7 +903,8 @@
             </label>
             <label>
               <span>Trigger type</span>
-              <select value={workflow.trigger.type} onchange={(event) => setTriggerType(event.currentTarget.value as "subscription" | "cron")}>
+              <select value={workflow.trigger.type} onchange={(event) => setTriggerType(event.currentTarget.value as TriggerMode)}>
+                <option value="connection">Connection</option>
                 <option value="subscription">Subscription</option>
                 <option value="cron">Cron</option>
               </select>
@@ -809,6 +913,26 @@
               <label>
                 <span>Cron</span>
                 <input value={workflow.trigger.cron} oninput={(event) => updateTriggerField("cron", event.currentTarget.value)} />
+              </label>
+            {:else if workflow.trigger.type === "connection"}
+              <label>
+                <span>Connection</span>
+                <select
+                  aria-label="Workflow connection"
+                  value={workflow.trigger.connection_slug}
+                  onchange={(event) => updateTriggerField("connection_slug", event.currentTarget.value)}
+                >
+                  {#if connections.length === 0}
+                    <option value={workflow.trigger.connection_slug}>{workflow.trigger.connection_slug}</option>
+                  {/if}
+                  {#each connections as connection (connection.slug)}
+                    <option value={connection.slug}>{connection.slug} ({connection.connector_slug})</option>
+                  {/each}
+                </select>
+              </label>
+              <label>
+                <span>Pattern</span>
+                <input value={workflow.trigger.pattern ?? ""} oninput={(event) => updateTriggerField("pattern", event.currentTarget.value)} />
               </label>
             {:else}
               <label>
@@ -820,6 +944,64 @@
                 <input value={workflow.trigger.pattern ?? ""} oninput={(event) => updateTriggerField("pattern", event.currentTarget.value)} />
               </label>
             {/if}
+            <div class="pf-connector-picker">
+              <label class="pf-connector-search">
+                <span>Connector</span>
+                <span class="pf-connector-searchbox">
+                  <Icon name="search" size={12} />
+                  <input
+                    aria-label="Search connectors"
+                    value={connectorQuery}
+                    placeholder="Search connectors"
+                    oninput={(event) => (connectorQuery = event.currentTarget.value)}
+                  />
+                </span>
+              </label>
+
+              {#if snapshot.connector_error}
+                <div class="pf-connector-empty">Connector runtime unavailable.</div>
+              {:else}
+                <div class="pf-connection-list" aria-label="Connections">
+                  {#if filteredConnections.length === 0}
+                    <div class="pf-connector-empty">No matching connections.</div>
+                  {/if}
+                  {#each filteredConnections as connection (connection.slug)}
+                    {@const connector = connectorBySlug(connection.connector_slug)}
+                    <button
+                      type="button"
+                      class="pf-connection-row"
+                      data-selected={activeConnectionSlug(workflow) === connection.slug}
+                      aria-label="Use {connection.slug} as workflow trigger"
+                      onclick={() => useConnectionTrigger(connection.slug)}
+                    >
+                      <span class="pf-connector-main">
+                        <strong>{connection.slug}</strong>
+                        <small>{(connector?.description ?? connection.description) || connection.connector_slug}</small>
+                      </span>
+                      <span class="pf-connection-state" data-state={connection.state}>{connection.state}</span>
+                    </button>
+                  {/each}
+                </div>
+
+                <div class="pf-connector-catalog" aria-label="Connector catalog">
+                  {#each filteredConnectors as connector (connector.connector_slug)}
+                    {@const connectorConnections = connectionsForConnector(connector.connector_slug)}
+                    <div class="pf-connector-row">
+                      <span class="pf-connector-main">
+                        <strong>{connector.connector_slug}</strong>
+                        <small>{connector.description}</small>
+                      </span>
+                      <span class="pf-connector-tags">
+                        {#if connector.requires_auth}<span>auth</span>{/if}
+                        {#if connector.can_subscribe}<span>events</span>{/if}
+                        {#if connector.can_proxy_agent}<span>proxy</span>{/if}
+                        {#if connectorConnections.length > 0}<span>{connectorConnections.length} conn</span>{/if}
+                      </span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           </section>
 
           <section class="pf-editor-panel pf-editor-inspector">
@@ -1347,6 +1529,159 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+
+  .pf-connector-picker {
+    border-top: 1px solid var(--border);
+    margin-top: 2px;
+    padding-top: 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .pf-connector-search {
+    gap: 5px !important;
+  }
+
+  .pf-connector-searchbox {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted-foreground);
+    border-radius: 8px;
+    padding: 0 8px;
+  }
+
+  .pf-connector-searchbox:focus-within {
+    border-color: var(--puffer-accent);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--puffer-accent) 18%, transparent);
+  }
+
+  .pf-connector-searchbox input {
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    padding: 7px 0;
+  }
+
+  .pf-connector-searchbox input:focus {
+    border: 0;
+    box-shadow: none;
+  }
+
+  .pf-connection-list,
+  .pf-connector-catalog {
+    display: grid;
+    gap: 5px;
+  }
+
+  .pf-connector-catalog {
+    max-height: 164px;
+    overflow: auto;
+  }
+
+  .pf-connection-row {
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--foreground);
+    border-radius: 8px;
+    padding: 7px 8px;
+    font: inherit;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    text-align: left;
+  }
+
+  .pf-connection-row:hover,
+  .pf-connection-row[data-selected="true"] {
+    border-color: transparent;
+    background: var(--pf-selected-bg-hover);
+  }
+
+  .pf-connection-row[data-selected="true"] {
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--puffer-accent) 45%, transparent);
+  }
+
+  .pf-connector-row {
+    border: 1px solid var(--border);
+    background: color-mix(in oklab, var(--card) 72%, transparent);
+    border-radius: 8px;
+    padding: 7px 8px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+  }
+
+  .pf-connector-main {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .pf-connector-main strong {
+    color: var(--foreground);
+    font-size: 12px;
+    line-height: 1.2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pf-connector-main small {
+    color: var(--muted-foreground);
+    font-size: 10.7px;
+    line-height: 1.32;
+  }
+
+  .pf-connection-state,
+  .pf-connector-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+
+  .pf-connection-state,
+  .pf-connector-tags span {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 6px;
+    background: var(--muted);
+  }
+
+  .pf-connection-state[data-state="active"],
+  .pf-connection-state[data-state="authenticated"] {
+    color: var(--puffer-accent);
+    background: color-mix(in oklab, var(--puffer-accent) 10%, var(--card));
+    border-color: color-mix(in oklab, var(--puffer-accent) 28%, var(--border));
+  }
+
+  .pf-connection-state[data-state="degraded"] {
+    color: var(--pf-run-failed);
+    background: color-mix(in oklab, var(--pf-run-failed) 10%, var(--card));
+    border-color: color-mix(in oklab, var(--pf-run-failed) 28%, var(--border));
+  }
+
+  .pf-connector-empty {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    padding: 8px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: var(--card);
   }
 
   .pf-editor-runs {

@@ -18,6 +18,7 @@ mod daemon_pty;
 mod daemon_title;
 mod daemon_turn_routing;
 mod daemon_ui_state;
+mod daemon_workflows;
 mod desktop_activity;
 mod desktop_api;
 mod desktop_api_types;

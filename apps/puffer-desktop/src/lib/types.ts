@@ -333,6 +333,13 @@ export type WorkflowTrigger =
       source_topic: string;
       pattern?: string | null;
       classify_prompt?: string | null;
+    }
+  | {
+      type: "connection";
+      connection_slug: string;
+      filter?: Record<string, unknown> | null;
+      pattern?: string | null;
+      classify_prompt?: string | null;
     };
 
 export type WorkflowPipelineNode = {
@@ -383,9 +390,31 @@ export type WorkflowRun = {
   trigger_key?: string | null;
 };
 
+export type WorkflowConnector = {
+  connector_slug: string;
+  description: string;
+  skill: string;
+  requires_auth: boolean;
+  can_subscribe: boolean;
+  can_proxy_agent: boolean;
+  action_slugs: string[];
+};
+
+export type WorkflowConnection = {
+  slug: string;
+  connector_slug: string;
+  description: string;
+  state: string;
+  has_consumer: boolean;
+  auth_failure_notified?: boolean;
+};
+
 export type WorkflowSnapshot = {
   workflows: WorkflowDefinition[];
   runs: WorkflowRun[];
+  connectors?: WorkflowConnector[];
+  connections?: WorkflowConnection[];
+  connector_error?: string | null;
 };
 
 export type ExternalCredential = {

@@ -50,6 +50,9 @@ type PtySet = {
 type WorkflowSnapshotFixture = {
   workflows: JsonRecord[];
   runs: JsonRecord[];
+  connectors?: JsonRecord[];
+  connections?: JsonRecord[];
+  connector_error?: string | null;
 };
 
 type SessionDetailOverrides = {
@@ -335,7 +338,38 @@ export class FakeDaemon {
         }
       }
     ],
-    runs: []
+    runs: [],
+    connectors: [
+      {
+        connector_slug: "telegram-login",
+        description: "Telegram personal account over MTProto",
+        skill: "telegram",
+        requires_auth: true,
+        can_subscribe: true,
+        can_proxy_agent: false,
+        action_slugs: ["send_message"]
+      },
+      {
+        connector_slug: "email",
+        description: "Email connector over SMTP and IMAP-compatible polling",
+        skill: "email",
+        requires_auth: true,
+        can_subscribe: true,
+        can_proxy_agent: false,
+        action_slugs: ["send_message"]
+      }
+    ],
+    connections: [
+      {
+        slug: "telegram-user",
+        connector_slug: "telegram-login",
+        description: "Personal Telegram",
+        state: "authenticated",
+        has_consumer: false,
+        auth_failure_notified: false
+      }
+    ],
+    connector_error: null
   };
   private nextTab = 2;
   private nextPty = 1;
@@ -468,7 +502,10 @@ export class FakeDaemon {
   setWorkflowSnapshot(snapshot: WorkflowSnapshotFixture): void {
     this.workflowSnapshot = {
       workflows: snapshot.workflows.map((workflow) => ({ ...workflow })),
-      runs: snapshot.runs.map((run) => ({ ...run }))
+      runs: snapshot.runs.map((run) => ({ ...run })),
+      connectors: snapshot.connectors?.map((connector) => ({ ...connector })),
+      connections: snapshot.connections?.map((connection) => ({ ...connection })),
+      connector_error: snapshot.connector_error ?? null
     };
   }
 
@@ -794,7 +831,10 @@ export class FakeDaemon {
       case "workflow_list":
         return {
           workflows: this.workflowSnapshot.workflows.map((workflow) => ({ ...workflow })),
-          runs: this.workflowSnapshot.runs.map((run) => ({ ...run }))
+          runs: this.workflowSnapshot.runs.map((run) => ({ ...run })),
+          connectors: this.workflowSnapshot.connectors?.map((connector) => ({ ...connector })) ?? [],
+          connections: this.workflowSnapshot.connections?.map((connection) => ({ ...connection })) ?? [],
+          connector_error: this.workflowSnapshot.connector_error ?? null
         };
       case "list_dir":
         return this.listDir(request.params);

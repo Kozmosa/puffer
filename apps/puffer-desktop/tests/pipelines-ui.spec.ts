@@ -53,6 +53,24 @@ test("pipeline graph agent nodes expose selected state", async ({ page }) => {
   await expect(page.getByLabel("Agent name")).toHaveValue("Claude reviewer");
 });
 
+test("pipeline connector search selects a connection trigger", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
+
+  await expect(page.getByLabel("Trigger type")).toHaveValue("subscription");
+  await page.getByLabel("Search connectors").fill("telegram");
+  await expect(page.locator('[aria-label="Connector catalog"]').getByText("telegram-login")).toBeVisible();
+
+  await page.getByRole("button", { name: "Use telegram-user as workflow trigger" }).click();
+
+  await expect(page.getByLabel("Trigger type")).toHaveValue("connection");
+  await expect(page.getByLabel("Workflow connection")).toHaveValue("telegram-user");
+  await expect(page.locator(".pf-pipe-graph").getByRole("button", { name: /telegram-user/ })).toBeVisible();
+});
+
 test("pipeline refresh is disabled while the workflow snapshot loads", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.delayFailure("workflow_list", () => true, "slow workflow snapshot", 250);
