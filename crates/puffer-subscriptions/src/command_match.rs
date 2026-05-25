@@ -28,6 +28,12 @@ pub(crate) fn command_matches_terminal_event(
             payload_str_eq(&envelope.event.payload, "peer", peer)
                 && payload_str_eq(&envelope.event.payload, "query", query)
         }
+        SubscriberCommand::TelegramListMessages {
+            peer, before_id, ..
+        } => {
+            payload_str_eq(&envelope.event.payload, "peer", peer)
+                && payload_option_i32_eq(&envelope.event.payload, "before_id", *before_id)
+        }
         SubscriberCommand::Custom { op, args } if op == "telegram_act" => args
             .get("action")
             .and_then(Value::as_str)
@@ -51,6 +57,13 @@ fn payload_option_str_eq(payload: &Value, key: &str, expected: Option<&str>) -> 
 fn payload_option_usize_eq(payload: &Value, key: &str, expected: Option<usize>) -> bool {
     match expected {
         Some(expected) => payload.get(key).and_then(Value::as_u64) == Some(expected as u64),
+        None => true,
+    }
+}
+
+fn payload_option_i32_eq(payload: &Value, key: &str, expected: Option<i32>) -> bool {
+    match expected {
+        Some(expected) => payload.get(key).and_then(Value::as_i64) == Some(expected as i64),
         None => true,
     }
 }
@@ -125,6 +138,25 @@ mod tests {
                 "peer_list",
                 json!({"query":"tony","peer_kind":"user","limit":10})
             )
+        ));
+    }
+
+    #[test]
+    fn message_list_terminal_events_match_peer_and_cursor() {
+        let command = SubscriberCommand::TelegramListMessages {
+            peer: "477843728".into(),
+            limit: Some(20),
+            before_id: Some(325),
+            succinct: true,
+        };
+
+        assert!(command_matches_terminal_event(
+            &command,
+            &envelope("message_list", json!({"peer":"477843728","before_id":325}))
+        ));
+        assert!(!command_matches_terminal_event(
+            &command,
+            &envelope("message_list", json!({"peer":"477843728","before_id":326}))
         ));
     }
 }

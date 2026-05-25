@@ -18,6 +18,7 @@ mod reflect;
 mod resume;
 mod session;
 mod tasks;
+mod telegram;
 mod terminal_setup;
 
 pub use actions::CommandActionEntry;
@@ -72,6 +73,7 @@ pub(crate) use session::{
 };
 pub use tasks::TaskActionEntry;
 pub(crate) use tasks::{handle_tasks_command, render_task_actions, render_tasks_panel_text};
+pub(crate) use telegram::handle_telegram_command;
 pub(crate) use terminal_setup::{
     handle_terminal_setup_command, should_hide_terminal_setup_command,
     terminal_setup_command_description,

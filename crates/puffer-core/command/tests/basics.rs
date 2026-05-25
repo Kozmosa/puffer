@@ -52,6 +52,17 @@ fn connect_command_is_registered_as_local_command() {
 }
 
 #[test]
+fn telegram_command_is_registered_as_local_command() {
+    let commands = supported_commands();
+    let telegram = find_command(&commands, "telegram").expect("telegram command");
+    assert_eq!(telegram.kind, CommandKind::Local);
+    assert!(telegram
+        .argument_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("list-messages")));
+}
+
+#[test]
 fn command_surface_includes_user_invocable_skills_and_skill_aliases() {
     let resources = LoadedResources {
         skills: vec![
@@ -88,6 +99,29 @@ fn command_surface_includes_user_invocable_skills_and_skill_aliases() {
     assert_eq!(verify.argument_hint.as_deref(), Some("<target>"));
     assert!(find_command(&commands, "skill:verify").is_some());
     assert!(find_command(&commands, "hidden").is_none());
+}
+
+#[test]
+fn command_surface_keeps_builtin_telegram_a_local_command() {
+    let resources = LoadedResources {
+        skills: vec![LoadedItem {
+            value: puffer_resources::SkillSpec {
+                name: "telegram".to_string(),
+                description: "Prompt-backed Telegram helper".to_string(),
+                ..puffer_resources::SkillSpec::default()
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from("/tmp/work/.puffer/resources/skills/telegram/SKILL.md"),
+                kind: SourceKind::Workspace,
+            },
+        }],
+        ..LoadedResources::default()
+    };
+
+    let commands = command_surface(&resources);
+    let telegram = find_command(&commands, "telegram").expect("telegram command");
+    assert_eq!(telegram.kind, CommandKind::Local);
+    assert!(find_command(&commands, "skill:telegram").is_none());
 }
 
 #[test]

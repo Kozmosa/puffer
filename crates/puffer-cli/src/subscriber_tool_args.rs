@@ -466,7 +466,23 @@ pub(crate) enum TelegramCommand {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-    /// Search Telegram messages inside one peer and include context.
+    /// List recent Telegram messages inside one peer without a search term.
+    #[command(name = "list-messages", alias = "messages")]
+    ListMessages {
+        /// Telegram peer id from search-peers, or a public @username.
+        #[arg(long)]
+        peer: String,
+        /// Maximum number of messages to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Exclusive Telegram message id cursor for older messages.
+        #[arg(long = "before-id")]
+        before_id: Option<i32>,
+        /// Return plain-text messages for LLM use.
+        #[arg(long = "succint", alias = "succinct")]
+        succinct: bool,
+    },
+    /// Search Telegram messages inside one peer and include previous context.
     #[command(name = "search-messages")]
     SearchMessages {
         /// Text query to search for.
@@ -477,8 +493,8 @@ pub(crate) enum TelegramCommand {
         /// Maximum number of message matches to return.
         #[arg(long, default_value_t = 10)]
         limit: usize,
-        /// Number of surrounding messages before and after each match.
-        #[arg(long, default_value_t = 2)]
+        /// Number of previous messages to include before each match.
+        #[arg(long, default_value_t = 0)]
         context: usize,
         /// Return plain-text search results for LLM use.
         #[arg(long = "succint", alias = "succinct")]

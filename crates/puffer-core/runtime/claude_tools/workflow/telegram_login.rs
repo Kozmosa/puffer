@@ -28,11 +28,11 @@ use puffer_subscriber_runtime::{Manifest, StateSpec, SubscriberCommand, Telegram
 use puffer_subscriptions::ConnectionRecord;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::subscription_globals;
+use super::telegram_format::{format_succinct_message_list, format_succinct_message_search};
 
 const TELEGRAM_USER_TOPIC: &str = "telegram-user";
 const TELEGRAM_LOGIN_CONNECTOR_SLUG: &str = "telegram-login";
@@ -43,6 +43,7 @@ const TELEGRAM_PEER_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 #[serde(rename_all = "snake_case")]
 enum TelegramAction {
     ImportDesktop,
+    ListMessages,
     ListPeers,
     LoginQr,
     LoginQrWait,
@@ -78,6 +79,7 @@ pub fn execute_telegram(state: &mut AppState, cwd: &Path, input: Value) -> Resul
         serde_json::from_value(input.clone()).context("invalid Telegram input")?;
     match parsed.action {
         TelegramAction::ImportDesktop => execute_telegram_import_desktop(state, cwd, input),
+        TelegramAction::ListMessages => execute_telegram_list_messages(state, cwd, input),
         TelegramAction::ListPeers => execute_telegram_list_peers(state, cwd, input, false),
         TelegramAction::LoginQr => execute_telegram_login_qr(state, cwd, input),
         TelegramAction::LoginQrWait => execute_telegram_login_qr_wait(state, cwd, input),
@@ -219,7 +221,7 @@ struct SearchMessagesInput {
     /// Optional maximum number of message matches to return.
     #[serde(default)]
     limit: Option<usize>,
-    /// Optional surrounding message count before and after each match.
+    /// Optional previous-message count to include before each match.
     #[serde(default)]
     context: Option<usize>,
     /// Return compact message search payloads for LLM consumption.
@@ -279,127 +281,63 @@ fn execute_telegram_search_messages(
     ))
 }
 
-fn format_succinct_message_search(payload: &Value) -> String {
-    let chat = payload.get("chat").unwrap_or(&Value::Null);
-    let chat_title = value_string(chat, "title")
-        .or_else(|| value_string(chat, "id"))
-        .unwrap_or_else(|| "unknown chat".to_string());
-    let chat_handle = value_string(chat, "handle")
-        .filter(|value| !value.is_empty())
-        .map(|value| format!(" ({value})"))
-        .unwrap_or_default();
-    let query = value_string(payload, "query").unwrap_or_else(|| "<empty query>".to_string());
-    let count = payload.get("count").and_then(Value::as_u64).unwrap_or(0);
-    let limit_reached = payload
-        .get("limit_reached")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    let mut output = String::new();
-    let _ = writeln!(
-        output,
-        "Telegram search: \"{}\" in {}{}",
-        one_line(&query),
-        chat_title,
-        chat_handle
-    );
-    let _ = writeln!(
-        output,
-        "{} match{} returned{}",
-        count,
-        if count == 1 { "" } else { "es" },
-        if limit_reached {
-            " (limit reached)"
-        } else {
-            ""
-        }
-    );
-
-    let Some(results) = payload.get("results").and_then(Value::as_array) else {
-        return trim_trailing_newline(output);
-    };
-    if results.is_empty() {
-        return trim_trailing_newline(output);
-    }
-
-    for (index, result) in results.iter().enumerate() {
-        let _ = writeln!(output);
-        if results.len() > 1 {
-            let _ = writeln!(output, "Match {}:", index + 1);
-        } else {
-            let _ = writeln!(output, "Match:");
-        }
-
-        match result.get("context").and_then(Value::as_array) {
-            Some(context) if !context.is_empty() => {
-                for message in context {
-                    write_succinct_message_line(&mut output, message);
-                }
-            }
-            _ => {
-                if let Some(message) = result
-                    .get("match")
-                    .or_else(|| result.get("message"))
-                    .filter(|value| value.is_object())
-                {
-                    write_succinct_message_line(&mut output, message);
-                }
-            }
-        }
-
-        if let Some(error) = value_string(result, "context_error").filter(|value| !value.is_empty())
-        {
-            let _ = writeln!(output, "context warning: {}", one_line(&error));
-        }
-    }
-
-    trim_trailing_newline(output)
+#[derive(Debug, Deserialize)]
+struct ListMessagesInput {
+    /// Telegram peer id from search-peers, or a public @username.
+    peer: String,
+    /// Optional maximum number of messages to return.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Optional exclusive Telegram message id cursor for older pages.
+    #[serde(default)]
+    before_id: Option<i32>,
+    /// Return compact message list payloads for LLM consumption.
+    #[serde(default, alias = "succint")]
+    succinct: bool,
 }
 
-fn write_succinct_message_line(output: &mut String, message: &Value) {
-    let offset = message.get("offset").and_then(Value::as_i64);
-    let offset = match offset {
-        Some(value) if value > 0 => format!("+{value}"),
-        Some(value) => value.to_string(),
-        None if message
-            .get("is_match")
-            .and_then(Value::as_bool)
-            .unwrap_or(false) =>
-        {
-            "0".to_string()
-        }
-        None => "?".to_string(),
+fn execute_telegram_list_messages(
+    _state: &mut AppState,
+    cwd: &Path,
+    input: Value,
+) -> Result<String> {
+    let connection_slug = connection_slug_from_input(&input)?;
+    let parsed: ListMessagesInput =
+        serde_json::from_value(input).context("invalid Telegram message-list input")?;
+    if parsed.peer.trim().is_empty() {
+        return Err(anyhow!("telegram list_messages requires a non-empty peer"));
+    }
+    ensure_telegram_connection_subscriber(cwd, &connection_slug)?;
+    let manager = subscription_globals::manager()?;
+    let succinct = parsed.succinct;
+    let command = SubscriberCommand::TelegramListMessages {
+        peer: parsed.peer,
+        limit: parsed.limit,
+        before_id: parsed.before_id,
+        succinct,
     };
-    let from = value_string(message, "from")
-        .or_else(|| {
-            message
-                .get("sender")
-                .and_then(|sender| value_string(sender, "title"))
+    let event = manager.send_command_and_wait(
+        &connection_slug,
+        &connection_slug,
+        &command,
+        &["message_list", "message_list_error", "login_error"],
+        TELEGRAM_PEER_EVENT_TIMEOUT,
+    )?;
+    if event.event.kind == "message_list" {
+        if succinct {
+            return Ok(format_succinct_message_list(&event.event.payload));
+        }
+        return Ok(json!({
+            "status": "complete",
+            "payload": event.event.payload,
+            "next": "Use `next_before_id` as `before_id` to fetch older Telegram messages."
         })
-        .unwrap_or_else(|| "unknown".to_string());
-    let text = value_string(message, "text")
-        .map(|value| one_line(&value))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "[non-text message]".to_string());
-    let _ = writeln!(output, "{offset:>3} {from}: {text}");
-}
-
-fn value_string(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn one_line(value: &str) -> String {
-    value.replace('\r', "\\r").replace('\n', "\\n")
-}
-
-fn trim_trailing_newline(mut output: String) -> String {
-    while output.ends_with('\n') {
-        output.pop();
+        .to_string());
     }
-    output
+    Err(anyhow!(
+        "telegram message list failed: {}",
+        event_error_message(&event.event.payload)
+    ))
 }
 
 #[derive(Debug, Deserialize)]

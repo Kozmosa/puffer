@@ -110,8 +110,8 @@ pub enum SubscriberCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
-    /// Search message text within one Telegram peer and return nearby context
-    /// messages so callers can inspect the match safely before acting.
+    /// Search message text within one Telegram peer and optionally return
+    /// previous messages so callers can inspect the match safely before acting.
     TelegramSearchMessages {
         /// Peer reference: a `@username` or numeric chat id string returned by
         /// `TelegramListPeers`.
@@ -121,10 +121,27 @@ pub enum SubscriberCommand {
         /// Optional maximum result count.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
-        /// Optional number of surrounding messages before and after each hit.
+        /// Optional number of previous messages to include before each hit.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<usize>,
         /// Return compact message and context payloads for LLM consumption.
+        #[serde(default, alias = "succint")]
+        succinct: bool,
+    },
+    /// List recent messages within one Telegram peer without requiring a
+    /// search term. Callers can page backward with `before_id`.
+    TelegramListMessages {
+        /// Peer reference: a `@username` or numeric chat id string returned by
+        /// `TelegramListPeers`.
+        peer: String,
+        /// Optional maximum message count.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        /// Optional exclusive Telegram message id cursor. When present,
+        /// subscribers return messages older than this id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_id: Option<i32>,
+        /// Return compact message payloads for LLM consumption.
         #[serde(default, alias = "succint")]
         succinct: bool,
     },

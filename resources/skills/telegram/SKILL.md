@@ -1,6 +1,6 @@
 ---
 name: telegram
-description: Configure Telegram with /connect, then resolve Telegram user/group ids and search Telegram messages through the internal CLI.
+description: Configure Telegram with /connect, then resolve Telegram user/group ids and search Telegram messages through the local Telegram command.
 allowed-tools:
   - Bash
 argument-hint: "[Telegram login task]"
@@ -13,10 +13,10 @@ Use `/connect telegram-login <connection>` when the user needs to authenticate
 or repair a Telegram personal-account connection. That flow uses
 AskUserQuestion for method choices and secrets.
 
-Use Bash to run the Telegram internal CLI only after auth exists, when the
-user needs Telegram peer lookup, message search, or other lookup-oriented
-personal-account workflows. Run Telegram lookup commands as `telegram ...`
-inside Bash.
+Use the local `/telegram` command when the user needs Telegram peer lookup,
+message listing, or message search. It dispatches directly to the Telegram
+subscriber and does not require a model turn. The internal CLI form
+`telegram ...` is still available inside Bash for non-interactive scripts.
 
 Target: $target
 
@@ -30,7 +30,7 @@ session file. `--account-index` is only the local import-time picker for
 Telegram Desktop/native storage slots; it is not the stable account identity.
 
 ```bash
-telegram --account tg-alt search-peers "C & Jason" --kind group
+/telegram --connection tg-alt search-peers "C & Jason" --kind group
 ```
 
 After `/connect` login or import completes, the auth tool registers that
@@ -44,13 +44,14 @@ needs a send target or workflow filter, resolve the stable numeric id first.
 Do not send to an ambiguous title directly.
 
 ```bash
-telegram search-peers "C & Jason" --kind group
+/telegram search-peers "C & Jason" --kind group
 ```
 
-Use `telegram list-peers --kind group --limit 50` to browse visible groups,
-or omit `--kind` to include users, groups, and channels. Results are JSON.
-Use `payload.peers[].id` as the send target or workflow chat id; it is a
-string on purpose so large Telegram ids stay exact.
+Use `/telegram list-peers --kind group --limit 50` to browse visible groups,
+or omit `--kind` to include users, groups, and channels. The local command
+returns the subscriber result directly. Use `payload.peers[].id` as the send
+target or workflow chat id when JSON output is returned; it is a string on
+purpose so large Telegram ids stay exact.
 
 Message search workflow:
 
@@ -58,21 +59,28 @@ When the user asks to find text in Telegram, resolve the chat first and then
 search messages by peer id. Prefer numeric peer ids over titles.
 
 ```bash
-telegram search-peers "TonyKe" --kind user
-telegram search-messages "karen" --peer 123456789 --context 2 --limit 10 --succint
+/telegram search-peers "TonyKe" --kind user
+/telegram list-messages --peer 123456789 --limit 20
+/telegram search-messages "karen" --peer 123456789 --context 0 --limit 10
 ```
 
-Use `--succint` for normal agent work. It returns plain text context lines
-with relative offsets, for example `+2 Sender: message`, instead of JSON.
+Use `/telegram list-messages` when the user asks to inspect recent chat
+history without a specific search term. Use the returned `--before-id` cursor
+to fetch older pages. Use `--context 0` for fast search; non-zero context
+returns previous messages before each hit.
+
+Use `--succint` with the internal CLI for normal agent work. It returns plain
+text context lines with relative offsets, for example `-2 Sender: message`,
+instead of JSON.
 Messages with downloadable media include a local file path; captions follow
 the path on the same line. Text-only media such as polls are rendered as
 text with answer indexes, for example
 `poll: Ship it? [open, 3 voters] | 0: Yes / 1: No`. Replies are shown as a
 prefix on the message line, for example `[reply to #42: previous text]`.
 Without `--succint`, results are JSON; inspect `payload.results[].context`,
-where the message with `is_match: true` is the search hit and neighboring
-items are surrounding context. JSON `media` is a string with the same
-contract: local file path for downloaded media, or text for text-only media.
+where the message with `is_match: true` is the search hit and earlier items are
+previous-message context. JSON `media` is a string with the same contract: local
+file path for downloaded media, or text for text-only media.
 JSON `poll` is null or an object with question, open/closed status, total
 voters, answer indexes, answer text, chosen/correct flags, voter counts, and
 `option_hex` tokens. JSON `reply_to` is null or an object with the replied

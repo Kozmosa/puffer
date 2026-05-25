@@ -17,7 +17,7 @@ use crate::events::emit_control;
 use crate::import::{import_tdata, TdataImportOptions, TdataImportOutcome};
 use crate::login;
 use crate::outbound::handle_send_message;
-use crate::peers::{handle_list_peers, handle_search_messages};
+use crate::peers::{handle_list_messages, handle_list_peers, handle_search_messages};
 use crate::qr_login;
 use crate::state::{
     default_init_params, resolve_api_credentials, LoginState, PersistedCredentials, SkillEnv,
@@ -164,6 +164,16 @@ pub async fn run() -> anyhow::Result<()> {
                     }),
                 )?;
             }
+            SubscriberCommand::TelegramListMessages { peer, .. } => {
+                emit_control(
+                    &env.topic,
+                    "message_list_error",
+                    json!({
+                        "error": "not authenticated yet; complete login before listing Telegram messages",
+                        "peer": peer,
+                    }),
+                )?;
+            }
             SubscriberCommand::SendMessage { peer, .. } => {
                 emit_control(
                     &env.topic,
@@ -297,6 +307,16 @@ pub async fn run() -> anyhow::Result<()> {
                         "error": "complete login before searching Telegram messages",
                         "peer": peer,
                         "query": query,
+                    }),
+                )?;
+            }
+            SubscriberCommand::TelegramListMessages { peer, .. } => {
+                emit_control(
+                    &env.topic,
+                    "message_list_error",
+                    json!({
+                        "error": "complete login before listing Telegram messages",
+                        "peer": peer,
                     }),
                 )?;
             }
@@ -593,6 +613,14 @@ async fn handle_runtime_command(
             succinct,
         } => {
             handle_search_messages(env, client, peer, query, limit, context, succinct).await?;
+        }
+        SubscriberCommand::TelegramListMessages {
+            peer,
+            limit,
+            before_id,
+            succinct,
+        } => {
+            handle_list_messages(env, client, peer, limit, before_id, succinct).await?;
         }
         SubscriberCommand::SendMessage {
             peer,

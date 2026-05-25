@@ -37,6 +37,7 @@ pub mod task_stop;
 pub mod task_update;
 pub mod team_create;
 pub mod team_delete;
+mod telegram_format;
 pub mod telegram_login;
 pub mod todo_write;
 pub mod workflow_tools;

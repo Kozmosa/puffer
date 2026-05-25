@@ -76,7 +76,7 @@ input_schema:
       description: Optional maximum result count for list_peers/search_peers/search_messages.
     context:
       type: integer
-      description: Optional surrounding message count before and after each match for search_messages.
+      description: Optional previous message count before each match for search_messages.
     succinct:
       type: boolean
       description: Optional plain-text message-search response for LLM use. Media appears as either a local file path or text for text-only media such as polls, with poll answer indexes included for voting. Reply relationships are preserved in message-search output.

@@ -1,9 +1,6 @@
 //! Telegram peer lookup, message search, and outbound send helpers.
 
-use std::{
-    collections::VecDeque,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use grammers_client::{
@@ -25,7 +22,6 @@ const DEFAULT_MESSAGE_LIMIT: usize = 10;
 const MAX_MESSAGE_LIMIT: usize = 50;
 const DEFAULT_CONTEXT_RADIUS: usize = 2;
 const MAX_CONTEXT_RADIUS: usize = 10;
-const CONTEXT_SCAN_LIMIT: usize = 2_000;
 const MAX_MESSAGE_TEXT_CHARS: usize = 2_000;
 
 /// Lists Telegram peers visible in the authenticated account's dialog list.
@@ -157,9 +153,86 @@ pub(crate) async fn handle_search_messages(
             "count": count,
             "limit_reached": count >= limit,
             "context_radius": context_radius,
-            "context_scan_limit": CONTEXT_SCAN_LIMIT,
             "chat": chat_payload,
             "results": results,
+        }),
+    )?;
+    Ok(())
+}
+
+/// Lists recent Telegram messages inside one peer without a search query.
+pub(crate) async fn handle_list_messages(
+    env: &SkillEnv,
+    client: &Client,
+    peer: String,
+    limit: Option<usize>,
+    before_id: Option<i32>,
+    succinct: bool,
+) -> anyhow::Result<()> {
+    let chat = match resolve_peer(client, &peer).await {
+        Ok(chat) => chat,
+        Err(error) => {
+            emit_control(
+                &env.topic,
+                "message_list_error",
+                json!({ "peer": peer, "error": error.to_string() }),
+            )?;
+            return Ok(());
+        }
+    };
+    let limit = clamp_message_limit(limit);
+    let mut iter = client.iter_messages(chat.pack()).limit(limit);
+    if let Some(before_id) = before_id {
+        iter = iter.offset_id(before_id);
+    }
+    let mut messages = Vec::new();
+    while messages.len() < limit {
+        let maybe_message = match iter.next().await {
+            Ok(message) => message,
+            Err(error) => {
+                emit_control(
+                    &env.topic,
+                    "message_list_error",
+                    json!({ "peer": peer, "error": format!("Telegram message list failed: {error}") }),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(message) = maybe_message else {
+            break;
+        };
+        messages.push(message);
+    }
+    let next_before_id = messages.iter().map(Message::id).min();
+    messages.sort_by_key(Message::id);
+    let mut payload_messages = Vec::with_capacity(messages.len());
+    for message in &messages {
+        let payload = if succinct {
+            concise_message_payload(env, message, None, false).await
+        } else {
+            message_payload(env, message, false).await
+        };
+        payload_messages.push(payload);
+    }
+    let count = payload_messages.len();
+    let chat_payload = if succinct {
+        peer_summary_payload(&chat)
+    } else {
+        peer_payload(&chat)
+    };
+    emit_control(
+        &env.topic,
+        "message_list",
+        json!({
+            "format": if succinct { "succinct" } else { "full" },
+            "peer": peer,
+            "limit": limit,
+            "count": count,
+            "limit_reached": count >= limit,
+            "before_id": before_id,
+            "next_before_id": next_before_id,
+            "chat": chat_payload,
+            "messages": payload_messages,
         }),
     )?;
     Ok(())
@@ -183,37 +256,8 @@ async fn collect_message_context(
         context.push(item);
     }
     context.sort_by_key(Message::id);
-    let mut newer = newer_context(client, chat, message.id(), radius).await?;
     context.push(message.clone());
-    context.append(&mut newer);
     Ok(context)
-}
-
-async fn newer_context(
-    client: &Client,
-    chat: &Chat,
-    message_id: i32,
-    radius: usize,
-) -> anyhow::Result<Vec<Message>> {
-    let mut found = false;
-    let mut newer = VecDeque::with_capacity(radius);
-    let mut iter = client.iter_messages(chat.pack()).limit(CONTEXT_SCAN_LIMIT);
-    while let Some(item) = iter.next().await? {
-        if item.id() == message_id {
-            found = true;
-            break;
-        }
-        newer.push_back(item);
-        if newer.len() > radius {
-            newer.pop_front();
-        }
-    }
-    if !found {
-        return Ok(Vec::new());
-    }
-    let mut newer = newer.into_iter().collect::<Vec<_>>();
-    newer.sort_by_key(Message::id);
-    Ok(newer)
 }
 
 /// Resolves a Telegram peer string into a chat visible to the authenticated account.

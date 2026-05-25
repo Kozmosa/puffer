@@ -336,6 +336,18 @@ pub(crate) fn run_telegram(args: TelegramArgs) -> Result<()> {
             "query": query,
             "limit": limit,
         }),
+        TelegramCommand::ListMessages {
+            peer,
+            limit,
+            before_id,
+            succinct,
+        } => json!({
+            "action": "list_messages",
+            "peer": peer,
+            "limit": limit,
+            "before_id": before_id,
+            "succinct": succinct,
+        }),
         TelegramCommand::SearchMessages {
             query,
             peer,
