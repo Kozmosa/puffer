@@ -13,15 +13,24 @@
   import {
     addMcpServer,
     isDaemonReachable,
+    listLambdaSkillLibraries,
     listMcpServers,
     listPermissions,
     listProviderModels,
+    removeLambdaSkillLibrary,
+    saveLambdaSkillLibrary,
     savePermissions,
+    setLambdaSkillApproval,
+    setLambdaSkillEnabled,
     updateConfig,
+    type LambdaSkillLibraryInfo,
+    type LambdaSkillLibrariesSnapshot,
+    type LambdaVerifiedSkillInfo,
     type McpServerInfo,
     type ModelDescriptorInfo,
     type PermissionsSnapshot
   } from "../api/desktop";
+  import { canInvokeTauri, currentDaemonClient } from "../api/daemonClient";
   import type {
     DesktopPreferences,
     ExternalCredential,
@@ -67,16 +76,20 @@
     if (section === "mcp" && daemonReachable && !mcpLoading && !mcpSaving) {
       void loadMcpServers();
     }
+    if (section === "skills" && daemonReachable && !lambdaLoading && !lambdaSaving && lambdaRemovingLibrary === null) {
+      void loadLambdaSkillLibraries();
+    }
     props.onRefresh();
   }
 
-  type Section = "general" | "providers" | "permissions" | "mcp" | "git" | "appearance" | "shortcuts";
+  type Section = "general" | "providers" | "permissions" | "skills" | "mcp" | "git" | "appearance" | "shortcuts";
   let section = $state<Section>("general");
 
   const navItems: { id: Section; label: string; icon: IconName }[] = [
     { id: "general",     label: "General",    icon: "settings" },
     { id: "providers",   label: "Providers",  icon: "plug" },
     { id: "permissions", label: "Permissions", icon: "bolt" },
+    { id: "skills",      label: "Verified Skills", icon: "shield" },
     { id: "mcp",         label: "MCP Servers", icon: "plug" },
     { id: "git",         label: "Git & PRs",  icon: "git" },
     { id: "appearance",  label: "Appearance", icon: "layers" },
@@ -114,6 +127,17 @@
     description: "",
     scope: "local" as "local" | "user"
   });
+
+  let lambdaSnapshot = $state<LambdaSkillLibrariesSnapshot | null>(null);
+  let lambdaLoaded = $state(false);
+  let lambdaLoading = $state(false);
+  let lambdaLoadGeneration = 0;
+  let lambdaSaving = $state(false);
+  let lambdaRemovingLibrary = $state<string | null>(null);
+  let lambdaTogglingSkill = $state<string | null>(null);
+  let lambdaTogglingApproval = $state<string | null>(null);
+  let lambdaError = $state<string | null>(null);
+  let lambdaSaved = $state<string | null>(null);
 
   // Per-provider model listings cached by providerId. Populated on demand
   // when the user expands the Providers pane.
@@ -203,6 +227,261 @@
       mcpError = (e as Error).message ?? String(e);
     } finally {
       mcpSaving = false;
+    }
+  }
+
+  async function loadLambdaSkillLibraries() {
+    const generation = ++lambdaLoadGeneration;
+    lambdaLoading = true;
+    lambdaError = null;
+    try {
+      const snap = await withTimeout(
+        listLambdaSkillLibraries(),
+        15000,
+        "Verified Skills are still loading. Try Refresh again in a moment."
+      );
+      if (generation !== lambdaLoadGeneration) return;
+      lambdaSnapshot = snap;
+    } catch (e) {
+      if (generation === lambdaLoadGeneration) {
+        lambdaError = (e as Error).message ?? String(e);
+      }
+    } finally {
+      if (generation === lambdaLoadGeneration) {
+        lambdaLoaded = true;
+        lambdaLoading = false;
+      }
+    }
+  }
+
+  function basenameFromPath(path: string): string {
+    return path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Verified Skills";
+  }
+
+  function slugFromPath(path: string): string {
+    const slug = basenameFromPath(path)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug || "verified-skills";
+  }
+
+  function shortPathHash(path: string): string {
+    let hash = 2166136261;
+    for (let i = 0; i < path.length; i += 1) {
+      hash ^= path.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36).slice(0, 6);
+  }
+
+  function verifiedSkillIdFromPath(path: string): string {
+    return `${slugFromPath(path)}-${shortPathHash(path)}`;
+  }
+
+  function normalizedFolderPath(path: string): string {
+    return path.replace(/\\/g, "/").replace(/\/+$/g, "");
+  }
+
+  function pathContains(parent: string, child: string): boolean {
+    const normalizedParent = normalizedFolderPath(parent);
+    const normalizedChild = normalizedFolderPath(child);
+    return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+  }
+
+  function coveringVerifiedSkillLibrary(path: string): LambdaSkillLibraryInfo | null {
+    const libraries = lambdaSnapshot?.libraries ?? [];
+    return libraries.find((library) => pathContains(library.root, path)) ?? null;
+  }
+
+  function lambdaLibraryKey(library: LambdaSkillLibraryInfo): string {
+    return `${library.sourceKind}:${library.id}`;
+  }
+
+  function verifiedSkillStatus(library: LambdaSkillLibraryInfo): string {
+    if (library.disableModelInvocation) return "Installed";
+    if (library.allowedTools.length > 0 && library.hostCatalogueSubpath) {
+      return "Ready for model use";
+    }
+    return "Needs verification output";
+  }
+
+  function verifiedSkillScopeLabel(library: LambdaSkillLibraryInfo): string {
+    return library.sourceKind === "user" ? "User" : "Workspace";
+  }
+
+  function verifiedSkillKey(skill: LambdaVerifiedSkillInfo): string {
+    return `${skill.sourceKind ?? "unknown"}:${skill.libraryId ?? "none"}:${skill.name}`;
+  }
+
+  function verifiedSkillReadinessLabel(skill: LambdaVerifiedSkillInfo): string {
+    if (skill.modelInvocable) return "Enabled";
+    if (!skill.enabled) return "Disabled";
+    if (skill.ready) return "Configured";
+    return "Needs attention";
+  }
+
+  function verifiedSkillDetailLabel(skill: LambdaVerifiedSkillInfo): string {
+    const scope = skill.sourceKind === "user" ? "User" : "Workspace";
+    const counts = [
+      skill.tools != null ? `${skill.tools} tools` : null,
+      skill.actions != null ? `${skill.actions} actions` : null
+    ].filter(Boolean);
+    const approval = skill.requireApproval ? "asks before tools" : "no extra approval";
+    return counts.length > 0
+      ? `${scope} Verified Skill · ${counts.join(" · ")} · ${approval}`
+      : `${scope} Verified Skill · ${approval}`;
+  }
+
+  function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        setTimeout(() => reject(new Error(message)), ms);
+      })
+    ]);
+  }
+
+  async function pickVerifiedSkillsFolder(): Promise<string | null> {
+    if (!canInvokeTauri()) {
+      throw new Error("Folder picker is only available in the desktop app.");
+    }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false });
+    return typeof picked === "string" && picked.length > 0 ? picked : null;
+  }
+
+  async function addVerifiedSkillsFolder() {
+    if (lambdaSaving) return;
+    let root: string | null = null;
+    try {
+      root = await pickVerifiedSkillsFolder();
+    } catch (e) {
+      lambdaError = (e as Error).message ?? String(e);
+      return;
+    }
+    if (!root) return;
+    const coveringLibrary = coveringVerifiedSkillLibrary(root);
+    if (coveringLibrary) {
+      lambdaError = null;
+      lambdaSaved = pathContains(root, coveringLibrary.root)
+        ? `${basenameFromPath(root)} is already added.`
+        : `${basenameFromPath(root)} is already covered by ${basenameFromPath(coveringLibrary.root)}.`;
+      return;
+    }
+    lambdaLoadGeneration += 1;
+    lambdaLoading = false;
+    lambdaSaving = true;
+    lambdaError = null;
+    lambdaSaved = null;
+    try {
+      lambdaSnapshot = await withTimeout(
+        saveLambdaSkillLibrary({
+          id: verifiedSkillIdFromPath(root),
+          root,
+          scope: "workspace",
+          userInvocable: true,
+          disableModelInvocation: false,
+          requireApproval: false
+        }),
+        15000,
+        "Adding this Verified Skills folder is still running. Try Refresh again in a moment."
+      );
+      lambdaLoaded = true;
+      lambdaSaved = `Added ${basenameFromPath(root)}`;
+      props.onRefresh();
+    } catch (e) {
+      lambdaError = (e as Error).message ?? String(e);
+    } finally {
+      lambdaSaving = false;
+    }
+  }
+
+  async function removeVerifiedSkillsFolder(library: LambdaSkillLibraryInfo) {
+    if (lambdaRemovingLibrary || lambdaSaving) return;
+    if (library.sourceKind !== "workspace" && library.sourceKind !== "user") return;
+    const key = lambdaLibraryKey(library);
+    lambdaLoadGeneration += 1;
+    lambdaLoading = false;
+    lambdaRemovingLibrary = key;
+    lambdaError = null;
+    lambdaSaved = null;
+    try {
+      lambdaSnapshot = await withTimeout(
+        removeLambdaSkillLibrary({
+          libraryId: library.id,
+          sourceKind: library.sourceKind
+        }),
+        15000,
+        "Removing this Verified Skills folder is still running. Try Refresh again in a moment."
+      );
+      lambdaLoaded = true;
+      lambdaSaved = `Removed ${basenameFromPath(library.root)}`;
+      props.onRefresh();
+    } catch (e) {
+      lambdaError = (e as Error).message ?? String(e);
+      void loadLambdaSkillLibraries();
+    } finally {
+      lambdaRemovingLibrary = null;
+    }
+  }
+
+  async function toggleVerifiedSkill(skill: LambdaVerifiedSkillInfo, enabled: boolean) {
+    if (!skill.libraryId || (skill.sourceKind !== "workspace" && skill.sourceKind !== "user")) {
+      lambdaError = "This Verified Skill is not backed by an editable folder config.";
+      return;
+    }
+    const key = verifiedSkillKey(skill);
+    lambdaTogglingSkill = key;
+    lambdaError = null;
+    lambdaSaved = null;
+    try {
+      lambdaSnapshot = await setLambdaSkillEnabled({
+        libraryId: skill.libraryId,
+        sourceKind: skill.sourceKind,
+        skillName: skill.name,
+        enabled
+      });
+      lambdaLoaded = true;
+      lambdaSaved = `${enabled ? "Enabled" : "Disabled"} ${skill.name}`;
+      props.onRefresh();
+    } catch (e) {
+      lambdaError = (e as Error).message ?? String(e);
+      void loadLambdaSkillLibraries();
+    } finally {
+      lambdaTogglingSkill = null;
+    }
+  }
+
+  async function toggleVerifiedSkillApproval(library: LambdaSkillLibraryInfo, requireApproval: boolean) {
+    if (library.sourceKind !== "workspace" && library.sourceKind !== "user") {
+      lambdaError = "This Verified Skills folder is not backed by an editable config.";
+      return;
+    }
+    const key = lambdaLibraryKey(library);
+    lambdaTogglingApproval = key;
+    lambdaError = null;
+    lambdaSaved = null;
+    try {
+      lambdaSnapshot = await withTimeout(
+        setLambdaSkillApproval({
+          libraryId: library.id,
+          sourceKind: library.sourceKind,
+          requireApproval
+        }),
+        15000,
+        "Updating this Verified Skills approval setting is still running. Try Refresh again in a moment."
+      );
+      lambdaLoaded = true;
+      lambdaSaved = requireApproval
+        ? `Extra approval enabled for ${basenameFromPath(library.root)}`
+        : `Verified calls now run without extra approval for ${basenameFromPath(library.root)}`;
+      props.onRefresh();
+    } catch (e) {
+      lambdaError = (e as Error).message ?? String(e);
+      void loadLambdaSkillLibraries();
+    } finally {
+      lambdaTogglingApproval = null;
     }
   }
 
@@ -401,6 +680,13 @@
     if (nextKey === settingsSourceKey) return;
     settingsSourceKey = nextKey;
 
+    lambdaSnapshot = null;
+    lambdaLoaded = false;
+    lambdaLoading = false;
+    lambdaLoadGeneration += 1;
+    lambdaError = null;
+    lambdaSaved = null;
+
     permissionLoadGeneration += 1;
     permissionSnapshot = null;
     permissionRows = [];
@@ -429,8 +715,18 @@
   // Skip RPC calls when the daemon isn't reachable — web previews render
   // static panes with a friendly "connect daemon" banner instead of a red
   // error. In Tauri the singleton connects on first `ensureLocalDaemonClient`.
-  let daemonReachable = isDaemonReachable();
+  let daemonReachable = $state(isDaemonReachable());
+  $effect(() => {
+    daemonReachable = isDaemonReachable();
+    const client = currentDaemonClient();
+    if (!client) return;
+    return client.onConnectionChange(() => {
+      daemonReachable = isDaemonReachable();
+    });
+  });
   let mcpFormDisabled = $derived(!daemonReachable || mcpLoading || mcpSaving);
+  let lambdaRefreshDisabled = $derived(!daemonReachable || lambdaLoading || lambdaSaving || lambdaRemovingLibrary !== null);
+  let lambdaChooseDisabled = $derived(lambdaSaving || lambdaRemovingLibrary !== null || !canInvokeTauri());
   let modelPickerLoading = $derived(
     Boolean(modelPickerProvider && modelLoadingByProvider[modelPickerProvider])
   );
@@ -467,6 +763,9 @@
     }
     if (section === "permissions" && permissionSnapshot === null && !permissionLoading && !permissionLoaded) {
       void loadPermissionSnapshot();
+    }
+    if (section === "skills" && !lambdaLoaded && !lambdaLoading) {
+      void loadLambdaSkillLibraries();
     }
     if (section === "mcp" && !mcpLoaded && !mcpLoading) {
       void loadMcpServers();
@@ -808,6 +1107,142 @@
         >
           {permissionSaving ? "Saving…" : "Save"}
         </button>
+      </div>
+
+    {:else if section === "skills"}
+      <h2>Verified Skills</h2>
+      <p class="lead">Add folders that contain Verified Skills with generated host catalogues. Puffer keeps the files outside the app and loads them from config.</p>
+      <div style="display: flex; justify-content: flex-end; margin-bottom: 10px;">
+        <button
+          type="button"
+          class="sc-btn"
+          data-variant="outline"
+          data-size="sm"
+          disabled={lambdaRefreshDisabled}
+          onclick={refreshIfIdle}
+        >
+          <Icon name="refresh" size={13} />Refresh
+        </button>
+      </div>
+      {#if lambdaError}
+        <div class="pf-settings-note warn">{lambdaError}</div>
+      {/if}
+      {#if lambdaSaved}
+        <div class="pf-settings-note">{lambdaSaved}</div>
+      {/if}
+      <div class="pf-settings-note">
+        {#if !daemonReachable}
+          Launch Puffer in the desktop app to add Verified Skills folders.
+        {:else if lambdaLoading}
+          Loading Verified Skills folders…
+        {:else}
+          Choose a folder once. Puffer will keep using it from this workspace.
+        {/if}
+      </div>
+
+      {#if lambdaSnapshot?.warnings.length}
+        <div class="pf-settings-note warn">
+          Some Verified Skills need generated verification output before the model can use them.
+        </div>
+      {/if}
+
+      <div class="pf-settings-row">
+        <div class="meta">
+          <div class="label">Add folder</div>
+          <div class="desc">Choose the folder that contains your Verified Skills. It must already include generated verification files and host catalogues.</div>
+        </div>
+        <button
+          type="button"
+          class="sc-btn"
+          data-variant="default"
+          data-size="sm"
+          disabled={lambdaChooseDisabled}
+          onclick={addVerifiedSkillsFolder}
+        >
+          <Icon name="folder" size={13} />{lambdaSaving ? "Adding…" : "Choose folder"}
+        </button>
+      </div>
+
+      <h3 class="pf-settings-subhead">Folders</h3>
+      <div class="pf-mcp-list">
+        {#each lambdaSnapshot?.libraries ?? [] as library (library.sourcePath)}
+          <div class="pf-mcp-card pf-verified-folder-card">
+            <span class="ico"><Icon name="shield" size={16} /></span>
+            <div>
+              <div class="title">{basenameFromPath(library.root)}</div>
+              <div class="desc">
+                {verifiedSkillScopeLabel(library)} Verified Skills folder
+                · {library.requireApproval ? "asks before verified tools" : "runs verified tools without extra approval"}
+              </div>
+            </div>
+            <span class:ready={verifiedSkillStatus(library) === "Ready for model use"} class="pf-status-pill">
+              {verifiedSkillStatus(library)}
+            </span>
+            <label class="pf-inline-switch">
+              <span>Ask before tools</span>
+              <input
+                type="checkbox"
+                class="sc-switch"
+                checked={library.requireApproval}
+                disabled={lambdaTogglingApproval === lambdaLibraryKey(library) || lambdaSaving || (library.sourceKind !== "workspace" && library.sourceKind !== "user")}
+                aria-label={`Require approval for ${basenameFromPath(library.root)} verified tools`}
+                onchange={(e) => toggleVerifiedSkillApproval(library, (e.currentTarget as HTMLInputElement).checked)}
+              />
+            </label>
+            <input
+              type="checkbox"
+              class="sc-switch"
+              checked={lambdaRemovingLibrary !== lambdaLibraryKey(library)}
+              disabled={lambdaRemovingLibrary === lambdaLibraryKey(library) || lambdaSaving || (library.sourceKind !== "workspace" && library.sourceKind !== "user")}
+              aria-label={`Remove ${basenameFromPath(library.root)} Verified Skills folder`}
+              onchange={(e) => {
+                if (!(e.currentTarget as HTMLInputElement).checked) {
+                  void removeVerifiedSkillsFolder(library);
+                }
+              }}
+            />
+          </div>
+        {/each}
+        {#if !lambdaLoading && (lambdaSnapshot?.libraries.length ?? 0) === 0}
+          <div class="pf-empty">No Verified Skills folders added.</div>
+        {/if}
+      </div>
+
+      <h3 class="pf-settings-subhead">Recognized Verified Skills</h3>
+      <div class="pf-mcp-list">
+        {#each lambdaSnapshot?.skills ?? [] as skill (verifiedSkillKey(skill))}
+          <div class="pf-mcp-card pf-skill-card">
+            <span class="ico"><Icon name="shield" size={16} /></span>
+            <div>
+              <div class="title">{skill.name}</div>
+              {#if skill.description}
+                <div class="desc">{skill.description}</div>
+              {/if}
+              <div class="desc">
+                {verifiedSkillDetailLabel(skill)}
+                {#if skill.failureReason && skill.enabled}
+                  · {skill.failureReason}
+                {/if}
+              </div>
+            </div>
+            <span
+              class:ready={skill.modelInvocable}
+              class="pf-status-pill"
+            >
+              {verifiedSkillReadinessLabel(skill)}
+            </span>
+            <input
+              type="checkbox"
+              class="sc-switch"
+              checked={skill.enabled}
+              disabled={lambdaTogglingSkill === verifiedSkillKey(skill) || !skill.libraryId || (skill.sourceKind !== "workspace" && skill.sourceKind !== "user")}
+              onchange={(e) => toggleVerifiedSkill(skill, (e.currentTarget as HTMLInputElement).checked)}
+            />
+          </div>
+        {/each}
+        {#if !lambdaLoading && (lambdaSnapshot?.skills.length ?? 0) === 0}
+          <div class="pf-empty">No Verified Skills recognized yet.</div>
+        {/if}
       </div>
 
     {:else if section === "mcp"}

@@ -11,8 +11,7 @@ use super::task_runtime::{
 };
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::json;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};

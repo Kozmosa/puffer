@@ -1,6 +1,7 @@
 mod auth_credentials;
 mod auth_provider;
 mod authflow;
+mod basic_commands;
 mod benchmark_reflection;
 mod benchmark_run;
 mod browser;
@@ -13,6 +14,7 @@ mod daemon;
 mod daemon_browser;
 mod daemon_files;
 mod daemon_fs_watch;
+mod daemon_lambda_skills;
 mod daemon_lsp;
 mod daemon_pty;
 mod daemon_title;
@@ -34,14 +36,14 @@ mod workflow_runtime;
 mod workflows;
 
 use anyhow::{Context, Result};
+use basic_commands::{
+    provider_supports_auth_mode, run_agents_command, run_auto_mode_command, run_doctor_command,
+    run_install_command, run_setup_token_command, run_update_command,
+};
 use benchmark_run::run_benchmark_command;
 use clap::Parser;
 use cli_args::{AuthCommand, Cli, Command, SessionCommand, ToolCommand};
-use command_surface::{
-    provider_supports_auth_mode, run_agents_command, run_auto_mode_command, run_doctor_command,
-    run_install_command, run_mcp_command, run_plugin_command, run_setup_token_command,
-    run_update_command,
-};
+use command_surface::{run_mcp_command, run_plugin_command};
 use non_interactive::run_non_interactive_command;
 use puffer_config::{ensure_workspace_dirs, load_config, ConfigPaths};
 use puffer_core::{resolve_resume_launch, supported_commands, AppState, ResumeLaunchResolution};

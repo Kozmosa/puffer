@@ -29,6 +29,7 @@ pub use command_helpers::execute_connect_flow;
 pub use command_helpers::execute_monitor_flow;
 pub use command_helpers::CommandActionEntry;
 pub use command_helpers::CopyActionEntry;
+pub use command_helpers::LambdaSkillStatus;
 pub use command_helpers::McpActionEntry;
 pub use command_helpers::PluginActionEntry;
 pub use command_helpers::ResumeLaunchResolution;
@@ -54,6 +55,7 @@ pub use runtime::claude_tools::execute_workflow_tool;
 pub use runtime::execute_tool_action_once;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::install_subscription_manager;
+pub use runtime::lambda_gate::LambdaHostConcreteToolBinding;
 pub use runtime::mcp_discovery;
 pub use runtime::quota::{QuotaError, QuotaErrorKind, QUOTA_EXIT_CODE};
 pub use runtime::resource_watcher;
@@ -122,6 +124,36 @@ pub fn render_doctor_report(
     auth_store: &AuthStore,
 ) -> Result<String> {
     command_helpers::render_doctor_report(state, resources, providers, auth_store)
+}
+
+/// Renders Lambda Skill harness status lines used by doctor surfaces.
+pub fn render_lambda_skill_doctor_status(resources: &LoadedResources) -> String {
+    command_helpers::render_lambda_skill_doctor_status(resources)
+}
+
+/// Returns Lambda Skill harness warning summaries used by doctor surfaces.
+pub fn lambda_skill_doctor_warning_lines(resources: &LoadedResources) -> Vec<String> {
+    command_helpers::lambda_skill_doctor_warnings(resources)
+        .into_iter()
+        .map(|warning| format!("{}; {}", warning.summary, warning.detail))
+        .collect()
+}
+
+/// Returns Lambda Skill readiness rows used by UI surfaces.
+pub fn lambda_skill_statuses(resources: &LoadedResources) -> Vec<LambdaSkillStatus> {
+    command_helpers::lambda_skill_statuses(resources)
+}
+
+/// Validates a precompiled Lambda Skill host catalogue for runtime use.
+pub fn validate_lambda_host_catalogue_runtime(raw: &str) -> Result<()> {
+    runtime::lambda_gate::validate_host_catalogue_runtime(raw)
+}
+
+/// Returns the concrete tool bindings declared by a Lambda Skill host catalogue.
+pub fn lambda_host_catalogue_concrete_tool_bindings(
+    raw: &str,
+) -> Result<Vec<LambdaHostConcreteToolBinding>> {
+    runtime::lambda_gate::host_catalogue_concrete_tool_bindings(raw)
 }
 
 /// Renders the current `/context` summary used by interactive overlays.

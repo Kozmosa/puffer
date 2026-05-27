@@ -158,6 +158,7 @@ type BackendTimelineItem =
       input_json?: Record<string, unknown> | null;
       outputText?: string;
       output_text?: string;
+      metadata?: unknown;
     } & BackendActorFields
   | ({
       kind: "permission_dialog";
@@ -442,14 +443,18 @@ function normalizeTimelineItem(value: BackendTimelineItem): TimelineItem {
         actor: value.actor ?? null
       };
     case "system_message":
+      const systemText = value.text;
+      const isVerifiedSkillGate = systemText.trim().startsWith("Verified Skill Gate");
+      const verifiedGateFailed = /\bevent:\s*[^\n]*reject/i.test(systemText);
       return {
         id: value.id,
         kind: "system",
         createdAtMs: value.createdAtMs ?? null,
-        title: "System message",
-        summary: preview(value.text),
-        body: value.text,
-        meta: [],
+        title: isVerifiedSkillGate ? "Verified Skill Gate" : "System message",
+        summary: preview(systemText),
+        body: systemText,
+        meta: isVerifiedSkillGate ? ["verified skill"] : [],
+        status: isVerifiedSkillGate ? (verifiedGateFailed ? "error" : "success") : null,
         actor: value.actor ?? null
       };
     case "command":
@@ -491,6 +496,7 @@ function normalizeTimelineItem(value: BackendTimelineItem): TimelineItem {
         input: inputText,
         output: outputText,
         inputJson,
+        metadata: value.metadata,
         actor: value.actor ?? null,
         subject: value.subject ?? null
       };
@@ -1766,6 +1772,86 @@ export type PermissionsSnapshot = {
   tools: Record<string, string>;
 };
 
+export type LambdaSkillLibraryInfo = {
+  id: string;
+  root: string;
+  generatedSubpath?: string | null;
+  hostCatalogueSubpath?: string | null;
+  compilerPath?: string | null;
+  allowedTools: string[];
+  hostToolBindings: Record<string, string[]>;
+  skillHostToolBindings: Record<string, Record<string, string[]>>;
+  userInvocable: boolean;
+  disableModelInvocation: boolean;
+  requireApproval: boolean;
+  disabledSkills: string[];
+  sourceKind: string;
+  sourcePath: string;
+};
+
+export type LambdaVerifiedSkillInfo = {
+  name: string;
+  description: string;
+  libraryId?: string | null;
+  libraryRoot?: string | null;
+  sourceKind?: string | null;
+  sourcePath?: string | null;
+  generatedPath?: string | null;
+  ready: boolean;
+  enabled: boolean;
+  modelInvocable: boolean;
+  gateSource?: string | null;
+  failureReason?: string | null;
+  allowedTools: string[];
+  requireApproval: boolean;
+  tools?: number | null;
+  actions?: number | null;
+};
+
+export type LambdaSkillLibrariesSnapshot = {
+  directories: {
+    workspace: string;
+    user: string;
+  };
+  libraries: LambdaSkillLibraryInfo[];
+  skills: LambdaVerifiedSkillInfo[];
+  doctor: string;
+  warnings: string[];
+};
+
+export type SaveLambdaSkillLibraryInput = {
+  id: string;
+  root: string;
+  generatedSubpath?: string | null;
+  hostCatalogueSubpath?: string | null;
+  compilerPath?: string | null;
+  allowedTools?: string[];
+  hostToolBindings?: Record<string, string[]>;
+  skillHostToolBindings?: Record<string, Record<string, string[]>>;
+  userInvocable?: boolean;
+  disableModelInvocation?: boolean;
+  requireApproval?: boolean;
+  scope?: "workspace" | "user";
+};
+
+export type SetLambdaSkillEnabledInput = {
+  libraryId: string;
+  sourceKind: "workspace" | "user";
+  skillName: string;
+  enabled: boolean;
+};
+
+export type SetLambdaSkillApprovalInput = {
+  libraryId: string;
+  sourceKind: "workspace" | "user";
+  requireApproval: boolean;
+};
+
+export type RemoveLambdaSkillLibraryInput = {
+  libraryId: string;
+  sourceKind: "workspace" | "user";
+};
+
 export type ConfigPatch = {
   defaultProvider?: string | null;
   defaultModel?: string | null;
@@ -1804,6 +1890,39 @@ export async function savePermissions(
 ): Promise<PermissionsSnapshot> {
   const client = await ensureLocalDaemonClient();
   return client.request<PermissionsSnapshot>("save_permissions", { tools });
+}
+
+export async function listLambdaSkillLibraries(): Promise<LambdaSkillLibrariesSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LambdaSkillLibrariesSnapshot>("list_lambda_skill_libraries");
+}
+
+export async function saveLambdaSkillLibrary(
+  input: SaveLambdaSkillLibraryInput
+): Promise<LambdaSkillLibrariesSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LambdaSkillLibrariesSnapshot>("save_lambda_skill_library", input);
+}
+
+export async function removeLambdaSkillLibrary(
+  input: RemoveLambdaSkillLibraryInput
+): Promise<LambdaSkillLibrariesSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LambdaSkillLibrariesSnapshot>("remove_lambda_skill_library", input);
+}
+
+export async function setLambdaSkillEnabled(
+  input: SetLambdaSkillEnabledInput
+): Promise<LambdaSkillLibrariesSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LambdaSkillLibrariesSnapshot>("set_lambda_skill_enabled", input);
+}
+
+export async function setLambdaSkillApproval(
+  input: SetLambdaSkillApprovalInput
+): Promise<LambdaSkillLibrariesSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LambdaSkillLibrariesSnapshot>("set_lambda_skill_approval", input);
 }
 
 /** Patch the user config file and return the fresh settings snapshot. The

@@ -31,6 +31,9 @@ pub mod goals;
 mod hook_support;
 mod http_support;
 pub(crate) mod internal_tool_permissions;
+pub(crate) mod lambda_gate;
+pub(crate) mod lambda_skill_activation;
+pub(crate) mod lambda_tool;
 mod local_tools;
 pub mod mcp_discovery;
 mod microcompact;
@@ -251,6 +254,8 @@ pub struct ToolInvocation {
     pub input: String,
     pub output: String,
     pub success: bool,
+    /// Structured tool metadata retained for traceability and session replay.
+    pub metadata: Value,
     /// When true, the agent_loop stops after the current batch finishes
     /// (and emits this invocation's tool result back to the model). Mirrors
     /// pi-mono's `AgentToolResult.terminate` (`pi-mono/packages/agent/src/types.ts:301`).
@@ -520,9 +525,13 @@ fn execute_user_prompt_with_options(
             provider.id
         );
     };
+    let saved_lambda_gate = state.lambda_gate.clone();
+    let saved_pending_lambda_host_call = state.pending_lambda_host_call.clone();
     let result = adapter.execute_turn(
         state, resources, providers, provider, model_id, auth_store, input, options,
     );
+    state.lambda_gate = saved_lambda_gate;
+    state.pending_lambda_host_call = saved_pending_lambda_host_call;
     if !is_side_turn && result.is_ok() {
         maybe_run_project_memory_review(state, resources, providers, auth_store);
     }
@@ -815,9 +824,13 @@ where
         options.tool_filter = Some(RequestToolFilter::empty_static());
         options.lightweight_context = true;
     }
+    let saved_lambda_gate = state.lambda_gate.clone();
+    let saved_pending_lambda_host_call = state.pending_lambda_host_call.clone();
     let result = adapter.execute_turn_streaming(
         state, resources, providers, provider, model_id, auth_store, input, options, on_event,
     );
+    state.lambda_gate = saved_lambda_gate;
+    state.pending_lambda_host_call = saved_pending_lambda_host_call;
     if !is_side_turn && result.is_ok() {
         maybe_run_project_memory_review(state, resources, providers, auth_store);
     }

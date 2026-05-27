@@ -438,6 +438,7 @@
       case "text-delta":
       case "tool-calls-requested":
       case "tool-invocations":
+      case "lambda-gate":
         setLiveSidebarAgentState(sid, "running", ev.turnId);
         break;
       case "permission-request":
@@ -1671,7 +1672,8 @@
         status: inv.success ? "success" : "error",
         input: inv.input,
         output: inv.output,
-        inputJson: safeParseJson(inv.input)
+        inputJson: safeParseJson(inv.input),
+        metadata: inv.metadata
       };
       const existingIdx = liveItems.findIndex((item) => item.id === id);
       liveItems = existingIdx >= 0
@@ -1688,6 +1690,104 @@
         liveStreamItems: liveItems,
         turnThinking: false,
         turnStatusHint: null
+      })
+    );
+  }
+
+  function lambdaGateSummary(
+    ev: Extract<SessionStreamEvent, { type: "lambda-gate" }>
+  ): string {
+    if (ev.gateEvent === "host_call_admitted") {
+      return `Gate admitted ${ev.hostTool ?? "host call"} for ${ev.concreteTool ?? ev.toolId}`;
+    }
+    if (ev.gateEvent === "host_call_committed") {
+      return `Gate committed ${ev.hostTool ?? "host call"} through ${ev.concreteTool ?? ev.toolId}`;
+    }
+    if (ev.gateEvent === "gate_rejected") {
+      return `Gate rejected ${ev.toolId}: ${ev.reason ?? "call did not satisfy the Verified Skill gate"}`;
+    }
+    return `Gate event: ${ev.gateEvent}`;
+  }
+
+  function gateJson(value: unknown): string | null {
+    if (value === null || value === undefined) return null;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function lambdaGateBody(
+    ev: Extract<SessionStreamEvent, { type: "lambda-gate" }>
+  ): string {
+    const hostTool = ev.hostTool ?? "host call";
+    const concreteTool = ev.concreteTool ?? ev.toolId;
+    const hostArgs = gateJson(ev.hostArgs);
+    const concreteInput = gateJson(ev.concreteInput);
+    const registeredFacts = gateJson(ev.registeredFacts);
+    const lines = ["Verified Skill Gate", `event: ${ev.gateEvent}`];
+    if (ev.gateEvent === "gate_rejected") {
+      lines.push("check: Compared the attempted tool call against the active LambdaHostCall gate.");
+      if (ev.reason) lines.push(`reason: ${ev.reason}`);
+      if (ev.retryTool) lines.push(`retry_tool: ${ev.retryTool}`);
+      lines.push(
+        "confirmation: Puffer rejected this call before committing the Lambda gate. Retry by opening LambdaHostCall with the formal host tool, host args, concrete tool, and exact concrete input."
+      );
+      return lines.join("\n");
+    }
+    if (ev.gateEvent === "host_call_committed") {
+      lines.push(
+        `check: Confirmed the concrete ${concreteTool} call matched the pending LambdaHostCall bridge for formal host tool ${hostTool}.`
+      );
+    } else {
+      lines.push(
+        `check: Verified LambdaHostCall may bind formal host tool ${hostTool} to concrete tool ${concreteTool}, and recorded the exact concrete input that must run next.`
+      );
+    }
+    lines.push(`host_tool: ${hostTool}`);
+    if (hostArgs) lines.push(`host_args: ${hostArgs}`);
+    lines.push(`concrete_tool: ${concreteTool}`);
+    if (concreteInput) lines.push(`concrete_input: ${concreteInput}`);
+    if (registeredFacts) lines.push(`registered_facts: ${registeredFacts}`);
+    lines.push(
+      ev.gateEvent === "host_call_committed"
+        ? "confirmation: Puffer observed the declared concrete tool succeed, then committed the Lambda gate and any registered facts."
+        : "confirmation: Compare concrete_tool with the next activity row's tool name and concrete_input with that tool's input. Puffer only allows the next concrete call when both match exactly."
+    );
+    return lines.join("\n");
+  }
+
+  function cacheBackgroundLambdaGateEvent(
+    sessionId: string,
+    ev: Extract<SessionStreamEvent, { type: "lambda-gate" }>
+  ) {
+    const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
+    const id = `live-gate-${ev.turnId}-${ev.callId}-${ev.gateEvent}`;
+    const payload: TimelineItem = {
+      id,
+      kind: "system",
+      title: "Verified Skill Gate",
+      summary: lambdaGateSummary(ev),
+      body: lambdaGateBody(ev),
+      meta: ["verified skill", ev.gateEvent],
+      status: ev.gateEvent === "gate_rejected" ? "error" : "success",
+      actor: ev.actor ?? null
+    };
+    const existingIdx = cached.liveStreamItems.findIndex((item) => item.id === id);
+    const liveItems = existingIdx >= 0
+      ? [
+          ...cached.liveStreamItems.slice(0, existingIdx),
+          payload,
+          ...cached.liveStreamItems.slice(existingIdx + 1)
+        ]
+      : appendCachedLiveItem(cached, payload);
+    setTransientConversationState(
+      sessionId,
+      withCachedTurnState(cached, ev.turnId, {
+        liveStreamItems: liveItems,
+        turnThinking: false,
+        turnStatusHint: ev.gateEvent === "gate_rejected" ? "Gate rejected" : "Gate checked"
       })
     );
   }
@@ -1769,16 +1869,21 @@
   ) {
     const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
     const { [ev.turnId]: _dropReplay, ...replayTextByTurn } = cached.replayTextByTurn;
-    const settledLiveItems = cached.liveStreamItems.filter(
-      (item) => item.kind !== "permission" && item.kind !== "question"
-    );
+    const wasCancelingTurn = cached.cancelingTurnId === ev.turnId;
+    const settledLiveItems = wasCancelingTurn
+      ? withoutLiveItemsForTurn(cached.liveStreamItems, ev.turnId)
+      : cached.liveStreamItems.filter(
+          (item) => item.kind !== "permission" && item.kind !== "question"
+        );
     setTransientConversationState(sessionId, {
       ...cached,
-      liveStreamItems: withCompletionAssistantFallback(
-        settledLiveItems,
-        ev.assistantText,
-        ev.turnId
-      ),
+      liveStreamItems: wasCancelingTurn
+        ? settledLiveItems
+        : withCompletionAssistantFallback(
+            settledLiveItems,
+            ev.assistantText,
+            ev.turnId
+          ),
       replayTextByTurn,
       turnPermissionLookup: {},
       turnQuestionLookup: {},
@@ -1799,9 +1904,12 @@
     const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
     const detail = ev.error?.trim() || "Unknown agent error.";
     const { [ev.turnId]: _dropReplay, ...replayTextByTurn } = cached.replayTextByTurn;
-    const settledLiveItems = cached.liveStreamItems.filter(
-      (item) => item.kind !== "permission" && item.kind !== "question"
-    );
+    const wasCancelingTurn = cached.cancelingTurnId === ev.turnId;
+    const settledLiveItems = wasCancelingTurn
+      ? withoutLiveItemsForTurn(cached.liveStreamItems, ev.turnId)
+      : cached.liveStreamItems.filter(
+          (item) => item.kind !== "permission" && item.kind !== "question"
+        );
     setTransientConversationState(sessionId, {
       ...cached,
       liveStreamItems: appendCachedLiveItem(
@@ -1856,6 +1964,9 @@
         break;
       case "tool-invocations":
         cacheBackgroundToolInvocations(sessionId, ev);
+        break;
+      case "lambda-gate":
+        cacheBackgroundLambdaGateEvent(sessionId, ev);
         break;
       case "permission-request":
         cacheBackgroundPermissionRequest(sessionId, ev);
@@ -2670,6 +2781,8 @@
     try {
       const result = await cancelTurn(turnId);
       if (!result.ok && currentTurnId === turnId) {
+        if (selectedSession) markTurnSettled(selectedSession.id, turnId);
+        liveStreamItems = withoutLiveItemsForTurn(liveStreamItems, turnId);
         cancelingTurnId = null;
         currentTurnId = null;
         turnStartedAtMs = null;
@@ -2778,6 +2891,45 @@
     return input ? `${item.toolName}:${input}` : null;
   }
 
+  function normalizedGateKey(value: string | null | undefined): string {
+    return (value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  function gateBodyField(item: TimelineItem, name: string): string | null {
+    if (item.kind !== "system") return null;
+    const target = normalizedGateKey(name);
+    for (const line of item.body.split("\n")) {
+      const idx = line.indexOf(":");
+      if (idx < 0) continue;
+      if (normalizedGateKey(line.slice(0, idx)) !== target) continue;
+      const value = line.slice(idx + 1).trim();
+      return value || null;
+    }
+    return null;
+  }
+
+  function transientGateSignature(item: TimelineItem): string | null {
+    if (item.kind !== "system") return null;
+    const isGate =
+      item.title === "Verified Skill Gate" ||
+      item.meta.includes("verified skill") ||
+      item.body.trim().startsWith("Verified Skill Gate");
+    if (!isGate) return null;
+    const event = gateBodyField(item, "event") ??
+      item.meta.find((value) => normalizedGateKey(value) !== "verifiedskill") ??
+      null;
+    const hostTool = gateBodyField(item, "host_tool") ?? gateBodyField(item, "hosttool");
+    const concreteTool = gateBodyField(item, "concrete_tool") ?? gateBodyField(item, "concretetool");
+    const reason = gateBodyField(item, "reason");
+    if (!event && !hostTool && !concreteTool && !reason) return null;
+    return stableJsonText({
+      event: event ? normalizedGateKey(event) : null,
+      hostTool,
+      concreteTool,
+      reason
+    });
+  }
+
   function reuseTransientMessageIds(
     persisted: TimelineItem[],
     transient: TimelineItem[]
@@ -2817,6 +2969,14 @@
   }
 
   function timelineHasTransientMatch(items: TimelineItem[], pending: TimelineItem): boolean {
+    const gateSignature = transientGateSignature(pending);
+    if (gateSignature) {
+      return items.some(
+        (item) =>
+          !wasPersistedBeforeSubmit(pending.id, item.id) &&
+          transientGateSignature(item) === gateSignature
+      );
+    }
     const body = timelineItemBody(pending).trim();
     if (!body) {
       const toolSignature = transientToolSignature(pending);
@@ -2960,6 +3120,22 @@
     return `live-tool-${turnId}-${callId}`;
   }
 
+  function liveItemBelongsToTurn(item: TimelineItem, turnId: string): boolean {
+    return (
+      item.id === streamingAssistantId(turnId) ||
+      item.id === `live-complete-assistant-${turnId}` ||
+      item.id === `live-error-turn-error-${turnId}` ||
+      item.id.startsWith(`live-tool-${turnId}-`) ||
+      item.id.startsWith(`live-gate-${turnId}-`) ||
+      item.id.startsWith(`live-perm-${turnId}-`) ||
+      item.id.startsWith(`live-question-${turnId}-`)
+    );
+  }
+
+  function withoutLiveItemsForTurn(items: TimelineItem[], turnId: string): TimelineItem[] {
+    return items.filter((item) => !liveItemBelongsToTurn(item, turnId));
+  }
+
   function upsertStreamingAssistant(turnId: string, delta: string) {
     const id = streamingAssistantId(turnId);
     const existingIdx = liveStreamItems.findIndex((item) => item.id === id && item.kind === "assistant");
@@ -3025,6 +3201,12 @@
     rememberSettledTurn(sessionId, turnId);
     const { [turnId]: _drop, ...rest } = replayTextByTurn;
     replayTextByTurn = rest;
+    turnPermissionLookup = Object.fromEntries(
+      Object.entries(turnPermissionLookup).filter(([, mapping]) => mapping.turnId !== turnId)
+    );
+    turnQuestionLookup = Object.fromEntries(
+      Object.entries(turnQuestionLookup).filter(([, mapping]) => mapping.turnId !== turnId)
+    );
     if (cancelingTurnId === turnId) {
       cancelingTurnId = null;
     }
@@ -3140,11 +3322,40 @@
             status: inv.success ? "success" : "error",
             input: inv.input,
             output: inv.output,
-            inputJson: safeParseJson(inv.input)
+            inputJson: safeParseJson(inv.input),
+            metadata: inv.metadata
           };
           if (existingIdx >= 0) {
             // Upgrade the pending card in place. Svelte needs a new array
             // reference to observe the change.
+            liveStreamItems = [
+              ...liveStreamItems.slice(0, existingIdx),
+              payload,
+              ...liveStreamItems.slice(existingIdx + 1)
+            ];
+          } else {
+            appendLive(payload);
+          }
+        }
+        break;
+      case "lambda-gate":
+        markTurnActive(sid, ev.turnId);
+        turnThinking = false;
+        turnStatusHint = ev.gateEvent === "gate_rejected" ? "Gate rejected" : "Gate checked";
+        {
+          const id = `live-gate-${ev.turnId}-${ev.callId}-${ev.gateEvent}`;
+          const payload: TimelineItem = {
+            id,
+            kind: "system",
+            title: "Verified Skill Gate",
+            summary: lambdaGateSummary(ev),
+            body: lambdaGateBody(ev),
+            meta: ["verified skill", ev.gateEvent],
+            status: ev.gateEvent === "gate_rejected" ? "error" : "success",
+            actor: ev.actor ?? null
+          };
+          const existingIdx = liveStreamItems.findIndex((item) => item.id === id);
+          if (existingIdx >= 0) {
             liveStreamItems = [
               ...liveStreamItems.slice(0, existingIdx),
               payload,
@@ -3235,7 +3446,8 @@
         break;
       }
       case "turn-complete":
-      case "turn-error":
+      case "turn-error": {
+        const wasCancelingTurn = cancelingTurnId === ev.turnId;
         markTurnSettled(sid, ev.turnId);
         turnStartedAtMs = null;
         turnThinking = false;
@@ -3253,11 +3465,13 @@
         if (selectedSession) {
           const sessionToRefresh = selectedSession;
           const completionText = ev.type === "turn-complete" ? ev.assistantText : "";
-          const liveItemsAtCompletion = withCompletionAssistantFallback(
-            liveStreamItems,
-            completionText,
-            ev.turnId
-          );
+          const liveItemsAtCompletion = wasCancelingTurn
+            ? withoutLiveItemsForTurn(liveStreamItems, ev.turnId)
+            : withCompletionAssistantFallback(
+                liveStreamItems,
+                completionText,
+                ev.turnId
+              );
           const submittedAtCompletion = submittedMessages;
           liveStreamItems = stillMissingFromPersisted(
             [...(sessionDetail?.timeline ?? []), ...submittedAtCompletion],
@@ -3277,6 +3491,7 @@
           );
         }
         break;
+      }
     }
   }
 

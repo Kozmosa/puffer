@@ -1025,6 +1025,7 @@ fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
                 success,
                 actor,
                 subject,
+                metadata,
             } => {
                 let status = if *success { "ok" } else { "error" };
                 let summary = summarize_tool_input(tool_id, input);
@@ -1036,9 +1037,17 @@ fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
                     input_text: input.clone(),
                     input_json: serde_json::from_str(input).ok(),
                     output_text: output.clone(),
+                    metadata: metadata.clone(),
                     actor: actor.clone(),
                     subject: subject.clone(),
                 });
+                if let Some(text) = lambda_gate_timeline_text(metadata, tool_id) {
+                    items.push(TimelineItemDto::SystemMessage {
+                        id: format!("timeline-{index}-{call_id}-lambda-gate"),
+                        text,
+                        actor: actor.clone(),
+                    });
+                }
                 if let Some((state, reason)) = permission_state(output) {
                     items.push(TimelineItemDto::PermissionDialog {
                         id: format!("timeline-{index}-{call_id}-permission"),
@@ -1093,6 +1102,69 @@ fn flush_pending_assistant(
     }
 }
 
+fn lambda_gate_timeline_text(metadata: &Option<Value>, tool_id: &str) -> Option<String> {
+    let lambda = metadata.as_ref()?.get("lambda_skill")?;
+    let event = lambda.get("event").and_then(Value::as_str)?;
+    let host_tool = lambda.get("host_tool").and_then(Value::as_str);
+    let concrete_tool = lambda.get("concrete_tool").and_then(Value::as_str);
+    let host_tool_label = host_tool.unwrap_or("host call");
+    let concrete_tool_label = concrete_tool.unwrap_or(tool_id);
+    let mut lines = vec!["Verified Skill Gate".to_string(), format!("event: {event}")];
+    if event == "gate_rejected" {
+        lines.push(
+            "check: Compared the attempted tool call against the active LambdaHostCall gate."
+                .to_string(),
+        );
+        if let Some(reason) = lambda.get("reason").and_then(Value::as_str) {
+            lines.push(format!("reason: {reason}"));
+        }
+        if let Some(retry) = lambda.get("retry_tool").and_then(Value::as_str) {
+            lines.push(format!("retry_tool: {retry}"));
+        }
+        lines.push(
+            "confirmation: Puffer rejected this call before committing the Lambda gate. Retry by opening LambdaHostCall with the formal host tool, host args, concrete tool, and exact concrete input."
+                .to_string(),
+        );
+        return Some(lines.join("\n"));
+    }
+    if event == "host_call_committed" {
+        lines.push(format!(
+            "check: Confirmed the concrete {concrete_tool_label} call matched the pending LambdaHostCall bridge for formal host tool {host_tool_label}."
+        ));
+    } else {
+        lines.push(format!(
+            "check: Verified LambdaHostCall may bind formal host tool {host_tool_label} to concrete tool {concrete_tool_label}, and recorded the exact concrete input that must run next."
+        ));
+    }
+    lines.push(format!("host_tool: {host_tool_label}"));
+    if let Some(args) = lambda.get("host_args").map(compact_json_text) {
+        lines.push(format!("host_args: {args}"));
+    }
+    lines.push(format!("concrete_tool: {concrete_tool_label}"));
+    if let Some(input) = lambda.get("concrete_input").map(compact_json_text) {
+        lines.push(format!("concrete_input: {input}"));
+    }
+    if let Some(facts) = lambda.get("registered_facts").map(compact_json_text) {
+        lines.push(format!("registered_facts: {facts}"));
+    }
+    if event == "host_call_committed" {
+        lines.push(
+            "confirmation: Puffer observed the declared concrete tool succeed, then committed the Lambda gate and any registered facts."
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "confirmation: Compare concrete_tool with the next activity row's tool name and concrete_input with that tool's input. Puffer only allows the next concrete call when both match exactly."
+                .to_string(),
+        );
+    }
+    Some(lines.join("\n"))
+}
+
+fn compact_json_text(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
 fn parse_system_message(
     index: usize,
     text: &str,
@@ -1108,6 +1180,7 @@ fn parse_system_message(
             input_text: parsed.input_text.clone(),
             input_json: parsed.input_json,
             output_text: parsed.output_text.clone(),
+            metadata: None,
             actor: actor.clone(),
             subject: None,
         }];
@@ -1585,6 +1658,7 @@ mod tests {
     use puffer_session_store::{
         SessionMetadata, SessionRecord, TranscriptEvent, TranscriptRewrite,
     };
+    use serde_json::json;
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -1619,6 +1693,45 @@ mod tests {
     }
 
     #[test]
+    fn timeline_surfaces_lambda_gate_metadata_as_system_event() {
+        let items = timeline_items(&record(vec![TranscriptEvent::ToolInvocation {
+            call_id: "call-1".to_string(),
+            tool_id: "LambdaHostCall".to_string(),
+            input: "{}".to_string(),
+            output: "admitted".to_string(),
+            success: true,
+            metadata: Some(json!({
+                "lambda_skill": {
+                    "event": "host_call_admitted",
+                    "host_tool": "gh_pr_view",
+                    "host_args": {"number": 42},
+                    "concrete_tool": "Bash",
+                    "concrete_input": {"command": "gh pr view 42"}
+                }
+            })),
+            actor: None,
+            subject: None,
+        }]));
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], TimelineItemDto::ToolCall { .. }));
+        match &items[1] {
+            TimelineItemDto::SystemMessage { text, .. } => {
+                assert!(text.contains("Verified Skill Gate"));
+                assert!(text.contains("event: host_call_admitted"));
+                assert!(text.contains("host_tool: gh_pr_view"));
+                assert!(text.contains(r#"host_args: {"number":42}"#));
+                assert!(text.contains("concrete_tool: Bash"));
+                assert!(text.contains(r#"concrete_input: {"command":"gh pr view 42"}"#));
+                assert!(
+                    text.contains("Compare concrete_tool with the next activity row's tool name")
+                );
+            }
+            other => panic!("expected lambda gate system event, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn timeline_places_persisted_tool_invocations_before_assistant_text() {
         let items = timeline_items(&record(vec![
             TranscriptEvent::UserMessage {
@@ -1635,6 +1748,7 @@ mod tests {
                 input: r#"{"path":"Cargo.toml"}"#.to_string(),
                 output: "contents".to_string(),
                 success: true,
+                metadata: None,
                 actor: None,
                 subject: None,
             },
@@ -1657,6 +1771,7 @@ mod tests {
                 input: r#"{"path":"Cargo.toml"}"#.to_string(),
                 output: "contents".to_string(),
                 success: true,
+                metadata: None,
                 actor: None,
                 subject: None,
             },
