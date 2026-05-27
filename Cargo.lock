@@ -4304,7 +4304,6 @@ dependencies = [
  "puffer-connector-matrix",
  "puffer-connector-slack",
  "puffer-connector-telegram",
- "puffer-connector-webhook",
  "puffer-core",
  "puffer-lark",
  "puffer-mcp-oauth",
@@ -4465,26 +4464,6 @@ dependencies = [
  "teloxide",
  "tempfile",
  "tokio",
- "uuid",
-]
-
-[[package]]
-name = "puffer-connector-webhook"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum 0.7.9",
- "http-body-util",
- "puffer-config",
- "puffer-connector-core",
- "puffer-provider-registry",
- "puffer-resources",
- "puffer-session-store",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tower 0.5.3",
  "uuid",
 ]
 

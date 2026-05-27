@@ -734,6 +734,82 @@ fn task_update_sets_timestamps_for_progress() {
 }
 
 #[test]
+fn task_create_persists_received_and_expires_at() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let created = crate::runtime::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        json!({
+            "subject": "Handle support ping",
+            "description": "Handle support ping",
+            "receivedAt": "2026-05-27T12:00:00Z",
+            "expiresAt": "2026-05-28T12:00:00Z"
+        }),
+    )
+    .unwrap();
+    let created: Value = serde_json::from_str(&created).unwrap();
+    assert_eq!(created["task"]["receivedAt"], "2026-05-27T12:00:00Z");
+    assert_eq!(created["task"]["expiresAt"], "2026-05-28T12:00:00Z");
+
+    let tasks_path = ConfigPaths::discover(&cwd)
+        .workspace_config_dir
+        .join(format!(
+            "runtime/claude_workflow/sessions/{}/tasks.json",
+            state.session.id
+        ));
+    let persisted: Value = serde_json::from_str(&fs::read_to_string(tasks_path).unwrap()).unwrap();
+    assert_eq!(persisted["tasks"][0]["receivedAt"], "2026-05-27T12:00:00Z");
+    assert_eq!(persisted["tasks"][0]["expiresAt"], "2026-05-28T12:00:00Z");
+    assert!(persisted["tasks"][0].get("received_at").is_none());
+    assert!(persisted["tasks"][0].get("expires_at").is_none());
+}
+
+#[test]
+fn monitor_task_create_requires_received_and_expires_at() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let error = crate::runtime::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        json!({
+            "subject": "Handle support ping",
+            "description": "Handle support ping",
+            "metadata": {
+                "_monitor": true,
+                "monitor_connection": "telegram-user"
+            },
+            "received_at": "2026-05-27T12:00:00Z",
+            "expires_at": "2026-05-28T12:00:00Z"
+        }),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("requires receivedAt"));
+}
+
+#[test]
+fn task_create_rejects_invalid_expiry_timestamp() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let error = crate::runtime::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        json!({
+            "subject": "Handle support ping",
+            "description": "Handle support ping",
+            "receivedAt": "2026-05-27T12:00:00Z",
+            "expiresAt": "tomorrow"
+        }),
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("expiresAt must be an RFC3339 timestamp"));
+}
+
+#[test]
 fn task_output_waits_for_agent_completion() {
     let mut state = temp_state();
     let cwd = state.cwd.clone();

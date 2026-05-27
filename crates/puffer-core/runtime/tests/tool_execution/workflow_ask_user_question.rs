@@ -123,7 +123,7 @@ fn ask_user_question_accepts_searchable_choice_question() {
                                 {"label": "email", "description": "Email over IMAP and SMTP"},
                                 {"label": "slack-login", "description": "Slack user account"},
                                 {"label": "telegram-login", "description": "Telegram personal account"},
-                                {"label": "webhook", "description": "HTTP webhook ingress"},
+                                {"label": "discord-bot", "description": "Discord bot connector"},
                                 {"label": "matrix", "description": "Matrix room connector"}
                             ]
                         }

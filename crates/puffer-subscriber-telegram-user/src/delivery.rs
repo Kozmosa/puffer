@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::events::{build_message_event, emit};
+use crate::notifications::NotificationMuteCache;
 use crate::state::SkillEnv;
 
 const MAX_CATCH_UP_DIALOGS: usize = 500;
@@ -83,6 +84,7 @@ pub(crate) async fn catch_up_recent_messages(
     env: &SkillEnv,
     client: &Client,
     cursor: &mut DeliveryCursor,
+    notification_mutes: &mut NotificationMuteCache,
 ) -> anyhow::Result<()> {
     let was_initialized = cursor.is_initialized();
     let mut dialogs = client.iter_dialogs();
@@ -99,6 +101,7 @@ pub(crate) async fn catch_up_recent_messages(
             }
         };
         scanned += 1;
+        notification_mutes.observe_dialog(&dialog);
 
         let Some(last_message) = dialog.last_message.as_ref() else {
             continue;
@@ -135,7 +138,7 @@ pub(crate) async fn catch_up_recent_messages(
         }
         pending.sort_by_key(Message::id);
         for message in pending {
-            if emit_message_if_new(env, cursor, &message)? {
+            if emit_message_if_new(env, cursor, notification_mutes, &message)? {
                 emitted += 1;
             }
         }
@@ -158,12 +161,17 @@ pub(crate) async fn catch_up_recent_messages(
 pub(crate) fn emit_message_if_new(
     env: &SkillEnv,
     cursor: &mut DeliveryCursor,
+    notification_mutes: &NotificationMuteCache,
     message: &Message,
 ) -> anyhow::Result<bool> {
     if !cursor.is_new(message) {
         return Ok(false);
     }
-    let event = build_message_event(&env.topic, message);
+    let event = build_message_event(
+        &env.topic,
+        message,
+        notification_mutes.message_chat_muted(message),
+    );
     emit(&event)?;
     cursor.record_seen(message);
     cursor.save(env)?;

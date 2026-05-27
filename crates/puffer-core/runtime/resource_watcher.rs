@@ -195,7 +195,7 @@ fn is_meaningful_event(event: &Event) -> bool {
 /// Returns true when at least one path in the event is "resource-like":
 ///   1. some path component matches one of [`WATCHED_SUBDIRS`]
 ///      (e.g. `…/skills/picked-up/SKILL.md` contains a `skills` segment),
-///      AND every component appearing *after* it is non-noise, AND
+///      AND every component appearing *after* it is non-noise when present, AND
 ///   2. no path component is a dotfile / editor swap file / tmpfile.
 ///
 /// We deliberately don't prefix-match against `_roots` because notify
@@ -208,7 +208,7 @@ fn is_resource_event(event: &Event, _roots: &[PathBuf]) -> bool {
     event.paths.iter().any(|p| {
         matches!(
             classify_resource_path(p.as_path()),
-            ResourcePathMatch::Concrete
+            ResourcePathMatch::Concrete | ResourcePathMatch::ParentOnly
         )
     })
 }

@@ -16,6 +16,7 @@ use crate::delivery::{catch_up_recent_messages, emit_message_if_new, DeliveryCur
 use crate::events::emit_control;
 use crate::import::{import_tdata, TdataImportOptions, TdataImportOutcome};
 use crate::login;
+use crate::notifications::NotificationMuteCache;
 use crate::outbound::handle_send_message;
 use crate::peers::{handle_list_messages, handle_list_peers, handle_search_messages};
 use crate::qr_login;
@@ -197,6 +198,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mut client = client.expect("client set after login phase");
     let mut delivery_cursor = DeliveryCursor::load(&env)?;
+    let mut notification_mutes = NotificationMuteCache::default();
 
     // Drive the remaining login steps (code + optional 2FA) if needed, then
     // enter the update loop. `client` may already be authorized when we
@@ -216,6 +218,7 @@ pub async fn run() -> anyhow::Result<()> {
                 &mut login_state,
                 &mut qr_state,
                 &mut delivery_cursor,
+                &mut notification_mutes,
             )
             .await?;
             return Ok(());
@@ -397,9 +400,10 @@ async fn run_update_loop(
     login_state: &mut LoginState,
     qr_state: &mut Option<qr_login::QrLoginState>,
     delivery_cursor: &mut DeliveryCursor,
+    notification_mutes: &mut NotificationMuteCache,
 ) -> anyhow::Result<()> {
     emit_control(&env.topic, "ready", json!({}))?;
-    catch_up_recent_messages(env, client, delivery_cursor).await?;
+    catch_up_recent_messages(env, client, delivery_cursor, notification_mutes).await?;
     info!("entering telegram update loop");
 
     loop {
@@ -415,9 +419,12 @@ async fn run_update_loop(
             update = client.next_update() => {
                 match update {
                     Ok(Update::NewMessage(msg)) => {
-                        if let Err(err) = emit_message_if_new(env, delivery_cursor, &msg) {
+                        if let Err(err) = emit_message_if_new(env, delivery_cursor, notification_mutes, &msg) {
                             error!(error = %err, "failed to emit message event");
                         }
+                    }
+                    Ok(Update::Raw(raw)) => {
+                        notification_mutes.apply_raw_update(&raw);
                     }
                     Ok(_) => {
                         // Silently ignore other update kinds for now. They

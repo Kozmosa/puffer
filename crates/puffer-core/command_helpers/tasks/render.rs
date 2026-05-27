@@ -143,7 +143,7 @@ pub(super) fn render_task_detail(task: &WorkflowTaskView) -> String {
     let mut text = String::new();
     let _ = writeln!(
         &mut text,
-        "Task {}\ntype={}\nstatus={}\nsubject={}\ndescription={}\nactive_form={}\nowner={}\ncommand={}\nprocess_id={}\noutput_file={}\nstarted_at_ms={}\nupdated_at_ms={}\nexit_code={}",
+        "Task {}\ntype={}\nstatus={}\nsubject={}\ndescription={}\nactive_form={}\nowner={}\ncommand={}\nprocess_id={}\noutput_file={}\nreceivedAt={}\nexpiresAt={}\nstarted_at_ms={}\nupdated_at_ms={}\nexit_code={}",
         task.task_id,
         task_kind(task),
         task.status,
@@ -156,6 +156,8 @@ pub(super) fn render_task_detail(task: &WorkflowTaskView) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "<none>".to_string()),
         task.output_file.as_deref().unwrap_or("<none>"),
+        task.received_at.as_deref().unwrap_or("<none>"),
+        task.expires_at.as_deref().unwrap_or("<none>"),
         display_optional_u64(task.started_at_ms),
         display_optional_u64(task.updated_at_ms),
         task.exit_code

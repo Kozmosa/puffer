@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 mod schemas;
-mod webhooks;
 
 use schemas::*;
 
@@ -100,7 +99,7 @@ impl ConnectorTemplate {
 
 /// Returns the built-in connector templates required by the workflow spec.
 pub fn builtin_connector_templates() -> Vec<ConnectorTemplate> {
-    let mut templates = vec![
+    vec![
         telegram_login_template(),
         telegram_bot_template(),
         discord_bot_template(),
@@ -111,9 +110,7 @@ pub fn builtin_connector_templates() -> Vec<ConnectorTemplate> {
         slack_login_template(),
         slack_bot_template(),
         email_template(),
-    ];
-    templates.extend(webhooks::builtin_webhook_templates());
-    templates
+    ]
 }
 
 /// Looks up a built-in connector template by slug.
@@ -136,7 +133,6 @@ pub fn suggested_connection_slug(connector_slug: &str) -> String {
         "slack-login" => "slack-login".to_string(),
         "telegram-bot" => "telegram-bot".to_string(),
         "slack-bot" => "slack-bot".to_string(),
-        slug if webhooks::is_builtin_webhook_slug(slug) => slug.to_string(),
         _ => connector_slug.to_string(),
     }
 }

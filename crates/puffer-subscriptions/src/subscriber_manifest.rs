@@ -119,32 +119,7 @@ fn connector_subscriber_manifest_supported(
 }
 
 fn serve_configured_connector(slug: &str) -> bool {
-    matches!(
-        slug,
-        "telegram-bot"
-            | "discord-bot"
-            | "matrix-bot"
-            | "alertmanager-webhook"
-            | "asana-webhook"
-            | "datadog-webhook"
-            | "newrelic-webhook"
-            | "opsgenie-webhook"
-            | "azure-devops-webhook"
-            | "bitbucket-webhook"
-            | "figma-webhook"
-            | "github-webhook"
-            | "grafana-webhook"
-            | "gitlab-webhook"
-            | "jira-webhook"
-            | "linear-webhook"
-            | "pagerduty-webhook"
-            | "sentry-webhook"
-            | "shopify-webhook"
-            | "stripe-webhook"
-            | "trello-webhook"
-            | "vercel-webhook"
-            | "webhook"
-    )
+    matches!(slug, "telegram-bot" | "discord-bot" | "matrix-bot")
 }
 
 /// Loads the subscriber manifest for a connection, instantiating shared

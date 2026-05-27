@@ -58,8 +58,6 @@ const MISSING_DOC_BASELINE: &[(&str, &str)] = &[
         "config",
     ),
     ("crates/puffer-connector-telegram/src/connector.rs", "new"),
-    ("crates/puffer-connector-webhook/src/connector.rs", "config"),
-    ("crates/puffer-connector-webhook/src/connector.rs", "new"),
     ("crates/puffer-core/memory.rs", "execute_memory_tool"),
     ("crates/puffer-core/memory.rs", "flush_project_memory"),
     ("crates/puffer-core/memory.rs", "load"),

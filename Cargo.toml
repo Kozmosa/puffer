@@ -9,7 +9,6 @@ members = [
     "crates/puffer-connector-matrix",
     "crates/puffer-connector-slack",
     "crates/puffer-connector-telegram",
-    "crates/puffer-connector-webhook",
     "crates/puffer-core",
     "crates/puffer-mcp-oauth",
     "crates/puffer-observability",

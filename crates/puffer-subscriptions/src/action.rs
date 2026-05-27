@@ -10,6 +10,7 @@ use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 static GLOBAL_OUTBOUND: OnceLock<Arc<dyn Outbound>> = OnceLock::new();
 static GLOBAL_WORKFLOW_RUNNER: OnceLock<Arc<dyn WorkflowActionRunner>> = OnceLock::new();
@@ -335,17 +336,7 @@ impl BuiltinActionDispatcher {
     }
 
     fn run_workflow(&self, slug: &str, envelope: &EventEnvelope) -> ActionResult {
-        let trigger = json!({
-            "type": "connection",
-            "envelope_id": envelope.envelope_id,
-            "connection_id": envelope.subscriber_id,
-            "received_at_ms": envelope.received_at_ms,
-            "topic": envelope.event.topic,
-            "kind": envelope.event.kind,
-            "dedup_key": envelope.event.dedup_key,
-            "text": envelope.event.text,
-            "payload": envelope.event.payload,
-        });
+        let trigger = trigger_payload(envelope);
         match self.resolved_workflow_runner() {
             Some(runner) => match runner.run_workflow(slug, trigger) {
                 Ok(summary) => ActionResult {
@@ -535,13 +526,26 @@ fn trigger_payload(envelope: &EventEnvelope) -> serde_json::Value {
         "type": "connection",
         "envelope_id": envelope.envelope_id,
         "connection_id": envelope.subscriber_id,
-        "received_at_ms": envelope.received_at_ms,
+        "receivedAt": format_epoch_ms_rfc3339(envelope.received_at_ms),
         "topic": envelope.event.topic,
         "kind": envelope.event.kind,
         "dedup_key": envelope.event.dedup_key,
         "text": envelope.event.text,
         "payload": envelope.event.payload,
     })
+}
+
+fn format_epoch_ms_rfc3339(value: i128) -> Option<String> {
+    if value < 0 || value > i64::MAX as i128 {
+        return None;
+    }
+    let seconds = (value / 1_000) as i64;
+    let nanos = ((value % 1_000) as u32) * 1_000_000;
+    let time = OffsetDateTime::from_unix_timestamp(seconds)
+        .ok()?
+        .replace_nanosecond(nanos)
+        .ok()?;
+    time.format(&Rfc3339).ok()
 }
 
 fn resolve_sqlite_path(storage_root: &Path, path: &str) -> Result<PathBuf> {
@@ -791,6 +795,9 @@ mod tests {
         assert_eq!(calls[0].0, "daily-review");
         assert_eq!(calls[0].1["type"], "connection");
         assert_eq!(calls[0].1["connection_id"], "telegram-user");
+        assert_eq!(calls[0].1["receivedAt"], "1970-01-01T00:00:00Z");
+        assert!(calls[0].1.get("received_at").is_none());
+        assert!(calls[0].1.get("received_at_ms").is_none());
         assert_eq!(calls[0].1["text"], "hello");
     }
 
@@ -842,6 +849,9 @@ mod tests {
         assert_eq!(calls[0].1.as_deref(), Some("fast-monitor"));
         assert_eq!(calls[0].2["type"], "connection");
         assert_eq!(calls[0].2["connection_id"], "telegram-user");
+        assert_eq!(calls[0].2["receivedAt"], "1970-01-01T00:00:00Z");
+        assert!(calls[0].2.get("received_at").is_none());
+        assert!(calls[0].2.get("received_at_ms").is_none());
         assert_eq!(calls[0].2["text"], "deploy?");
     }
 
