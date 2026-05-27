@@ -17,26 +17,6 @@ fn builtins_cover_required_initial_connectors() {
     assert!(slugs.contains(&"slack-login".to_string()));
     assert!(slugs.contains(&"slack-bot".to_string()));
     assert!(slugs.contains(&"email".to_string()));
-    assert!(slugs.contains(&"alertmanager-webhook".to_string()));
-    assert!(slugs.contains(&"asana-webhook".to_string()));
-    assert!(slugs.contains(&"datadog-webhook".to_string()));
-    assert!(slugs.contains(&"newrelic-webhook".to_string()));
-    assert!(slugs.contains(&"opsgenie-webhook".to_string()));
-    assert!(slugs.contains(&"azure-devops-webhook".to_string()));
-    assert!(slugs.contains(&"bitbucket-webhook".to_string()));
-    assert!(slugs.contains(&"figma-webhook".to_string()));
-    assert!(slugs.contains(&"github-webhook".to_string()));
-    assert!(slugs.contains(&"grafana-webhook".to_string()));
-    assert!(slugs.contains(&"gitlab-webhook".to_string()));
-    assert!(slugs.contains(&"jira-webhook".to_string()));
-    assert!(slugs.contains(&"linear-webhook".to_string()));
-    assert!(slugs.contains(&"pagerduty-webhook".to_string()));
-    assert!(slugs.contains(&"sentry-webhook".to_string()));
-    assert!(slugs.contains(&"shopify-webhook".to_string()));
-    assert!(slugs.contains(&"stripe-webhook".to_string()));
-    assert!(slugs.contains(&"trello-webhook".to_string()));
-    assert!(slugs.contains(&"vercel-webhook".to_string()));
-    assert!(slugs.contains(&"webhook".to_string()));
 }
 
 #[test]
@@ -47,74 +27,6 @@ fn suggested_connection_slugs_match_connect_defaults() {
     assert_eq!(suggested_connection_slug("lark-app"), "lark-app");
     assert_eq!(suggested_connection_slug("matrix-bot"), "matrix-bot");
     assert_eq!(suggested_connection_slug("slack-login"), "slack-login");
-    assert_eq!(
-        suggested_connection_slug("alertmanager-webhook"),
-        "alertmanager-webhook"
-    );
-    assert_eq!(suggested_connection_slug("asana-webhook"), "asana-webhook");
-    assert_eq!(
-        suggested_connection_slug("datadog-webhook"),
-        "datadog-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("newrelic-webhook"),
-        "newrelic-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("opsgenie-webhook"),
-        "opsgenie-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("azure-devops-webhook"),
-        "azure-devops-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("bitbucket-webhook"),
-        "bitbucket-webhook"
-    );
-    assert_eq!(suggested_connection_slug("figma-webhook"), "figma-webhook");
-    assert_eq!(
-        suggested_connection_slug("github-webhook"),
-        "github-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("grafana-webhook"),
-        "grafana-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("gitlab-webhook"),
-        "gitlab-webhook"
-    );
-    assert_eq!(suggested_connection_slug("jira-webhook"), "jira-webhook");
-    assert_eq!(
-        suggested_connection_slug("linear-webhook"),
-        "linear-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("pagerduty-webhook"),
-        "pagerduty-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("sentry-webhook"),
-        "sentry-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("shopify-webhook"),
-        "shopify-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("stripe-webhook"),
-        "stripe-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("trello-webhook"),
-        "trello-webhook"
-    );
-    assert_eq!(
-        suggested_connection_slug("vercel-webhook"),
-        "vercel-webhook"
-    );
-    assert_eq!(suggested_connection_slug("webhook"), "webhook");
     assert_eq!(suggested_connection_slug("custom-feed"), "custom-feed");
 }
 
@@ -177,30 +89,7 @@ fn builtins_define_host_enforced_action_permissions() {
 
 #[test]
 fn serve_mode_connectors_do_not_claim_workflow_runtime_capabilities() {
-    for slug in [
-        "discord-bot",
-        "matrix-bot",
-        "alertmanager-webhook",
-        "asana-webhook",
-        "datadog-webhook",
-        "newrelic-webhook",
-        "opsgenie-webhook",
-        "azure-devops-webhook",
-        "bitbucket-webhook",
-        "figma-webhook",
-        "github-webhook",
-        "grafana-webhook",
-        "gitlab-webhook",
-        "jira-webhook",
-        "linear-webhook",
-        "pagerduty-webhook",
-        "sentry-webhook",
-        "shopify-webhook",
-        "stripe-webhook",
-        "trello-webhook",
-        "vercel-webhook",
-        "webhook",
-    ] {
+    for slug in ["discord-bot", "matrix-bot"] {
         let template = builtin_connector_template(slug).unwrap();
         assert!(!template.can_subscribe, "{slug} should not claim triggers");
         assert!(

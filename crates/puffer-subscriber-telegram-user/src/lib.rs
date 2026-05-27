@@ -24,6 +24,7 @@ mod delivery;
 mod events;
 mod import;
 mod login;
+mod notifications;
 mod outbound;
 mod peers;
 mod polls;

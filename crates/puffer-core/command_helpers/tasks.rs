@@ -261,6 +261,10 @@ struct WorkflowTaskView {
     process_id: Option<u32>,
     #[serde(default, alias = "outputFile")]
     output_file: Option<String>,
+    #[serde(default, rename = "receivedAt")]
+    received_at: Option<String>,
+    #[serde(default, rename = "expiresAt")]
+    expires_at: Option<String>,
     #[serde(default, alias = "startedAtMs")]
     started_at_ms: Option<u64>,
     #[serde(default, alias = "updatedAtMs")]
@@ -846,6 +850,8 @@ fn merge_task_get(stored: Option<WorkflowTaskView>, task: WorkflowTaskView) -> W
     merged.blocks = task.blocks;
     merged.blocked_by = task.blocked_by;
     merged.owner = task.owner.or(merged.owner);
+    merged.received_at = task.received_at.or(merged.received_at);
+    merged.expires_at = task.expires_at.or(merged.expires_at);
     merged
 }
 
@@ -858,6 +864,8 @@ fn merge_task_list(stored: Option<WorkflowTaskView>, task: WorkflowTaskView) -> 
     merged.status = task.status;
     merged.owner = task.owner;
     merged.blocked_by = task.blocked_by;
+    merged.received_at = task.received_at;
+    merged.expires_at = task.expires_at;
     merged
 }
 
@@ -877,6 +885,8 @@ fn default_task_view(task_id: &str) -> WorkflowTaskView {
         command: None,
         process_id: None,
         output_file: None,
+        received_at: None,
+        expires_at: None,
         started_at_ms: None,
         updated_at_ms: None,
         exit_code: None,

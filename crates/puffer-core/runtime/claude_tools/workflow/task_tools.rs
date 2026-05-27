@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 /// Executes the live `TaskCreate` workflow tool.
 pub(super) fn execute_task_create(
@@ -26,6 +27,13 @@ pub(super) fn execute_task_create(
     let parsed: TaskCreateInput =
         serde_json::from_value(input).context("invalid TaskCreate input")?;
     validate_task_create_actions(&parsed)?;
+    let received_at = parse_rfc3339_field(parsed.received_at.as_deref(), "receivedAt")?;
+    let expires_at = parse_rfc3339_field(parsed.expires_at.as_deref(), "expiresAt")?;
+    if let (Some((_, received)), Some((_, expires))) = (&received_at, &expires_at) {
+        if expires <= received {
+            bail!("TaskCreate expiresAt must be after receivedAt");
+        }
+    }
     let mut metadata = parsed.metadata.unwrap_or_default();
     if !parsed.actions.is_empty() {
         metadata.insert("actions".to_string(), json!(parsed.actions));
@@ -37,6 +45,12 @@ pub(super) fn execute_task_create(
         );
     }
     let monitor_task = is_monitor_task_metadata(&metadata);
+    if monitor_task && received_at.is_none() {
+        bail!("monitor TaskCreate requires receivedAt in RFC3339 format");
+    }
+    if monitor_task && expires_at.is_none() {
+        bail!("monitor TaskCreate requires expiresAt in RFC3339 format");
+    }
     let tp = if monitor_task {
         monitor_tasks_path(state.session.cwd.as_path())
     } else {
@@ -62,6 +76,8 @@ pub(super) fn execute_task_create(
         command: None,
         process_id: None,
         output_file: None,
+        received_at: received_at.map(|(value, _)| value),
+        expires_at: expires_at.map(|(value, _)| value),
         started_at_ms: Some(now_ms()),
         updated_at_ms: Some(now_ms()),
         exit_code: None,
@@ -72,6 +88,8 @@ pub(super) fn execute_task_create(
         "task": {
             "id": task.task_id,
             "subject": task.subject,
+            "receivedAt": task.received_at,
+            "expiresAt": task.expires_at,
         }
     }))?)
 }
@@ -96,6 +114,8 @@ pub(super) fn execute_task_get(state: &mut AppState, _cwd: &Path, input: Value) 
                 "status": task.status,
                 "blocks": task.blocks,
                 "blockedBy": task.blocked_by,
+                "receivedAt": task.received_at,
+                "expiresAt": task.expires_at,
             })
         })
     }))?)
@@ -159,6 +179,8 @@ pub(super) fn execute_task_list(
                 "subject": task.subject,
                 "status": task.status,
                 "owner": task.owner,
+                "receivedAt": task.received_at,
+                "expiresAt": task.expires_at,
                 "blockedBy": task
                     .blocked_by
                     .iter()
@@ -306,6 +328,21 @@ pub(super) fn execute_task_update(
         "updatedFields": updated_fields,
         "statusChange": status_change,
     }))?)
+}
+
+fn parse_rfc3339_field(
+    value: Option<&str>,
+    field_name: &str,
+) -> Result<Option<(String, OffsetDateTime)>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = OffsetDateTime::parse(value, &Rfc3339)
+        .with_context(|| format!("TaskCreate {field_name} must be an RFC3339 timestamp"))?;
+    let normalized = parsed
+        .format(&Rfc3339)
+        .with_context(|| format!("failed to format TaskCreate {field_name}"))?;
+    Ok(Some((normalized, parsed)))
 }
 
 fn validate_task_create_actions(parsed: &TaskCreateInput) -> Result<()> {

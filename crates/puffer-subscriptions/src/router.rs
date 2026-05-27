@@ -4,9 +4,12 @@
 use crate::action::{ActionDispatcher, BuiltinActionDispatcher};
 use crate::classify::{Classifier, ClassifyDecision, NullClassifier};
 use crate::history::{now_ms, WorkflowHistoryStore};
-use crate::spec::{filter_matches, FilterSpec, WorkflowBindingStatus};
+use crate::spec::{
+    filter_matches, ActionSpec, FilterSpec, WorkflowBindingSpec, WorkflowBindingStatus,
+};
 use crate::store::WorkflowBindingStore;
 use puffer_subscriber_runtime::{EventBus, EventEnvelope, EventReceiver};
+use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -199,6 +202,9 @@ pub fn process_envelope_result(
         if !topic_matches {
             continue;
         }
+        if monitor_binding_should_skip_event(&spec, &envelope.event.payload) {
+            continue;
+        }
         if !filter_matches(
             spec.filter.as_ref(),
             &envelope.event.text,
@@ -258,6 +264,23 @@ pub fn process_envelope_result(
         }
     }
     result
+}
+
+fn monitor_binding_should_skip_event(spec: &WorkflowBindingSpec, payload: &Value) -> bool {
+    if !is_monitor_binding(spec) {
+        return false;
+    }
+    payload_bool(payload, "notification_muted") || payload_bool(payload, "notification_silent")
+}
+
+fn is_monitor_binding(spec: &WorkflowBindingSpec) -> bool {
+    spec.slug.starts_with("monitor-")
+        || (matches!(spec.action, ActionSpec::TriageAgent { .. })
+            && spec.description.to_ascii_lowercase().contains("monitor"))
+}
+
+fn payload_bool(payload: &Value, key: &str) -> bool {
+    payload.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 /// Free-standing helper used by tests and by future explicit "test this
@@ -336,6 +359,25 @@ mod tests {
         assert!(!result.matched);
         assert_eq!(result.acted, 0);
         assert_eq!(result.failed, 0);
+
+        let mut silent_envelope = envelope.clone();
+        silent_envelope.envelope_id = "env-silent".into();
+        silent_envelope.event.payload = serde_json::json!({
+            "message": "quiet",
+            "notification_silent": true
+        });
+        let result = process_envelope_result(
+            &silent_envelope,
+            &store,
+            None,
+            &dispatcher,
+            &classifier,
+            None,
+        );
+
+        assert!(!result.matched);
+        assert_eq!(result.acted, 0);
+        assert_eq!(result.failed, 0);
     }
 
     #[test]
@@ -382,6 +424,103 @@ mod tests {
         assert!(result.matched);
         assert_eq!(result.acted, 0);
         assert_eq!(result.failed, 1);
+    }
+
+    #[test]
+    fn monitor_bindings_skip_muted_notification_events() {
+        let dir = tempdir().unwrap();
+        let store = WorkflowBindingStore::load(dir.path().join("bindings.json")).unwrap();
+        store
+            .create(WorkflowBindingSpec {
+                slug: "monitor-telegram-user".into(),
+                description: "Monitor telegram-user for actionable tasks".into(),
+                connection_slug: "telegram-user".into(),
+                connector_slug: Some("telegram-login".into()),
+                status: WorkflowBindingStatus::Enabled,
+                filter: None,
+                classify_prompt: None,
+                classify_model: None,
+                action: ActionSpec::TriageAgent {
+                    prompt: "triage".into(),
+                    model: None,
+                },
+                created_at_ms: 0,
+            })
+            .unwrap();
+        let envelope = EventEnvelope {
+            envelope_id: "env-muted".into(),
+            subscriber_id: "telegram-user".into(),
+            received_at_ms: 0,
+            event: Event {
+                topic: "telegram-user".into(),
+                kind: "message".into(),
+                control: false,
+                dedup_key: None,
+                text: "quiet".into(),
+                payload: serde_json::json!({
+                    "message": "quiet",
+                    "notification_muted": true
+                }),
+            },
+        };
+        let dispatcher: Arc<dyn ActionDispatcher> = Arc::new(BuiltinActionDispatcher::new());
+        let classifier: Arc<dyn Classifier> = Arc::new(NullClassifier);
+
+        let result =
+            process_envelope_result(&envelope, &store, None, &dispatcher, &classifier, None);
+
+        assert!(!result.matched);
+        assert_eq!(result.acted, 0);
+        assert_eq!(result.failed, 0);
+    }
+
+    #[test]
+    fn non_monitor_bindings_still_receive_muted_notification_events() {
+        let dir = tempdir().unwrap();
+        let store = WorkflowBindingStore::load(dir.path().join("bindings.json")).unwrap();
+        store
+            .create(WorkflowBindingSpec {
+                slug: "append-telegram".into(),
+                description: "append telegram".into(),
+                connection_slug: "telegram-user".into(),
+                connector_slug: Some("telegram-login".into()),
+                status: WorkflowBindingStatus::Enabled,
+                filter: None,
+                classify_prompt: None,
+                classify_model: None,
+                action: ActionSpec::FileAppend {
+                    path: "out.jsonl".into(),
+                    format: FileAppendFormat::Jsonl,
+                },
+                created_at_ms: 0,
+            })
+            .unwrap();
+        let envelope = EventEnvelope {
+            envelope_id: "env-muted".into(),
+            subscriber_id: "telegram-user".into(),
+            received_at_ms: 0,
+            event: Event {
+                topic: "telegram-user".into(),
+                kind: "message".into(),
+                control: false,
+                dedup_key: None,
+                text: "quiet".into(),
+                payload: serde_json::json!({
+                    "message": "quiet",
+                    "notification_muted": true
+                }),
+            },
+        };
+        let dispatcher: Arc<dyn ActionDispatcher> =
+            Arc::new(BuiltinActionDispatcher::with_storage_root(dir.path()));
+        let classifier: Arc<dyn Classifier> = Arc::new(NullClassifier);
+
+        let result =
+            process_envelope_result(&envelope, &store, None, &dispatcher, &classifier, None);
+
+        assert!(result.matched);
+        assert_eq!(result.acted, 1);
+        assert_eq!(result.failed, 0);
     }
 
     #[tokio::test]

@@ -30,13 +30,6 @@ pub fn execute_connect_flow(
         "matrix-bot" => {
             serve_config::connect_matrix_bot(state, resources, &target.connection_name)?
         }
-        slug if serve_config::is_webhook_preset(slug) => serve_config::connect_webhook_preset(
-            state,
-            resources,
-            &target.connector_slug,
-            &target.connection_name,
-        )?,
-        "webhook" => serve_config::connect_webhook(state, resources, &target.connection_name)?,
         _ => connect_generic(state, resources, &target)?,
     };
     Ok(TurnExecution {
@@ -788,26 +781,6 @@ mod tests {
             .expect("question text")
             .to_string();
         let answer = match question.as_str() {
-            "What bind address should the webhook listen on?" => "127.0.0.1:9191",
-            "Should this webhook require bearer-token auth?" => "No bearer token",
-            "What bind address should the Alertmanager webhook listen on?" => "127.0.0.1:9597",
-            "What URL path should Alertmanager post webhook events to?" => "alertmanager",
-            "What bind address should the GitHub webhook listen on?" => "127.0.0.1:9292",
-            "What URL path should GitHub post webhook events to?" => "/github",
-            "What bind address should the Grafana webhook listen on?" => "127.0.0.1:9596",
-            "What URL path should Grafana post webhook events to?" => "grafana",
-            "What bind address should the Linear webhook listen on?" => "127.0.0.1:9393",
-            "What URL path should Linear post webhook events to?" => "linear",
-            "What bind address should the PagerDuty webhook listen on?" => "127.0.0.1:9796",
-            "What URL path should PagerDuty post webhook events to?" => "pagerduty",
-            "What bind address should the Sentry webhook listen on?" => "127.0.0.1:9798",
-            "What URL path should Sentry post webhook events to?" => "sentry",
-            "What bind address should the Shopify webhook listen on?" => "127.0.0.1:9999",
-            "What URL path should Shopify post webhook events to?" => "shopify",
-            "What bind address should the Stripe webhook listen on?" => "127.0.0.1:9696",
-            "What URL path should Stripe post webhook events to?" => "stripe",
-            "What bind address should the Trello webhook listen on?" => "127.0.0.1:9898",
-            "What URL path should Trello post webhook events to?" => "trello",
             "What Telegram bot token should Puffer use?" => "telegram-token",
             other => panic!("unexpected question: {other}"),
         };
@@ -898,83 +871,6 @@ mod tests {
             .is_some_and(|options| options
                 .iter()
                 .any(|option| option["label"] == "telegram-login")));
-    }
-
-    #[test]
-    fn execute_connect_flow_dispatches_webhook_setup() {
-        let mut state = temp_state();
-        let resources = LoadedResources::default();
-
-        let turn = with_user_question_prompt_handler(
-            |request| answer_connect_question(&request),
-            || execute_connect_flow(&mut state, &resources, "webhook local-hook"),
-        )
-        .expect("connect turn");
-
-        assert!(turn.assistant_text.contains("connection: local-hook"));
-        assert!(turn.assistant_text.contains("run `puffer serve`"));
-        let raw = connector_config(&state);
-        assert!(raw.contains("[connectors.webhook]"));
-    }
-
-    #[test]
-    fn execute_connect_flow_dispatches_github_webhook_setup() {
-        let mut state = temp_state();
-        let resources = LoadedResources::default();
-
-        let turn = with_user_question_prompt_handler(
-            |request| answer_connect_question(&request),
-            || execute_connect_flow(&mut state, &resources, "github-webhook github-events"),
-        )
-        .expect("connect turn");
-
-        assert!(turn.assistant_text.contains("connector: github-webhook"));
-        assert!(turn.assistant_text.contains("connection: github-events"));
-        assert!(turn.assistant_text.contains("run `puffer serve`"));
-        let raw = connector_config(&state);
-        assert!(raw.contains("[connectors.webhook]"));
-        assert!(raw.contains("display_name = \"github-events\""));
-        assert!(raw.contains("path = \"/github\""));
-    }
-
-    #[test]
-    fn execute_connect_flow_dispatches_linear_webhook_setup() {
-        let mut state = temp_state();
-        let resources = LoadedResources::default();
-
-        let turn = with_user_question_prompt_handler(
-            |request| answer_connect_question(&request),
-            || execute_connect_flow(&mut state, &resources, "linear-webhook linear-events"),
-        )
-        .expect("connect turn");
-
-        assert!(turn.assistant_text.contains("connector: linear-webhook"));
-        assert!(turn.assistant_text.contains("connection: linear-events"));
-        assert!(turn.assistant_text.contains("run `puffer serve`"));
-        let raw = connector_config(&state);
-        assert!(raw.contains("[connectors.webhook]"));
-        assert!(raw.contains("display_name = \"linear-events\""));
-        assert!(raw.contains("path = \"/linear\""));
-    }
-
-    #[test]
-    fn execute_connect_flow_dispatches_stripe_webhook_setup() {
-        let mut state = temp_state();
-        let resources = LoadedResources::default();
-
-        let turn = with_user_question_prompt_handler(
-            |request| answer_connect_question(&request),
-            || execute_connect_flow(&mut state, &resources, "stripe-webhook stripe-events"),
-        )
-        .expect("connect turn");
-
-        assert!(turn.assistant_text.contains("connector: stripe-webhook"));
-        assert!(turn.assistant_text.contains("connection: stripe-events"));
-        assert!(turn.assistant_text.contains("run `puffer serve`"));
-        let raw = connector_config(&state);
-        assert!(raw.contains("[connectors.webhook]"));
-        assert!(raw.contains("display_name = \"stripe-events\""));
-        assert!(raw.contains("path = \"/stripe\""));
     }
 
     #[test]

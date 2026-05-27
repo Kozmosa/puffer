@@ -38,6 +38,10 @@ pub(super) struct StoredTask {
     pub(super) process_id: Option<u32>,
     #[serde(default)]
     pub(super) output_file: Option<String>,
+    #[serde(default, rename = "receivedAt")]
+    pub(super) received_at: Option<String>,
+    #[serde(default, rename = "expiresAt")]
+    pub(super) expires_at: Option<String>,
     #[serde(default)]
     pub(super) started_at_ms: Option<u64>,
     #[serde(default)]
@@ -250,6 +254,10 @@ pub(super) struct TaskCreateInput {
     pub(super) description: String,
     #[serde(default, rename = "activeForm")]
     pub(super) active_form: Option<String>,
+    #[serde(default, rename = "receivedAt")]
+    pub(super) received_at: Option<String>,
+    #[serde(default, rename = "expiresAt")]
+    pub(super) expires_at: Option<String>,
     #[serde(default)]
     pub(super) actions: Vec<TaskCreateActionInput>,
     #[serde(

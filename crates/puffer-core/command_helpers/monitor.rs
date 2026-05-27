@@ -361,7 +361,7 @@ fn monitor_triage_prompt(
     memory_path: &Path,
 ) -> String {
     format!(
-        "You are the background monitor triage agent for connection `{connection_slug}` ({connector_slug}). Connector description: {connector_description}\n\nFor every new connector event:\n1. Read `{}` if it exists and apply its ignore rules.\n2. If the event matches ignore memory, do not create a task; briefly report that it was ignored.\n3. Otherwise decide whether the event represents an ongoing actionable task. Telegram monitoring handles every non-ignored message. Email monitoring handles every message. Slack monitoring handles every message visible to the connection.\n4. Use TaskList first to avoid duplicates. Use TaskCreate for new tasks and TaskUpdate for materially changed existing monitor tasks.\n5. Every monitor TaskCreate MUST include metadata with `_monitor: true`, `monitor_connection: \"{connection_slug}\"`, `monitor_connector: \"{connector_slug}\"`, and `monitor_memory_path: \"{}\"`.\n6. Every monitor TaskCreate SHOULD include `actions`: an array of objects with `actionName` and `actionPrompt`, and `possibleIgnoreReasons`: a short array of suggested ignore reasons.\n7. Keep action prompts ready to send to the current coding agent. Include enough source context from the connector event for the agent to act without rereading the whole stream.\n\nDo not send connector replies unless a selected action later asks for it.",
+        "You are the background monitor triage agent for connection `{connection_slug}` ({connector_slug}). Connector description: {connector_description}\n\nFor every new connector event:\n1. Read `{}` if it exists and apply its ignore rules.\n2. If the event matches ignore memory, do not create a task; briefly report that it was ignored.\n3. Muted or silent notification events are filtered before this agent runs. If an event payload still says `notification_muted` or `notification_silent`, do not create a task.\n4. Otherwise decide whether the event represents an ongoing actionable task. Telegram monitoring handles every non-ignored, unmuted notification. Email monitoring handles every message. Slack monitoring handles every message visible to the connection.\n5. Use TaskList first to avoid duplicates. Use TaskCreate for new tasks and TaskUpdate for materially changed existing monitor tasks.\n6. Every monitor TaskCreate MUST include `receivedAt` from the workflow trigger's RFC3339 `receivedAt` field and an RFC3339 `expiresAt` chosen from the event urgency. If no better deadline is evident, set `expiresAt` 24 hours after `receivedAt`.\n7. Every monitor TaskCreate MUST include metadata with `_monitor: true`, `monitor_connection: \"{connection_slug}\"`, `monitor_connector: \"{connector_slug}\"`, and `monitor_memory_path: \"{}\"`.\n8. Every monitor TaskCreate SHOULD include `actions`: an array of objects with `actionName` and `actionPrompt`, and `possibleIgnoreReasons`: a short array of suggested ignore reasons.\n9. Keep action prompts ready to send to the current coding agent. Include enough source context from the connector event for the agent to act without rereading the whole stream.\n\nDo not send connector replies unless a selected action later asks for it.",
         memory_path.display(),
         memory_path.display()
     )
@@ -380,12 +380,12 @@ fn maybe_spawn_backfill_agent(
         return Ok(None);
     }
     let backfill_hint = if connector_slug.contains("telegram") {
-        "Use Telegram list_peers and list_messages with the exact connection_slug named above and succinct=true to inspect recent messages."
+        "Use Telegram list_peers first and skip peers where notification_muted=true. Then use list_messages with the exact connection_slug named above and succinct=true to inspect recent messages only for unmuted peers."
     } else {
         "Use Slack list_conversations and read_messages with the exact connection_slug named above to inspect recent messages."
     };
     let prompt = format!(
-        "Backfill monitor tasks for connection `{connection_slug}` ({connector_slug}). Every connector lookup tool call MUST pass `connection_slug: \"{connection_slug}\"`.\n\n{backfill_hint}\n\nRead monitor memory `{}` first and skip ignored examples. For actionable current work, create monitor tasks using TaskCreate with metadata `_monitor: true`, `monitor_connection: \"{connection_slug}\"`, `monitor_connector: \"{connector_slug}\"`, and `monitor_memory_path: \"{}\"`. Include `actions` and `possibleIgnoreReasons` for each task. Avoid duplicates by calling TaskList first.",
+        "Backfill monitor tasks for connection `{connection_slug}` ({connector_slug}). Every connector lookup tool call MUST pass `connection_slug: \"{connection_slug}\"`.\n\n{backfill_hint}\n\nRead monitor memory `{}` first and skip ignored examples. Skip muted or silent notifications. For actionable current work, create monitor tasks using TaskCreate with RFC3339 `receivedAt`, RFC3339 `expiresAt`, metadata `_monitor: true`, `monitor_connection: \"{connection_slug}\"`, `monitor_connector: \"{connector_slug}\"`, and `monitor_memory_path: \"{}\"`. Include `actions` and `possibleIgnoreReasons` for each task. Avoid duplicates by calling TaskList first.",
         memory_path.display(),
         memory_path.display()
     );
@@ -465,7 +465,12 @@ mod tests {
         );
         assert!(prompt.contains("TaskCreate MUST include metadata"));
         assert!(prompt.contains("possibleIgnoreReasons"));
-        assert!(prompt.contains("Telegram monitoring handles every non-ignored message"));
+        assert!(
+            prompt.contains("Telegram monitoring handles every non-ignored, unmuted notification")
+        );
+        assert!(prompt.contains("notification_muted"));
+        assert!(prompt.contains("receivedAt"));
+        assert!(prompt.contains("expiresAt"));
     }
 
     #[test]

@@ -49,12 +49,13 @@ pub fn emit_control(topic: &str, kind: &str, payload: Value) -> anyhow::Result<(
 /// `kind` is `"channel_post"` when the message came from a broadcast channel
 /// and `"message"` otherwise. The payload contains routing fields action
 /// handlers rely on (chat id, chat kind, sender id, date in ms, etc.).
-pub fn build_message_event(topic: &str, message: &Message) -> Event {
+pub fn build_message_event(topic: &str, message: &Message, notification_muted: bool) -> Event {
     let chat = message.chat();
     let (chat_kind, chat_title, chat_username) = describe_chat(&chat);
     let chat_id = chat.id();
     let message_id = message.id();
     let date_ms = message.date().timestamp_millis();
+    let date = message.date().to_rfc3339();
     let is_outgoing = message.outgoing();
 
     let (sender_id, sender_username, sender_name) = match message.sender() {
@@ -91,8 +92,11 @@ pub fn build_message_event(topic: &str, message: &Message) -> Event {
         payload.insert("sender_name".to_string(), json!(name));
     }
     payload.insert("message_id".to_string(), json!(message_id));
+    payload.insert("date".to_string(), json!(date));
     payload.insert("date_ms".to_string(), json!(date_ms));
     payload.insert("is_outgoing".to_string(), json!(is_outgoing));
+    payload.insert("notification_muted".to_string(), json!(notification_muted));
+    payload.insert("notification_silent".to_string(), json!(message.silent()));
     if let Some(reply_to) = reply_header_payload(message.reply_header()) {
         payload.insert("reply_to".to_string(), reply_to);
     }

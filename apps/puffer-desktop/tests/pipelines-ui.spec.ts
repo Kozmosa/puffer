@@ -431,7 +431,7 @@ test("pipeline connector search matches workflow draft commands", async ({ page 
   const resultSummary = page.getByLabel("Connector search results");
 
   await page.getByLabel("Search connectors").fill("draft /workflows new telegram-user");
-  await expect(resultSummary).toHaveText("1/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("1/10 connectors; 1/2 connections");
   await expect(catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" })).toBeVisible();
   await expect(connections.getByRole("button", { name: "Use telegram-user as workflow trigger" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create workflow draft for telegram-user" })).toHaveAttribute(
@@ -440,7 +440,7 @@ test("pipeline connector search matches workflow draft commands", async ({ page 
   );
 
   await page.getByLabel("Search connectors").fill("draft /workflows new email-workflow email");
-  await expect(resultSummary).toHaveText("1/30 connectors; 0/2 connections");
+  await expect(resultSummary).toHaveText("1/10 connectors; 0/2 connections");
   await expect(catalog.getByRole("button", { name: "Plan email workflow trigger" })).toBeVisible();
 });
 
@@ -658,62 +658,25 @@ test("pipeline connector catalog shows built-in coverage and result counts", asy
     "slack-app",
     "slack-login",
     "slack-bot",
-    "email",
-    "alertmanager-webhook",
-    "asana-webhook",
-    "datadog-webhook",
-    "newrelic-webhook",
-    "opsgenie-webhook",
-    "azure-devops-webhook",
-    "bitbucket-webhook",
-    "figma-webhook",
-    "github-webhook",
-    "grafana-webhook",
-    "gitlab-webhook",
-    "jira-webhook",
-    "linear-webhook",
-    "pagerduty-webhook",
-    "sentry-webhook",
-    "shopify-webhook",
-    "stripe-webhook",
-    "trello-webhook",
-    "vercel-webhook",
-    "webhook"
+    "email"
   ];
 
-  await expect(resultSummary).toHaveText("30/30 connectors; 2/2 connections");
+  await expect(resultSummary).toHaveText("10/10 connectors; 2/2 connections");
   for (const slug of connectorSlugs) {
     await expect(catalog).toContainText(slug);
   }
 
   await page.getByLabel("Search connectors").fill("workspace local session");
-  await expect(resultSummary).toHaveText("1/30 connectors; 0/2 connections");
+  await expect(resultSummary).toHaveText("1/10 connectors; 0/2 connections");
   await expect(catalog.getByRole("button", { name: "Select slack-login connector setup" })).toBeVisible();
   await expect(catalog.getByRole("button", { name: "Select slack-app connector setup" })).not.toBeVisible();
 
-  await page.getByLabel("Search connectors").fill("serve webhook");
-  await expect(resultSummary).toHaveText("20/30 connectors; 0/2 connections");
-  await expect(catalog.getByRole("button", { name: "Select alertmanager-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select asana-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select datadog-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select newrelic-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select opsgenie-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select azure-devops-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select bitbucket-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select figma-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select github-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select grafana-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select gitlab-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select jira-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select linear-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select pagerduty-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select sentry-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select shopify-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select stripe-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select trello-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select vercel-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select matrix-bot connector setup" })).not.toBeVisible();
+  await page.getByLabel("Search connectors").fill("serve");
+  await expect(resultSummary).toHaveText("3/10 connectors; 0/2 connections");
+  await expect(catalog.getByRole("button", { name: "Select telegram-bot connector setup" })).toBeVisible();
+  await expect(catalog.getByRole("button", { name: "Select discord-bot connector setup" })).toBeVisible();
+  await expect(catalog.getByRole("button", { name: "Select matrix-bot connector setup" })).toBeVisible();
+  await expect(catalog.getByRole("button", { name: "Select slack-app connector setup" })).not.toBeVisible();
 });
 
 test("pipeline connector catalog shows and searches existing connection names", async ({ page }) => {
@@ -727,13 +690,13 @@ test("pipeline connector catalog shows and searches existing connection names", 
   const resultSummary = page.getByLabel("Connector search results");
 
   await page.getByLabel("Search connectors").fill("telegram-user");
-  await expect(resultSummary).toHaveText("1/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("1/10 connectors; 1/2 connections");
   const telegram = catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" });
   await expect(telegram).toContainText("conn:telegram-user");
   await expect(catalog.getByRole("button", { name: "Select slack-app connector setup" })).not.toBeVisible();
 
   await page.getByLabel("Search connectors").fill("workspace slack-app");
-  await expect(resultSummary).toHaveText("1/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("1/10 connectors; 1/2 connections");
   const slack = catalog.getByRole("button", { name: "Select slack-app connector setup" });
   await expect(slack).toContainText("conn:slack-app");
   await expect(catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" })).not.toBeVisible();
@@ -751,418 +714,16 @@ test("pipeline connector catalog shows and searches runtime source hints", async
   const resultSummary = page.getByLabel("Connector search results");
 
   await page.getByLabel("Search connectors").fill("serve");
-  await expect(resultSummary).toHaveText("23/30 connectors; 0/2 connections");
-  await expect(catalog.getByRole("button", { name: "Select alertmanager-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select asana-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select datadog-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select newrelic-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select opsgenie-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select azure-devops-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select bitbucket-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select figma-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select github-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select grafana-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select gitlab-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select jira-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select linear-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select pagerduty-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select sentry-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select shopify-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select stripe-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select trello-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select vercel-webhook connector setup" })).toContainText("serve");
-  await expect(catalog.getByRole("button", { name: "Select webhook connector setup" })).toContainText("serve");
+  await expect(resultSummary).toHaveText("3/10 connectors; 0/2 connections");
+  await expect(catalog.getByRole("button", { name: "Select telegram-bot connector setup" })).toContainText("serve");
   await expect(catalog.getByRole("button", { name: "Select discord-bot connector setup" })).toContainText("serve");
+  await expect(catalog.getByRole("button", { name: "Select matrix-bot connector setup" })).toContainText("serve");
   await expect(catalog.getByRole("button", { name: "Select slack-app connector setup" })).not.toBeVisible();
 
   await page.getByLabel("Search connectors").fill("subscriber telegram");
-  await expect(resultSummary).toHaveText("1/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("1/10 connectors; 1/2 connections");
   await expect(catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" })).toContainText("subscriber");
   await expect(connections.getByRole("button", { name: "Use telegram-user as workflow trigger" })).toContainText("subscriber");
-});
-
-test("pipeline connector catalog exposes Linear setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("linear issue webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select linear-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("linear-webhook");
-  await expect(details).toContainText("skill:linear-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect linear-webhook linear-webhook");
-});
-
-test("pipeline connector catalog exposes Alertmanager setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("prometheus alertmanager webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select alertmanager-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("alertmanager-webhook");
-  await expect(details).toContainText("skill:alertmanager-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText(
-    "/connect alertmanager-webhook alertmanager-webhook"
-  );
-});
-
-test("pipeline connector catalog exposes Datadog setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("datadog monitor webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select datadog-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("datadog-webhook");
-  await expect(details).toContainText("skill:datadog-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect datadog-webhook datadog-webhook");
-});
-
-test("pipeline connector catalog exposes New Relic setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("new relic alert webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select newrelic-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("newrelic-webhook");
-  await expect(details).toContainText("skill:newrelic-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText(
-    "/connect newrelic-webhook newrelic-webhook"
-  );
-});
-
-test("pipeline connector catalog exposes Opsgenie setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("opsgenie alert action webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select opsgenie-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("opsgenie-webhook");
-  await expect(details).toContainText("skill:opsgenie-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect opsgenie-webhook opsgenie-webhook");
-});
-
-test("pipeline connector catalog exposes Azure DevOps setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("azure devops work item webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select azure-devops-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("azure-devops-webhook");
-  await expect(details).toContainText("skill:azure-devops-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText(
-    "/connect azure-devops-webhook azure-devops-webhook"
-  );
-});
-
-test("pipeline connector catalog exposes Bitbucket setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("bitbucket pull request webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select bitbucket-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("bitbucket-webhook");
-  await expect(details).toContainText("skill:bitbucket-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect bitbucket-webhook bitbucket-webhook");
-});
-
-test("pipeline connector catalog exposes Figma setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("figma comment dev mode webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select figma-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("figma-webhook");
-  await expect(details).toContainText("skill:figma-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect figma-webhook figma-webhook");
-});
-
-test("pipeline connector catalog exposes Grafana setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("grafana alert webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select grafana-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("grafana-webhook");
-  await expect(details).toContainText("skill:grafana-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect grafana-webhook grafana-webhook");
-});
-
-test("pipeline connector catalog exposes PagerDuty setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("pagerduty incident webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select pagerduty-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("pagerduty-webhook");
-  await expect(details).toContainText("skill:pagerduty-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect pagerduty-webhook pagerduty-webhook");
-});
-
-test("pipeline connector catalog exposes Sentry setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("sentry issue alert webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select sentry-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("sentry-webhook");
-  await expect(details).toContainText("skill:sentry-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect sentry-webhook sentry-webhook");
-});
-
-test("pipeline connector catalog exposes Asana setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("asana task project webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select asana-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("asana-webhook");
-  await expect(details).toContainText("skill:asana-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect asana-webhook asana-webhook");
-});
-
-test("pipeline connector catalog exposes GitLab setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("gitlab merge request webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select gitlab-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("gitlab-webhook");
-  await expect(details).toContainText("skill:gitlab-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect gitlab-webhook gitlab-webhook");
-});
-
-test("pipeline connector catalog exposes Jira setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("jira issue comment webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select jira-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("jira-webhook");
-  await expect(details).toContainText("skill:jira-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect jira-webhook jira-webhook");
-});
-
-test("pipeline connector catalog exposes Stripe setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("stripe invoice payment webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select stripe-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("stripe-webhook");
-  await expect(details).toContainText("skill:stripe-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect stripe-webhook stripe-webhook");
-});
-
-test("pipeline connector catalog exposes Shopify setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("shopify order product webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select shopify-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("shopify-webhook");
-  await expect(details).toContainText("skill:shopify-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect shopify-webhook shopify-webhook");
-});
-
-test("pipeline connector catalog exposes Trello setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("trello board card webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select trello-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("trello-webhook");
-  await expect(details).toContainText("skill:trello-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect trello-webhook trello-webhook");
-});
-
-test("pipeline connector catalog exposes Vercel setup details", async ({ page }) => {
-  const daemon = new FakeDaemon();
-  await daemon.install(page);
-  await daemon.open(page);
-
-  await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
-
-  await page.getByLabel("Search connectors").fill("vercel deployment project webhook");
-  const catalog = page.locator('[aria-label="Connector catalog"]');
-  const connector = catalog.getByRole("button", { name: "Select vercel-webhook connector setup" });
-  await expect(connector).toContainText("serve");
-  await expect(connector).toContainText("no trigger");
-  await connector.click();
-
-  const details = page.getByLabel("Selected connector details");
-  await expect(details).toContainText("vercel-webhook");
-  await expect(details).toContainText("skill:vercel-webhook");
-  await expect(details).toContainText("serve");
-  await expect(page.getByLabel("Selected connector command")).toContainText("/connect vercel-webhook vercel-webhook");
 });
 
 test("pipeline connector filter presets apply stable search terms", async ({ page }) => {
@@ -1177,56 +738,55 @@ test("pipeline connector filter presets apply stable search terms", async ({ pag
 
   await filters.getByRole("button", { name: "Trigger", exact: true }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("trigger-ready");
-  await expect(resultSummary).toHaveText("2/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("2/10 connectors; 1/2 connections");
   await expect(filters.getByRole("button", { name: "Trigger", exact: true })).toHaveAttribute("aria-pressed", "true");
 
   await filters.getByRole("button", { name: "Draft" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("draft");
-  await expect(resultSummary).toHaveText("2/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("2/10 connectors; 1/2 connections");
   await expect(filters.getByRole("button", { name: "Draft" })).toHaveAttribute("aria-pressed", "true");
 
   await filters.getByRole("button", { name: "Append" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("append");
-  await expect(resultSummary).toHaveText("2/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("2/10 connectors; 1/2 connections");
   await expect(filters.getByRole("button", { name: "Append" })).toHaveAttribute("aria-pressed", "true");
 
   await filters.getByRole("button", { name: "Monitor" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("monitor");
-  await expect(resultSummary).toHaveText("1/30 connectors; 1/2 connections");
-  await expect(page.locator('[aria-label="Connector catalog"]')).toContainText("datadog-webhook");
+  await expect(resultSummary).toHaveText("0/10 connectors; 1/2 connections");
   await expect(page.locator('[aria-label="Connections"]')).toContainText("telegram-user");
 
   await filters.getByRole("button", { name: "Tasks" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("monitor task");
-  await expect(resultSummary).toHaveText("0/30 connectors; 0/2 connections");
+  await expect(resultSummary).toHaveText("0/10 connectors; 0/2 connections");
   await expect(page.getByLabel("Monitor task search results")).toHaveText("1/1 monitor tasks");
   await expect(page.getByLabel("Monitor tasks")).toContainText("Reply to Telegram support ping");
 
   await filters.getByRole("button", { name: "Repair" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("repair");
-  await expect(resultSummary).toHaveText("0/30 connectors; 2/2 connections");
+  await expect(resultSummary).toHaveText("0/10 connectors; 2/2 connections");
 
   await filters.getByRole("button", { name: "Active" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("active");
-  await expect(resultSummary).toHaveText("0/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("0/10 connectors; 1/2 connections");
   await expect(page.locator('[aria-label="Connections"]')).toContainText("telegram-user");
 
   await filters.getByRole("button", { name: "Idle" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("idle");
-  await expect(resultSummary).toHaveText("0/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("0/10 connectors; 1/2 connections");
   await expect(page.locator('[aria-label="Connections"]')).toContainText("slack-app");
 
   await filters.getByRole("button", { name: "Actions" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("has-actions");
-  await expect(resultSummary).toHaveText("7/30 connectors; 2/2 connections");
+  await expect(resultSummary).toHaveText("7/10 connectors; 2/2 connections");
 
   await filters.getByRole("button", { name: "Serve" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("serve");
-  await expect(resultSummary).toHaveText("23/30 connectors; 0/2 connections");
+  await expect(resultSummary).toHaveText("3/10 connectors; 0/2 connections");
 
   await filters.getByRole("button", { name: "All" }).click();
   await expect(page.getByLabel("Search connectors")).toHaveValue("");
-  await expect(resultSummary).toHaveText("30/30 connectors; 2/2 connections");
+  await expect(resultSummary).toHaveText("10/10 connectors; 2/2 connections");
 });
 
 test("pipeline connector search matches setup-only capability terms", async ({ page }) => {
@@ -1241,36 +801,12 @@ test("pipeline connector search matches setup-only capability terms", async ({ p
   const resultSummary = page.getByLabel("Connector search results");
 
   await page.getByLabel("Search connectors").fill("no trigger");
-  await expect(resultSummary).toHaveText("28/30 connectors; 1/2 connections");
+  await expect(resultSummary).toHaveText("8/10 connectors; 1/2 connections");
   await expect(catalog.getByRole("button", { name: "Select slack-app connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select webhook connector setup" })).toBeVisible();
+  await expect(catalog.getByRole("button", { name: "Select discord-bot connector setup" })).toBeVisible();
   await expect(catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" })).not.toBeVisible();
   await expect(connections.getByRole("button", { name: "slack-app cannot start workflow triggers" })).toBeVisible();
   await expect(connections.getByRole("button", { name: "Use telegram-user as workflow trigger" })).not.toBeVisible();
-
-  await page.getByLabel("Search connectors").fill("setup-only webhook");
-  await expect(resultSummary).toHaveText("20/30 connectors; 0/2 connections");
-  await expect(catalog.getByRole("button", { name: "Select alertmanager-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select asana-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select datadog-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select newrelic-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select opsgenie-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select azure-devops-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select bitbucket-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select figma-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select github-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select grafana-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select gitlab-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select jira-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select linear-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select pagerduty-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select sentry-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select shopify-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select stripe-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select trello-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select vercel-webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select webhook connector setup" })).toBeVisible();
-  await expect(catalog.getByRole("button", { name: "Select slack-app connector setup" })).not.toBeVisible();
 });
 
 test("pipeline connector search matches append workflow commands", async ({ page }) => {
@@ -1283,7 +819,7 @@ test("pipeline connector search matches append workflow commands", async ({ page
   await page.getByLabel("Search connectors").fill("append /tmp/email.log");
 
   const catalog = page.locator('[aria-label="Connector catalog"]');
-  await expect(page.getByLabel("Connector search results")).toHaveText("1/30 connectors; 0/2 connections");
+  await expect(page.getByLabel("Connector search results")).toHaveText("1/10 connectors; 0/2 connections");
   await expect(catalog.getByRole("button", { name: "Plan email workflow trigger" })).toBeVisible();
   await expect(catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" })).not.toBeVisible();
 });
@@ -1360,7 +896,7 @@ test("pipeline connector catalog expands action chips for unique connector searc
   const catalog = page.locator('[aria-label="Connector catalog"]');
   const telegram = catalog.getByRole("button", { name: "Plan telegram-login workflow trigger" });
 
-  await expect(page.getByLabel("Connector search results")).toHaveText("1/30 connectors; 1/2 connections");
+  await expect(page.getByLabel("Connector search results")).toHaveText("1/10 connectors; 1/2 connections");
   await expect(telegram).toContainText("send_message");
   await expect(telegram).toContainText("edit_message");
   await expect(telegram).toContainText("delete_messages");
@@ -1443,7 +979,7 @@ test("pipeline connector search preserves custom connection names", async ({ pag
   await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
 
   await page.getByLabel("Search connectors").fill("connect matrix matrix-main");
-  await expect(page.getByLabel("Connector search results")).toHaveText("1/30 connectors; 0/2 connections");
+  await expect(page.getByLabel("Connector search results")).toHaveText("1/10 connectors; 0/2 connections");
   const matrix = page
     .locator('[aria-label="Connector catalog"]')
     .getByRole("button", { name: "Select matrix-bot connector setup" });
@@ -1457,7 +993,7 @@ test("pipeline connector search preserves custom connection names", async ({ pag
   await expect(page.getByLabel("Selected connector command")).toContainText("/connect matrix-bot matrix-main");
 
   await page.getByLabel("Search connectors").fill("email team-email");
-  await expect(page.getByLabel("Connector search results")).toHaveText("1/30 connectors; 0/2 connections");
+  await expect(page.getByLabel("Connector search results")).toHaveText("1/10 connectors; 0/2 connections");
   await page.getByRole("button", { name: "Plan email workflow trigger" }).click();
   await expect(page.getByLabel("Connector connection name")).toHaveValue("team-email");
   await expect(page.getByLabel("Workflow connection")).toHaveValue("team-email");
@@ -1513,20 +1049,20 @@ test("pipeline connector catalog can run default setup from a connector row", as
 
   await page.locator(".pf-sidebar").getByRole("button", { name: "Pipelines" }).click();
 
-  await page.getByLabel("Search connectors").fill("github event webhook");
+  await page.getByLabel("Search connectors").fill("discord bot");
   const connector = page
     .locator('[aria-label="Connector catalog"]')
-    .getByRole("button", { name: "Select github-webhook connector setup" });
+    .getByRole("button", { name: "Select discord-bot connector setup" });
   await expect(connector).toContainText("serve");
   await expect(connector).toContainText("no trigger");
 
-  const runButton = page.getByRole("button", { name: "Run /connect github-webhook github-webhook" });
-  await expect(runButton).toHaveAttribute("title", "/connect github-webhook github-webhook");
+  const runButton = page.getByRole("button", { name: "Run /connect discord-bot discord-bot" });
+  await expect(runButton).toHaveAttribute("title", "/connect discord-bot discord-bot");
   await runButton.click();
 
   const request = await daemon.waitForRequest(
     "run_agent_turn",
-    (candidate) => candidate.params.message === "/connect github-webhook github-webhook"
+    (candidate) => candidate.params.message === "/connect discord-bot discord-bot"
   );
   expect(String(request.params.sessionId ?? "")).not.toHaveLength(0);
 });

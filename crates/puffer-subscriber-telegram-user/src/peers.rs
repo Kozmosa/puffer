@@ -12,6 +12,7 @@ use puffer_subscriber_runtime::TelegramPeerKind;
 use serde_json::json;
 
 use crate::events::emit_control;
+use crate::notifications::dialog_notifications_muted;
 use crate::polls::{poll_payload, poll_text};
 use crate::reply::{reply_header_payload, reply_to_label};
 use crate::state::SkillEnv;
@@ -56,7 +57,10 @@ pub(crate) async fn handle_list_peers(
                 continue;
             }
         }
-        peers.push(peer_payload(chat));
+        peers.push(peer_payload_with_notifications(
+            chat,
+            dialog_notifications_muted(&dialog),
+        ));
         if peers.len() >= limit {
             break;
         }
@@ -414,6 +418,14 @@ fn peer_payload(chat: &Chat) -> serde_json::Value {
         "usernames": usernames,
         "handles": handles,
     })
+}
+
+fn peer_payload_with_notifications(chat: &Chat, notification_muted: bool) -> serde_json::Value {
+    let mut payload = peer_payload(chat);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("notification_muted".to_string(), json!(notification_muted));
+    }
+    payload
 }
 
 fn peer_summary_payload(chat: &Chat) -> serde_json::Value {
