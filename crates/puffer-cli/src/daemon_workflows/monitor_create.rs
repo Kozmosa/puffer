@@ -5,8 +5,8 @@ use puffer_subscriptions::{
     connection_workflow_trigger_supported, ActionSpec, ConnectionRecord, ConnectionState,
     WorkflowBindingSpec, WorkflowBindingStatus,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,14 @@ use std::path::{Path, PathBuf};
 struct MonitorCreateParams {
     #[serde(alias = "connectionSlug")]
     connection_slug: String,
+    #[serde(default, deserialize_with = "deserialize_model_update")]
+    model: Option<Option<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MonitorModelUpdate {
+    Preserve,
+    Set(Option<String>),
 }
 
 /// Creates or resumes a monitor workflow binding and returns the refreshed snapshot.
@@ -21,11 +29,16 @@ pub(crate) fn handle_monitor_create(paths: &ConfigPaths, params: &Value) -> Resu
     let params: MonitorCreateParams =
         serde_json::from_value(params.clone()).context("invalid monitor create params")?;
     let connection_slug = normalized_connection_slug(&params.connection_slug)?;
-    create_or_resume_monitor(paths, &connection_slug)?;
+    let model_update = normalized_model_update(params.model);
+    create_or_resume_monitor(paths, &connection_slug, model_update)?;
     super::handle_workflow_list(paths)
 }
 
-fn create_or_resume_monitor(paths: &ConfigPaths, connection_slug: &str) -> Result<()> {
+fn create_or_resume_monitor(
+    paths: &ConfigPaths,
+    connection_slug: &str,
+    model_update: MonitorModelUpdate,
+) -> Result<()> {
     let manager = subscription_manager()?;
     manager.refresh_connection_auth()?;
     let connection = manager
@@ -61,6 +74,7 @@ fn create_or_resume_monitor(paths: &ConfigPaths, connection_slug: &str) -> Resul
                 &connection.connector_slug,
                 &template.description,
                 &memory_path,
+                &model_update,
             )?;
             binding
         }
@@ -69,6 +83,7 @@ fn create_or_resume_monitor(paths: &ConfigPaths, connection_slug: &str) -> Resul
             &connection.connector_slug,
             &template.description,
             &memory_path,
+            model_update.model(None).as_deref(),
         )?,
     };
     manager.store().upsert(binding)?;
@@ -119,6 +134,7 @@ fn monitor_binding(
     connector_slug: &str,
     connector_description: &str,
     memory_path: &Path,
+    model: Option<&str>,
 ) -> Result<WorkflowBindingSpec> {
     Ok(WorkflowBindingSpec {
         slug: monitor_slug(connection_slug),
@@ -135,6 +151,7 @@ fn monitor_binding(
             connector_slug,
             connector_description,
             memory_path,
+            model,
         )?,
         created_at_ms: puffer_subscriptions::now_ms(),
     })
@@ -146,7 +163,9 @@ fn refresh_monitor_binding(
     connector_slug: &str,
     connector_description: &str,
     memory_path: &Path,
+    model_update: &MonitorModelUpdate,
 ) -> Result<()> {
+    let model = model_update.model(monitor_action_model(&binding.action));
     binding.description = format!("Monitor {connection_slug} for actionable tasks");
     binding.connection_slug = connection_slug.to_string();
     binding.connector_slug = Some(connector_slug.to_string());
@@ -155,6 +174,7 @@ fn refresh_monitor_binding(
         connector_slug,
         connector_description,
         memory_path,
+        model.as_deref(),
     )?;
     Ok(())
 }
@@ -164,6 +184,7 @@ fn monitor_action(
     connector_slug: &str,
     connector_description: &str,
     memory_path: &Path,
+    model: Option<&str>,
 ) -> Result<ActionSpec> {
     let action_prompt = monitor_triage_prompt(
         connection_slug,
@@ -171,11 +192,10 @@ fn monitor_action(
         connector_description,
         memory_path,
     );
-    serde_json::from_value::<ActionSpec>(json!({
-        "type": "triage_agent",
-        "prompt": action_prompt,
-    }))
-    .context("build triage_agent action")
+    Ok(ActionSpec::TriageAgent {
+        prompt: action_prompt,
+        model: model.map(ToOwned::to_owned),
+    })
 }
 
 fn normalized_connection_slug(value: &str) -> Result<String> {
@@ -184,6 +204,42 @@ fn normalized_connection_slug(value: &str) -> Result<String> {
         anyhow::bail!("missing connection_slug");
     }
     Ok(value.to_string())
+}
+
+fn normalized_model_update(value: Option<Option<String>>) -> MonitorModelUpdate {
+    match value {
+        None => MonitorModelUpdate::Preserve,
+        Some(None) => MonitorModelUpdate::Set(None),
+        Some(Some(model)) => {
+            let model = model.trim();
+            MonitorModelUpdate::Set((!model.is_empty()).then(|| model.to_string()))
+        }
+    }
+}
+
+fn deserialize_model_update<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+impl MonitorModelUpdate {
+    fn model(&self, current: Option<String>) -> Option<String> {
+        match self {
+            Self::Preserve => current,
+            Self::Set(model) => model.clone(),
+        }
+    }
+}
+
+fn monitor_action_model(action: &ActionSpec) -> Option<String> {
+    match action {
+        ActionSpec::TriageAgent { model, .. } => model.clone(),
+        _ => None,
+    }
 }
 
 fn monitor_slug(connection_slug: &str) -> String {
@@ -247,6 +303,27 @@ mod tests {
     }
 
     #[test]
+    fn monitor_create_params_distinguish_missing_and_null_model() {
+        let missing: MonitorCreateParams =
+            serde_json::from_value(json!({"connection_slug": "telegram-user"})).unwrap();
+        let cleared: MonitorCreateParams =
+            serde_json::from_value(json!({"connection_slug": "telegram-user", "model": null}))
+                .unwrap();
+        let selected: MonitorCreateParams = serde_json::from_value(json!({
+            "connection_slug": "telegram-user",
+            "model": " openai/gpt-5.4 "
+        }))
+        .unwrap();
+
+        assert_eq!(missing.model, None);
+        assert_eq!(cleared.model, Some(None));
+        assert_eq!(
+            normalized_model_update(selected.model),
+            MonitorModelUpdate::Set(Some("openai/gpt-5.4".to_string()))
+        );
+    }
+
+    #[test]
     fn monitor_create_rejects_degraded_connection_auth() {
         let mut connection =
             ConnectionRecord::authenticated("telegram-user", "telegram-login", "Telegram");
@@ -301,8 +378,14 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let old_path = tempdir.path().join("old.md");
         let new_path = tempdir.path().join("new.md");
-        let mut binding =
-            monitor_binding("feed-connection", "feed", "old feed", &old_path).unwrap();
+        let mut binding = monitor_binding(
+            "feed-connection",
+            "feed",
+            "old feed",
+            &old_path,
+            Some("openai/gpt-5.4"),
+        )
+        .unwrap();
         binding
             .ignore_filters
             .push(puffer_subscriptions::FilterSpec::Json(json!({
@@ -316,18 +399,61 @@ mod tests {
             "feed",
             "updated feed",
             &new_path,
+            &MonitorModelUpdate::Preserve,
         )
         .unwrap();
 
         assert_eq!(binding.ignore_filters.len(), 1);
         match binding.action {
-            ActionSpec::TriageAgent { prompt, .. } => {
+            ActionSpec::TriageAgent { prompt, model } => {
                 assert!(prompt.contains("updated feed"));
                 assert!(prompt.contains("Never infer source identity"));
                 assert!(prompt.contains("Do not add any metadata field named"));
                 assert!(!prompt.contains("Telegram monitoring handles"));
+                assert_eq!(model.as_deref(), Some("openai/gpt-5.4"));
             }
             _ => panic!("expected triage agent"),
         }
+    }
+
+    #[test]
+    fn monitor_refresh_can_replace_or_clear_model() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("memory.md");
+        let mut binding = monitor_binding(
+            "feed-connection",
+            "feed",
+            "old feed",
+            &path,
+            Some("openai/gpt-5.4"),
+        )
+        .unwrap();
+
+        refresh_monitor_binding(
+            &mut binding,
+            "feed-connection",
+            "feed",
+            "updated feed",
+            &path,
+            &MonitorModelUpdate::Set(Some("anthropic/claude-sonnet-4-5".to_string())),
+        )
+        .unwrap();
+
+        assert_eq!(
+            monitor_action_model(&binding.action).as_deref(),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+
+        refresh_monitor_binding(
+            &mut binding,
+            "feed-connection",
+            "feed",
+            "updated feed",
+            &path,
+            &MonitorModelUpdate::Set(None),
+        )
+        .unwrap();
+
+        assert_eq!(monitor_action_model(&binding.action), None);
     }
 }

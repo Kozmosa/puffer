@@ -25,6 +25,7 @@ pub struct ProjectMetadataStore {
 }
 
 impl ProjectMetadataStore {
+    /// Creates a project metadata store from discovered configuration paths.
     pub fn from_paths(paths: &ConfigPaths) -> Self {
         Self {
             path: paths.user_config_dir.join(FILE_NAME),
@@ -54,10 +55,12 @@ impl ProjectMetadataStore {
         Ok(())
     }
 
+    /// Returns all saved project metadata keyed by project folder path.
     pub fn all(&self) -> Result<BTreeMap<String, ProjectMetadata>> {
         self.load_map()
     }
 
+    /// Replaces the tags for the provided project folder and returns the saved metadata.
     pub fn set_tags(&self, folder_path: &Path, tags: Vec<String>) -> Result<ProjectMetadata> {
         let key = folder_path.to_string_lossy().into_owned();
         let mut map = self.load_map()?;
@@ -75,6 +78,7 @@ impl ProjectMetadataStore {
         Ok(result)
     }
 
+    /// Deletes metadata for the provided project folder when it exists.
     pub fn delete(&self, folder_path: &Path) -> Result<()> {
         let key = folder_path.to_string_lossy().into_owned();
         let mut map = self.load_map()?;
@@ -89,14 +93,23 @@ impl ProjectMetadataStore {
 mod tests {
     use super::*;
 
-    fn paths(temp: &tempfile::TempDir) -> ConfigPaths {
-        ConfigPaths::discover(temp.path())
+    /// Build ConfigPaths fully under the tempdir so tests never read the
+    /// real `~/.puffer` directory. `ConfigPaths::discover` resolves
+    /// `user_config_dir` to the user's home by default, which would let
+    /// prior runs of this test leak entries into the assertion below.
+    fn isolated_paths(temp: &tempfile::TempDir) -> ConfigPaths {
+        ConfigPaths {
+            workspace_root: temp.path().to_path_buf(),
+            workspace_config_dir: temp.path().join(".puffer"),
+            user_config_dir: temp.path().join(".puffer-user"),
+            builtin_resources_dir: temp.path().join("resources"),
+        }
     }
 
     #[test]
     fn set_tags_dedupes_and_sorts() {
         let temp = tempfile::tempdir().unwrap();
-        let paths = paths(&temp);
+        let paths = isolated_paths(&temp);
         fs::create_dir_all(&paths.user_config_dir).unwrap();
         let store = ProjectMetadataStore::from_paths(&paths);
         let folder = temp.path().join("proj");
@@ -118,7 +131,7 @@ mod tests {
     #[test]
     fn delete_removes_only_the_target_entry() {
         let temp = tempfile::tempdir().unwrap();
-        let paths = paths(&temp);
+        let paths = isolated_paths(&temp);
         fs::create_dir_all(&paths.user_config_dir).unwrap();
         let store = ProjectMetadataStore::from_paths(&paths);
         let a = temp.path().join("a");

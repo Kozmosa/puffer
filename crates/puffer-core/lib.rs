@@ -70,6 +70,7 @@ pub use runtime::{
     execute_user_prompt_streaming_with_permissions_and_cancel as execute_user_turn_streaming_with_permissions_and_cancel,
     execute_user_prompt_streaming_with_reflection as execute_user_turn_streaming_with_reflection,
     execute_user_prompt_streaming_with_structured_output as execute_user_turn_streaming_with_structured_output,
+    execute_user_prompt_streaming_without_tools as execute_user_turn_streaming_without_tools,
     execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
     execute_user_prompt_without_tools as execute_user_turn_without_tools, runtime_work_active,
     shutdown_runtime_services, with_permission_prompt_handler, with_user_question_prompt_handler,

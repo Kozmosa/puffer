@@ -19,6 +19,10 @@
      *  where new sessions will land. */
     defaultWorkspaceCwd?: string;
     loading?: boolean;
+    loadedSessions?: number;
+    totalSessions?: number | null;
+    hasMoreSessions?: boolean;
+    loadingMoreSessions?: boolean;
     onOpenAgent?: (id: string) => void;
     onOpenBoard?: (projectId: string) => void;
     /** "New agent" was clicked on a project row. `cwd` is that project's
@@ -30,6 +34,7 @@
     /** User clicked the workspace-cwd chip in the header — the parent
      *  should open the WorkspacePicker. */
     onOpenWorkspacePicker?: () => void;
+    onLoadMoreSessions?: () => void | Promise<void>;
     pinnedWorkspacePaths?: string[];
     pinningWorkspacePaths?: string[];
     onToggleWorkspacePin?: (path: string, pinned: boolean) => void;
@@ -44,10 +49,15 @@
     groups,
     defaultWorkspaceCwd = "",
     loading = false,
+    loadedSessions = 0,
+    totalSessions = null,
+    hasMoreSessions = false,
+    loadingMoreSessions = false,
     onOpenAgent,
     onOpenBoard,
     onNewAgent,
     onSessionReady,
+    onLoadMoreSessions,
     pinnedWorkspacePaths = [],
     pinningWorkspacePaths = [],
     onToggleWorkspacePin,
@@ -174,6 +184,7 @@
   );
   let projectCount = $derived(projects.length);
   let visibleProjectCount = $derived(visibleProjects.length);
+  let visibleSessionCount = $derived(visibleProjects.reduce((count, project) => count + visibleAgentsFor(project).length, 0));
 
   $effect(() => {
     visibleProjects;
@@ -364,6 +375,33 @@
         onSetSessionTags={onSetSessionTags}
       />
     {/each}
+    {#if totalSessions !== null && totalSessions > 0 && !searchNeedle}
+      <div class="pf-pw-load-more">
+        <span>
+          Showing {Math.min(loadedSessions, totalSessions)} of {totalSessions} sessions
+        </span>
+        {#if hasMoreSessions}
+          <button
+            type="button"
+            class="sc-btn"
+            data-variant="outline"
+            data-size="sm"
+            onclick={() => onLoadMoreSessions?.()}
+            disabled={!onLoadMoreSessions || loadingMoreSessions}
+          >
+            {#if loadingMoreSessions}
+              <Icon name="refresh" size={13} />Loading...
+            {:else}
+              Load more
+            {/if}
+          </button>
+        {/if}
+      </div>
+    {:else if searchNeedle && totalSessions !== null}
+      <div class="pf-pw-load-more">
+        <span>Showing {visibleSessionCount} matching loaded sessions</span>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -403,5 +441,14 @@
     padding: 1px 6px;
     border-radius: 4px;
     background: var(--muted);
+  }
+  .pf-pw-load-more {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 18px 0 28px;
+    color: var(--muted-foreground);
+    font-size: 12px;
   }
 </style>

@@ -347,11 +347,7 @@ pub fn execute_user_prompt(
     )
 }
 
-/// Executes one user prompt with all tools suppressed.
-///
-/// This is used for advisory side-turns that should be able to reason about
-/// supplied context but must not mutate files, tasks, connector state, or
-/// workflow bindings.
+/// Executes one user prompt with all tools suppressed for advisory side-turns.
 pub fn execute_user_prompt_without_tools(
     state: &mut AppState,
     resources: &LoadedResources,
@@ -374,6 +370,32 @@ pub fn execute_user_prompt_without_tools(
             observability: None,
             lightweight_context: false,
         },
+    )
+}
+
+/// Executes one streamed user prompt with all tools suppressed.
+pub fn execute_user_prompt_streaming_without_tools<F>(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    mut on_event: F,
+) -> Result<TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    execute_user_prompt_streaming_with_options(
+        state,
+        resources,
+        providers,
+        auth_store,
+        input,
+        TurnRequestOptions {
+            tool_filter: Some(RequestToolFilter::empty_static()),
+            ..TurnRequestOptions::default()
+        },
+        &mut on_event,
     )
 }
 

@@ -203,13 +203,25 @@ impl<'a, E: AgentExecutor> DagRunner<'a, E> {
 }
 
 fn node_kind(node: &PipelineNode) -> NodeKind {
-    let explicit = node
+    // Order matters: an explicit `kind` field always wins. Otherwise the
+    // `type` field only counts as a kind when it's one of the
+    // deterministic kinds — for agent nodes `type` carries the provider
+    // id (codex/claude/puffer), which must NOT collapse to "Agent" by
+    // accident; that's exactly what we want here.
+    if let Some(kind) = node
         .extra
         .get("kind")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .or(node.node_type.as_deref());
-    match explicit {
+    {
+        return match kind {
+            "tool" => NodeKind::Tool,
+            "merge" => NodeKind::Merge,
+            "fanout" => NodeKind::Fanout,
+            _ => NodeKind::Agent,
+        };
+    }
+    match node.node_type.as_deref() {
         Some("tool") => NodeKind::Tool,
         Some("merge") => NodeKind::Merge,
         Some("fanout") => NodeKind::Fanout,

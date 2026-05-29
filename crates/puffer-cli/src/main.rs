@@ -17,8 +17,10 @@ mod daemon_browser;
 mod daemon_files;
 mod daemon_fs_watch;
 mod daemon_lambda_skills;
+mod daemon_local_model;
 mod daemon_lsp;
 mod daemon_pty;
+mod daemon_singleton;
 mod daemon_title;
 mod daemon_turn_routing;
 mod daemon_ui_state;
@@ -162,6 +164,11 @@ fn main() -> Result<()> {
     // long-lived processes only.
     let install_subscription_manager =
         start_background_runtimes || matches!(cli.subcommand, Some(Command::NonInteractive(_)));
+    let mut daemon_host_guard = if matches!(cli.subcommand, Some(Command::Daemon { .. })) {
+        Some(daemon_singleton::acquire(&paths)?)
+    } else {
+        None
+    };
     let _heartbeat = if start_background_runtimes {
         match heartbeat::start_from_env() {
             Ok(handle) => handle,
@@ -310,6 +317,9 @@ fn main() -> Result<()> {
             disable_auto_title,
             yolo,
         }) => daemon::run(daemon::DaemonOptions {
+            host_guard: daemon_host_guard
+                .take()
+                .expect("daemon host guard acquired before daemon startup"),
             bind,
             handshake_file,
             token,

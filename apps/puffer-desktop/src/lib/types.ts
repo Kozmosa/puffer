@@ -40,6 +40,15 @@ export type FolderGroup = {
   tags: string[];
 };
 
+export type SessionGroupsPage = {
+  groups: FolderGroup[];
+  offset: number;
+  limit: number;
+  returnedSessions: number;
+  totalSessions: number;
+  hasMore: boolean;
+};
+
 export type DesktopPinState = {
   pinnedAgentIds: string[];
   pinnedWorkspacePaths: string[];
@@ -501,6 +510,7 @@ export type WorkflowBinding = {
   action_type: string;
   action_path?: string | null;
   action_format?: string | null;
+  model?: string | null;
   filter_pattern?: string | null;
   ignore_filters?: WorkflowFilterRule[];
   monitor?: boolean;

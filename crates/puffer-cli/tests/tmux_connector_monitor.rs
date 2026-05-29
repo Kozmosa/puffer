@@ -254,9 +254,30 @@ fn start_puffer_tui(workspace: &Path, puffer_home: &Path) -> puffer_test_support
 }
 
 fn submit_command(session: &puffer_test_support::TmuxSession, command: &str) {
-    send_tmux_keys(session, &[command, "Enter"]).unwrap();
-    let _ = wait_for_tmux_text(session, command, Duration::from_secs(3));
+    send_tmux_keys(session, &[command]).unwrap();
+    wait_for_prompt_input(session, command, Duration::from_secs(3)).unwrap();
     send_tmux_keys(session, &["Enter"]).unwrap();
+}
+
+fn wait_for_prompt_input(
+    session: &puffer_test_support::TmuxSession,
+    command: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let pane = capture_tmux_pane(session).unwrap_or_default();
+        if pane
+            .lines()
+            .any(|line| line.trim_start().starts_with('❯') && line.contains(command))
+        {
+            return Ok(());
+        }
+        last = pane;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!("timed out waiting for prompt input `{command}`\n{last}");
 }
 
 fn answer_input(session: &puffer_test_support::TmuxSession, question: &str, answer: &str) {

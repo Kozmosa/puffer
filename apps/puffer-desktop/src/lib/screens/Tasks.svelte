@@ -2,9 +2,21 @@
   import "../design/tasks.css";
 
   import { onMount } from "svelte";
-  import { createMonitor, ignoreMonitorTask, loadWorkflowSnapshot, saveMonitorMemory } from "../api/desktop";
+  import {
+    createMonitor,
+    deleteMonitor,
+    ignoreMonitorTask,
+    listProviderModels,
+    loadSettingsSnapshot,
+    loadWorkflowSnapshot,
+    saveMonitorMemory,
+    type ModelDescriptorInfo
+  } from "../api/desktop";
   import Icon from "../design/Icon.svelte";
+  import { providerIsAvailableForAgent, providerIdsEquivalent } from "../providerIds";
   import type {
+    ProviderSummary,
+    SettingsSnapshot,
     WorkflowBinding,
     WorkflowConnection,
     WorkflowFilterRule,
@@ -21,6 +33,10 @@
   };
 
   type SourceFilter = "all" | "ignored" | WorkflowTaskSource;
+  type TaskModelOption = {
+    selector: string;
+    label: string;
+  };
 
   let { onRunTaskCommand }: Props = $props();
 
@@ -45,12 +61,20 @@
   let ignoreMenuTaskId = $state<string | null>(null);
   let showTaskConfig = $state(false);
   let selectedMonitorConnection = $state("");
+  let selectedMonitorModel = $state("");
   let creatingMonitor = $state(false);
   let configMemoryPath = $state("");
   let selectedFilterBindingSlug = $state("");
   let memoryDraft = $state("");
   let savingMemoryPath = $state<string | null>(null);
+  let deletingMonitorSlug = $state<string | null>(null);
+  let confirmDeleteMonitorSlug = $state<string | null>(null);
+  let settingsSnapshot = $state<SettingsSnapshot | null>(null);
+  let taskModelOptions = $state<TaskModelOption[]>([]);
+  let taskModelLoading = $state(false);
+  let taskModelLoadError = $state<string | null>(null);
   let refreshGeneration = 0;
+  let taskModelGeneration = 0;
 
   let tasks = $derived(normalizedTasks());
   let searchTerms = $derived(query.trim().toLowerCase().split(/\s+/).filter(Boolean));
@@ -87,6 +111,9 @@
   let selectedMonitorConnectionRecord = $derived(
     monitorConnections.find((connection) => connection.slug === selectedMonitorConnection) ?? null
   );
+  let selectedMonitorBinding = $derived(
+    monitorFilterBindings.find((binding) => binding.connection_slug === selectedMonitorConnection) ?? null
+  );
   let selectedMonitorNeedsRepair = $derived(
     selectedMonitorConnectionRecord ? connectionNeedsRepair(selectedMonitorConnectionRecord) : false
   );
@@ -99,6 +126,11 @@
     if (!showTaskConfig) return;
     if (monitorConnections.some((connection) => connection.slug === selectedMonitorConnection)) return;
     selectedMonitorConnection = monitorConnections[0]?.slug ?? "";
+  });
+
+  $effect(() => {
+    if (!showTaskConfig) return;
+    selectedMonitorModel = selectedMonitorBinding?.model ?? "";
   });
 
   $effect(() => {
@@ -157,6 +189,9 @@
       monitor_ignore_filter_error: next.monitor_ignore_filter_error ?? null
     };
     ignoreMenuTaskId = null;
+    if (confirmDeleteMonitorSlug && !(next.workflow_bindings ?? []).some((binding) => binding.slug === confirmDeleteMonitorSlug)) {
+      confirmDeleteMonitorSlug = null;
+    }
   }
 
   function normalizedTasks(): WorkflowTask[] {
@@ -252,19 +287,96 @@
     return connectionNeedsRepair(connection) ? "repair auth" : connection.state;
   }
 
+  function modelSupportsAgentTools(model: ModelDescriptorInfo): boolean {
+    return model.supportsTools !== false;
+  }
+
+  function providerSort(left: ProviderSummary, right: ProviderSummary): number {
+    const defaultProvider = settingsSnapshot?.config.defaultProvider ?? "";
+    const leftDefault = providerIdsEquivalent(left.id, defaultProvider);
+    const rightDefault = providerIdsEquivalent(right.id, defaultProvider);
+    if (leftDefault !== rightDefault) return leftDefault ? -1 : 1;
+    return left.displayName.localeCompare(right.displayName);
+  }
+
+  async function loadTaskModelOptions() {
+    if (taskModelLoading) return;
+    const generation = ++taskModelGeneration;
+    taskModelLoading = true;
+    taskModelLoadError = null;
+    try {
+      const settings = await loadSettingsSnapshot();
+      if (generation !== taskModelGeneration) return;
+      settingsSnapshot = settings;
+      const authenticatedProviderIds = settings.auth.map((entry) => entry.providerId);
+      const providers = settings.providers
+        .filter((provider) => providerIsAvailableForAgent(provider, authenticatedProviderIds))
+        .sort(providerSort);
+      const loaded = await Promise.allSettled(
+        providers.map(async (provider) => ({
+          provider,
+          models: await listProviderModels(provider.id)
+        }))
+      );
+      if (generation !== taskModelGeneration) return;
+      const seen = new Set<string>();
+      const nextOptions: TaskModelOption[] = [];
+      const failed: string[] = [];
+      for (const result of loaded) {
+        if (result.status === "rejected") {
+          failed.push("provider");
+          continue;
+        }
+        const provider = result.value.provider;
+        const providerLabel = provider.displayName || provider.id;
+        for (const model of result.value.models.filter(modelSupportsAgentTools)) {
+          const modelId = model.id.trim();
+          if (!modelId) continue;
+          const modelProvider = model.provider?.trim() || provider.id;
+          const selector = `${modelProvider}/${modelId}`;
+          if (seen.has(selector)) continue;
+          seen.add(selector);
+          nextOptions.push({
+            selector,
+            label: `${model.displayName || modelId} (${providerLabel})`
+          });
+        }
+      }
+      taskModelOptions = nextOptions;
+      taskModelLoadError = failed.length > 0 && nextOptions.length === 0
+        ? "Could not load task model suggestions."
+        : null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      taskModelLoadError = `Could not load task models: ${message}`;
+    } finally {
+      if (generation === taskModelGeneration) {
+        taskModelLoading = false;
+      }
+    }
+  }
+
+  function monitorModelLabel(binding: WorkflowBinding): string {
+    return binding.model?.trim() || "default";
+  }
+
   async function createSelectedMonitor(event?: SubmitEvent) {
     event?.preventDefault();
     if (!selectedMonitorConnection || selectedMonitorNeedsRepair || creatingMonitor) return;
     const connection = monitorConnections.find((item) => item.slug === selectedMonitorConnection);
+    const wasUpdate = selectedMonitorBinding !== null;
+    const selectedModel = selectedMonitorModel.trim();
     creatingMonitor = true;
     try {
-      const next = await createMonitor(selectedMonitorConnection);
+      const next = await createMonitor(selectedMonitorConnection, selectedModel || null);
       applySnapshot(next);
       showTaskConfig = false;
-      notice = `Monitor created for ${connection?.slug ?? selectedMonitorConnection}.`;
+      const action = wasUpdate ? "updated" : "created";
+      const model = selectedModel || "default model";
+      notice = `Monitor ${action} for ${connection?.slug ?? selectedMonitorConnection} using ${model}.`;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      notice = `Could not create monitor: ${message}`;
+      notice = `Could not configure monitor: ${message}`;
     } finally {
       creatingMonitor = false;
     }
@@ -349,6 +461,16 @@
     return `${binding.connection_slug} - ${bindingFilterSummary(binding)} (${status})`;
   }
 
+  function monitorCountLabel(count: number): string {
+    return count === 1 ? "1 configured monitor" : `${count} configured monitors`;
+  }
+
+  function monitorRowSummary(binding: WorkflowBinding): string {
+    const connector = binding.connector_slug?.trim() || "connector";
+    const status = binding.enabled ? "active" : "paused";
+    return `${connector} - ${monitorModelLabel(binding)} - ${bindingFilterSummary(binding)} - ${status}`;
+  }
+
   function scalarRuleEntries(rule: WorkflowFilterRule): string[] {
     return Object.entries(rule)
       .filter(([, value]) => value === null || ["string", "number", "boolean"].includes(typeof value))
@@ -376,14 +498,19 @@
 
   function openTaskConfig() {
     showTaskConfig = true;
+    confirmDeleteMonitorSlug = null;
+    if (taskModelOptions.length === 0) {
+      void loadTaskModelOptions();
+    }
     if (!configMemoryPath && monitorMemories.length > 0) {
       chooseConfigMemory(monitorMemories[0].path);
     }
   }
 
   function closeTaskConfig() {
-    if (savingMemoryPath !== null || creatingMonitor) return;
+    if (savingMemoryPath !== null || creatingMonitor || deletingMonitorSlug !== null) return;
     showTaskConfig = false;
+    confirmDeleteMonitorSlug = null;
   }
 
   function chooseConfigMemory(path: string) {
@@ -411,6 +538,32 @@
       notice = `Could not save memory for ${memory.connection_slug}: ${message}`;
     } finally {
       savingMemoryPath = null;
+    }
+  }
+
+  function requestDeleteMonitor(binding: WorkflowBinding) {
+    if (savingMemoryPath !== null || creatingMonitor || deletingMonitorSlug !== null) return;
+    confirmDeleteMonitorSlug = confirmDeleteMonitorSlug === binding.slug ? null : binding.slug;
+  }
+
+  async function deleteConfiguredMonitor(binding: WorkflowBinding) {
+    if (savingMemoryPath !== null || creatingMonitor || deletingMonitorSlug !== null) return;
+    deletingMonitorSlug = binding.slug;
+    try {
+      const next = await deleteMonitor(binding.slug);
+      applySnapshot(next);
+      if (selectedFilterBindingSlug === binding.slug) {
+        selectedFilterBindingSlug = "";
+      }
+      if (selectedMonitorConnection === binding.connection_slug) {
+        selectedMonitorModel = "";
+      }
+      notice = `Deleted monitor for ${binding.connection_slug}.`;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      notice = `Could not delete monitor for ${binding.connection_slug}: ${message}`;
+    } finally {
+      deletingMonitorSlug = null;
     }
   }
 
@@ -691,7 +844,7 @@
             data-variant="ghost"
             data-size="sm"
             aria-label="Close task configuration"
-            disabled={creatingMonitor || savingMemoryPath !== null}
+            disabled={creatingMonitor || savingMemoryPath !== null || deletingMonitorSlug !== null}
             onclick={closeTaskConfig}
           >
             <Icon name="x" size={12} />
@@ -700,8 +853,8 @@
 
         <form class="pf-task-config-section" onsubmit={(event) => void createSelectedMonitor(event)}>
           <div class="pf-task-config-section-head">
-            <strong>New monitor</strong>
-            <span>Create a monitor from a trigger-ready connection.</span>
+            <strong>Monitor agent</strong>
+            <span>Create or update the task agent for a trigger-ready connection.</span>
           </div>
           <div class="pf-task-config-row">
             <label>
@@ -718,6 +871,22 @@
                 {/each}
               </select>
             </label>
+            <label>
+              <span>Model</span>
+              <input
+                list="pf-task-model-options"
+                bind:value={selectedMonitorModel}
+                aria-label="Task agent model"
+                placeholder={taskModelLoading ? "Loading models" : "default model"}
+                disabled={creatingMonitor}
+                spellcheck="false"
+              />
+              <datalist id="pf-task-model-options">
+                {#each taskModelOptions as option (option.selector)}
+                  <option value={option.selector}>{option.label}</option>
+                {/each}
+              </datalist>
+            </label>
             <button
               type="submit"
               class="sc-btn"
@@ -725,13 +894,77 @@
               data-size="sm"
               disabled={!selectedMonitorConnection || selectedMonitorNeedsRepair || creatingMonitor}
             >
-              <Icon name="plus" size={12} />{creatingMonitor ? "Creating" : "Create"}
+              <Icon name={selectedMonitorBinding ? "check" : "plus"} size={12} />
+              {creatingMonitor ? (selectedMonitorBinding ? "Updating" : "Creating") : (selectedMonitorBinding ? "Update" : "Create")}
             </button>
           </div>
           {#if monitorConnections.length === 0}
             <p>No trigger-ready connections.</p>
           {/if}
+          {#if selectedMonitorBinding}
+            <p>Current model: {monitorModelLabel(selectedMonitorBinding)}</p>
+          {/if}
+          {#if taskModelLoadError}
+            <p>{taskModelLoadError}</p>
+          {/if}
         </form>
+
+        <section class="pf-task-config-section">
+          <div class="pf-task-config-section-head">
+            <strong>Active monitors</strong>
+            <span>{monitorCountLabel(monitorFilterBindings.length)}</span>
+          </div>
+          {#if monitorFilterBindings.length > 0}
+            <div class="pf-task-monitor-list">
+              {#each monitorFilterBindings as binding (binding.slug)}
+                <div class="pf-task-monitor-row" data-enabled={binding.enabled}>
+                  <div class="pf-task-monitor-main">
+                    <strong>{binding.connection_slug}</strong>
+                    <span>{monitorRowSummary(binding)}</span>
+                  </div>
+                  <div class="pf-task-monitor-actions">
+                    {#if confirmDeleteMonitorSlug === binding.slug}
+                      <button
+                        type="button"
+                        class="sc-btn"
+                        data-variant="ghost"
+                        data-size="sm"
+                        disabled={deletingMonitorSlug === binding.slug}
+                        onclick={() => (confirmDeleteMonitorSlug = null)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        class="sc-btn"
+                        data-variant="destructive"
+                        data-size="sm"
+                        disabled={creatingMonitor || savingMemoryPath !== null || deletingMonitorSlug !== null}
+                        onclick={() => void deleteConfiguredMonitor(binding)}
+                      >
+                        <Icon name="trash" size={12} />{deletingMonitorSlug === binding.slug ? "Deleting" : "Confirm"}
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="sc-btn"
+                        data-variant="ghost"
+                        data-size="sm"
+                        aria-label={`Delete monitor for ${binding.connection_slug}`}
+                        disabled={creatingMonitor || savingMemoryPath !== null || deletingMonitorSlug !== null}
+                        onclick={() => requestDeleteMonitor(binding)}
+                      >
+                        <Icon name="trash" size={12} />Delete
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p>No active monitors.</p>
+          {/if}
+        </section>
 
         <section class="pf-task-config-section">
           <div class="pf-task-config-section-head">
@@ -751,6 +984,10 @@
               </select>
             </label>
             <div class="pf-task-filter-list">
+              <div class="pf-task-filter-rule">
+                <span>Model</span>
+                <code>{monitorModelLabel(selectedFilterBinding)}</code>
+              </div>
               {#if selectedFilterBinding.filter_pattern}
                 <div class="pf-task-filter-rule">
                   <span>Trigger</span>

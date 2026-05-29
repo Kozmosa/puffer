@@ -14,6 +14,7 @@ import type {
   RepoActionResult,
   RepoStatus,
   SessionDetail,
+  SessionGroupsPage,
   SessionListItem,
   SettingsSnapshot,
   MessageActor,
@@ -40,6 +41,15 @@ type BackendFolderGroup = {
   sessionCount: number;
   sessions: BackendSessionListItem[];
   tags?: string[];
+};
+
+type BackendSessionGroupsPage = {
+  groups: BackendFolderGroup[];
+  offset: number;
+  limit: number;
+  returnedSessions: number;
+  totalSessions: number;
+  hasMore: boolean;
 };
 
 type BackendDesktopPinState = {
@@ -565,20 +575,35 @@ function normalizeSessionDetail(value: BackendSessionDetail): SessionDetail {
   };
 }
 
-export async function listGroupedSessions(remote?: RemoteConnection): Promise<FolderGroup[]> {
-  if (!canInvokeTauri()) {
-    if (canReachDaemon()) return listGroupedSessionsFromDaemon();
-    return mockFolders;
-  }
-  const response = await invoke<BackendFolderGroup[]>("list_grouped_sessions", remoteArgs(remote));
-  return response.map((group) => ({
+function normalizeFolderGroup(group: BackendFolderGroup): FolderGroup {
+  return {
     id: group.folderId,
     label: group.folderLabel,
     path: group.folderPath,
     sessionCount: group.sessionCount,
     sessions: group.sessions.map(normalizeSessionListItem),
     tags: group.tags ?? []
-  }));
+  };
+}
+
+function normalizeSessionGroupsPage(page: BackendSessionGroupsPage): SessionGroupsPage {
+  return {
+    groups: page.groups.map(normalizeFolderGroup),
+    offset: page.offset,
+    limit: page.limit,
+    returnedSessions: page.returnedSessions,
+    totalSessions: page.totalSessions,
+    hasMore: page.hasMore
+  };
+}
+
+export async function listGroupedSessions(remote?: RemoteConnection): Promise<FolderGroup[]> {
+  if (!canInvokeTauri()) {
+    if (canReachDaemon()) return listGroupedSessionsFromDaemon();
+    return mockFolders;
+  }
+  const response = await invoke<BackendFolderGroup[]>("list_grouped_sessions", remoteArgs(remote));
+  return response.map(normalizeFolderGroup);
 }
 
 export async function loadSessionDetail(
@@ -861,7 +886,8 @@ import {
 export async function createSession(
   cwd?: string,
   providerId?: string,
-  modelId?: string
+  modelId?: string,
+  displayName = "New Session"
 ): Promise<{
   sessionId: string;
   cwd: string;
@@ -873,7 +899,9 @@ export async function createSession(
   return client.request(
     "create_session",
     Object.fromEntries(
-      Object.entries({ cwd, providerId, modelId }).filter(([, value]) => Boolean(value))
+      Object.entries({ cwd, providerId, modelId, displayName }).filter(([, value]) =>
+        Boolean(value)
+      )
     )
   );
 }
@@ -1022,16 +1050,51 @@ export async function listGroupedSessionsFromDaemon(): Promise<FolderGroup[]> {
   try {
     const client = await ensureLocalDaemonClient();
     const raw = await client.request<BackendFolderGroup[]>("list_grouped_sessions");
-    return raw.map((folder) => ({
-      id: folder.folderId,
-      label: folder.folderLabel,
-      path: folder.folderPath,
-      sessionCount: folder.sessionCount,
-      sessions: folder.sessions.map(normalizeSessionListItem),
-      tags: folder.tags ?? []
-    }));
+    return raw.map(normalizeFolderGroup);
   } catch (_error) {
     if (!canReachDaemon()) return mockFolders;
+    throw _error;
+  }
+}
+
+export async function listGroupedSessionsPageFromDaemon(
+  offset = 0,
+  limit = 30
+): Promise<SessionGroupsPage> {
+  try {
+    const client = await ensureLocalDaemonClient();
+    const raw = await client.request<BackendSessionGroupsPage>("list_grouped_sessions_page", {
+      offset,
+      limit
+    });
+    return normalizeSessionGroupsPage(raw);
+  } catch (_error) {
+    if (!canReachDaemon()) {
+      const entries = mockFolders.flatMap((folder) =>
+        folder.sessions.map((session) => ({ folder, session }))
+      );
+      const pageEntries = entries.slice(offset, offset + limit);
+      const groupsById = new Map<string, FolderGroup>();
+      for (const { folder, session } of pageEntries) {
+        const group = groupsById.get(folder.id) ?? {
+          ...folder,
+          sessions: [],
+          sessionCount: 0
+        };
+        group.sessions.push(session);
+        group.sessionCount = group.sessions.length;
+        groupsById.set(folder.id, group);
+      }
+      const pageGroups = Array.from(groupsById.values());
+      return {
+        groups: pageGroups,
+        offset,
+        limit,
+        returnedSessions: pageGroups.reduce((count, group) => count + group.sessions.length, 0),
+        totalSessions: entries.length,
+        hasMore: offset + limit < entries.length
+      };
+    }
     throw _error;
   }
 }
@@ -1150,9 +1213,23 @@ export async function createWorkflowBinding(binding: WorkflowBindingCreateReques
 }
 
 /** Create or resume a connector monitor and return the refreshed workflow snapshot. */
-export async function createMonitor(connectionSlug: string): Promise<WorkflowSnapshot> {
+export async function createMonitor(
+  connectionSlug: string,
+  model?: string | null
+): Promise<WorkflowSnapshot> {
   const client = await ensureLocalDaemonClient();
-  return client.request<WorkflowSnapshot>("task_monitor_create", { connection_slug: connectionSlug });
+  const params: { connection_slug: string; model?: string | null } = {
+    connection_slug: connectionSlug
+  };
+  if (model !== undefined) {
+    params.model = model?.trim() || null;
+  }
+  return client.request<WorkflowSnapshot>("task_monitor_create", params);
+}
+
+/** Delete one connector monitor and return the refreshed workflow snapshot. */
+export async function deleteMonitor(slug: string): Promise<WorkflowSnapshot> {
+  return deleteWorkflowBinding(slug);
 }
 
 /** Ignore one monitor-created task and return the refreshed workflow snapshot. */
@@ -1854,6 +1931,47 @@ export type ModelDescriptorInfo = {
   defaultThinkingOptionId?: string;
 };
 
+export type LocalModelStatus = {
+  id: string;
+  modelId: string;
+  displayName: string;
+  checkedAtMs: number;
+  supported: boolean;
+  recommended: boolean;
+  installed: boolean;
+  configured: boolean;
+  running: boolean;
+  installing: boolean;
+  reason: string;
+  endpoint: string;
+  size: string;
+  installPath: string;
+  providerPath: string;
+  logPath: string;
+  installLogPath: string;
+  serveLogPath: string;
+  checks: LocalModelCheck[];
+};
+
+export type LocalModelCheck = {
+  label: string;
+  state: "ok" | "missing" | "warning" | "error" | string;
+  detail: string;
+};
+
+export type LocalModelInstallJob = {
+  jobId: string;
+  status: LocalModelStatus;
+};
+
+export type LocalModelEvent = {
+  modelId: string;
+  jobId: string;
+  phase: string;
+  message: string;
+  status?: LocalModelStatus | null;
+};
+
 export type PermissionsSnapshot = {
   path: string;
   tools: Record<string, string>;
@@ -1947,6 +2065,16 @@ export type ConfigPatch = {
   browserChromeProfile?: string | null;
 };
 
+export async function localModelStatus(modelId = "minicpm5"): Promise<LocalModelStatus> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LocalModelStatus>("local_model_status", { modelId });
+}
+
+export async function installLocalModel(modelId = "minicpm5"): Promise<LocalModelInstallJob> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LocalModelInstallJob>("install_local_model", { modelId });
+}
+
 export async function listMcpServers(): Promise<McpServerInfo[]> {
   const client = await ensureLocalDaemonClient();
   const result = await client.request<{ servers: McpServerInfo[] }>("list_mcp_servers");
@@ -2019,4 +2147,25 @@ export async function setLambdaSkillApproval(
 export async function updateConfig(patch: ConfigPatch): Promise<SettingsSnapshot> {
   const client = await ensureLocalDaemonClient();
   return client.request<SettingsSnapshot>("update_config", patch);
+}
+
+export type Minicpm5Recommendation = {
+  recommend: boolean;
+  reason?: string;
+  display_name?: string;
+  why?: string;
+  size?: string;
+  install_cmd?: string;
+};
+
+/** Ask the desktop backend whether to recommend the local MiniCPM5 model on
+ *  this machine (macOS + Apple Silicon + not yet installed). */
+export async function minicpm5Recommend(): Promise<Minicpm5Recommendation> {
+  return await invoke<Minicpm5Recommendation>("minicpm5_recommend");
+}
+
+/** Kick off the local-model install. Progress streams as `minicpm5://install-log`
+ *  events; completion arrives as `minicpm5://install-done` ({ success }). */
+export async function minicpm5Install(): Promise<void> {
+  await invoke("minicpm5_install");
 }
