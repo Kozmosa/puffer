@@ -5,14 +5,17 @@ import type {
   AskUserQuestionItem,
   DesktopPinState,
   DiffSnapshot,
+  DraftProxyEndpoint,
   ExternalCredential,
   FolderGroup,
   ProviderSummary,
+  ProxyTestResult,
   PullRequest,
   RemoteConnection,
   RemoteOperation,
   RepoActionResult,
   RepoStatus,
+  SaveProxySettingsInput,
   SessionDetail,
   SessionListItem,
   SettingsSnapshot,
@@ -231,6 +234,7 @@ type BackendSettingsSessionSummary = SettingsSnapshot["sessions"];
 type BackendAuthProviderStatus = AuthProviderStatus;
 type BackendProviderSummary = ProviderSummary;
 type BackendBrowserProfile = SettingsSnapshot["browserProfiles"][number];
+type BackendNetworkProxySettings = SettingsSnapshot["networkProxy"];
 
 type BackendSettingsSnapshot = {
   workspaceRoot: string;
@@ -243,6 +247,7 @@ type BackendSettingsSnapshot = {
   sessions: BackendSettingsSessionSummary;
   auth: BackendAuthProviderStatus[];
   providers: BackendProviderSummary[];
+  networkProxy: BackendNetworkProxySettings;
   browserProfiles: BackendBrowserProfile[];
 };
 
@@ -793,6 +798,21 @@ export async function logoutProvider(
     providerId,
     ...remoteArgs(remote)
   });
+}
+
+export async function saveProxySettings(
+  input: SaveProxySettingsInput
+): Promise<SettingsSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BackendSettingsSnapshot>("save_proxy_settings", input);
+}
+
+export async function testProxy(input: {
+  proxyId?: string;
+  endpoint?: DraftProxyEndpoint;
+}): Promise<ProxyTestResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ProxyTestResult>("test_proxy", input);
 }
 
 export async function runRemoteBash(

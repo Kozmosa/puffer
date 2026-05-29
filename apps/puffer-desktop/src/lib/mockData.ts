@@ -633,6 +633,13 @@ export const mockSettingsSnapshot: SettingsSnapshot = {
   },
   auth: mockAuth,
   providers: mockProviders,
+  networkProxy: {
+    enabled: false,
+    selected: null,
+    bypass: ["localhost", "127.0.0.1", "::1"],
+    proxies: [],
+    lastTest: null
+  },
   browserProfiles: [
     {
       id: "Default",
