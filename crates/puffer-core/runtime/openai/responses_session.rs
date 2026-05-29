@@ -176,6 +176,7 @@ impl TurnSession for OpenAIResponsesTurnSession {
         let response = send_openai_request_with_refresh_streaming(
             auth_store,
             &mut self.execution,
+            &state.config.network.proxy,
             request_builder_from_body(primary_body),
             &mut sized,
         )
@@ -196,6 +197,7 @@ impl TurnSession for OpenAIResponsesTurnSession {
             send_openai_request_with_refresh_streaming(
                 auth_store,
                 &mut self.execution,
+                &state.config.network.proxy,
                 request_builder_from_body(fallback_body),
                 &mut sized,
             )
@@ -303,6 +305,7 @@ impl TurnSession for OpenAIResponsesTurnSession {
         let response_value = send_openai_request_with_refresh(
             auth_store,
             &mut self.execution,
+            &state.config.network.proxy,
             request_builder_from_body(primary_body),
         )
         .or_else(|error| {
@@ -315,6 +318,7 @@ impl TurnSession for OpenAIResponsesTurnSession {
             send_openai_request_with_refresh(
                 auth_store,
                 &mut self.execution,
+                &state.config.network.proxy,
                 request_builder_from_body(fallback_body),
             )
         })?;
