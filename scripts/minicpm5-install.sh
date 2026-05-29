@@ -44,7 +44,13 @@ if [ -f "$MODEL_DIR/config.json" ]; then
   echo "    already present, skipping download."
 else
   mkdir -p "$MODEL_DIR"
-  "$PY" -c "from huggingface_hub import snapshot_download; snapshot_download('$REPO', local_dir='$MODEL_DIR')"
+  # Pass repo/dir via env (argv), not string-interpolated into Python source —
+  # a path/repo containing quotes must not break or inject code.
+  MC5_REPO="$REPO" MC5_DIR="$MODEL_DIR" "$PY" - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+snapshot_download(os.environ["MC5_REPO"], local_dir=os.environ["MC5_DIR"])
+PY
 fi
 
 echo "3/4 installing shim → $BIN_DIR/minicpm5-shim.py …"
@@ -56,7 +62,8 @@ cp "$SHIM_SRC" "$BIN_DIR/minicpm5-shim.py"
 
 echo "4/4 registering provider → $PUFFER_HOME/resources/providers/minicpm5.yaml …"
 mkdir -p "$PUFFER_HOME/resources/providers"
-cp "$HERE/resources/providers/minicpm5.yaml" "$PUFFER_HOME/resources/providers/minicpm5.yaml" 2>/dev/null || true
+# Don't swallow failure — registration is the whole point; surface it.
+cp "$HERE/resources/providers/minicpm5.yaml" "$PUFFER_HOME/resources/providers/minicpm5.yaml"
 
 echo
 echo "Done. MiniCPM5-1B installed (model: $MODEL_DIR)."

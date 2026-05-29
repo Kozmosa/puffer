@@ -30,10 +30,15 @@ def _coerce(v):
     try: return json.loads(v)            # numbers/bools/json
     except Exception: return v           # plain string
 
-def parse_tool_calls(text):
+def parse_tool_calls(text, allow=None):
+    # allow = set of advertised tool names; drop any call the model invents that
+    # the request didn't offer (untrusted model/tool-output text can't fabricate
+    # calls to unadvertised tools).
     calls = []
     for i, m in enumerate(CALL_RE.finditer(text)):
         name = m.group(1)
+        if allow is not None and name not in allow:
+            continue
         args = {pn: _coerce(pv) for pn, pv in PARAM_RE.findall(m.group(2))}
         calls.append({"id": f"call_{int(time.time()*1000)}_{i}", "type": "function",
                       "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}})
@@ -93,7 +98,12 @@ def run(messages, tools, temperature, max_tokens, enable_thinking=True):
                        sampler=sampler, verbose=False)
     # strip thinking for the surfaced content/parse (keep final segment)
     final = out.split("</think>")[-1].strip() if "</think>" in out else out.strip()
-    calls = parse_tool_calls(final) or parse_tool_calls(out)
+    allow = None
+    if tools:
+        allow = {(t.get("function", t) if isinstance(t, dict) else {}).get("name")
+                 for t in tools}
+        allow.discard(None)
+    calls = parse_tool_calls(final, allow) or parse_tool_calls(out, allow)
     if calls:
         # content before the first <function> (often empty)
         content = CALL_RE.split(final)[0].strip()
@@ -122,11 +132,8 @@ class H(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(400, {"error": f"bad request: {e}", "got_bytes": len(raw) if 'raw' in dir() else 0})
         try:
-            with open("/tmp/shim_requests.jsonl", "a") as f:
-                f.write(json.dumps({"n_msgs": len(body.get("messages", [])),
-                                    "n_tools": len(body.get("tools") or []),
-                                    "tool_names": [ (t.get("function",{}) or {}).get("name") for t in (body.get("tools") or [])],
-                                    "messages": body.get("messages", [])}, ensure_ascii=False) + "\n")
+            # NOTE: do NOT log request messages anywhere — this is a local,
+            # privacy-preserving model; prompts/tool outputs/code stay in memory.
             think = body.get("enable_thinking")
             if think is None:
                 think = (body.get("chat_template_kwargs") or {}).get("enable_thinking", True)
