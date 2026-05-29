@@ -10,6 +10,7 @@
   import Icon from "../../design/Icon.svelte";
   import { focusTrap } from "../../focusTrap";
   import { normalizeProxyBypass, validateProxyBypassEntries } from "./proxyBypass";
+  import { removeProxyEndpoint } from "./proxyList";
   import { proxyStatusLabel, proxyStatusState, proxyStatusTitle } from "./proxyStatus";
 
   type Props = {
@@ -178,6 +179,12 @@
     editing = endpointToDraft(item);
   }
 
+  function deleteProxy(item: SanitizedProxyEndpoint) {
+    if (editing?.id === item.id) closeEditor();
+    if (lastTest?.proxyId === item.id) lastTest = null;
+    void persist(removeProxyEndpoint(proxy, item.id));
+  }
+
   function closeEditor() {
     editing = null;
     draftPassword = "";
@@ -334,6 +341,9 @@
             </button>
             <button type="button" class="sc-btn" data-variant="outline" data-size="sm" disabled={saving} onclick={() => editProxy(item)}>
               <Icon name="edit" size={12} />Edit
+            </button>
+            <button type="button" class="sc-btn" data-variant="destructive" data-size="sm" disabled={saving || testingId !== null} onclick={() => deleteProxy(item)}>
+              <Icon name="trash" size={12} />Delete
             </button>
           </div>
         </article>

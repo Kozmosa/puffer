@@ -179,6 +179,58 @@ test("network proxy editor uses compact controls", async ({ page }) => {
   await expect(credentialGrid.getByLabel("Password")).toBeVisible();
 });
 
+test("network proxy item delete persists the remaining proxy list", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setNetworkProxy({
+    enabled: true,
+    selected: "local",
+    bypass: ["localhost"],
+    proxies: [
+      {
+        id: "local",
+        scheme: "socks5",
+        host: "127.0.0.1",
+        port: 7890,
+        username: null,
+        hasPassword: false,
+        uri: "socks5://127.0.0.1:7890"
+      },
+      {
+        id: "backup",
+        scheme: "socks5h",
+        host: "127.0.0.1",
+        port: 7891,
+        username: null,
+        hasPassword: false,
+        uri: "socks5h://127.0.0.1:7891"
+      }
+    ],
+    lastTest: null
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const pane = page.locator(".pf-settings-pane");
+  const proxyCard = pane.locator(".pf-network-proxy-card").filter({
+    hasText: "socks5://127.0.0.1:7890"
+  });
+  await proxyCard.getByRole("button", { name: "Delete" }).click();
+
+  const saveRequest = await daemon.waitForRequest("save_proxy_settings");
+  expect(saveRequest.params).toMatchObject({
+    enabled: true,
+    selected: "backup",
+    bypass: ["localhost"]
+  });
+  expect(saveRequest.params.proxies).toEqual([
+    expect.objectContaining({ id: "backup", scheme: "socks5h", host: "127.0.0.1", port: 7891 })
+  ]);
+  await expect(pane.getByText("socks5://127.0.0.1:7890")).toHaveCount(0);
+});
+
 test("network bypass editor preserves input and validates before save", async ({ page }) => {
   const daemon = new FakeDaemon();
   await daemon.install(page);
