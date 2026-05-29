@@ -4348,6 +4348,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "ipnet",
  "serde",
  "serde_json",
  "tempfile",
@@ -4482,6 +4483,7 @@ dependencies = [
  "glob",
  "html2text",
  "indexmap 2.14.0",
+ "ipnet",
  "jsonschema",
  "libc",
  "notify",
@@ -4519,6 +4521,7 @@ dependencies = [
  "tracing",
  "tungstenite 0.24.0",
  "url",
+ "urlencoding",
  "uuid",
 ]
 

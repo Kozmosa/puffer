@@ -32,7 +32,8 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use indexmap::IndexMap;
 use puffer_config::{
-    ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, PufferConfig,
+    ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, ProxyConfig, ProxyEndpoint,
+    ProxyScheme, PufferConfig,
 };
 use puffer_core::{
     command_surface, default_effort_level, dispatch_command, enter_plan_mode,
@@ -43,17 +44,13 @@ use puffer_core::{
     PermissionPromptAction, PermissionPromptRequest, ToolCallRequest, ToolInvocation,
     TurnStreamEvent, UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
-use puffer_provider_openai::{
-    exchange_authorization_code as exchange_openai_authorization_code,
-    parse_authorization_input as parse_openai_authorization_input,
-};
+use puffer_provider_openai::parse_authorization_input as parse_openai_authorization_input;
 use puffer_provider_registry::{
     AuthStore, ModelDescriptor, ProviderDescriptor, ProviderRegistry, StoredCredential,
 };
 use puffer_resources::{load_resources, LoadedResources, McpServerSpec};
 use puffer_session_store::{MessageActor, SessionStore, TranscriptEvent};
 use puffer_transport_anthropic::{
-    exchange_authorization_code as exchange_anthropic_authorization_code,
     parse_authorization_input as parse_anthropic_authorization_input, ANTHROPIC_API_BASE_URL,
     ANTHROPIC_MANUAL_REDIRECT_URL,
 };
@@ -94,8 +91,9 @@ use crate::daemon_ui_state::{
 };
 use crate::desktop_api;
 use crate::desktop_api_types::{
-    ExternalCredentialDto, FolderGroupDto, McpServerDto, ModelDescriptorDto, RepoActionResultDto,
-    RepoStatusDto, SessionDetailDto, SettingsSnapshotDto, ThinkingOptionDto,
+    ExternalCredentialDto, FolderGroupDto, McpServerDto, ModelDescriptorDto, ProxyEndpointInputDto,
+    ProxyTestResultDto, RepoActionResultDto, RepoStatusDto, SaveProxySettingsParams,
+    SessionDetailDto, SettingsSnapshotDto, ThinkingOptionDto,
 };
 
 const PROTOCOL_VERSION: &str = "1";
@@ -449,7 +447,12 @@ impl DaemonState {
             );
         }
         if discover_all {
-            let _ = providers.discover_and_merge_all(&auth_store);
+            if let Ok(client) = proxy_discovery_client(&config) {
+                let _ =
+                    providers.discover_and_merge_all_with_discovery_client(&auth_store, &client);
+            } else {
+                let _ = providers.discover_and_merge_all(&auth_store);
+            }
         } else {
             // Even on the fast path we apply the on-disk discovery cache
             // — that's a synchronous file read, no network — so callers
@@ -472,6 +475,110 @@ struct RuntimeInputs {
     providers: ProviderRegistry,
     auth_store: AuthStore,
     session_store: SessionStore,
+}
+
+fn proxy_discovery_client(
+    config: &PufferConfig,
+) -> Result<puffer_provider_registry::ModelDiscoveryClient> {
+    let client = puffer_core::blocking_client_for_url(
+        &config.network.proxy,
+        puffer_core::HttpPurpose::Discovery,
+        "https://api.openai.com/v1/models",
+        Duration::from_secs(8),
+    )?;
+    Ok(puffer_provider_registry::ModelDiscoveryClient::with_client(
+        client,
+    ))
+}
+
+fn proxy_connectivity_test_urls() -> &'static [&'static str] {
+    &[
+        "https://www.gstatic.com/generate_204",
+        "https://cp.cloudflare.com/generate_204",
+        "https://www.cloudflare.com/cdn-cgi/trace",
+    ]
+}
+
+fn test_proxy_connectivity(
+    endpoint: &ProxyEndpoint,
+    timeout: Duration,
+) -> Result<(&'static str, puffer_core::ProxyTestOutcome)> {
+    let mut last_error = None;
+    for target_url in proxy_connectivity_test_urls() {
+        match puffer_core::test_proxy_endpoint(endpoint, target_url, timeout) {
+            Ok(outcome) => return Ok((target_url, outcome)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no proxy connectivity test URLs configured")))
+}
+
+fn parse_proxy_scheme(value: &str) -> Result<ProxyScheme> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "http" => Ok(ProxyScheme::Http),
+        "https" => Ok(ProxyScheme::Https),
+        "socks5" => Ok(ProxyScheme::Socks5),
+        "socks5h" => Ok(ProxyScheme::Socks5h),
+        other => anyhow::bail!("unknown proxy scheme `{other}`"),
+    }
+}
+
+fn proxy_endpoint_from_input(
+    input: ProxyEndpointInputDto,
+    current_config: &PufferConfig,
+) -> Result<ProxyEndpoint> {
+    let existing_password = current_config
+        .network
+        .proxy
+        .proxies
+        .iter()
+        .find(|endpoint| endpoint.id == input.id)
+        .and_then(|endpoint| endpoint.password.clone());
+    let password = input
+        .password
+        .or_else(|| input.keep_password.then_some(existing_password).flatten());
+    Ok(ProxyEndpoint {
+        id: input.id,
+        scheme: parse_proxy_scheme(&input.scheme)?,
+        host: input.host,
+        port: input.port,
+        username: input.username,
+        password,
+    })
+}
+
+fn proxy_test_error_message(endpoint: &ProxyEndpoint, error: &anyhow::Error) -> String {
+    let mut message = error.to_string();
+    if let Some(password) = endpoint
+        .password
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        message = message.replace(password, "******");
+    }
+    let mut chars = message.chars();
+    let truncated = chars.by_ref().take(240).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestProxyParams {
+    proxy_id: Option<String>,
+    endpoint: Option<ProxyEndpointInputDto>,
+}
+
+fn proxy_oauth_client(config: &PufferConfig, url: &str) -> Result<reqwest::blocking::Client> {
+    puffer_core::blocking_client_for_url(
+        &config.network.proxy,
+        puffer_core::HttpPurpose::OAuth,
+        url,
+        Duration::from_secs(60),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -849,6 +956,8 @@ async fn dispatch_request(
         "list_provider_models" => {
             respond!(detached!(|s, p| handle_list_provider_models(&s, &p)))
         }
+        "save_proxy_settings" => respond!(detached!(|s, p| handle_save_proxy_settings(&s, &p))),
+        "test_proxy" => respond!(detached!(|s, p| handle_test_proxy(&s, &p))),
         "list_permissions" => respond!(handle_list_permissions(&state)),
         "save_permissions" => respond!(handle_save_permissions(&state, &params)),
         "update_config" => respond!(detached!(|s, p| handle_update_config(&s, &p))),
@@ -1373,6 +1482,84 @@ fn handle_load_settings_snapshot(state: &DaemonState) -> Result<Value> {
     Ok(serde_json::to_value(snapshot)?)
 }
 
+fn handle_save_proxy_settings(state: &DaemonState, params: &Value) -> Result<Value> {
+    let input: SaveProxySettingsParams =
+        serde_json::from_value(params.clone()).context("invalid proxy settings")?;
+    let current_config = state.config.lock().unwrap().clone();
+    let proxies = input
+        .proxies
+        .into_iter()
+        .map(|endpoint| proxy_endpoint_from_input(endpoint, &current_config))
+        .collect::<Result<Vec<_>>>()?;
+    let mut config = current_config;
+    config.network.proxy = ProxyConfig {
+        enabled: input.enabled,
+        selected: input.selected.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }),
+        bypass: input.bypass,
+        proxies,
+    };
+    config.network.proxy.normalize_selection();
+    config.network.proxy.validate()?;
+    save_user_config(&state.paths, &config).context("save user config")?;
+    reload_daemon_config(state)?;
+    let fresh = state.build_runtime_inputs()?;
+    let config = state.config.lock().unwrap().clone();
+    let snapshot: SettingsSnapshotDto = desktop_api::load_settings_snapshot(
+        &state.paths,
+        &config,
+        &fresh.resources,
+        &fresh.providers,
+        &fresh.auth_store,
+        &fresh.session_store,
+    )?;
+    Ok(serde_json::to_value(snapshot)?)
+}
+
+fn handle_test_proxy(state: &DaemonState, params: &Value) -> Result<Value> {
+    let input: TestProxyParams =
+        serde_json::from_value(params.clone()).context("invalid proxy test params")?;
+    let current_config = state.config.lock().unwrap().clone();
+    let endpoint = if let Some(endpoint) = input.endpoint {
+        proxy_endpoint_from_input(endpoint, &current_config)?
+    } else {
+        let proxy_id = input
+            .proxy_id
+            .or_else(|| current_config.network.proxy.selected.clone())
+            .context("missing proxyId or endpoint")?;
+        current_config
+            .network
+            .proxy
+            .proxies
+            .iter()
+            .find(|endpoint| endpoint.id == proxy_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown proxy `{proxy_id}`"))?
+    };
+    let result = match test_proxy_connectivity(&endpoint, Duration::from_secs(8)) {
+        Ok((target_url, outcome)) => ProxyTestResultDto {
+            proxy_id: Some(endpoint.id.clone()),
+            ok: true,
+            message: format!(
+                "Connected to {target_url} with HTTP {}",
+                outcome.status_code
+            ),
+            latency_ms: Some(outcome.latency_ms),
+            status_code: Some(outcome.status_code),
+        },
+        Err(error) => ProxyTestResultDto {
+            proxy_id: Some(endpoint.id.clone()),
+            ok: false,
+            message: proxy_test_error_message(&endpoint, &error),
+            latency_ms: None,
+            status_code: None,
+        },
+    };
+    Ok(serde_json::to_value(result)?)
+}
+
 /// Stores an API key credential in the workspace auth store and returns
 /// the refreshed settings snapshot so the UI can re-render without a
 /// second round-trip.
@@ -1454,7 +1641,16 @@ fn handle_login_with_oauth(state: &DaemonState, params: &Value) -> Result<Value>
                     anyhow::bail!("oauth state mismatch for openai");
                 }
             }
-            let credential = exchange_openai_authorization_code(&code, &bundle.verifier, None)?;
+            let oauth_client = proxy_oauth_client(
+                &state.config.lock().unwrap().clone(),
+                puffer_provider_openai::OPENAI_TOKEN_URL,
+            )?;
+            let credential = puffer_provider_openai::exchange_authorization_code_with_client(
+                &oauth_client,
+                &code,
+                &bundle.verifier,
+                None,
+            )?;
             set_stored_credential(
                 &mut inputs.auth_store,
                 provider_id.to_string(),
@@ -1473,7 +1669,12 @@ fn handle_login_with_oauth(state: &DaemonState, params: &Value) -> Result<Value>
             let redirect_uri = inferred_anthropic_redirect_uri(&callback)
                 .or_else(|| bundle.manual_redirect_uri.clone())
                 .unwrap_or_else(|| ANTHROPIC_MANUAL_REDIRECT_URL.to_string());
-            let credential = exchange_anthropic_authorization_code(
+            let oauth_client = proxy_oauth_client(
+                &state.config.lock().unwrap().clone(),
+                ANTHROPIC_API_BASE_URL,
+            )?;
+            let credential = puffer_transport_anthropic::exchange_authorization_code_with_client(
+                &oauth_client,
                 &code,
                 &bundle.verifier,
                 &bundle.state,
@@ -1715,9 +1916,20 @@ fn handle_list_provider_models(state: &DaemonState, params: &Value) -> Result<Va
         .context("missing providerId")?;
     let provider_id = canonical_desktop_provider_id(requested_provider_id);
     let mut inputs = state.build_runtime_inputs_without_discovery()?;
-    inputs
-        .providers
-        .discover_and_merge_provider(&provider_id, &inputs.auth_store)?;
+    let config = state.config.lock().unwrap().clone();
+    if let Ok(client) = proxy_discovery_client(&config) {
+        inputs
+            .providers
+            .discover_and_merge_provider_with_discovery_client(
+                &provider_id,
+                &inputs.auth_store,
+                &client,
+            )?;
+    } else {
+        inputs
+            .providers
+            .discover_and_merge_provider(&provider_id, &inputs.auth_store)?;
+    }
     let entry = inputs
         .providers
         .provider_entries()
@@ -3976,13 +4188,16 @@ mod tests {
         handle_list_lambda_skill_libraries, handle_list_permissions, handle_list_provider_models,
         handle_local_model_status, handle_login_with_api_key, handle_logout_provider,
         handle_remove_lambda_skill_library, handle_save_lambda_skill_library,
-        handle_save_permissions, handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled,
-        model_descriptor_dto, permission_review_payload_json, report_cancelled_turn,
-        requires_explicit_subscription, resolve_create_session_model_id, run_off_runtime,
-        DaemonState, TurnProgress, TurnRequestOptions,
+        handle_save_permissions, handle_save_proxy_settings, handle_set_lambda_skill_approval,
+        handle_set_lambda_skill_enabled, model_descriptor_dto, permission_review_payload_json,
+        report_cancelled_turn, requires_explicit_subscription, resolve_create_session_model_id,
+        run_off_runtime, DaemonState, TurnProgress, TurnRequestOptions,
     };
     use indexmap::IndexMap;
-    use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
+    use puffer_config::{
+        ensure_workspace_dirs, load_config, ConfigPaths, ProxyConfig, ProxyEndpoint, ProxyScheme,
+        PufferConfig,
+    };
     use puffer_core::{AppState, ModelPreferenceFamily, ToolCallRequest, ToolInvocation};
     use puffer_provider_registry::{
         AuthStore, Modality, ModelDescriptor, ProviderDescriptor, ProviderRegistry,
@@ -3999,6 +4214,18 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn proxy_test_uses_public_connectivity_endpoint() {
+        assert_eq!(
+            super::proxy_connectivity_test_urls(),
+            &[
+                "https://www.gstatic.com/generate_204",
+                "https://cp.cloudflare.com/generate_204",
+                "https://www.cloudflare.com/cdn-cgi/trace",
+            ]
+        );
     }
 
     struct DiscoveryCacheEnvGuard {
@@ -4773,6 +5000,189 @@ mod tests {
             !model_ids.contains(&"gpt-5"),
             "fresh discovery should remove stale static models: {response}"
         );
+    }
+
+    #[test]
+    fn daemon_proxy_clients_accept_configured_proxy() {
+        let config = PufferConfig {
+            network: puffer_config::NetworkConfig {
+                proxy: puffer_config::ProxyConfig {
+                    enabled: false,
+                    selected: None,
+                    bypass: vec![],
+                    proxies: vec![],
+                },
+            },
+            ..PufferConfig::default()
+        };
+
+        let discovery = super::proxy_discovery_client(&config).expect("discovery client");
+        let oauth = super::proxy_oauth_client(&config, puffer_provider_openai::OPENAI_TOKEN_URL)
+            .expect("oauth client");
+        let _ = (discovery, oauth);
+    }
+
+    #[test]
+    fn save_proxy_settings_preserves_password_and_redacts_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(
+            workspace_root,
+            paths.clone(),
+            "token".into(),
+            true,
+            false,
+            false,
+        )
+        .expect("daemon state");
+        state.config.lock().unwrap().network.proxy = ProxyConfig {
+            enabled: true,
+            selected: Some("corp".to_string()),
+            bypass: vec!["localhost".to_string()],
+            proxies: vec![ProxyEndpoint {
+                id: "corp".to_string(),
+                scheme: ProxyScheme::Http,
+                host: "old-proxy.example.com".to_string(),
+                port: 8080,
+                username: Some("alice".to_string()),
+                password: Some("old-secret".to_string()),
+            }],
+        };
+
+        let response = handle_save_proxy_settings(
+            &state,
+            &json!({
+                "enabled": true,
+                "selected": "corp",
+                "bypass": ["localhost"],
+                "proxies": [{
+                    "id": "corp",
+                    "scheme": "https",
+                    "host": "proxy.example.com",
+                    "port": 8443,
+                    "username": "alice",
+                    "password": null,
+                    "keepPassword": true
+                }]
+            }),
+        )
+        .expect("save proxy settings");
+
+        let snapshot = &response["networkProxy"];
+        assert_eq!(snapshot["enabled"], true);
+        assert_eq!(snapshot["selected"], "corp");
+        assert_eq!(snapshot["proxies"][0]["hasPassword"], true);
+        assert_eq!(
+            snapshot["proxies"][0]["uri"],
+            "https://proxy.example.com:8443"
+        );
+        assert!(snapshot["proxies"][0].get("password").is_none());
+        let saved = load_config(&paths).expect("saved config");
+        let endpoint = saved
+            .network
+            .proxy
+            .proxies
+            .iter()
+            .find(|endpoint| endpoint.id == "corp")
+            .expect("saved proxy");
+        assert_eq!(endpoint.scheme, ProxyScheme::Https);
+        assert_eq!(endpoint.password.as_deref(), Some("old-secret"));
+    }
+
+    #[test]
+    fn save_proxy_settings_disables_empty_enabled_proxy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(
+            workspace_root,
+            paths.clone(),
+            "token".into(),
+            true,
+            false,
+            false,
+        )
+        .expect("daemon state");
+
+        let response = handle_save_proxy_settings(
+            &state,
+            &json!({
+                "enabled": true,
+                "selected": null,
+                "bypass": ["localhost"],
+                "proxies": []
+            }),
+        )
+        .expect("save proxy settings");
+
+        let snapshot = &response["networkProxy"];
+        assert_eq!(snapshot["enabled"], false);
+        assert!(snapshot["selected"].is_null());
+        assert_eq!(snapshot["proxies"].as_array().expect("proxies").len(), 0);
+        let saved = load_config(&paths).expect("saved config");
+        assert!(!saved.network.proxy.enabled);
+        assert_eq!(saved.network.proxy.selected, None);
+    }
+
+    #[test]
+    fn save_proxy_settings_selects_first_proxy_when_enabling_without_selection() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(
+            workspace_root,
+            paths.clone(),
+            "token".into(),
+            true,
+            false,
+            false,
+        )
+        .expect("daemon state");
+
+        let response = handle_save_proxy_settings(
+            &state,
+            &json!({
+                "enabled": true,
+                "selected": null,
+                "bypass": ["localhost"],
+                "proxies": [{
+                    "id": "local",
+                    "scheme": "socks5",
+                    "host": "127.0.0.1",
+                    "port": 7890,
+                    "username": null,
+                    "password": null,
+                    "keepPassword": false
+                }]
+            }),
+        )
+        .expect("save proxy settings");
+
+        let snapshot = &response["networkProxy"];
+        assert_eq!(snapshot["enabled"], true);
+        assert_eq!(snapshot["selected"], "local");
+        let saved = load_config(&paths).expect("saved config");
+        assert!(saved.network.proxy.enabled);
+        assert_eq!(saved.network.proxy.selected.as_deref(), Some("local"));
     }
 
     #[test]

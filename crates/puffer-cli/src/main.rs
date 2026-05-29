@@ -151,7 +151,15 @@ fn main() -> Result<()> {
     // (e.g. a slow custom `openai_base_url`) cannot delay startup. Newly
     // discovered models become available on the next launch.
     let stale_provider_ids = providers.apply_discovery_cache();
-    let _discovery_handle = providers.start_background_discovery(stale_provider_ids, &auth_store);
+    let _discovery_handle = if let Ok(client) = proxy_discovery_client(&config) {
+        providers.start_background_discovery_with_discovery_client(
+            stale_provider_ids,
+            &auth_store,
+            client,
+        )
+    } else {
+        providers.start_background_discovery(stale_provider_ids, &auth_store)
+    };
 
     // Boot background automation only for long-lived processes. Short CLI
     // commands like `workflow register` and `workflow ls` must not fire cron
@@ -213,6 +221,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Auth { command }) => run_auth_command(
             command,
+            &config,
             config.default_provider.as_deref(),
             &mut auth_store,
             &auth_path,
@@ -827,6 +836,7 @@ fn run_session_command(command: Option<SessionCommand>, paths: &ConfigPaths) -> 
 
 fn run_auth_command(
     command: AuthCommand,
+    config: &puffer_config::PufferConfig,
     default_provider: Option<&str>,
     auth_store: &mut AuthStore,
     auth_path: &std::path::Path,
@@ -879,7 +889,9 @@ fn run_auth_command(
                     "provider `{provider}` does not support OAuth; use `puffer setup-token {provider}` or `puffer auth set-api-key {provider}`"
                 );
             }
-            run_login_flow(&provider, value, stdin, auth_store, auth_path, providers)?;
+            run_login_flow(
+                &provider, value, stdin, auth_store, auth_path, providers, config,
+            )?;
         }
         AuthCommand::Logout { provider } => {
             let provider = resolve_provider_arg(providers, provider, default_provider);
@@ -967,7 +979,17 @@ fn run_auth_command(
                             anyhow::bail!("oauth state mismatch for openai");
                         }
                     }
-                    let credential = exchange_openai_code(&code, &verifier, None)?;
+                    let credential = match proxy_oauth_client(
+                        config,
+                        puffer_provider_openai::OPENAI_TOKEN_URL,
+                    ) {
+                        Ok(client) => {
+                            puffer_provider_openai::exchange_authorization_code_with_client(
+                                &client, &code, &verifier, None,
+                            )?
+                        }
+                        Err(_) => exchange_openai_code(&code, &verifier, None)?,
+                    };
                     auth_store.set_oauth(
                         provider.clone(),
                         to_registry_oauth_credential_openai(credential),
@@ -986,13 +1008,25 @@ fn run_auth_command(
                     }
                     let redirect_uri = inferred_anthropic_redirect_uri(&input)
                         .unwrap_or_else(|| ANTHROPIC_MANUAL_REDIRECT_URL.to_string());
-                    let credential = exchange_anthropic_code(
-                        &code,
-                        &verifier,
-                        &expected_state,
-                        Some(&redirect_uri),
-                        Some(ANTHROPIC_API_BASE_URL),
-                    )?;
+                    let credential = match proxy_oauth_client(config, ANTHROPIC_API_BASE_URL) {
+                        Ok(client) => {
+                            puffer_transport_anthropic::exchange_authorization_code_with_client(
+                                &client,
+                                &code,
+                                &verifier,
+                                &expected_state,
+                                Some(&redirect_uri),
+                                Some(ANTHROPIC_API_BASE_URL),
+                            )?
+                        }
+                        Err(_) => exchange_anthropic_code(
+                            &code,
+                            &verifier,
+                            &expected_state,
+                            Some(&redirect_uri),
+                            Some(ANTHROPIC_API_BASE_URL),
+                        )?,
+                    };
                     store_anthropic_credential(auth_store, &provider, credential)?;
                 }
                 None => anyhow::bail!("oauth exchange is not implemented for {provider}"),
@@ -1010,17 +1044,34 @@ fn run_auth_command(
             };
             let refreshed = match oauth_family_for_provider(providers, &provider) {
                 Some(OauthFamily::OpenAi) => {
-                    StoredCredential::OAuth(to_registry_oauth_credential_openai(
-                        refresh_openai_oauth_token(&existing.refresh_token)?,
-                    ))
+                    let credential = match proxy_oauth_client(
+                        config,
+                        puffer_provider_openai::OPENAI_TOKEN_URL,
+                    ) {
+                        Ok(client) => puffer_provider_openai::refresh_oauth_token_with_client(
+                            &client,
+                            &existing.refresh_token,
+                        )?,
+                        Err(_) => refresh_openai_oauth_token(&existing.refresh_token)?,
+                    };
+                    StoredCredential::OAuth(to_registry_oauth_credential_openai(credential))
                 }
                 Some(OauthFamily::Anthropic) => {
-                    store_ready_credential_from_anthropic(refresh_anthropic_oauth_token(
-                        &existing.refresh_token,
-                        anthropic_refresh_scopes(existing).as_deref(),
-                        Some(ANTHROPIC_API_BASE_URL),
-                        Some(&registry_to_anthropic_oauth_credential(existing)),
-                    )?)?
+                    let credential = match proxy_oauth_client(config, ANTHROPIC_API_BASE_URL) {
+                        Ok(client) => puffer_transport_anthropic::refresh_oauth_token_with_client(
+                            &client,
+                            &existing.refresh_token,
+                            anthropic_refresh_scopes(existing).as_deref(),
+                            Some(&registry_to_anthropic_oauth_credential(existing)),
+                        )?,
+                        Err(_) => refresh_anthropic_oauth_token(
+                            &existing.refresh_token,
+                            anthropic_refresh_scopes(existing).as_deref(),
+                            Some(ANTHROPIC_API_BASE_URL),
+                            Some(&registry_to_anthropic_oauth_credential(existing)),
+                        )?,
+                    };
+                    store_ready_credential_from_anthropic(credential)?
                 }
                 None => anyhow::bail!("oauth refresh is not implemented for {provider}"),
             };
@@ -1050,6 +1101,32 @@ fn resolve_provider_id(providers: &ProviderRegistry, provider: &str) -> String {
         .unwrap_or_else(|| canonical_provider_id(provider))
 }
 
+fn proxy_discovery_client(
+    config: &puffer_config::PufferConfig,
+) -> Result<puffer_provider_registry::ModelDiscoveryClient> {
+    let client = puffer_core::blocking_client_for_url(
+        &config.network.proxy,
+        puffer_core::HttpPurpose::Discovery,
+        "https://api.openai.com/v1/models",
+        Duration::from_secs(8),
+    )?;
+    Ok(puffer_provider_registry::ModelDiscoveryClient::with_client(
+        client,
+    ))
+}
+
+fn proxy_oauth_client(
+    config: &puffer_config::PufferConfig,
+    url: &str,
+) -> Result<reqwest::blocking::Client> {
+    puffer_core::blocking_client_for_url(
+        &config.network.proxy,
+        puffer_core::HttpPurpose::OAuth,
+        url,
+        Duration::from_secs(60),
+    )
+}
+
 fn run_login_flow(
     provider: &str,
     value: Option<String>,
@@ -1057,6 +1134,7 @@ fn run_login_flow(
     auth_store: &mut AuthStore,
     auth_path: &std::path::Path,
     providers: &ProviderRegistry,
+    config: &puffer_config::PufferConfig,
 ) -> Result<()> {
     let callback_listener = if stdin || value.is_some() {
         None
@@ -1103,7 +1181,16 @@ fn run_login_flow(
                     anyhow::bail!("oauth state mismatch for openai");
                 }
             }
-            let credential = exchange_openai_code(&code, &bundle.verifier, None)?;
+            let credential =
+                match proxy_oauth_client(config, puffer_provider_openai::OPENAI_TOKEN_URL) {
+                    Ok(client) => puffer_provider_openai::exchange_authorization_code_with_client(
+                        &client,
+                        &code,
+                        &bundle.verifier,
+                        None,
+                    )?,
+                    Err(_) => exchange_openai_code(&code, &bundle.verifier, None)?,
+                };
             auth_store.set_oauth(
                 provider.to_string(),
                 to_registry_oauth_credential_openai(credential),
@@ -1121,13 +1208,23 @@ fn run_login_flow(
             let redirect_uri = inferred_anthropic_redirect_uri(&input)
                 .or_else(|| bundle.manual_redirect_uri.clone())
                 .unwrap_or_else(|| ANTHROPIC_MANUAL_REDIRECT_URL.to_string());
-            let credential = exchange_anthropic_code(
-                &code,
-                &bundle.verifier,
-                &bundle.state,
-                Some(&redirect_uri),
-                Some(ANTHROPIC_API_BASE_URL),
-            )?;
+            let credential = match proxy_oauth_client(config, ANTHROPIC_API_BASE_URL) {
+                Ok(client) => puffer_transport_anthropic::exchange_authorization_code_with_client(
+                    &client,
+                    &code,
+                    &bundle.verifier,
+                    &bundle.state,
+                    Some(&redirect_uri),
+                    Some(ANTHROPIC_API_BASE_URL),
+                )?,
+                Err(_) => exchange_anthropic_code(
+                    &code,
+                    &bundle.verifier,
+                    &bundle.state,
+                    Some(&redirect_uri),
+                    Some(ANTHROPIC_API_BASE_URL),
+                )?,
+            };
             store_anthropic_credential(auth_store, provider, credential)?;
         }
         None => anyhow::bail!("oauth login is not implemented for {provider}"),
@@ -1319,4 +1416,27 @@ fn run_serve_command(
     }
     puffer_core::shutdown_runtime_services().ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cli_proxy_clients_accept_configured_proxy() {
+        let config = puffer_config::PufferConfig {
+            network: puffer_config::NetworkConfig {
+                proxy: puffer_config::ProxyConfig {
+                    enabled: false,
+                    selected: None,
+                    bypass: vec![],
+                    proxies: vec![],
+                },
+            },
+            ..puffer_config::PufferConfig::default()
+        };
+
+        let discovery = super::proxy_discovery_client(&config).expect("discovery client");
+        let oauth = super::proxy_oauth_client(&config, puffer_provider_openai::OPENAI_TOKEN_URL)
+            .expect("oauth client");
+        let _ = (discovery, oauth);
+    }
 }

@@ -127,6 +127,208 @@ test("default model load errors stay scoped to the selected provider", async ({ 
   await expect(modelSelect).toHaveValue("codex-default");
 });
 
+test("network proxy test renders connected latency inline", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const pane = page.locator(".pf-settings-pane");
+  const proxyCard = pane.locator(".pf-network-proxy-card").filter({
+    hasText: "socks5://127.0.0.1:7890"
+  });
+  await proxyCard.getByRole("button", { name: "Test" }).click();
+
+  const request = await daemon.waitForRequest("test_proxy");
+  expect(request.params).toMatchObject({ proxyId: "local" });
+  await expect(proxyCard.locator(".pf-network-status")).toHaveText("connected (ping: 848 ms)");
+  await expect(proxyCard.locator(".pf-network-status")).toHaveAttribute("data-state", "connected");
+});
+
+test("network proxy editor uses compact controls", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const proxySection = page.locator("section[aria-label='Proxy list']");
+  await expect(
+    proxySection.locator(".pf-network-section-head").getByRole("button", { name: "Add proxy" })
+  ).toBeVisible();
+
+  await proxySection.getByRole("button", { name: "Add proxy" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add proxy" });
+  await expect(dialog.getByLabel("Scheme")).toHaveValue("socks5");
+  await expect(dialog.getByText("socks5h://127.0.0.1:7890")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Save proxy" })).toHaveAttribute(
+    "data-variant",
+    "default"
+  );
+  await expect(dialog.getByLabel("Port")).not.toHaveAttribute("type", "number");
+
+  const endpointGrid = dialog.locator(".pf-network-form-grid").first();
+  await expect(endpointGrid.getByLabel("Host")).toBeVisible();
+  await expect(endpointGrid.getByLabel("Port")).toBeVisible();
+
+  const credentialGrid = dialog.locator(".pf-network-form-grid").nth(1);
+  await expect(credentialGrid.getByLabel("Username")).toBeVisible();
+  await expect(credentialGrid.getByLabel("Password")).toBeVisible();
+});
+
+test("network proxy item delete persists the remaining proxy list", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setNetworkProxy({
+    enabled: true,
+    selected: "local",
+    bypass: ["localhost"],
+    proxies: [
+      {
+        id: "local",
+        scheme: "socks5",
+        host: "127.0.0.1",
+        port: 7890,
+        username: null,
+        hasPassword: false,
+        uri: "socks5://127.0.0.1:7890"
+      },
+      {
+        id: "backup",
+        scheme: "socks5h",
+        host: "127.0.0.1",
+        port: 7891,
+        username: null,
+        hasPassword: false,
+        uri: "socks5h://127.0.0.1:7891"
+      }
+    ],
+    lastTest: null
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const pane = page.locator(".pf-settings-pane");
+  const proxyCard = pane.locator(".pf-network-proxy-card").filter({
+    hasText: "socks5://127.0.0.1:7890"
+  });
+  await proxyCard.getByRole("button", { name: "Delete" }).click();
+
+  const saveRequest = await daemon.waitForRequest("save_proxy_settings");
+  expect(saveRequest.params).toMatchObject({
+    enabled: true,
+    selected: "backup",
+    bypass: ["localhost"]
+  });
+  expect(saveRequest.params.proxies).toEqual([
+    expect.objectContaining({ id: "backup", scheme: "socks5h", host: "127.0.0.1", port: 7891 })
+  ]);
+  await expect(pane.getByText("socks5://127.0.0.1:7890")).toHaveCount(0);
+});
+
+test("network proxy switch is disabled without proxy list items", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setNetworkProxy({
+    enabled: true,
+    selected: null,
+    bypass: ["localhost"],
+    proxies: [],
+    lastTest: null
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const pane = page.locator(".pf-settings-pane");
+  const proxySwitch = pane.locator(".pf-network-switch");
+  await expect(proxySwitch).not.toBeChecked();
+  await expect(proxySwitch).toBeDisabled();
+  await expect(pane.locator(".pf-settings-note.warn")).toHaveCount(0);
+});
+
+test("network proxy deleting the final item disables routing", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setNetworkProxy({
+    enabled: true,
+    selected: "local",
+    bypass: ["localhost"],
+    proxies: [
+      {
+        id: "local",
+        scheme: "socks5",
+        host: "127.0.0.1",
+        port: 7890,
+        username: null,
+        hasPassword: false,
+        uri: "socks5://127.0.0.1:7890"
+      }
+    ],
+    lastTest: null
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const pane = page.locator(".pf-settings-pane");
+  const proxyCard = pane.locator(".pf-network-proxy-card").filter({
+    hasText: "socks5://127.0.0.1:7890"
+  });
+  await proxyCard.getByRole("button", { name: "Delete" }).click();
+
+  const saveRequest = await daemon.waitForRequest("save_proxy_settings");
+  expect(saveRequest.params).toMatchObject({
+    enabled: false,
+    selected: null,
+    proxies: []
+  });
+  const proxySwitch = pane.locator(".pf-network-switch");
+  await expect(proxySwitch).not.toBeChecked();
+  await expect(proxySwitch).toBeDisabled();
+});
+
+test("network bypass editor preserves input and validates before save", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Network" }).click();
+
+  const bypassSection = page.locator("section[aria-label='Bypass']");
+  const bypassInput = bypassSection.locator(".pf-network-bypass");
+  const saveButton = bypassSection.getByRole("button", { name: "Save bypass" });
+  await expect(saveButton).toHaveAttribute("data-variant", "default");
+
+  await bypassInput.fill("localhost\napi.example.com");
+  await page.waitForTimeout(80);
+  await expect(bypassInput).toHaveValue("localhost\napi.example.com");
+
+  await saveButton.click();
+  const saveRequest = await daemon.waitForRequest("save_proxy_settings");
+  expect(saveRequest.params.bypass).toEqual(["localhost", "api.example.com"]);
+
+  const savedRequestCount = daemon.requests.filter(
+    (request) => request.method === "save_proxy_settings"
+  ).length;
+  await bypassInput.fill("localhost\n*.example.com");
+  await saveButton.click();
+  await page.waitForTimeout(80);
+
+  await expect(page.getByText("Invalid bypass entry: *.example.com")).toBeVisible();
+  expect(daemon.requests.filter((request) => request.method === "save_proxy_settings")).toHaveLength(
+    savedRequestCount
+  );
+});
+
 test("default routing only offers authenticated agent providers", async ({ page }) => {
   const daemon = new FakeDaemon({
     auth: [

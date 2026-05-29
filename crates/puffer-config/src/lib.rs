@@ -1,5 +1,6 @@
 pub mod env_vars;
 mod home_override;
+mod proxy;
 mod settings_catalog;
 
 use anyhow::Context;
@@ -15,6 +16,7 @@ use std::path::{Path, PathBuf};
 const BUILTIN_RESOURCES_DIR_ENV: &str = "PUFFER_BUILTIN_RESOURCES_DIR";
 
 pub use home_override::{set_puffer_home_override, PufferHomeOverride};
+pub use proxy::{NetworkConfig, ProxyConfig, ProxyEndpoint, ProxyScheme, SanitizedProxyEndpoint};
 pub use settings_catalog::{
     config_setting_persists_to_workspace_file, config_setting_scope, config_setting_spec,
     normalize_config_setting_key, parse_config_cli_value, supported_config_settings,
@@ -46,6 +48,8 @@ pub struct PufferConfig {
     pub recap: RecapConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
     pub mascot: MascotConfig,
     pub ui: UiConfig,
     /// When set, the runtime constructs a remote `RemoteToolRunner` against
@@ -230,6 +234,7 @@ impl Default for PufferConfig {
             memory: MemoryConfig::default(),
             recap: RecapConfig::default(),
             browser: BrowserConfig::default(),
+            network: NetworkConfig::default(),
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),
@@ -418,6 +423,7 @@ pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
             config.effort_level.clone(),
             config.copy_full_response,
             config.browser.clone(),
+            config.network.clone(),
         ));
     }
     if paths.workspace_config_file().exists() {
@@ -433,6 +439,7 @@ pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
         effort_level,
         copy_full_response,
         browser,
+        network,
     )) = user_selection
     {
         config.default_provider = provider;
@@ -443,6 +450,7 @@ pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
         config.effort_level = effort_level;
         config.copy_full_response = copy_full_response;
         config.browser = browser;
+        config.network = network;
     }
     Ok(config)
 }

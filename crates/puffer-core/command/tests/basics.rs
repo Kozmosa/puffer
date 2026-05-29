@@ -509,6 +509,7 @@ fn app_state_defaults_expose_command_state() {
             memory: puffer_config::MemoryConfig::default(),
             recap: puffer_config::RecapConfig::default(),
             browser: puffer_config::BrowserConfig::default(),
+            network: puffer_config::NetworkConfig::default(),
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),

@@ -5,6 +5,7 @@
   import Icon, { type IconName } from "../design/Icon.svelte";
   import LoginView from "../components/LoginView.svelte";
   import LocalModelSetupCard from "../components/LocalModelSetupCard.svelte";
+  import NetworkSettings from "./settings/NetworkSettings.svelte";
   import { focusTrap } from "../focusTrap";
   import {
     providerIdCanRunAgent,
@@ -97,12 +98,13 @@
     props.onRefresh();
   }
 
-  type Section = "general" | "providers" | "connectors" | "permissions" | "skills" | "mcp" | "git" | "appearance" | "shortcuts";
+  type Section = "general" | "providers" | "network" | "connectors" | "permissions" | "skills" | "mcp" | "git" | "appearance" | "shortcuts";
   let section = $state<Section>("general");
 
   const navItems: { id: Section; label: string; icon: IconName }[] = [
     { id: "general",     label: "General",    icon: "settings" },
     { id: "providers",   label: "Providers",  icon: "plug" },
+    { id: "network",     label: "Network",    icon: "globe" },
     { id: "connectors",  label: "Connectors", icon: "server" },
     { id: "permissions", label: "Permissions", icon: "bolt" },
     { id: "skills",      label: "Verified Skills", icon: "shield" },
@@ -1525,6 +1527,9 @@
         onImportExternal={props.onImportExternal ?? (() => {})}
         onRefresh={props.onRefresh}
       />
+
+    {:else if section === "network"}
+      <NetworkSettings snapshot={props.snapshot} onSaved={(_next) => props.onRefresh()} />
 
     {:else if section === "connectors"}
       <h2>Connectors</h2>

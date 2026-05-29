@@ -171,6 +171,7 @@ pub(super) fn execute_tool_call(
         Ok(policy) => policy,
         Err(denied) => return Ok(denied),
     };
+    let proxy_config = state.config.network.proxy.clone();
     let provider_context = match backend {
         ToolExecutionBackend::Anthropic {
             request_config,
@@ -178,6 +179,7 @@ pub(super) fn execute_tool_call(
         } => ProviderToolContext::Anthropic {
             request_config,
             model_id,
+            proxy: &proxy_config,
             structured_output,
         },
         ToolExecutionBackend::OpenAi {
@@ -186,6 +188,7 @@ pub(super) fn execute_tool_call(
         } => ProviderToolContext::OpenAI {
             request_config,
             model_id,
+            proxy: &proxy_config,
             structured_output,
         },
     };

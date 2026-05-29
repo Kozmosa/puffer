@@ -79,9 +79,27 @@ pub fn exchange_authorization_code(
     auth::exchange_authorization_code(code, verifier, redirect_uri)
 }
 
+/// Exchanges an OAuth authorization code using an injected blocking HTTP client.
+pub fn exchange_authorization_code_with_client(
+    client: &reqwest::blocking::Client,
+    code: &str,
+    verifier: &str,
+    redirect_uri: Option<&str>,
+) -> anyhow::Result<OpenAIOAuthCredentials> {
+    auth::exchange_authorization_code_with_client(client, code, verifier, redirect_uri)
+}
+
 /// Refreshes OpenAI bearer credentials from a stored refresh token.
 pub fn refresh_oauth_token(refresh_token: &str) -> anyhow::Result<OpenAIOAuthCredentials> {
     auth::refresh_oauth_token(refresh_token)
+}
+
+/// Refreshes OpenAI bearer credentials using an injected blocking HTTP client.
+pub fn refresh_oauth_token_with_client(
+    client: &reqwest::blocking::Client,
+    refresh_token: &str,
+) -> anyhow::Result<OpenAIOAuthCredentials> {
+    auth::refresh_oauth_token_with_client(client, refresh_token)
 }
 
 /// Builds an ordered OpenAI Responses API request for execution or testing.

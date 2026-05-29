@@ -20,10 +20,10 @@ use crate::desktop_activity::session_activity_status;
 use crate::desktop_api_types::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
     BrowserGoogleAccountDto, BrowserProfileDto, DiffSummaryDto, DivergenceReportDto,
-    ExternalCredentialDto, FolderGroupDto, ProviderSummaryDto, RepoActionResultDto,
-    RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto, SessionGroupsPageDto,
-    SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto,
-    TimelineItemDto,
+    ExternalCredentialDto, FolderGroupDto, NetworkProxySettingsDto, ProviderSummaryDto,
+    RepoActionResultDto, RepoPullRequestDto, RepoStatusDto, ResourceCountsDto,
+    SanitizedProxyEndpointDto, SessionDetailDto, SessionGroupsPageDto, SessionListItemDto,
+    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.
@@ -424,8 +424,36 @@ pub(crate) fn load_settings_snapshot(
         },
         auth: auth_statuses(auth_store),
         providers: providers.provider_entries().map(provider_summary).collect(),
+        network_proxy: network_proxy_settings_dto(config),
         browser_profiles: browser_profile_dtos(config.browser.chrome_profile.as_deref()),
     })
+}
+
+fn network_proxy_settings_dto(config: &PufferConfig) -> NetworkProxySettingsDto {
+    NetworkProxySettingsDto {
+        enabled: config.network.proxy.enabled,
+        selected: config.network.proxy.selected.clone(),
+        bypass: config.network.proxy.bypass.clone(),
+        proxies: config
+            .network
+            .proxy
+            .proxies
+            .iter()
+            .map(|endpoint| {
+                let sanitized = endpoint.sanitized();
+                SanitizedProxyEndpointDto {
+                    id: sanitized.id,
+                    scheme: sanitized.scheme.as_uri_scheme().to_string(),
+                    host: sanitized.host,
+                    port: sanitized.port,
+                    username: sanitized.username,
+                    has_password: sanitized.has_password,
+                    uri: sanitized.uri,
+                }
+            })
+            .collect(),
+        last_test: None,
+    }
 }
 
 fn browser_profile_dtos(selected_profile: Option<&str>) -> Vec<BrowserProfileDto> {

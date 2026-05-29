@@ -74,8 +74,11 @@ pub(super) fn execute_tool_batch(
     }
 
     let session_id = inputs.state.session.id;
-    let provider_context =
-        backend_to_provider_context(session.tool_execution_backend(), inputs.model_id);
+    let provider_context = backend_to_provider_context(
+        session.tool_execution_backend(),
+        inputs.model_id,
+        &inputs.state.config.network.proxy,
+    );
     // Cloned once before `thread::scope` because the worker closures cannot
     // touch `inputs.state` (no `&mut AppState` across spawn boundaries).
     // `Arc<dyn ToolRunner>` is `Send + Sync` and clones cheaply.
@@ -464,6 +467,7 @@ fn enforce_tool_result_budget_in_place(invocations: &mut [ToolInvocation], sessi
 fn backend_to_provider_context<'a>(
     backend: ToolExecutionBackend<'a>,
     model_id: &'a str,
+    proxy: &'a puffer_config::ProxyConfig,
 ) -> ProviderToolContext<'a> {
     match backend {
         ToolExecutionBackend::OpenAi {
@@ -472,6 +476,7 @@ fn backend_to_provider_context<'a>(
         } => ProviderToolContext::OpenAI {
             request_config,
             model_id,
+            proxy,
             structured_output,
         },
         ToolExecutionBackend::Anthropic {
@@ -480,6 +485,7 @@ fn backend_to_provider_context<'a>(
         } => ProviderToolContext::Anthropic {
             request_config,
             model_id,
+            proxy,
             structured_output,
         },
     }

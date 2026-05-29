@@ -1,5 +1,5 @@
 use puffer_session_store::MessageActor;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
@@ -264,7 +264,62 @@ pub(crate) struct SettingsSnapshotDto {
     pub(crate) sessions: SettingsSessionSummaryDto,
     pub(crate) auth: Vec<AuthProviderStatusDto>,
     pub(crate) providers: Vec<ProviderSummaryDto>,
+    pub(crate) network_proxy: NetworkProxySettingsDto,
     pub(crate) browser_profiles: Vec<BrowserProfileDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkProxySettingsDto {
+    pub(crate) enabled: bool,
+    pub(crate) selected: Option<String>,
+    pub(crate) bypass: Vec<String>,
+    pub(crate) proxies: Vec<SanitizedProxyEndpointDto>,
+    pub(crate) last_test: Option<ProxyTestResultDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SanitizedProxyEndpointDto {
+    pub(crate) id: String,
+    pub(crate) scheme: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) username: Option<String>,
+    pub(crate) has_password: bool,
+    pub(crate) uri: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProxyTestResultDto {
+    pub(crate) proxy_id: Option<String>,
+    pub(crate) ok: bool,
+    pub(crate) message: String,
+    pub(crate) latency_ms: Option<u128>,
+    pub(crate) status_code: Option<u16>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SaveProxySettingsParams {
+    pub(crate) enabled: bool,
+    pub(crate) selected: Option<String>,
+    pub(crate) bypass: Vec<String>,
+    pub(crate) proxies: Vec<ProxyEndpointInputDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProxyEndpointInputDto {
+    pub(crate) id: String,
+    pub(crate) scheme: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) username: Option<String>,
+    pub(crate) password: Option<String>,
+    #[serde(default)]
+    pub(crate) keep_password: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

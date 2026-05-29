@@ -343,6 +343,51 @@ export type BrowserGoogleAccount = {
   gaiaId: string | null;
 };
 
+export type ProxyScheme = "http" | "https" | "socks5" | "socks5h";
+
+export type SanitizedProxyEndpoint = {
+  id: string;
+  scheme: ProxyScheme;
+  host: string;
+  port: number;
+  username: string | null;
+  hasPassword: boolean;
+  uri: string;
+};
+
+export type ProxyTestResult = {
+  proxyId: string | null;
+  ok: boolean;
+  message: string;
+  latencyMs: number | null;
+  statusCode: number | null;
+};
+
+export type NetworkProxySettings = {
+  enabled: boolean;
+  selected: string | null;
+  bypass: string[];
+  proxies: SanitizedProxyEndpoint[];
+  lastTest: ProxyTestResult | null;
+};
+
+export type DraftProxyEndpoint = {
+  id: string;
+  scheme: ProxyScheme;
+  host: string;
+  port: number;
+  username: string | null;
+  password: string | null;
+  keepPassword?: boolean;
+};
+
+export type SaveProxySettingsInput = {
+  enabled: boolean;
+  selected: string | null;
+  bypass: string[];
+  proxies: DraftProxyEndpoint[];
+};
+
 export type SettingsSnapshot = {
   workspaceRoot: string;
   workspaceConfigFile: string;
@@ -354,6 +399,7 @@ export type SettingsSnapshot = {
   sessions: SettingsSessionSummary;
   auth: AuthProviderStatus[];
   providers: ProviderSummary[];
+  networkProxy: NetworkProxySettings;
   browserProfiles: BrowserProfile[];
 };
 
