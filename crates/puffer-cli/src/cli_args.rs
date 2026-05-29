@@ -170,7 +170,7 @@ pub(crate) enum Command {
     },
     /// Run the Puffer daemon — a WebSocket/NDJSON server that exposes the
     /// runtime (conversations, turns, permissions) to desktop / web / remote
-    /// clients. One daemon per workspace; auth is a pre-shared token.
+    /// clients. One daemon per host/user config; auth is a pre-shared token.
     Daemon {
         /// Bind address. Defaults to `127.0.0.1:0` (ephemeral localhost).
         #[arg(long = "bind", default_value = "127.0.0.1:0")]

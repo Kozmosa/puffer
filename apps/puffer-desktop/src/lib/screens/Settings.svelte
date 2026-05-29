@@ -4,6 +4,7 @@
   import { onDestroy } from "svelte";
   import Icon, { type IconName } from "../design/Icon.svelte";
   import LoginView from "../components/LoginView.svelte";
+  import LocalModelSetupCard from "../components/LocalModelSetupCard.svelte";
   import { focusTrap } from "../focusTrap";
   import {
     providerIdCanRunAgent,
@@ -1371,6 +1372,8 @@
           resources reload.
         </div>
       {/if}
+      <LocalModelSetupCard onRefresh={props.onRefresh} />
+
       <div class="pf-settings-row" style="align-items: start;">
         <div class="meta">
           <div class="label">Default routing</div>

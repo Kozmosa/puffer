@@ -1519,7 +1519,7 @@ test("connector settings renders dynamic AskUserQuestion inputs", async ({ page 
       "Setup mode": "Default"
     }
   });
-  await expect(pane.getByText("Created connector connection telegram-test.")).toBeVisible();
+  await expect(pane.getByText("Connector setup finished for telegram-test.")).toBeVisible();
   await expect(pane.locator(".pf-mcp-card").filter({ hasText: "telegram-test" })).toBeVisible();
 });
 
@@ -1634,4 +1634,30 @@ test("connector settings remain readable on narrow screens", async ({ page }) =>
   const dialogBox = await createDialog.boundingBox();
   expect(dialogBox?.width).toBeGreaterThan(340);
   await expect(createDialog.getByLabel("Connector connection slug")).toBeVisible();
+});
+
+test("providers pane can install and start the local MiniCPM5 behavior model", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Providers" }).click();
+
+  const pane = page.locator(".pf-settings-pane");
+  const card = pane.locator(".pf-local-model-card");
+  await expect(card.getByRole("heading", { name: "MiniCPM5 local model" })).toBeVisible();
+  await expect(card).toContainText("MiniCPM5-1B runs on-device");
+
+  await card.getByRole("button", { name: "Check status" }).click();
+  await expect(card).toContainText("Status checked at");
+  await expect(card).toContainText("Server health");
+  await expect(card).toContainText("http://127.0.0.1:8088/v1/models");
+
+  await card.getByRole("button", { name: /Install MiniCPM5/ }).click();
+  const install = await daemon.waitForRequest("install_local_model");
+  expect(install.params).toMatchObject({ modelId: "minicpm5" });
+
+  await expect(card).toContainText("MiniCPM5 is installed, registered, and running");
+  await expect(card.getByRole("button", { name: /MiniCPM5 ready/ })).toBeDisabled();
 });
