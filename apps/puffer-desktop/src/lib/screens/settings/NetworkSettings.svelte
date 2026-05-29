@@ -8,6 +8,7 @@
   } from "../../types";
   import { saveProxySettings, testProxy } from "../../api/desktop";
   import Icon from "../../design/Icon.svelte";
+  import { focusTrap } from "../../focusTrap";
 
   type Props = {
     snapshot: SettingsSnapshot | null;
@@ -35,6 +36,9 @@
   let draftPassword = $state("");
 
   let proxy = $derived(props.snapshot?.networkProxy ?? emptyProxy);
+  let editingExisting = $derived(proxy.proxies.some((item) => item.id === editing?.id));
+  let editingTitle = $derived(editingExisting ? "Edit proxy" : "Add proxy");
+  let editingValidation = $derived(editing ? proxyValidationLabel(editing) : null);
   $effect(() => {
     if (!props.snapshot?.networkProxy) return;
     const nextBypass = props.snapshot.networkProxy.bypass.join("\n");
@@ -45,11 +49,31 @@
   });
 
   function nextProxyId() {
-    return `proxy-${Date.now()}`;
+    const existing = new Set(proxy.proxies.map((item) => item.id));
+    const base = `proxy-${Date.now()}`;
+    if (!existing.has(base)) return base;
+    let suffix = 2;
+    while (existing.has(`${base}-${suffix}`)) suffix += 1;
+    return `${base}-${suffix}`;
   }
 
   function endpointUri(endpoint: DraftProxyEndpoint) {
     return `${endpoint.scheme}://${endpoint.host.trim()}:${endpoint.port || 0}`;
+  }
+
+  function endpointPreview(endpoint: DraftProxyEndpoint) {
+    if (!endpoint.host.trim() || !validProxyPort(endpoint.port)) return "Enter host and port.";
+    return endpointUri(endpoint);
+  }
+
+  function validProxyPort(port: number) {
+    return Number.isInteger(port) && port >= 1 && port <= 65535;
+  }
+
+  function proxyValidationLabel(endpoint: DraftProxyEndpoint) {
+    if (!endpoint.host.trim()) return "Host is required.";
+    if (!validProxyPort(endpoint.port)) return "Use a port from 1 to 65535.";
+    return null;
   }
 
   function toSaveProxySettingsInput(next: NetworkProxySettings) {
@@ -144,15 +168,16 @@
     if (!editing) return;
     const nextDraft: DraftProxyEndpoint = {
       ...editing,
-      id: editing.id.trim(),
+      id: editing.id.trim() || nextProxyId(),
       host: editing.host.trim(),
       username: editing.username?.trim() || null,
       password: draftPassword.trim() ? draftPassword : null,
       keepPassword: !draftPassword.trim() && Boolean(editing.keepPassword)
     };
     const existing = proxy.proxies.find((item) => item.id === nextDraft.id);
-    if (!nextDraft.id || !nextDraft.host || !nextDraft.port) {
-      error = "Proxy id, host, and port are required.";
+    const validation = proxyValidationLabel(nextDraft);
+    if (validation) {
+      error = validation;
       return;
     }
     const nextItem = draftToSanitized(nextDraft, existing);
@@ -321,13 +346,14 @@
 </section>
 
 {#if editing}
-  <div class="pf-network-modal-scrim" role="presentation" onclick={closeEditor} onkeydown={() => {}}>
+  <div class="pf-modal-scrim pf-network-proxy-scrim" role="presentation" onclick={closeEditor} onkeydown={() => {}}>
     <div
-      class="pf-network-modal"
+      class="pf-modal pf-network-proxy-modal"
       role="dialog"
-      aria-label="Edit proxy"
+      aria-label={editingTitle}
       aria-modal="true"
       tabindex="-1"
+      use:focusTrap
       onclick={(event) => event.stopPropagation()}
       onkeydown={(event) => {
         if (event.key === "Escape") {
@@ -336,53 +362,79 @@
         }
       }}
     >
-      <div class="pf-network-modal-head">
-        <div>
-          <h3>{proxy.proxies.some((item) => item.id === editing?.id) ? "Edit proxy" : "Add proxy"}</h3>
-          <p>Credentials are saved to config and never shown in snapshots.</p>
+      <form
+        class="pf-network-proxy-form"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void saveEditingProxy();
+        }}
+      >
+        <div class="pf-modal-head">
+          <div class="pf-modal-title-group">
+            <div class="pf-modal-title">{editingTitle}</div>
+          </div>
+          <button type="button" class="pf-modal-close" aria-label="Close" disabled={saving} onclick={closeEditor}>
+            <Icon name="x" size={14} />
+          </button>
         </div>
-        <button type="button" class="pf-network-modal-close" aria-label="Close" onclick={closeEditor}>
-          <Icon name="x" size={14} />
-        </button>
-      </div>
-      <div class="pf-network-form">
-        <label>
-          Id
-          <input class="sc-input" value={editing.id} disabled={saving} oninput={(e) => (editing = { ...editing!, id: (e.currentTarget as HTMLInputElement).value })} />
-        </label>
-        <label>
-          Scheme
-          <select class="sc-input" value={editing.scheme} disabled={saving} onchange={(e) => (editing = { ...editing!, scheme: (e.currentTarget as HTMLSelectElement).value as ProxyScheme })}>
-            {#each schemes as scheme}
-              <option value={scheme}>{scheme}</option>
-            {/each}
-          </select>
-        </label>
-        <label>
-          Host
-          <input class="sc-input" value={editing.host} disabled={saving} oninput={(e) => (editing = { ...editing!, host: (e.currentTarget as HTMLInputElement).value })} />
-        </label>
-        <label>
-          Port
-          <input class="sc-input" type="number" min="1" max="65535" value={editing.port} disabled={saving} oninput={(e) => (editing = { ...editing!, port: Number((e.currentTarget as HTMLInputElement).value) })} />
-        </label>
-        <label>
-          Username
-          <input class="sc-input" value={editing.username ?? ""} disabled={saving} oninput={(e) => (editing = { ...editing!, username: (e.currentTarget as HTMLInputElement).value || null })} />
-        </label>
-        <label>
-          Password
-          <input class="sc-input" type="password" value={draftPassword} disabled={saving} placeholder={editing.keepPassword ? "Stored password unchanged" : ""} oninput={(e) => (draftPassword = (e.currentTarget as HTMLInputElement).value)} />
-        </label>
-      </div>
-      <div class="pf-network-modal-foot">
-        <button type="button" class="sc-btn" data-variant="outline" data-size="sm" disabled={saving} onclick={closeEditor}>
-          Cancel
-        </button>
-        <button type="button" class="sc-btn" data-size="sm" disabled={saving} onclick={saveEditingProxy}>
-          {saving ? "Saving..." : "Save proxy"}
-        </button>
-      </div>
+        <div class="pf-modal-body pf-network-proxy-body">
+          <div class="pf-connector-form pf-network-form">
+            <label>
+              Scheme
+              <select class="sc-input" value={editing.scheme} disabled={saving} onchange={(e) => (editing = { ...editing!, scheme: (e.currentTarget as HTMLSelectElement).value as ProxyScheme })}>
+                {#each schemes as scheme}
+                  <option value={scheme}>{scheme}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              Host
+              <input class="sc-input" value={editing.host} disabled={saving} data-autofocus oninput={(e) => (editing = { ...editing!, host: (e.currentTarget as HTMLInputElement).value })} />
+            </label>
+            <label>
+              Port
+              <input
+                class="sc-input"
+                type="number"
+                min="1"
+                max="65535"
+                step="1"
+                value={editing.port || ""}
+                disabled={saving}
+                oninput={(e) => {
+                  const value = (e.currentTarget as HTMLInputElement).value;
+                  editing = { ...editing!, port: value === "" ? 0 : Number(value) };
+                }}
+              />
+            </label>
+            <label>
+              Username
+              <input class="sc-input" value={editing.username ?? ""} disabled={saving} oninput={(e) => (editing = { ...editing!, username: (e.currentTarget as HTMLInputElement).value || null })} />
+            </label>
+            <label>
+              Password
+              <input class="sc-input" type="password" value={draftPassword} disabled={saving} placeholder={editing.keepPassword ? "Stored password unchanged" : ""} oninput={(e) => (draftPassword = (e.currentTarget as HTMLInputElement).value)} />
+            </label>
+            {#if editingValidation}
+              <div class="pf-connector-validation">{editingValidation}</div>
+            {/if}
+            <div class="pf-connector-command pf-network-proxy-preview" aria-label="Proxy endpoint preview">
+              <Icon name="link" size={12} />
+              <code>{endpointPreview(editing)}</code>
+            </div>
+          </div>
+        </div>
+        <div class="pf-modal-foot">
+          <div class="pf-modal-foot-btns">
+            <button type="button" class="sc-btn" data-variant="outline" data-size="sm" disabled={saving} onclick={closeEditor}>
+              Cancel
+            </button>
+            <button type="submit" class="sc-btn" data-size="sm" disabled={saving || Boolean(editingValidation)}>
+              {saving ? "Saving..." : "Save proxy"}
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   </div>
 {/if}
@@ -479,8 +531,7 @@
   }
 
   .pf-network-proxy-actions,
-  .pf-network-actions,
-  .pf-network-modal-foot {
+  .pf-network-actions {
     display: flex;
     gap: 8px;
     align-items: center;
@@ -504,70 +555,32 @@
     margin-top: 10px;
   }
 
-  .pf-network-modal-scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-    background: color-mix(in oklab, var(--background) 54%, transparent);
-    backdrop-filter: blur(8px);
+  .pf-network-proxy-scrim {
+    padding: 28px 16px;
   }
 
-  .pf-network-modal {
+  .pf-network-proxy-modal {
     width: min(560px, calc(100vw - 32px));
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--background);
-    box-shadow: 0 24px 70px color-mix(in oklab, var(--foreground) 18%, transparent);
-    overflow: hidden;
+    max-height: min(720px, calc(100vh - 56px));
   }
 
-  .pf-network-modal-head {
+  .pf-network-proxy-form {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .pf-network-proxy-body {
     padding: 14px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .pf-network-modal-head h3,
-  .pf-network-modal-head p {
-    margin: 0;
-  }
-
-  .pf-network-modal-head p {
-    margin-top: 3px;
-    color: var(--muted-foreground);
-    font-size: 12px;
-  }
-
-  .pf-network-modal-close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--muted-foreground);
-    cursor: pointer;
-  }
-
-  .pf-network-modal-close:hover {
-    background: var(--pf-selected-bg-hover);
-    color: var(--foreground);
   }
 
   .pf-network-form {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-direction: column;
     gap: 10px;
-    padding: 14px 16px;
+    min-width: 0;
+    width: 100%;
   }
 
   .pf-network-form label {
@@ -578,10 +591,8 @@
     font-size: 11.5px;
   }
 
-  .pf-network-modal-foot {
-    justify-content: flex-end;
-    padding: 12px 16px;
-    border-top: 1px solid var(--border);
+  .pf-network-proxy-preview code {
+    min-width: 0;
   }
 
   @media (max-width: 760px) {
@@ -590,13 +601,22 @@
     }
 
     .pf-network-proxy-actions,
-    .pf-network-actions,
-    .pf-network-modal-foot {
+    .pf-network-actions {
       justify-content: flex-start;
     }
 
-    .pf-network-form {
-      grid-template-columns: 1fr;
+    .pf-network-proxy-scrim {
+      align-items: stretch;
+      padding: 18px 12px;
+    }
+
+    .pf-network-proxy-modal {
+      width: 100%;
+      max-height: calc(100vh - 36px);
+    }
+
+    .pf-network-proxy-modal .pf-modal-foot-btns {
+      width: 100%;
     }
   }
 </style>
