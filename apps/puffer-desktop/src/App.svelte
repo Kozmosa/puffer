@@ -69,6 +69,9 @@
   import { providerIdCanRunAgent, providerIdInSet, providerIsAvailableForAgent } from "./lib/providerIds";
   import { providerCatalogForSetup } from "./lib/providerFallbacks";
   import type { UnlistenFn } from "@tauri-apps/api/event";
+  import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { detectPlatform } from "./lib/shell/platform";
   import type {
     DesktopPreferences,
     DesktopPinState,
@@ -1045,7 +1048,28 @@
     window.addEventListener("focus", cancelRecapBlurTimer);
     window.addEventListener("keydown", handleShellKeydown, true);
     void init();
+
+    // Mini floating window hands off its prompt here: focus the main window
+    // and run it through the normal create-session-if-needed + submit path.
+    let miniUnlisten: UnlistenFn | null = null;
+    if (detectPlatform() !== "web") {
+      void listen<string>("puffer://mini-submit", async (event) => {
+        const text = (event.payload ?? "").trim();
+        if (!text) return;
+        try {
+          await getCurrentWindow().show();
+          await getCurrentWindow().setFocus();
+        } catch {
+          // best-effort focus; the handoff still runs
+        }
+        await runWorkflowCommand(text);
+      }).then((un) => {
+        miniUnlisten = un;
+      });
+    }
+
     return () => {
+      miniUnlisten?.();
       cancelRecapBlurTimer();
       clearDaemonClientListeners();
       sessionSubscriptionGeneration += 1;

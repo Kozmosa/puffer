@@ -7,6 +7,7 @@ mod events;
 mod files;
 mod fs_watch;
 mod lsp;
+mod mini_window;
 mod pty;
 mod remote_client;
 mod repo_actions;
@@ -48,6 +49,7 @@ const REGISTERED_TAURI_COMMANDS: &[&str] = &[
     "resolve_permission",
     "resolve_user_question",
     "cancel_turn",
+    "summon_mini_window",
 ];
 
 fn backend_call(
@@ -386,8 +388,24 @@ pub fn run() {
     let launcher = Arc::new(DaemonLauncher::new());
     websocket::start_backend_ws(backend.clone());
 
+    // Cmd/Ctrl+Shift+Space summons the mini floating window. Avoids Cmd+Space
+    // (Spotlight). Toggling on the same chord hides it.
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+    let mini_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
+
     Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut(mini_shortcut)
+                .expect("register mini-window shortcut")
+                .with_handler(move |app, shortcut, event| {
+                    if shortcut == &mini_shortcut && event.state() == ShortcutState::Pressed {
+                        mini_window::toggle_mini_window(app);
+                    }
+                })
+                .build(),
+        )
         .manage(backend)
         .manage(launcher)
         .invoke_handler(tauri::generate_handler![
@@ -413,6 +431,7 @@ pub fn run() {
             resolve_permission,
             resolve_user_question,
             cancel_turn,
+            mini_window::summon_mini_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Corbina desktop");
