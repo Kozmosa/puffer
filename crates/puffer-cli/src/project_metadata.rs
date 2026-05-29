@@ -25,6 +25,7 @@ pub struct ProjectMetadataStore {
 }
 
 impl ProjectMetadataStore {
+    /// Creates a project metadata store from discovered configuration paths.
     pub fn from_paths(paths: &ConfigPaths) -> Self {
         Self {
             path: paths.user_config_dir.join(FILE_NAME),
@@ -54,10 +55,12 @@ impl ProjectMetadataStore {
         Ok(())
     }
 
+    /// Returns all saved project metadata keyed by project folder path.
     pub fn all(&self) -> Result<BTreeMap<String, ProjectMetadata>> {
         self.load_map()
     }
 
+    /// Replaces the tags for the provided project folder and returns the saved metadata.
     pub fn set_tags(&self, folder_path: &Path, tags: Vec<String>) -> Result<ProjectMetadata> {
         let key = folder_path.to_string_lossy().into_owned();
         let mut map = self.load_map()?;
@@ -75,6 +78,7 @@ impl ProjectMetadataStore {
         Ok(result)
     }
 
+    /// Deletes metadata for the provided project folder when it exists.
     pub fn delete(&self, folder_path: &Path) -> Result<()> {
         let key = folder_path.to_string_lossy().into_owned();
         let mut map = self.load_map()?;

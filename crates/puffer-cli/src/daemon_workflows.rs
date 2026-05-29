@@ -288,6 +288,7 @@ fn workflow_binding_json(paths: &ConfigPaths, binding: WorkflowBindingSpec) -> V
     let action_type = workflow_action_type(&binding.action);
     let action_path = workflow_action_path(&binding.action);
     let action_format = workflow_action_format(&binding.action);
+    let model = workflow_action_model(&binding.action).map(ToOwned::to_owned);
     let filter_pattern = workflow_filter_pattern(binding.filter.as_ref());
     let ignore_filters =
         serde_json::to_value(&binding.ignore_filters).unwrap_or_else(|_| Value::Array(Vec::new()));
@@ -313,6 +314,7 @@ fn workflow_binding_json(paths: &ConfigPaths, binding: WorkflowBindingSpec) -> V
         "action_type": action_type,
         "action_path": action_path,
         "action_format": action_format,
+        "model": model,
         "filter_pattern": filter_pattern,
         "ignore_filters": ignore_filters,
         "monitor": monitor,
@@ -349,6 +351,13 @@ fn workflow_action_format(action: &ActionSpec) -> Option<String> {
         ActionSpec::FileAppend { format, .. } => serde_json::to_value(format)
             .ok()
             .and_then(|value| value.as_str().map(ToOwned::to_owned)),
+        _ => None,
+    }
+}
+
+fn workflow_action_model(action: &ActionSpec) -> Option<&str> {
+    match action {
+        ActionSpec::TriageAgent { model, .. } => model.as_deref(),
         _ => None,
     }
 }
@@ -841,7 +850,7 @@ mod tests {
             classify_model: None,
             action: ActionSpec::TriageAgent {
                 prompt: "triage events".to_string(),
-                model: None,
+                model: Some("openai/gpt-5.4".to_string()),
             },
             created_at_ms: 42,
         };
@@ -852,6 +861,7 @@ mod tests {
         assert_eq!(value["status"], "paused");
         assert_eq!(value["enabled"], false);
         assert_eq!(value["action_type"], "triage_agent");
+        assert_eq!(value["model"], "openai/gpt-5.4");
         assert_eq!(value["monitor"], true);
         assert!(value["monitor_memory_path"]
             .as_str()

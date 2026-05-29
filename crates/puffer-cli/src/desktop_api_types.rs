@@ -39,6 +39,17 @@ pub(crate) struct FolderGroupDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SessionGroupsPageDto {
+    pub(crate) groups: Vec<FolderGroupDto>,
+    pub(crate) offset: usize,
+    pub(crate) limit: usize,
+    pub(crate) returned_sessions: usize,
+    pub(crate) total_sessions: usize,
+    pub(crate) has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DiffSummaryDto {
     pub(crate) id: String,
     pub(crate) source: String,

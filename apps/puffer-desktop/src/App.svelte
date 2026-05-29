@@ -32,7 +32,7 @@
     loginWithOauth,
     deleteProject,
     deleteSession,
-    listGroupedSessionsFromDaemon,
+    listGroupedSessionsPageFromDaemon,
     loadSettingsSnapshot,
     loadSessionDetailFromDaemon,
     renameSession,
@@ -156,6 +156,10 @@
   // Backend-backed state
   let groups = $state<FolderGroup[]>([]);
   let groupsLoading = $state(false);
+  let groupsLoadingMore = $state(false);
+  let groupsLoadedSessions = $state(0);
+  let groupsTotalSessions = $state<number | null>(null);
+  let groupsHasMore = $state(false);
   let selectedSession = $state<SessionListItem | null>(null);
   let fallbackSessionsById = $state<Record<string, SessionListItem>>({});
   let sessionDetail = $state<SessionDetail | null>(null);
@@ -216,6 +220,7 @@
   let settingsLoading = $state(false);
   let settingsRefreshGeneration = 0;
   let groupsRefreshGeneration = 0;
+  const GROUPS_PAGE_SIZE = 30;
   let authBusyProviderId = $state<string | null>(null);
   let authError = $state<string | null>(null);
   let externalCredentials = $state<ExternalCredential[]>([]);
@@ -502,6 +507,42 @@
 
   function groupsContainSession(sourceGroups: FolderGroup[], sessionId: string): boolean {
     return sourceGroups.some((group) => group.sessions.some((item) => item.id === sessionId));
+  }
+
+  function loadedSessionCount(sourceGroups: FolderGroup[]): number {
+    return sourceGroups.reduce((count, group) => count + group.sessions.length, 0);
+  }
+
+  function mergePagedGroups(sourceGroups: FolderGroup[], pageGroups: FolderGroup[]): FolderGroup[] {
+    const byId = new Map<string, FolderGroup>();
+    for (const group of sourceGroups) {
+      byId.set(group.id, {
+        ...group,
+        sessions: [...group.sessions]
+      });
+    }
+    for (const group of pageGroups) {
+      const existing = byId.get(group.id);
+      if (!existing) {
+        byId.set(group.id, {
+          ...group,
+          sessions: [...group.sessions]
+        });
+        continue;
+      }
+      const sessionsById = new Map(existing.sessions.map((session) => [session.id, session]));
+      for (const session of group.sessions) {
+        sessionsById.set(session.id, session);
+      }
+      const sessions = Array.from(sessionsById.values()).sort(compareSessionsByRecency);
+      byId.set(group.id, {
+        ...existing,
+        tags: group.tags.length > 0 ? group.tags : existing.tags,
+        sessionCount: sessions.length,
+        sessions
+      });
+    }
+    return Array.from(byId.values()).sort(compareFolderGroups);
   }
 
   function insertSessionFallback(
@@ -1306,11 +1347,14 @@
     const generation = ++groupsRefreshGeneration;
     groupsLoading = true;
     try {
-      const nextGroups = await listGroupedSessionsFromDaemon();
+      const page = await listGroupedSessionsPageFromDaemon(0, GROUPS_PAGE_SIZE);
       if (generation !== groupsRefreshGeneration) return;
-      groups = nextGroups;
+      groups = page.groups;
+      groupsLoadedSessions = loadedSessionCount(page.groups);
+      groupsTotalSessions = page.totalSessions;
+      groupsHasMore = page.hasMore;
       if (selectedSession) rememberFallbackSession(selectedSession);
-      pruneFallbackSessions(nextGroups);
+      pruneFallbackSessions(page.groups);
       statusMessage =
         groups.length === 0
           ? "No sessions in this workspace yet."
@@ -1321,6 +1365,31 @@
     } finally {
       if (generation === groupsRefreshGeneration) {
         groupsLoading = false;
+      }
+    }
+  }
+
+  async function loadMoreGroups() {
+    if (groupsLoadingMore || groupsLoading || !groupsHasMore) return;
+    const generation = groupsRefreshGeneration;
+    groupsLoadingMore = true;
+    try {
+      const page = await listGroupedSessionsPageFromDaemon(groupsLoadedSessions, GROUPS_PAGE_SIZE);
+      if (generation !== groupsRefreshGeneration) return;
+      const nextGroups = mergePagedGroups(groups, page.groups);
+      groups = nextGroups;
+      groupsLoadedSessions += page.returnedSessions;
+      groupsTotalSessions = page.totalSessions;
+      groupsHasMore = page.hasMore;
+      if (selectedSession) rememberFallbackSession(selectedSession);
+      pruneFallbackSessions(nextGroups);
+      statusMessage = `Loaded ${Math.min(groupsLoadedSessions, page.totalSessions)} of ${page.totalSessions} sessions.`;
+    } catch (error) {
+      if (generation !== groupsRefreshGeneration) return;
+      statusMessage = String(error);
+    } finally {
+      if (generation === groupsRefreshGeneration) {
+        groupsLoadingMore = false;
       }
     }
   }
@@ -2338,6 +2407,10 @@
     selectedSession = null;
     groups = [];
     groupsLoading = false;
+    groupsLoadingMore = false;
+    groupsLoadedSessions = 0;
+    groupsTotalSessions = null;
+    groupsHasMore = false;
     fallbackSessionsById = {};
     liveSidebarAgentsById = {};
     sessionDetail = null;
@@ -3703,6 +3776,11 @@
                 settingsSnapshot={settingsSnapshot}
                 defaultWorkspaceCwd={defaultWorkspaceCwd}
                 loading={groupsLoading}
+                loadedSessions={groupsLoadedSessions}
+                totalSessions={groupsTotalSessions}
+                hasMoreSessions={groupsHasMore}
+                loadingMoreSessions={groupsLoadingMore}
+                onLoadMoreSessions={() => void loadMoreGroups()}
                 onOpenAgent={(id) => onOpenAgent(id)}
                 onOpenBoard={onOpenProject}
                 onNewAgent={(cwd) => requestNewAgent(cwd)}

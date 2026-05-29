@@ -6,7 +6,8 @@ use puffer_provider_registry::{
 };
 use puffer_resources::LoadedResources;
 use puffer_session_store::{
-    GitDiffSnapshot, MessageActor, SessionRecord, SessionStore, TranscriptEvent, TranscriptRewrite,
+    GitDiffSnapshot, MessageActor, SessionRecord, SessionStore, SessionSummary, TranscriptEvent,
+    TranscriptRewrite,
 };
 use puffer_workflow::WorkflowStore;
 use serde_json::Value;
@@ -20,8 +21,9 @@ use crate::desktop_api_types::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
     BrowserGoogleAccountDto, BrowserProfileDto, DiffSummaryDto, DivergenceReportDto,
     ExternalCredentialDto, FolderGroupDto, ProviderSummaryDto, RepoActionResultDto,
-    RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto, SessionListItemDto,
-    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
+    RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto, SessionGroupsPageDto,
+    SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto,
+    TimelineItemDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.
@@ -187,6 +189,33 @@ pub(crate) fn list_grouped_sessions(
     project_tags: &BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<FolderGroupDto>> {
     let sessions = session_store.list_sessions()?;
+    group_session_summaries(session_store, project_tags, sessions)
+}
+
+pub(crate) fn list_grouped_sessions_page(
+    session_store: &SessionStore,
+    project_tags: &BTreeMap<String, Vec<String>>,
+    offset: usize,
+    limit: usize,
+) -> Result<SessionGroupsPageDto> {
+    let page = session_store.list_sessions_page(offset, limit)?;
+    let returned_sessions = page.sessions.len();
+    let has_more = page.has_more();
+    Ok(SessionGroupsPageDto {
+        groups: group_session_summaries(session_store, project_tags, page.sessions)?,
+        offset: page.offset,
+        limit: page.limit,
+        returned_sessions,
+        total_sessions: page.total_sessions,
+        has_more,
+    })
+}
+
+fn group_session_summaries(
+    session_store: &SessionStore,
+    project_tags: &BTreeMap<String, Vec<String>>,
+    sessions: Vec<SessionSummary>,
+) -> Result<Vec<FolderGroupDto>> {
     let mut groups = BTreeMap::<String, Vec<SessionListItemDto>>::new();
     for session in sessions {
         let record = session_store.load_session(session.id)?;

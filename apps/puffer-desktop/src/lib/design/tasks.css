@@ -499,6 +499,7 @@
   letter-spacing: 0.06em;
 }
 
+.pf-task-config input,
 .pf-task-config select,
 .pf-task-config textarea {
   width: 100%;
@@ -508,10 +509,15 @@
   color: var(--foreground);
 }
 
+.pf-task-config input,
 .pf-task-config select {
   height: 30px;
   padding: 0 8px;
   font-size: 12px;
+}
+
+.pf-task-config input::placeholder {
+  color: var(--muted-foreground);
 }
 
 .pf-task-config textarea {
@@ -523,6 +529,7 @@
   line-height: 1.45;
 }
 
+.pf-task-config input:focus,
 .pf-task-config select:focus,
 .pf-task-config textarea:focus {
   outline: none;
@@ -544,6 +551,61 @@
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+.pf-task-monitor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pf-task-monitor-row {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pf-task-monitor-row[data-enabled="false"] {
+  color: var(--muted-foreground);
+}
+
+.pf-task-monitor-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pf-task-monitor-main strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pf-task-monitor-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.pf-task-monitor-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .pf-task-filter-list {
@@ -661,7 +723,9 @@
 
   .pf-task-config-row,
   .pf-task-config-section-head,
-  .pf-task-config-actions {
+  .pf-task-config-actions,
+  .pf-task-monitor-row,
+  .pf-task-monitor-actions {
     align-items: stretch;
     flex-direction: column;
   }

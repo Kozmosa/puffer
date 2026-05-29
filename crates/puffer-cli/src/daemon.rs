@@ -801,6 +801,9 @@ async fn dispatch_request(
         }
 
         "list_grouped_sessions" => respond!(handle_list_grouped_sessions(&state)),
+        "list_grouped_sessions_page" => {
+            respond!(detached!(|s, p| handle_list_grouped_sessions_page(&s, &p)))
+        }
         "load_desktop_pins" => respond!(handle_load_desktop_pins(&state)),
         "set_desktop_pin" => respond!(handle_set_desktop_pin(&state, &params)),
         "load_file_tabs" => respond!(handle_load_file_tabs(&state, &params)),
@@ -1034,6 +1037,29 @@ fn handle_list_grouped_sessions(state: &DaemonState) -> Result<Value> {
         desktop_api::list_grouped_sessions(&session_store, &project_tags)?;
     apply_session_routing_to_groups(state, &mut groups)?;
     Ok(serde_json::to_value(groups)?)
+}
+
+const DEFAULT_SESSION_LIST_PAGE_SIZE: usize = 30;
+const MAX_SESSION_LIST_PAGE_SIZE: usize = 200;
+
+fn handle_list_grouped_sessions_page(state: &DaemonState, params: &Value) -> Result<Value> {
+    let offset = params
+        .get("offset")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(DEFAULT_SESSION_LIST_PAGE_SIZE)
+        .clamp(1, MAX_SESSION_LIST_PAGE_SIZE);
+    let session_store = SessionStore::from_paths(&state.paths)?;
+    let project_tags = project_tag_map(&state.paths);
+    let mut page =
+        desktop_api::list_grouped_sessions_page(&session_store, &project_tags, offset, limit)?;
+    apply_session_routing_to_groups(state, &mut page.groups)?;
+    Ok(serde_json::to_value(page)?)
 }
 
 fn project_tag_map(paths: &ConfigPaths) -> BTreeMap<String, Vec<String>> {

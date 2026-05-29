@@ -44,7 +44,10 @@ fn rank(transcript: &[RenderedMessage], query: &str) -> Vec<(usize, f64)> {
     if q.is_empty() || transcript.is_empty() {
         return Vec::new();
     }
-    let docs: Vec<Vec<String>> = transcript.iter().map(|m| tokenize(&message_text(m))).collect();
+    let docs: Vec<Vec<String>> = transcript
+        .iter()
+        .map(|m| tokenize(&message_text(m)))
+        .collect();
     let n = docs.len() as f64;
     let avg_len = docs.iter().map(|d| d.len()).sum::<usize>() as f64 / n.max(1.0);
     // document frequency per query term
@@ -78,7 +81,16 @@ fn snippet(m: &RenderedMessage, max: usize) -> String {
     let mut body = m.text.trim().to_string();
     if body.is_empty() {
         if let Some(t) = &m.tool_id {
-            body = format!("{}({})", t, m.tool_input.as_deref().unwrap_or("").chars().take(80).collect::<String>());
+            body = format!(
+                "{}({})",
+                t,
+                m.tool_input
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+            );
         }
     }
     if body.chars().count() > max {
@@ -99,7 +111,11 @@ pub fn execute_recall(state: &mut AppState, cwd: &Path, input: Value) -> Result<
     if query.is_empty() {
         anyhow::bail!("Recall requires a non-empty 'query'");
     }
-    let k = input.get("k").and_then(Value::as_u64).unwrap_or(5).clamp(1, 20) as usize;
+    let k = input
+        .get("k")
+        .and_then(Value::as_u64)
+        .unwrap_or(5)
+        .clamp(1, 20) as usize;
 
     // Don't rank the last message (the Recall call's own context) into results.
     let n = state.transcript.len();
@@ -155,9 +171,16 @@ mod tests {
     fn state_with(msgs: Vec<RenderedMessage>) -> AppState {
         let cwd = std::env::temp_dir();
         let session = SessionMetadata {
-            id: Uuid::new_v4(), display_name: None, generated_title: None,
-            cwd: cwd.clone(), created_at_ms: 0, updated_at_ms: 0,
-            parent_session_id: None, slug: None, tags: Vec::new(), note: None,
+            id: Uuid::new_v4(),
+            display_name: None,
+            generated_title: None,
+            cwd: cwd.clone(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            parent_session_id: None,
+            slug: None,
+            tags: Vec::new(),
+            note: None,
         };
         let mut s = AppState::new(PufferConfig::default(), cwd, session);
         s.transcript = msgs;
@@ -167,17 +190,31 @@ mod tests {
     #[test]
     fn recall_finds_relevant_earlier_message() {
         let mut s = state_with(vec![
-            msg(MessageRole::User, "let's set up the postgres connection pool with sqlx"),
-            msg(MessageRole::Assistant, "I configured the rate limiter middleware"),
+            msg(
+                MessageRole::User,
+                "let's set up the postgres connection pool with sqlx",
+            ),
+            msg(
+                MessageRole::Assistant,
+                "I configured the rate limiter middleware",
+            ),
             msg(MessageRole::User, "now add the redis cache layer"),
             msg(MessageRole::Assistant, "done"), // last msg, excluded
         ]);
         let cwd = s.cwd.clone();
-        let out = execute_recall(&mut s, &cwd, json!({ "query": "postgres database pool", "k": 2 })).unwrap();
+        let out = execute_recall(
+            &mut s,
+            &cwd,
+            json!({ "query": "postgres database pool", "k": 2 }),
+        )
+        .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert!(v["matches"].as_u64().unwrap() >= 1, "found a match");
         let top = v["results"][0]["content"].as_str().unwrap();
-        assert!(top.contains("postgres"), "most relevant is the postgres message, got: {top}");
+        assert!(
+            top.contains("postgres"),
+            "most relevant is the postgres message, got: {top}"
+        );
     }
 
     #[test]
