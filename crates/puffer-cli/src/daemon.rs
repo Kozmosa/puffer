@@ -112,6 +112,7 @@ pub(crate) struct Handshake {
 }
 
 pub(crate) struct DaemonOptions {
+    pub host_guard: crate::daemon_singleton::DaemonHostGuard,
     pub bind: String,
     pub handshake_file: Option<String>,
     pub token: Option<String>,
@@ -131,31 +132,40 @@ pub(crate) fn run(options: DaemonOptions) -> Result<()> {
 }
 
 async fn run_async(options: DaemonOptions) -> Result<()> {
+    let DaemonOptions {
+        host_guard,
+        bind,
+        handshake_file,
+        token,
+        print_handshake,
+        no_browser,
+        system_prompt_1,
+        disable_auto_title,
+        yolo,
+    } = options;
+    let daemon_host_guard = host_guard;
     let cwd = std::env::current_dir()?;
     let paths = ConfigPaths::discover(&cwd);
     ensure_workspace_dirs(&paths)?;
 
-    let token = options
-        .token
-        .unwrap_or_else(|| load_or_generate_token(&paths));
+    let token = token.unwrap_or_else(|| load_or_generate_token(&paths));
 
     let state = DaemonState::load(
         cwd.clone(),
         paths.clone(),
         token.clone(),
-        options.no_browser,
-        options.disable_auto_title,
-        options.yolo,
+        no_browser,
+        disable_auto_title,
+        yolo,
     )?;
-    if let Some(prompt) = options
-        .system_prompt_1
+    if let Some(prompt) = system_prompt_1
         .as_deref()
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
     {
         std::env::set_var("PUFFER_SYSTEM_PROMPT_1", prompt);
     }
-    if options.no_browser {
+    if no_browser {
         std::env::set_var("PUFFER_NO_BROWSER", "1");
     } else {
         std::env::remove_var("PUFFER_NO_BROWSER");
@@ -166,7 +176,7 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
         .route("/ws", get(ws_handler))
         .with_state(state.clone());
 
-    let addr: SocketAddr = options.bind.parse().context("bind address")?;
+    let addr: SocketAddr = bind.parse().context("bind address")?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
     let url = format!("ws://{bound}/ws");
@@ -179,8 +189,7 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
     };
 
     // Handshake file (machine-readable + surviving parent-process restart).
-    let handshake_path = options
-        .handshake_file
+    let handshake_path = handshake_file
         .clone()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| paths.user_config_dir.join("daemon.handshake"));
@@ -190,7 +199,7 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
     let handshake_json = serde_json::to_string(&handshake)?;
     std::fs::write(&handshake_path, &handshake_json)?;
 
-    if options.print_handshake {
+    if print_handshake {
         // One-line NDJSON so Tauri (or shell scripts) can `read` a line,
         // parse, and act. We continue to serve after printing.
         println!("{handshake_json}");
@@ -201,7 +210,9 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
         paths.workspace_root.display()
     );
 
-    axum::serve(listener, app).await?;
+    let serve_result = axum::serve(listener, app).await;
+    drop(daemon_host_guard);
+    serve_result?;
     Ok(())
 }
 
@@ -265,6 +276,8 @@ pub(crate) struct DaemonState {
     pub(crate) fs_watches: Arc<FsWatchRegistry>,
     /// Chrome-backed browser sessions used by the desktop Browser tab.
     pub(crate) browsers: Arc<BrowserRegistry>,
+    /// Local model setup/status jobs used by the desktop MiniCPM card.
+    pub(crate) local_models: crate::daemon_local_model::LocalModelInstaller,
     disable_auto_title: bool,
     yolo: bool,
     /// Transcript replay buffer — a bounded ring of recent session / clone /
@@ -348,6 +361,7 @@ impl DaemonState {
                 !no_browser,
                 browser_chrome_profile,
             )),
+            local_models: crate::daemon_local_model::LocalModelInstaller::new(),
             disable_auto_title,
             yolo,
             recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_EVENT_CAPACITY))),
@@ -436,6 +450,12 @@ impl DaemonState {
         }
         if discover_all {
             let _ = providers.discover_and_merge_all(&auth_store);
+        } else {
+            // Even on the fast path we apply the on-disk discovery cache
+            // — that's a synchronous file read, no network — so callers
+            // like `create_session` can resolve previously-discovered
+            // model names without paying for a fresh network round-trip.
+            let _stale = providers.apply_discovery_cache();
         }
         let session_store = SessionStore::from_paths(&self.paths)?;
         Ok(RuntimeInputs {
@@ -890,6 +910,12 @@ async fn dispatch_request(
         "browser_agent" => respond!(detached!(|s, p| {
             crate::daemon_browser::handle_browser_agent(&s, &p)
         })),
+        "local_model_status" => {
+            respond!(detached!(|s, p| handle_local_model_status(&s, &p)))
+        }
+        "install_local_model" => {
+            respond!(detached!(|s, p| handle_install_local_model(&s, &p)))
+        }
         "workflow_list" => respond!(crate::daemon_workflows::handle_workflow_list(&state.paths)),
         "workflow_save" => respond!(crate::daemon_workflows::handle_workflow_save(
             &state.paths,
@@ -2029,7 +2055,12 @@ fn resolve_create_session_routing(
         return Ok(DesktopSessionRouting::default());
     }
 
-    let inputs = state.build_runtime_inputs()?;
+    // Creating a session only needs to verify the provider/model exists in
+    // the locally-registered set — we don't need a refreshed model catalog
+    // here. Discovery makes a synchronous network round-trip to every
+    // eligible provider; doing it on every "Start agent" click made the
+    // first click after a daemon restart stall for several seconds.
+    let inputs = state.build_runtime_inputs_without_discovery()?;
     if let Some(provider_id) = provider_id {
         let provider_id = canonical_desktop_provider_id(&provider_id);
         let provider = inputs
@@ -2136,6 +2167,26 @@ fn handle_default_workspace(state: &DaemonState) -> Result<Value> {
         "cwd": state.cwd.display().to_string(),
         "workspaceRoot": state.paths.workspace_root.display().to_string(),
     }))
+}
+
+fn local_model_id_param(params: &Value) -> &str {
+    params
+        .get("modelId")
+        .or_else(|| params.get("model_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("minicpm5")
+}
+
+fn handle_local_model_status(state: &DaemonState, params: &Value) -> Result<Value> {
+    let status = state.local_models.status(local_model_id_param(params))?;
+    serde_json::to_value(status).context("serialize local model status")
+}
+
+fn handle_install_local_model(state: &DaemonState, params: &Value) -> Result<Value> {
+    let job = state
+        .local_models
+        .install_or_start(state.event_sender(), local_model_id_param(params))?;
+    serde_json::to_value(job).context("serialize local model install job")
 }
 
 /// Clones a git repository to a destination directory. Runs in the daemon's
@@ -3897,12 +3948,12 @@ mod tests {
         apply_daemon_yolo_mode, apply_turn_model_override, apply_turn_request_options,
         browser_permission_payload_json, handle_create_session, handle_import_external_credential,
         handle_list_lambda_skill_libraries, handle_list_permissions, handle_list_provider_models,
-        handle_login_with_api_key, handle_logout_provider, handle_remove_lambda_skill_library,
-        handle_save_lambda_skill_library, handle_save_permissions,
-        handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled, model_descriptor_dto,
-        permission_review_payload_json, report_cancelled_turn, requires_explicit_subscription,
-        resolve_create_session_model_id, run_off_runtime, DaemonState, TurnProgress,
-        TurnRequestOptions,
+        handle_local_model_status, handle_login_with_api_key, handle_logout_provider,
+        handle_remove_lambda_skill_library, handle_save_lambda_skill_library,
+        handle_save_permissions, handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled,
+        model_descriptor_dto, permission_review_payload_json, report_cancelled_turn,
+        requires_explicit_subscription, resolve_create_session_model_id, run_off_runtime,
+        DaemonState, TurnProgress, TurnRequestOptions,
     };
     use indexmap::IndexMap;
     use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
@@ -4029,6 +4080,35 @@ mod tests {
         }
     }
 
+    struct PufferHomeEnvGuard {
+        previous: Option<std::ffi::OsString>,
+        _temp: tempfile::TempDir,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl PufferHomeEnvGuard {
+        fn set() -> Self {
+            let lock = discovery_cache_env_lock();
+            let previous = std::env::var_os("PUFFER_HOME");
+            let temp = tempfile::tempdir().expect("temp puffer home");
+            std::env::set_var("PUFFER_HOME", temp.path());
+            Self {
+                previous,
+                _temp: temp,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for PufferHomeEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => std::env::set_var("PUFFER_HOME", value),
+                None => std::env::remove_var("PUFFER_HOME"),
+            }
+        }
+    }
+
     #[test]
     fn high_volume_browser_events_require_explicit_subscription() {
         assert!(requires_explicit_subscription(
@@ -4043,6 +4123,32 @@ mod tests {
         assert!(!requires_explicit_subscription(
             "workspace:sessions:changed"
         ));
+    }
+
+    #[test]
+    fn local_model_status_handler_returns_minicpm5_contract() {
+        let _home_guard = PufferHomeEnvGuard::set();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+
+        let status =
+            handle_local_model_status(&state, &json!({"modelId": "minicpm5"})).expect("status");
+
+        assert_eq!(status["id"], "minicpm5");
+        assert_eq!(status["modelId"], "minicpm5-1b");
+        assert_eq!(status["displayName"], "MiniCPM5-1B (local)");
+        assert!(status["checks"]
+            .as_array()
+            .is_some_and(|checks| !checks.is_empty()));
     }
 
     fn spawn_openai_discovery_server() -> (String, std::thread::JoinHandle<()>) {
@@ -4338,10 +4444,42 @@ mod tests {
         assert!(pending_tool_index < interrupt_index);
     }
 
+    /// Writes a single discovered model into the discovery cache file
+    /// pointed at by `PUFFER_DISCOVERY_CACHE_PATH`. `create_session`
+    /// reads this cache synchronously instead of firing a network
+    /// discovery request, which is what these tests exercise.
+    fn prewarm_discovery_cache(provider_id: &str, model_id: &str) {
+        let path = std::env::var("PUFFER_DISCOVERY_CACHE_PATH")
+            .expect("PUFFER_DISCOVERY_CACHE_PATH must be set via DiscoveryCacheEnvGuard");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let cache = json!({
+            "entries": {
+                provider_id: {
+                    "models": [
+                        {
+                            "id": model_id,
+                            "display_name": model_id,
+                            "provider": provider_id,
+                            "api": "openai",
+                            "context_window": 8192,
+                            "max_output_tokens": 4096,
+                        }
+                    ],
+                    "cached_at_ms": now_ms,
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&cache).unwrap())
+            .expect("write discovery cache");
+    }
+
     #[test]
     fn create_session_provider_routing_runs_off_tokio_runtime() {
         let _cache_guard = DiscoveryCacheEnvGuard::set();
-        let (openai_base_url, server) = spawn_openai_discovery_server();
+        prewarm_discovery_cache("openai", "gpt-local-discovered");
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
         let paths = ConfigPaths {
@@ -4360,7 +4498,6 @@ mod tests {
             false,
         )
         .expect("daemon state");
-        state.config.lock().unwrap().openai_base_url = Some(openai_base_url);
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4376,7 +4513,6 @@ mod tests {
             })
             .expect("create session");
 
-        server.join().expect("discovery server");
         assert_eq!(response["providerId"], "openai");
         assert_eq!(response["modelId"], "gpt-local-discovered");
     }
@@ -4384,7 +4520,7 @@ mod tests {
     #[test]
     fn create_session_accepts_desktop_provider_aliases_off_tokio_runtime() {
         let _cache_guard = DiscoveryCacheEnvGuard::set();
-        let (openai_base_url, server) = spawn_openai_discovery_server();
+        prewarm_discovery_cache("openai", "gpt-local-discovered");
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
         let paths = ConfigPaths {
@@ -4403,7 +4539,6 @@ mod tests {
             false,
         )
         .expect("daemon state");
-        state.config.lock().unwrap().openai_base_url = Some(openai_base_url);
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4420,7 +4555,6 @@ mod tests {
             })
             .expect("create session");
 
-        server.join().expect("discovery server");
         assert_eq!(response["providerId"], "openai");
         assert_eq!(response["modelId"], "gpt-local-discovered");
     }
@@ -4428,7 +4562,7 @@ mod tests {
     #[test]
     fn create_session_accepts_display_case_provider_names_off_tokio_runtime() {
         let _cache_guard = DiscoveryCacheEnvGuard::set();
-        let (openai_base_url, server) = spawn_openai_discovery_server();
+        prewarm_discovery_cache("openai", "gpt-local-discovered");
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
         let paths = ConfigPaths {
@@ -4447,7 +4581,6 @@ mod tests {
             false,
         )
         .expect("daemon state");
-        state.config.lock().unwrap().openai_base_url = Some(openai_base_url);
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4464,7 +4597,94 @@ mod tests {
             })
             .expect("create session");
 
-        server.join().expect("discovery server");
+        assert_eq!(response["providerId"], "openai");
+        assert_eq!(response["modelId"], "gpt-local-discovered");
+    }
+
+    /// Binds a local TCP listener whose only job is to verify that nobody
+    /// connects to it. If `create_session` ever fires a network discovery
+    /// call, this listener accepts the connection and the test thread
+    /// panics. Used by `create_session_does_not_fire_network_discovery`.
+    fn spawn_unexpected_discovery_server() -> (String, std::thread::JoinHandle<()>) {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind unexpected discovery server");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking unexpected discovery server");
+        let address = listener
+            .local_addr()
+            .expect("unexpected discovery server address");
+        let handle = std::thread::spawn(move || {
+            // Sample for ~500ms — long enough for any network discovery to
+            // land, short enough to keep the test fast.
+            for _ in 0..50 {
+                match listener.accept() {
+                    Ok(_) => {
+                        panic!("create_session should not contact the provider discovery URL")
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("unexpected listener error: {error}"),
+                }
+            }
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[test]
+    fn create_session_does_not_fire_network_discovery() {
+        let _cache_guard = DiscoveryCacheEnvGuard::set();
+        // Pre-populate the cache so the discovered model is resolvable
+        // synchronously — exactly the path real `create_session` calls take
+        // after the daemon has run any earlier model-list refresh.
+        prewarm_discovery_cache("openai", "gpt-local-discovered");
+        let (unreachable_base_url, server) = spawn_unexpected_discovery_server();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(
+            workspace_root.clone(),
+            paths,
+            "token".into(),
+            true,
+            false,
+            false,
+        )
+        .expect("daemon state");
+        state.config.lock().unwrap().openai_base_url = Some(unreachable_base_url);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let start = std::time::Instant::now();
+        let response = runtime
+            .block_on(async move {
+                let params = json!({
+                    "cwd": workspace_root.display().to_string(),
+                    "providerId": "openai",
+                    "modelId": "gpt-local-discovered",
+                });
+                run_off_runtime(move || handle_create_session(&state, &params)).await
+            })
+            .expect("create session");
+        let elapsed = start.elapsed();
+
+        // The "unexpected" server must finish its sampling window without
+        // ever accepting a connection — that's the regression assertion.
+        server.join().expect("unexpected discovery server panicked");
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "create_session took {elapsed:?} — should resolve from cache without network"
+        );
         assert_eq!(response["providerId"], "openai");
         assert_eq!(response["modelId"], "gpt-local-discovered");
     }

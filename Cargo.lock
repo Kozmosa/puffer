@@ -4293,6 +4293,7 @@ dependencies = [
  "base64",
  "clap",
  "ctrlc",
+ "fslock",
  "futures",
  "indexmap 2.14.0",
  "notify",

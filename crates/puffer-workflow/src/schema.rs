@@ -322,6 +322,11 @@ fn validate_slug(slug: &str) -> Result<()> {
 
 /// Recognized node kinds. Everything that is not `Agent` is **deterministic** —
 /// executed inline by the runner, no provider/LLM involved.
+///
+/// For agent nodes, the `type` field carries the provider id (e.g. `codex`,
+/// `claude`, `puffer`) — that's NOT a kind. So `type` is only consulted
+/// when it spells out an explicit non-agent kind; otherwise the node is an
+/// agent and the kind defaults to "agent".
 fn node_kind_str(node: &PipelineNode) -> &str {
     if let Some(value) = node
         .extra
@@ -331,14 +336,26 @@ fn node_kind_str(node: &PipelineNode) -> &str {
     {
         return value;
     }
-    node.node_type.as_deref().unwrap_or("agent")
+    match node.node_type.as_deref() {
+        Some(value) if DETERMINISTIC_KINDS.contains(&value) => value,
+        _ => "agent",
+    }
 }
 
+const DETERMINISTIC_KINDS: &[&str] = &["tool", "merge", "fanout"];
 const KNOWN_KINDS: &[&str] = &["agent", "tool", "merge", "fanout"];
 
 fn validate_node(node: &PipelineNode) -> Result<()> {
     if node.id.trim().is_empty() {
         return Err(anyhow!("node id must not be empty"));
+    }
+    // AgentFlow control-flow primitive — the runner has no implementation
+    // for it, so reject it before `node_kind_str` collapses it to "agent".
+    if node.node_type.as_deref() == Some("sync") {
+        return Err(anyhow!(
+            "unsupported AgentFlow control-flow node `{}` type `sync`",
+            node.id
+        ));
     }
     let kind = node_kind_str(node);
     if !KNOWN_KINDS.contains(&kind) {
@@ -493,16 +510,60 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_node() {
+    fn rejects_unsupported_node_kind() {
+        // `shell` as a `type` is no longer rejected — it's just a tag on an
+        // agent node since tool nodes cover that ground now. The unsupported
+        // path is for explicit `kind` values outside KNOWN_KINDS.
         let err = WorkflowDefinition::from_json(
             json!({
                 "slug":"x",
                 "trigger":{"type":"cron","cron":"* * * * *"},
-                "pipeline":{"name":"x","nodes":[{"id":"a","type":"shell","prompt":"echo x"}]}
+                "pipeline":{"name":"x","nodes":[
+                    {"id":"a","kind":"bogus","prompt":"x"}
+                ]}
             }),
             RegisterOptions::default(),
         )
         .unwrap_err();
         assert!(err.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn rejects_sync_control_flow_node() {
+        // `sync` is an AgentFlow control-flow primitive the runner doesn't
+        // implement; it remains explicitly rejected even though
+        // `python`/`shell` were dropped as separate categories.
+        let err = WorkflowDefinition::from_json(
+            json!({
+                "slug":"x",
+                "trigger":{"type":"cron","cron":"* * * * *"},
+                "pipeline":{"name":"x","nodes":[
+                    {"id":"a","type":"sync","prompt":"x"}
+                ]}
+            }),
+            RegisterOptions::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn accepts_provider_id_as_node_type_for_agent_nodes() {
+        // Agent nodes carry their provider id in the `type` field (codex /
+        // claude / puffer) — schema must not reject this as an unknown
+        // kind. Regression guard for the
+        // `workflow_save_upserts_definition_and_returns_snapshot`
+        // daemon-side test that uses `type:"puffer"`.
+        WorkflowDefinition::from_json(
+            json!({
+                "slug":"x",
+                "trigger":{"type":"cron","cron":"* * * * *"},
+                "pipeline":{"name":"x","nodes":[
+                    {"id":"reply","type":"puffer","prompt":"Draft a reply."}
+                ]}
+            }),
+            RegisterOptions::default(),
+        )
+        .expect("agent node with provider id type must be accepted");
     }
 }

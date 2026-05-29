@@ -48,6 +48,7 @@ webbrowser = "1.0"
 # Daemon subcommand dependencies — WebSocket server + tower-layered HTTP
 axum = { version = "0.7", features = ["ws"] }
 futures = "0.3"
+fslock.workspace = true
 rand = "0.8"
 tower = "0.5"
 
