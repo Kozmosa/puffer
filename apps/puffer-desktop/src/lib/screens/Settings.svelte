@@ -103,7 +103,7 @@
   const navItems: { id: Section; label: string; icon: IconName }[] = [
     { id: "general",     label: "General",    icon: "settings" },
     { id: "providers",   label: "Providers",  icon: "plug" },
-    { id: "network",     label: "Network",    icon: "server" },
+    { id: "network",     label: "Network",    icon: "globe" },
     { id: "connectors",  label: "Connectors", icon: "server" },
     { id: "permissions", label: "Permissions", icon: "bolt" },
     { id: "skills",      label: "Verified Skills", icon: "shield" },
