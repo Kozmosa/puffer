@@ -49,19 +49,32 @@
 
   onMount(() => {
     if (!isDesktopMac()) return;
-    void minicpm5Recommend()
-      .then((r) => (mcp = r))
-      .catch(() => {});
+    // Guard against unmount racing the async listen()/recommend() resolutions:
+    // if we're already torn down, drop the result / unsubscribe immediately.
+    let cancelled = false;
     let unlog: (() => void) | null = null;
     let undone: (() => void) | null = null;
-    void listen<string>("minicpm5://install-log", (e) => (mcpLog = e.payload)).then(
-      (u) => (unlog = u)
-    );
+    void minicpm5Recommend()
+      .then((r) => {
+        if (!cancelled) mcp = r;
+      })
+      .catch(() => {});
+    void listen<string>("minicpm5://install-log", (e) => (mcpLog = e.payload)).then((u) => {
+      if (cancelled) u();
+      else unlog = u;
+    });
     void listen<{ success: boolean }>("minicpm5://install-done", (e) => {
       mcpInstalling = false;
       mcpDone = e.payload?.success ?? false;
-    }).then((u) => (undone = u));
+      // The installer registered a new local provider — refresh the snapshot so
+      // it surfaces (and onboarding can advance past the unauthenticated state).
+      if (mcpDone) props.onRefresh();
+    }).then((u) => {
+      if (cancelled) u();
+      else undone = u;
+    });
     return () => {
+      cancelled = true;
       unlog?.();
       undone?.();
     };

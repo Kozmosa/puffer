@@ -25,6 +25,18 @@ MODEL_DIR="$PUFFER_HOME/models/minicpm5-1b"
 BIN_DIR="$PUFFER_HOME/bin"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Cross-process single-flight: two concurrent installers (e.g. a second window)
+# would interleave snapshot_download / pip into the same dirs and corrupt them.
+# mkdir is atomic; flock isn't available on stock macOS.
+mkdir -p "$PUFFER_HOME"
+LOCK="$PUFFER_HOME/.minicpm5-install.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "error: another MiniCPM5 install is already running (lock: $LOCK)." >&2
+  echo "       if you're sure none is, remove it: rmdir '$LOCK'" >&2
+  exit 1
+fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
 command -v python3 >/dev/null 2>&1 || { echo "error: python3 not found (macOS ships it; or 'brew install python')." >&2; exit 1; }
 
 # Isolated runtime venv — avoids PEP 668 (homebrew/system python) and keeps the
