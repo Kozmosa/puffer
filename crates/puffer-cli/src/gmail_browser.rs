@@ -109,6 +109,30 @@ pub(crate) fn load_config(
     load_config_from_dir(&state_dir(paths, connection_slug))
 }
 
+/// Saves Gmail browser config for one connection.
+pub(crate) fn save_config(
+    paths: &ConfigPaths,
+    workspace_root: &Path,
+    connection_slug: &str,
+    accounts: Vec<String>,
+) -> Result<GmailBrowserConfig> {
+    let accounts = normalize_accounts(accounts);
+    anyhow::ensure!(
+        !accounts.is_empty(),
+        "gmail-browser requires at least one Google account"
+    );
+    let config = GmailBrowserConfig {
+        workspace_root: Some(workspace_root.to_path_buf()),
+        accounts,
+    };
+    let dir = state_dir(paths, connection_slug);
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let raw = toml::to_string_pretty(&config).context("serialize Gmail browser config")?;
+    let path = dir.join(CONFIG_FILE);
+    fs::write(&path, raw).with_context(|| format!("write {}", path.display()))?;
+    Ok(config)
+}
+
 /// Returns the per-connection state directory used by the subscriber runtime.
 pub(crate) fn state_dir(paths: &ConfigPaths, connection_slug: &str) -> PathBuf {
     paths.user_config_dir.join(STATE_ROOT).join(connection_slug)
@@ -573,15 +597,23 @@ const GMAIL_INBOX_SCRIPT: &str = r#"
       const fromEl = row.querySelector('.yW span[email], span[email], .yX.xY .yW span');
       const subjectEl = row.querySelector('.bog, span[data-thread-id], .y6 span[id]');
       const snippetEl = row.querySelector('.y2, span[data-thread-id] + span');
-      const threadId =
+      const idEl = row.querySelector('[data-legacy-thread-id], [data-thread-id], [data-legacy-message-id]');
+      const legacyThreadId =
         row.getAttribute("data-legacy-thread-id") ||
-        row.getAttribute("data-thread-id") ||
-        row.getAttribute("data-id") ||
+        (idEl && idEl.getAttribute("data-legacy-thread-id")) ||
         "";
+      const rawThreadId =
+        row.getAttribute("data-thread-id") ||
+        (idEl && idEl.getAttribute("data-thread-id")) ||
+        "";
+      const threadId = legacyThreadId || rawThreadId.replace(/^#/, "");
       const messageId =
         row.getAttribute("data-legacy-message-id") ||
+        (idEl && idEl.getAttribute("data-legacy-message-id")) ||
         row.getAttribute("data-message-id") ||
+        legacyThreadId ||
         threadId ||
+        row.getAttribute("data-id") ||
         "";
       const sender =
         (fromEl && (fromEl.getAttribute("name") || fromEl.getAttribute("aria-label"))) ||
@@ -598,6 +630,8 @@ const GMAIL_INBOX_SCRIPT: &str = r#"
       return {
         id: messageId || fallback,
         threadId,
+        legacyThreadId,
+        gmailThreadId: rawThreadId,
         sender,
         fromEmail,
         subject,

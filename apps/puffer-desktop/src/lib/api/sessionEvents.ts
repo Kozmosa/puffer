@@ -121,6 +121,9 @@ export type SessionStreamEvent =
       turnId: string;
       requestId: string;
       questions: unknown[];
+      browserSessionId?: string;
+      browserTabId?: string;
+      browserUrl?: string;
       replay?: boolean;
     } & StreamActorFields)
   | ({

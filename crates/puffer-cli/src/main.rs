@@ -16,6 +16,7 @@ mod daemon;
 mod daemon_browser;
 mod daemon_files;
 mod daemon_fs_watch;
+mod daemon_gmail_browser_setup;
 mod daemon_lambda_skills;
 mod daemon_local_model;
 mod daemon_lsp;

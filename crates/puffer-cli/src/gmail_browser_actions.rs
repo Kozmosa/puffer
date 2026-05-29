@@ -1,6 +1,10 @@
 //! Connector action helpers for the Gmail-browser subscriber.
 
+#[path = "gmail_browser_draft.rs"]
+mod gmail_browser_draft;
+
 use anyhow::{Context, Result};
+use gmail_browser_draft::{draft_rows_contain, gmail_reply_draft_script, gmail_save_draft_script};
 use serde_json::{json, Value};
 use std::time::Instant;
 
@@ -78,7 +82,7 @@ fn gmail_mark_read(
     let url = gmail_thread_url(&account, input, &thread_id);
     let handshake_ref = ensure_browser_daemon(config, handshake)?;
     open_gmail_url(env, &account, handshake_ref, &url)?;
-    wait_gmail_ready(env, &account, handshake_ref)?;
+    wait_gmail_thread_ready(env, &account, handshake_ref, &thread_id)?;
     Ok(json!({
         "action": action,
         "summary": format!("opened Gmail thread {thread_id} for {account} to mark it read"),
@@ -100,7 +104,7 @@ fn gmail_delete(
     let url = gmail_thread_url(&account, input, &thread_id);
     let handshake_ref = ensure_browser_daemon(config, handshake)?;
     open_gmail_url(env, &account, handshake_ref, &url)?;
-    wait_gmail_ready(env, &account, handshake_ref)?;
+    wait_gmail_thread_ready(env, &account, handshake_ref, &thread_id)?;
     let click = evaluate_gmail_script(env, &account, handshake_ref, GMAIL_DELETE_SCRIPT)?;
     if !click.get("ok").and_then(Value::as_bool).unwrap_or(false) {
         anyhow::bail!(
@@ -127,16 +131,94 @@ fn gmail_draft(
     action: &str,
     input: &Value,
 ) -> Result<Value> {
+    let fields = GmailComposeFields::from_input(action, input);
+    if fields.is_empty_draft() {
+        anyhow::bail!("draft actions require at least one recipient, subject, or body field");
+    }
     let account = gmail_action_account(config, input)?;
-    let url = gmail_compose_url(&account, action, input);
+    if action == "draft_reply" {
+        if let Some(thread_id) = optional_gmail_thread_id(input) {
+            return gmail_thread_reply_draft(
+                env, config, handshake, action, input, fields, thread_id,
+            );
+        }
+    }
+    let url = gmail_compose_url_for_fields(&account, &fields);
     let handshake_ref = ensure_browser_daemon(config, handshake)?;
     open_gmail_url(env, &account, handshake_ref, &url)?;
     wait_gmail_ready(env, &account, handshake_ref)?;
+    let save = evaluate_gmail_script(
+        env,
+        &account,
+        handshake_ref,
+        &gmail_save_draft_script(&fields),
+    )?;
+    if !save.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        anyhow::bail!(
+            "Gmail draft was not prepared: {}",
+            save.get("reason")
+                .and_then(Value::as_str)
+                .or_else(|| save.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+        );
+    }
+    std::thread::sleep(GMAIL_EVALUATE_INTERVAL);
+    let drafts_url = gmail_drafts_url(&account);
+    let drafts = poll_account_at_url(env, &account, handshake_ref, &drafts_url)?;
+    ensure_gmail_action_not_auth_blocked(&account, &drafts)?;
+    if !draft_rows_contain(&fields, &drafts) {
+        let status = drafts
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        anyhow::bail!("Gmail draft was prepared but was not visible in Drafts; status `{status}`");
+    }
     Ok(json!({
         "action": action,
-        "summary": format!("opened Gmail draft compose for {account}"),
+        "summary": format!("saved Gmail draft for {account}"),
         "account": account,
         "url": url,
+        "drafts_url": drafts_url,
+        "save": save,
+    }))
+}
+
+fn gmail_thread_reply_draft(
+    env: &SubscriberEnv,
+    config: &GmailBrowserConfig,
+    handshake: &mut Option<crate::daemon::Handshake>,
+    action: &str,
+    input: &Value,
+    fields: GmailComposeFields,
+    thread_id: String,
+) -> Result<Value> {
+    let account = gmail_action_account(config, input)?;
+    let url = gmail_thread_url(&account, input, &thread_id);
+    let handshake_ref = ensure_browser_daemon(config, handshake)?;
+    open_gmail_url(env, &account, handshake_ref, &url)?;
+    wait_gmail_thread_ready(env, &account, handshake_ref, &thread_id)?;
+    let save = evaluate_gmail_script(
+        env,
+        &account,
+        handshake_ref,
+        &gmail_reply_draft_script(&fields),
+    )?;
+    if !save.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        anyhow::bail!(
+            "Gmail reply draft was not prepared: {}",
+            save.get("reason")
+                .and_then(Value::as_str)
+                .or_else(|| save.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+        );
+    }
+    Ok(json!({
+        "action": action,
+        "summary": format!("saved Gmail reply draft for {account}"),
+        "account": account,
+        "thread_id": thread_id,
+        "url": url,
+        "save": save,
     }))
 }
 
@@ -241,14 +323,40 @@ fn wait_gmail_ready(
     Ok(result)
 }
 
+fn wait_gmail_thread_ready(
+    env: &SubscriberEnv,
+    account: &str,
+    handshake: &crate::daemon::Handshake,
+    thread_id: &str,
+) -> Result<Value> {
+    let result = evaluate_gmail_script(
+        env,
+        account,
+        handshake,
+        &gmail_thread_ready_script(thread_id),
+    )?;
+    ensure_gmail_action_ready(account, &result)?;
+    if !result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        anyhow::bail!("Gmail thread `{thread_id}` did not become ready for account `{account}`");
+    }
+    Ok(result)
+}
+
 fn ensure_gmail_action_ready(account: &str, result: &Value) -> Result<()> {
+    ensure_gmail_action_not_auth_blocked(account, result)?;
     match result.get("status").and_then(Value::as_str).unwrap_or("ok") {
         "ok" => Ok(()),
-        "auth_required" => anyhow::bail!(
-            "Gmail account `{account}` is not signed in inside the global Puffer browser profile"
-        ),
         status => anyhow::bail!("Gmail account `{account}` returned status `{status}`"),
     }
+}
+
+fn ensure_gmail_action_not_auth_blocked(account: &str, result: &Value) -> Result<()> {
+    if result.get("status").and_then(Value::as_str) == Some("auth_required") {
+        anyhow::bail!(
+            "Gmail account `{account}` is not signed in inside the global Puffer browser profile"
+        );
+    }
+    Ok(())
 }
 
 fn gmail_action_account(config: &GmailBrowserConfig, input: &Value) -> Result<String> {
@@ -268,16 +376,19 @@ fn gmail_action_account(config: &GmailBrowserConfig, input: &Value) -> Result<St
 }
 
 fn gmail_thread_id(input: &Value) -> Result<String> {
+    optional_gmail_thread_id(input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Gmail action requires `thread_id`, `gmail_thread_id`, `message_id`, or `id`"
+        )
+    })
+}
+
+fn optional_gmail_thread_id(input: &Value) -> Option<String> {
     string_input(input, "thread_id")
         .or_else(|| string_input(input, "gmail_thread_id"))
         .or_else(|| string_input(input, "message_id"))
         .or_else(|| string_input(input, "id"))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Gmail action requires `thread_id`, `gmail_thread_id`, `message_id`, or `id`"
-            )
-        })
 }
 
 fn gmail_collection_url(account: &str, input: &Value) -> String {
@@ -335,17 +446,20 @@ fn gmail_thread_url(account: &str, input: &Value, thread_id: &str) -> String {
 }
 
 fn gmail_compose_url(account: &str, action: &str, input: &Value) -> String {
+    let fields = GmailComposeFields::from_input(action, input);
+    gmail_compose_url_for_fields(account, &fields)
+}
+
+fn gmail_compose_url_for_fields(account: &str, fields: &GmailComposeFields) -> String {
     let mut pairs = vec![
         ("authuser".to_string(), account.to_string()),
         ("view".to_string(), "cm".to_string()),
         ("fs".to_string(), "1".to_string()),
         ("tf".to_string(), "1".to_string()),
     ];
-    let to = address_list_input(input, "to").join(",");
-    let cc = address_list_input(input, "cc").join(",");
-    let bcc = address_list_input(input, "bcc").join(",");
-    let subject = draft_subject(action, string_input(input, "subject").unwrap_or_default());
-    let body = body_input(input);
+    let to = fields.to.join(",");
+    let cc = fields.cc.join(",");
+    let bcc = fields.bcc.join(",");
     if !to.is_empty() {
         pairs.push(("to".to_string(), to));
     }
@@ -355,11 +469,11 @@ fn gmail_compose_url(account: &str, action: &str, input: &Value) -> String {
     if !bcc.is_empty() {
         pairs.push(("bcc".to_string(), bcc));
     }
-    if !subject.trim().is_empty() {
-        pairs.push(("su".to_string(), subject));
+    if !fields.subject.trim().is_empty() {
+        pairs.push(("su".to_string(), fields.subject.clone()));
     }
-    if !body.trim().is_empty() {
-        pairs.push(("body".to_string(), body));
+    if !fields.body.trim().is_empty() {
+        pairs.push(("body".to_string(), fields.body.clone()));
     }
     format!(
         "https://mail.google.com/mail/?{}",
@@ -373,9 +487,41 @@ fn gmail_compose_url(account: &str, action: &str, input: &Value) -> String {
     )
 }
 
+struct GmailComposeFields {
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+    subject: String,
+    body: String,
+}
+
+impl GmailComposeFields {
+    fn from_input(action: &str, input: &Value) -> Self {
+        Self {
+            to: address_list_input(input, "to"),
+            cc: address_list_input(input, "cc"),
+            bcc: address_list_input(input, "bcc"),
+            subject: draft_subject(action, string_input(input, "subject").unwrap_or_default()),
+            body: body_input(input),
+        }
+    }
+
+    fn is_empty_draft(&self) -> bool {
+        self.to.is_empty()
+            && self.cc.is_empty()
+            && self.bcc.is_empty()
+            && self.subject.trim().is_empty()
+            && self.body.trim().is_empty()
+    }
+}
+
 fn gmail_base_url(account: &str) -> String {
     let encoded = url::form_urlencoded::byte_serialize(account.as_bytes()).collect::<String>();
     format!("https://mail.google.com/mail/?authuser={encoded}")
+}
+
+fn gmail_drafts_url(account: &str) -> String {
+    format!("{}#drafts", gmail_base_url(account))
 }
 
 fn url_fragment(value: &str) -> String {
@@ -384,6 +530,9 @@ fn url_fragment(value: &str) -> String {
 
 fn draft_subject(action: &str, subject: String) -> String {
     let trimmed = subject.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
     if action == "draft_forward" {
         if trimmed.to_ascii_lowercase().starts_with("fwd:")
             || trimmed.to_ascii_lowercase().starts_with("fw:")
@@ -555,6 +704,62 @@ const GMAIL_READY_SCRIPT: &str = r#"
 })()
 "#;
 
+fn gmail_thread_ready_script(thread_id: &str) -> String {
+    let expected = json!(thread_id).to_string();
+    format!(
+        r#"
+(() => {{
+  const expected = {expected};
+  const href = location.href;
+  const hash = location.hash || "";
+  const title = document.title || "";
+  const bodyText = document.body ? document.body.innerText || "" : "";
+  const host = location.hostname || "";
+  const signinLike =
+    host.includes("accounts.google.com") ||
+    /ServiceLogin|signin|identifier/.test(href) ||
+    (/sign in/i.test(title) && !/gmail/i.test(title));
+  if (signinLike) {{
+    return {{ ok: false, status: "auth_required", href, title }};
+  }}
+  const visible = (node) => {{
+    if (!node) return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }};
+  const label = (node) => [
+    node.getAttribute("aria-label") || "",
+    node.getAttribute("data-tooltip") || "",
+    node.getAttribute("title") || "",
+    node.textContent || ""
+  ].join(" ").trim();
+  const hasThreadHash = /\/[^/]+$/.test(hash) || hash.includes(expected);
+  const replyButton = Array.from(document.querySelectorAll('[aria-label], [data-tooltip], [role="button"]'))
+    .filter(visible)
+    .some((node) => /^reply\b/i.test(label(node)) && !/reply all/i.test(label(node)));
+  const draftBody = Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
+    .filter(visible)
+    .some((node) =>
+      /message body|body/i.test(label(node)) ||
+      (node.getAttribute("g_editable") === "true" && node.getAttribute("role") === "textbox")
+    );
+  const threadChrome = /Print all|In new window/i.test(bodyText);
+  if (hasThreadHash && (replyButton || draftBody || threadChrome)) {{
+    return {{ ok: true, status: "ok", href, title }};
+  }}
+  return {{
+    ok: false,
+    status: "loading",
+    href,
+    title,
+    hash,
+    bodyText: bodyText.slice(0, 200)
+  }};
+}})()
+"#
+    )
+}
+
 const GMAIL_DELETE_SCRIPT: &str = r#"
 (() => {
   const visible = (node) => {
@@ -642,6 +847,31 @@ mod tests {
         assert!(url.contains("bcc=ops%40example.com"));
         assert!(url.contains("su=Re%3A+Plan"));
         assert!(url.contains("body=Looks+good"));
+    }
+
+    #[test]
+    fn draft_fields_reject_empty_draft_and_generate_save_script() {
+        let empty = GmailComposeFields::from_input("draft_reply", &json!({}));
+        assert!(empty.is_empty_draft());
+
+        let fields = GmailComposeFields::from_input(
+            "draft_reply",
+            &json!({
+                "to": "alice@example.com",
+                "subject": "Plan",
+                "body": "Looks good",
+            }),
+        );
+        assert!(!fields.is_empty_draft());
+        let script = gmail_save_draft_script(&fields);
+        assert!(script.contains("alice@example.com"));
+        assert!(script.contains("draft_autosaved"));
+        let reply_script = gmail_reply_draft_script(&fields);
+        assert!(reply_script.contains("reply_opening"));
+        assert!(draft_rows_contain(
+            &fields,
+            &json!({"rows":[{"subject":"Re: Plan","snippet":"Looks good"}]})
+        ));
     }
 
     #[test]
