@@ -1429,6 +1429,7 @@
   function sendWheel(event: WheelEvent) {
     if (!connected) return;
     event.preventDefault();
+    event.stopPropagation();
     const point = canvasPoint(event);
     sendBrowserInput({
       kind: "wheel",
@@ -1497,13 +1498,16 @@
     if (!connected) return;
     if (isCopyShortcut(event)) {
       event.preventDefault();
+      event.stopPropagation();
       void copySelection();
       return;
     }
     if (handleBrowserShortcut(event)) {
+      event.stopPropagation();
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     const text = event.key.length === 1 && !event.metaKey && !event.ctrlKey ? event.key : undefined;
     sendBrowserInput({
       kind: "key",
@@ -1519,13 +1523,16 @@
     if (!connected) return;
     if (handledBrowserShortcutCodes.delete(event.code)) {
       event.preventDefault();
+      event.stopPropagation();
       return;
     }
     if (isCopyShortcut(event)) {
       event.preventDefault();
+      event.stopPropagation();
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     sendBrowserInput({
       kind: "key",
       eventType: "keyUp",
@@ -1540,6 +1547,7 @@
     const text = event.clipboardData?.getData("text/plain") ?? "";
     if (!text) return;
     event.preventDefault();
+    event.stopPropagation();
     sendBrowserInput({ kind: "text", text });
   }
 

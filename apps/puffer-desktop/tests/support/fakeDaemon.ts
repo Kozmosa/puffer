@@ -59,6 +59,10 @@ type WorkflowSnapshotFixture = {
   monitor_task_error?: string | null;
 };
 
+type MonitorHistoryFixture = {
+  messages: JsonRecord[];
+};
+
 type ConnectorSetupQuestionFixture = {
   type: "input" | "choice";
   header: string;
@@ -348,10 +352,11 @@ export class FakeDaemon {
   };
   private readonly activeTurnIds = new Set<string>();
   private readonly pendingConnectorTurns = new Map<string, {
-    sessionId: string;
+    eventChannel: string;
     connectorSlug: string;
     connectionSlug: string;
   }>();
+  private connectorSetupCompletionDelayMs = 0;
   private connectorSetupQuestions: ConnectorSetupQuestionFixture[] = [
     {
       type: "input",
@@ -593,6 +598,7 @@ export class FakeDaemon {
         monitor_connection: "telegram-user",
         monitor_connector: "telegram-login",
         monitor_memory_path: "/tmp/telegram-user.md",
+        monitor_envelope_id: "env-monitor-1",
         ignored: false,
         actions: [
           {
@@ -614,6 +620,47 @@ export class FakeDaemon {
       }
     ],
     monitor_task_error: null
+  };
+  private monitorHistory: MonitorHistoryFixture = {
+    messages: [
+      {
+        idx: 1,
+        run_id: "run-monitor-1",
+        workflow_slug: "monitor-telegram-user",
+        connection_slug: "telegram-user",
+        connector_slug: "telegram-login",
+        envelope_id: "env-monitor-1",
+        received_at_ms: now - 16_000,
+        topic: "telegram-user",
+        kind: "message",
+        dedup_key: "msg-1",
+        summary: "Telegram from Alice: deployment status?",
+        text: "Alice asked whether the deployment is finished.",
+        payload: {
+          chat_title: "Support",
+          sender_username: "alice",
+          message: "deployment status?"
+        },
+        action_log: [
+          {
+            action: "triage_agent",
+            status: "completed",
+            summary: "Created monitor task monitor-1.",
+            started_at_ms: now - 15_500,
+            ended_at_ms: now - 15_000,
+            usage: {
+              input_tokens: 40,
+              output_tokens: 8,
+              cache_read_tokens: 10,
+              cache_creation_tokens: 0
+            }
+          }
+        ],
+        status: "completed",
+        started_at_ms: now - 15_500,
+        ended_at_ms: now - 15_000
+      }
+    ]
   };
   private nextTab = 2;
   private nextPty = 1;
@@ -771,11 +818,21 @@ export class FakeDaemon {
     };
   }
 
+  setMonitorHistory(history: MonitorHistoryFixture): void {
+    this.monitorHistory = {
+      messages: history.messages.map((message) => ({ ...message }))
+    };
+  }
+
   setConnectorSetupQuestions(questions: ConnectorSetupQuestionFixture[]): void {
     this.connectorSetupQuestions = questions.map((question) => ({
       ...question,
       options: question.options?.map((option) => ({ ...option })) ?? []
     }));
+  }
+
+  setConnectorSetupCompletionDelay(ms: number): void {
+    this.connectorSetupCompletionDelayMs = Math.max(0, ms);
   }
 
   socketCount(): number {
@@ -1031,6 +1088,8 @@ export class FakeDaemon {
         return this.setDesktopPin(request.params);
       case "list_grouped_sessions":
         return this.groupedSessions();
+      case "list_grouped_sessions_page":
+        return this.groupedSessionsPage(request.params);
       case "load_session_detail":
         return this.sessionDetail(String(request.params.sessionId ?? session.sessionId));
       case "rename_session":
@@ -1049,6 +1108,8 @@ export class FakeDaemon {
         return this.runAgentTurn(request.params);
       case "dispatch_slash_command":
         return this.runAgentTurn(request.params);
+      case "start_connector_setup":
+        return this.startConnectorSetup(request.params);
       case "cancel_turn": {
         const turnId = String(request.params.turnId ?? "");
         if (this.activeTurnIds.has(turnId)) {
@@ -1118,6 +1179,9 @@ export class FakeDaemon {
         return { frames: this.browserRecordings.get(String(request.params.sessionId ?? "")) ?? [] };
       case "workflow_list":
         return this.workflowListResponse();
+      case "task_monitor_history_list":
+      case "monitor_history_list":
+        return this.monitorHistory;
       case "workflow_save":
         return this.saveWorkflow(request.params);
       case "workflow_binding_create":
@@ -1434,9 +1498,38 @@ export class FakeDaemon {
     const connectMatch = /^\/connect\s+([a-z0-9-]+)\s+([a-z0-9-]+)$/i.exec(message);
     if (connectMatch) {
       const [, connectorSlug, connectionSlug] = connectMatch;
-      this.pendingConnectorTurns.set(turnId, { sessionId, connectorSlug, connectionSlug });
+      this.pendingConnectorTurns.set(turnId, {
+        eventChannel: `session:${sessionId}:event`,
+        connectorSlug,
+        connectionSlug
+      });
       setTimeout(() => {
         this.emit(`session:${sessionId}:event`, {
+          type: "user-question-request",
+          turnId,
+          requestId: "connector-setup",
+          questions: this.connectorSetupQuestions.map((question) => ({
+            ...question,
+            options: question.options?.map((option) => ({ ...option })) ?? []
+          }))
+        });
+      }, 0);
+    }
+    return { turnId };
+  }
+
+  private startConnectorSetup(params: JsonRecord): JsonRecord {
+    const setupId = String(params.setupId ?? "connector-setup");
+    const turnId = `turn-${setupId}`;
+    const message = String(params.message ?? "").trim();
+    const connectMatch = /^\/connect\s+([a-z0-9-]+)\s+([a-z0-9-]+)$/i.exec(message);
+    this.activeTurnIds.add(turnId);
+    if (connectMatch) {
+      const [, connectorSlug, connectionSlug] = connectMatch;
+      const eventChannel = `connector-setup:${setupId}:event`;
+      this.pendingConnectorTurns.set(turnId, { eventChannel, connectorSlug, connectionSlug });
+      setTimeout(() => {
+        this.emit(eventChannel, {
           type: "user-question-request",
           turnId,
           requestId: "connector-setup",
@@ -1477,12 +1570,12 @@ export class FakeDaemon {
       ].sort((a, b) => String(a.slug ?? "").localeCompare(String(b.slug ?? "")))
     };
     setTimeout(() => {
-      this.emit(`session:${pending.sessionId}:event`, {
+      this.emit(pending.eventChannel, {
         type: "turn-complete",
         turnId,
         assistantText: `Created connector connection ${pending.connectionSlug}.`
       });
-    }, 0);
+    }, this.connectorSetupCompletionDelayMs);
     return {};
   }
 
@@ -1804,6 +1897,37 @@ export class FakeDaemon {
       group.tags = this.projectTags.get(folderPath) ?? [];
     }
     return Array.from(groups.values());
+  }
+
+  private groupedSessionsPage(params: JsonRecord): JsonRecord {
+    const offset = Math.max(0, Number(params.offset ?? 0) || 0);
+    const limit = Math.max(1, Number(params.limit ?? 30) || 30);
+    const entries = this.groupedSessions().flatMap((group) =>
+      ((group.sessions as JsonRecord[] | undefined) ?? []).map((sessionItem) => ({
+        group,
+        session: sessionItem
+      }))
+    );
+    const pageGroups = new Map<string, JsonRecord>();
+    for (const { group, session: sessionItem } of entries.slice(offset, offset + limit)) {
+      const folderId = String(group.folderId ?? group.folderPath ?? "");
+      const pageGroup = pageGroups.get(folderId) ?? {
+        ...group,
+        sessionCount: 0,
+        sessions: []
+      };
+      (pageGroup.sessions as JsonRecord[]).push(sessionItem);
+      pageGroup.sessionCount = (pageGroup.sessions as JsonRecord[]).length;
+      pageGroups.set(folderId, pageGroup);
+    }
+    return {
+      groups: Array.from(pageGroups.values()),
+      offset,
+      limit,
+      returnedSessions: entries.slice(offset, offset + limit).length,
+      totalSessions: entries.length,
+      hasMore: offset + limit < entries.length
+    };
   }
 
   private sessionDetail(sessionId: string): JsonRecord {

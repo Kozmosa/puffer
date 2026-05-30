@@ -39,6 +39,9 @@ default-members = ["crates/puffer-cli"]
 exclude = ["vendor/cua-driver"]
 resolver = "2"
 
+[patch.crates-io]
+grammers-session = { path = "vendor/grammers-session" }
+
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
@@ -62,6 +65,7 @@ jsonschema = { version = "0.45.1", default-features = false }
 libc = "0.2"
 libloading = "0.8.9"
 psl = "2.1.163"
+qrcode = "0.14.1"
 ratatui = "0.29.0"
 # Anthropic's official Rust SDK for the Model Context Protocol. Pinned to the
 # same major version codex uses (0.15) and opted into the client + server +

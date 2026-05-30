@@ -24,6 +24,7 @@ import type {
   TimelineItem,
   WorkflowDefinition,
   WorkflowBindingCreateRequest,
+  WorkflowMonitorHistoryMessage,
   WorkflowRun,
   WorkflowSnapshot
 } from "../types";
@@ -243,7 +244,6 @@ type BackendResourceCounts = SettingsSnapshot["resources"];
 type BackendSettingsSessionSummary = SettingsSnapshot["sessions"];
 type BackendAuthProviderStatus = AuthProviderStatus;
 type BackendProviderSummary = ProviderSummary;
-type BackendBrowserProfile = SettingsSnapshot["browserProfiles"][number];
 type BackendNetworkProxySettings = SettingsSnapshot["networkProxy"];
 
 type BackendSettingsSnapshot = {
@@ -258,7 +258,6 @@ type BackendSettingsSnapshot = {
   auth: BackendAuthProviderStatus[];
   providers: BackendProviderSummary[];
   networkProxy: BackendNetworkProxySettings;
-  browserProfiles: BackendBrowserProfile[];
 };
 
 type BackendRemoteOperation = RemoteOperation;
@@ -1270,6 +1269,16 @@ export async function saveMonitorMemory(connectionSlug: string, content: string)
   });
 }
 
+/** Load recent received monitor messages and their agent outcomes. */
+export async function loadMonitorHistory(limit = 200): Promise<WorkflowMonitorHistoryMessage[]> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<{ messages?: WorkflowMonitorHistoryMessage[] }>(
+    "task_monitor_history_list",
+    { limit }
+  );
+  return result.messages ?? [];
+}
+
 /** Delete one connection-triggered workflow binding. */
 export async function deleteWorkflowBinding(slug: string): Promise<WorkflowSnapshot> {
   const client = await ensureLocalDaemonClient();
@@ -1349,6 +1358,21 @@ export async function dispatchSlashCommand(
   const client = await ensureLocalDaemonClient();
   const result = await client.request<{ turnId: string }>("dispatch_slash_command", {
     sessionId,
+    message
+  });
+  return result.turnId;
+}
+
+/** Runs deterministic connector setup without creating a persisted session.
+ *  Events stream on `connector-setup:<setupId>:event` and use the same
+ *  question/complete/error payloads as a normal turn. */
+export async function startConnectorSetupCommand(
+  setupId: string,
+  message: string
+): Promise<string> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<{ turnId: string }>("start_connector_setup", {
+    setupId,
     message
   });
   return result.turnId;
@@ -2082,7 +2106,6 @@ export type ConfigPatch = {
   defaultModel?: string | null;
   theme?: string;
   openaiBaseUrl?: string | null;
-  browserChromeProfile?: string | null;
 };
 
 export async function localModelStatus(modelId = "minicpm5"): Promise<LocalModelStatus> {

@@ -5,6 +5,7 @@ use crate::spec::{render_template, render_value_templates, ActionSpec, FileAppen
 use anyhow::{Context, Result};
 use puffer_subscriber_runtime::EventEnvelope;
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -66,6 +67,86 @@ pub struct ActionResult {
     pub success: bool,
     /// One-line summary suitable for logs and `/subscriptions status`.
     pub summary: String,
+    /// Optional token usage for agent-backed actions.
+    pub usage: Option<ActionUsage>,
+}
+
+impl ActionResult {
+    /// Builds a successful action result without token usage.
+    pub fn success(summary: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            summary: summary.into(),
+            usage: None,
+        }
+    }
+
+    /// Builds a successful action result with optional token usage.
+    pub fn success_with_usage(summary: impl Into<String>, usage: Option<ActionUsage>) -> Self {
+        Self {
+            success: true,
+            summary: summary.into(),
+            usage,
+        }
+    }
+
+    /// Builds a failed action result without token usage.
+    pub fn failure(summary: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            summary: summary.into(),
+            usage: None,
+        }
+    }
+}
+
+/// Token usage reported by an agent-backed workflow action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionUsage {
+    /// Input tokens reported by the model provider.
+    pub input_tokens: u64,
+    /// Output tokens reported by the model provider.
+    pub output_tokens: u64,
+    /// Input tokens served from provider cache.
+    pub cache_read_tokens: u64,
+    /// Input tokens written into provider cache.
+    pub cache_creation_tokens: u64,
+}
+
+impl ActionUsage {
+    /// Returns the non-cached input plus output token total.
+    pub fn spent_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_sub(self.cache_read_tokens)
+            .saturating_add(self.output_tokens)
+    }
+}
+
+/// Output returned by a workflow action runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowActionOutput {
+    /// One-line or concise action summary.
+    pub summary: String,
+    /// Optional token usage for agent-backed actions.
+    pub usage: Option<ActionUsage>,
+}
+
+impl WorkflowActionOutput {
+    /// Builds workflow action output without token usage.
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            usage: None,
+        }
+    }
+
+    /// Builds workflow action output with token usage.
+    pub fn with_usage(summary: impl Into<String>, usage: Option<ActionUsage>) -> Self {
+        Self {
+            summary: summary.into(),
+            usage,
+        }
+    }
 }
 
 /// Trait for delivering an outbound message through whichever subscriber
@@ -84,7 +165,7 @@ pub trait Outbound: Send + Sync {
 /// Trait for triggering native Puffer workflows from subscription actions.
 pub trait WorkflowActionRunner: Send + Sync {
     /// Runs `slug` with `trigger` as the interpolation payload.
-    fn run_workflow(&self, slug: &str, trigger: serde_json::Value) -> Result<String>;
+    fn run_workflow(&self, slug: &str, trigger: serde_json::Value) -> Result<WorkflowActionOutput>;
 
     /// Executes a Puffer tool call from a workflow action.
     fn run_tool_action(
@@ -92,7 +173,7 @@ pub trait WorkflowActionRunner: Send + Sync {
         tool_id: &str,
         input: serde_json::Value,
         trigger: serde_json::Value,
-    ) -> Result<String> {
+    ) -> Result<WorkflowActionOutput> {
         let _ = (tool_id, input, trigger);
         anyhow::bail!("workflow tool actions are not installed in this runtime")
     }
@@ -103,7 +184,7 @@ pub trait WorkflowActionRunner: Send + Sync {
         prompt: &str,
         model: Option<&str>,
         trigger: serde_json::Value,
-    ) -> Result<String> {
+    ) -> Result<WorkflowActionOutput> {
         let _ = (prompt, model, trigger);
         anyhow::bail!("workflow agent triage is not installed in this runtime")
     }
@@ -114,7 +195,7 @@ pub trait WorkflowActionRunner: Send + Sync {
         prompt: &str,
         model: Option<&str>,
         trigger: serde_json::Value,
-    ) -> Result<String> {
+    ) -> Result<WorkflowActionOutput> {
         let _ = (prompt, model, trigger);
         anyhow::bail!("workflow ignore analysis is not installed in this runtime")
     }
@@ -277,10 +358,11 @@ impl BuiltinActionDispatcher {
             ],
         )
         .with_context(|| format!("insert into {table}"))?;
-        Ok(ActionResult {
-            success: true,
-            summary: format!("inserted into {} ({})", absolute.display(), table),
-        })
+        Ok(ActionResult::success(format!(
+            "inserted into {} ({})",
+            absolute.display(),
+            table
+        )))
     }
 
     fn file_append(
@@ -315,10 +397,10 @@ impl BuiltinActionDispatcher {
                     .with_context(|| format!("append newline to {}", absolute.display()))?;
             }
         }
-        Ok(ActionResult {
-            success: true,
-            summary: format!("appended to {}", absolute.display()),
-        })
+        Ok(ActionResult::success(format!(
+            "appended to {}",
+            absolute.display()
+        )))
     }
 
     fn forward_message(
@@ -333,21 +415,14 @@ impl BuiltinActionDispatcher {
             .unwrap_or_else(|| envelope.event.text.clone());
         match self.resolved_outbound() {
             Some(outbound) => match outbound.send(platform, target, &rendered) {
-                Ok(summary) => ActionResult {
-                    success: true,
-                    summary,
-                },
-                Err(error) => ActionResult {
-                    success: false,
-                    summary: format!("forward_message to {platform}:{target} failed: {error:#}"),
-                },
+                Ok(summary) => ActionResult::success(summary),
+                Err(error) => ActionResult::failure(format!(
+                    "forward_message to {platform}:{target} failed: {error:#}"
+                )),
             },
-            None => ActionResult {
-                success: false,
-                summary: format!(
+            None => ActionResult::failure(format!(
                     "forward_message: no outbound is installed; spec needs {platform}:{target} but the running puffer process cannot deliver messages"
-                ),
-            },
+                )),
         }
     }
 
@@ -355,21 +430,14 @@ impl BuiltinActionDispatcher {
         let trigger = trigger_payload(envelope);
         match self.resolved_workflow_runner() {
             Some(runner) => match runner.run_workflow(slug, trigger) {
-                Ok(summary) => ActionResult {
-                    success: true,
-                    summary,
-                },
-                Err(error) => ActionResult {
-                    success: false,
-                    summary: format!("run_workflow `{slug}` failed: {error:#}"),
-                },
+                Ok(output) => ActionResult::success_with_usage(output.summary, output.usage),
+                Err(error) => {
+                    ActionResult::failure(format!("run_workflow `{slug}` failed: {error:#}"))
+                }
             },
-            None => ActionResult {
-                success: false,
-                summary: format!(
-                    "run_workflow: no workflow runner is installed; `{slug}` cannot be run"
-                ),
-            },
+            None => ActionResult::failure(format!(
+                "run_workflow: no workflow runner is installed; `{slug}` cannot be run"
+            )),
         }
     }
 
@@ -383,19 +451,12 @@ impl BuiltinActionDispatcher {
         let trigger = trigger_payload(envelope);
         match self.resolved_workflow_runner() {
             Some(runner) => match runner.run_tool_action(tool, rendered, trigger) {
-                Ok(summary) => ActionResult {
-                    success: true,
-                    summary,
-                },
-                Err(error) => ActionResult {
-                    success: false,
-                    summary: format!("tool_call `{tool}` failed: {error:#}"),
-                },
+                Ok(output) => ActionResult::success_with_usage(output.summary, output.usage),
+                Err(error) => {
+                    ActionResult::failure(format!("tool_call `{tool}` failed: {error:#}"))
+                }
             },
-            None => ActionResult {
-                success: false,
-                summary: "tool_call: no workflow action runner is installed".to_string(),
-            },
+            None => ActionResult::failure("tool_call: no workflow action runner is installed"),
         }
     }
 
@@ -409,19 +470,10 @@ impl BuiltinActionDispatcher {
         let trigger = trigger_payload(envelope);
         match self.resolved_workflow_runner() {
             Some(runner) => match runner.triage_agent(&rendered, model, trigger) {
-                Ok(summary) => ActionResult {
-                    success: true,
-                    summary,
-                },
-                Err(error) => ActionResult {
-                    success: false,
-                    summary: format!("triage_agent failed: {error:#}"),
-                },
+                Ok(output) => ActionResult::success_with_usage(output.summary, output.usage),
+                Err(error) => ActionResult::failure(format!("triage_agent failed: {error:#}")),
             },
-            None => ActionResult {
-                success: false,
-                summary: "triage_agent: no workflow action runner is installed".to_string(),
-            },
+            None => ActionResult::failure("triage_agent: no workflow action runner is installed"),
         }
     }
 
@@ -437,22 +489,15 @@ impl BuiltinActionDispatcher {
         match self.resolved_connector_action_executor() {
             Some(executor) => {
                 match executor.run_connector_action(connector_slug, action, rendered, trigger) {
-                    Ok(summary) => ActionResult {
-                        success: true,
-                        summary,
-                    },
-                    Err(error) => ActionResult {
-                        success: false,
-                        summary: format!(
-                            "connector_act `{connector_slug}.{action}` failed: {error:#}"
-                        ),
-                    },
+                    Ok(summary) => ActionResult::success(summary),
+                    Err(error) => ActionResult::failure(format!(
+                        "connector_act `{connector_slug}.{action}` failed: {error:#}"
+                    )),
                 }
             }
-            None => ActionResult {
-                success: false,
-                summary: "connector_act: no connector action executor is installed".to_string(),
-            },
+            None => {
+                ActionResult::failure("connector_act: no connector action executor is installed")
+            }
         }
     }
 
@@ -468,26 +513,18 @@ impl BuiltinActionDispatcher {
                 !completed.contains(&node.id)
                     && node.depends_on.iter().all(|dep| completed.contains(dep))
             }) else {
-                return ActionResult {
-                    success: false,
-                    summary: "graph has no executable node; validate the action graph first"
-                        .to_string(),
-                };
+                return ActionResult::failure(
+                    "graph has no executable node; validate the action graph first",
+                );
             };
             let result = self.dispatch(&node.action, envelope);
             summaries.push(format!("{}: {}", node.id, result.summary));
             if !result.success {
-                return ActionResult {
-                    success: false,
-                    summary: summaries.join("; "),
-                };
+                return ActionResult::failure(summaries.join("; "));
             }
             completed.insert(node.id.clone());
         }
-        ActionResult {
-            success: true,
-            summary: summaries.join("; "),
-        }
+        ActionResult::success(summaries.join("; "))
     }
 }
 
@@ -497,19 +534,13 @@ impl ActionDispatcher for BuiltinActionDispatcher {
             ActionSpec::SqliteInsert { path, table } => {
                 match self.sqlite_insert(path, table, envelope) {
                     Ok(result) => result,
-                    Err(error) => ActionResult {
-                        success: false,
-                        summary: format!("sqlite_insert failed: {error:#}"),
-                    },
+                    Err(error) => ActionResult::failure(format!("sqlite_insert failed: {error:#}")),
                 }
             }
             ActionSpec::FileAppend { path, format } => {
                 match self.file_append(path, *format, envelope) {
                     Ok(result) => result,
-                    Err(error) => ActionResult {
-                        success: false,
-                        summary: format!("file_append failed: {error:#}"),
-                    },
+                    Err(error) => ActionResult::failure(format!("file_append failed: {error:#}")),
                 }
             }
             ActionSpec::ForwardMessage {
@@ -528,11 +559,9 @@ impl ActionDispatcher for BuiltinActionDispatcher {
                 self.triage_agent(prompt, model.as_deref(), envelope)
             }
             ActionSpec::Graph { nodes } => self.graph(nodes, envelope),
-            ActionSpec::Unknown => ActionResult {
-                success: false,
-                summary: "action.type unknown — agent wrote a spec this Puffer build cannot run"
-                    .into(),
-            },
+            ActionSpec::Unknown => ActionResult::failure(
+                "action.type unknown — agent wrote a spec this Puffer build cannot run",
+            ),
         }
     }
 }
@@ -789,9 +818,13 @@ mod tests {
     }
 
     impl WorkflowActionRunner for RecordingWorkflowRunner {
-        fn run_workflow(&self, slug: &str, trigger: serde_json::Value) -> Result<String> {
+        fn run_workflow(
+            &self,
+            slug: &str,
+            trigger: serde_json::Value,
+        ) -> Result<WorkflowActionOutput> {
             self.calls.lock().unwrap().push((slug.to_string(), trigger));
-            Ok(format!("ran {slug}"))
+            Ok(WorkflowActionOutput::new(format!("ran {slug}")))
         }
     }
 
@@ -822,8 +855,12 @@ mod tests {
     }
 
     impl WorkflowActionRunner for RecordingTriageRunner {
-        fn run_workflow(&self, slug: &str, _trigger: serde_json::Value) -> Result<String> {
-            Ok(format!("unused {slug}"))
+        fn run_workflow(
+            &self,
+            slug: &str,
+            _trigger: serde_json::Value,
+        ) -> Result<WorkflowActionOutput> {
+            Ok(WorkflowActionOutput::new(format!("unused {slug}")))
         }
 
         fn triage_agent(
@@ -831,13 +868,21 @@ mod tests {
             prompt: &str,
             model: Option<&str>,
             trigger: serde_json::Value,
-        ) -> Result<String> {
+        ) -> Result<WorkflowActionOutput> {
             self.calls.lock().unwrap().push((
                 prompt.to_string(),
                 model.map(ToOwned::to_owned),
                 trigger,
             ));
-            Ok("triaged".to_string())
+            Ok(WorkflowActionOutput::with_usage(
+                "triaged",
+                Some(ActionUsage {
+                    input_tokens: 12,
+                    output_tokens: 3,
+                    cache_read_tokens: 2,
+                    cache_creation_tokens: 0,
+                }),
+            ))
         }
     }
 
@@ -859,6 +904,7 @@ mod tests {
 
         assert!(result.success, "{}", result.summary);
         assert_eq!(result.summary, "triaged");
+        assert_eq!(result.usage.map(|usage| usage.spent_tokens()), Some(13));
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "Review deploy? from Alice");

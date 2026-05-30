@@ -19,11 +19,11 @@ use crate::cli_args::DesktopApiCommand;
 use crate::desktop_activity::session_activity_status;
 use crate::desktop_api_types::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
-    BrowserGoogleAccountDto, BrowserProfileDto, DiffSummaryDto, DivergenceReportDto,
-    ExternalCredentialDto, FolderGroupDto, NetworkProxySettingsDto, ProviderSummaryDto,
-    RepoActionResultDto, RepoPullRequestDto, RepoStatusDto, ResourceCountsDto,
-    SanitizedProxyEndpointDto, SessionDetailDto, SessionGroupsPageDto, SessionListItemDto,
-    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
+    DiffSummaryDto, DivergenceReportDto, ExternalCredentialDto, FolderGroupDto,
+    NetworkProxySettingsDto, ProviderSummaryDto, RepoActionResultDto, RepoPullRequestDto,
+    RepoStatusDto, ResourceCountsDto, SanitizedProxyEndpointDto, SessionDetailDto,
+    SessionGroupsPageDto, SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto,
+    SettingsSnapshotDto, TimelineItemDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.
@@ -403,7 +403,6 @@ pub(crate) fn load_settings_snapshot(
             mascot_enabled: config.mascot.enabled,
             ui_no_alt_screen: config.ui.no_alt_screen,
             ui_tmux_golden_mode: config.ui.tmux_golden_mode,
-            browser_chrome_profile: config.browser.chrome_profile.clone(),
         },
         resources: ResourceCountsDto {
             providers: resources.providers.len(),
@@ -425,7 +424,6 @@ pub(crate) fn load_settings_snapshot(
         auth: auth_statuses(auth_store),
         providers: providers.provider_entries().map(provider_summary).collect(),
         network_proxy: network_proxy_settings_dto(config),
-        browser_profiles: browser_profile_dtos(config.browser.chrome_profile.as_deref()),
     })
 }
 
@@ -454,29 +452,6 @@ fn network_proxy_settings_dto(config: &PufferConfig) -> NetworkProxySettingsDto 
             .collect(),
         last_test: None,
     }
-}
-
-fn browser_profile_dtos(selected_profile: Option<&str>) -> Vec<BrowserProfileDto> {
-    crate::browser_profiles::discover_chrome_profiles(selected_profile)
-        .into_iter()
-        .map(|profile| BrowserProfileDto {
-            id: profile.id,
-            name: profile.name,
-            email: profile.email,
-            google_accounts: profile
-                .google_accounts
-                .into_iter()
-                .map(|account| BrowserGoogleAccountDto {
-                    email: account.email,
-                    name: account.name,
-                    gaia_id: account.gaia_id,
-                })
-                .collect(),
-            path: profile.path.display().to_string(),
-            is_last_used: profile.is_last_used,
-            is_selected: profile.is_selected,
-        })
-        .collect()
 }
 
 fn auth_statuses(auth_store: &AuthStore) -> Vec<AuthProviderStatusDto> {

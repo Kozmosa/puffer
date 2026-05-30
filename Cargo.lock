@@ -1874,8 +1874,6 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03d5fea440a79a78d0d68b57f062d737a0aed0decee813bf3c232252f3b3f7da"
 dependencies = [
  "grammers-crypto",
  "grammers-tl-gen",
@@ -4504,6 +4502,7 @@ dependencies = [
  "puffer-tools",
  "puffer-transport-anthropic",
  "puffer-workflow",
+ "qrcode",
  "regex",
  "reqwest",
  "rmcp",
@@ -4938,6 +4937,15 @@ name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+dependencies = [
+ "image",
+]
 
 [[package]]
 name = "quick-error"

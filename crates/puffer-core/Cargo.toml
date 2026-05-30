@@ -47,6 +47,7 @@ indexmap.workspace = true
 jsonschema.workspace = true
 notify.workspace = true
 psl.workspace = true
+qrcode.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true

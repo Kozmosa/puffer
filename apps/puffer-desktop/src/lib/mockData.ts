@@ -612,8 +612,7 @@ export const mockSettingsSnapshot: SettingsSnapshot = {
     mascotDisplayName: "Clawd",
     mascotEnabled: true,
     uiNoAltScreen: false,
-    uiTmuxGoldenMode: false,
-    browserChromeProfile: null
+    uiTmuxGoldenMode: false
   },
   resources: {
     providers: 2,
@@ -639,22 +638,5 @@ export const mockSettingsSnapshot: SettingsSnapshot = {
     bypass: ["localhost", "127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     proxies: [],
     lastTest: null
-  },
-  browserProfiles: [
-    {
-      id: "Default",
-      name: "Personal",
-      email: "demo@example.com",
-      googleAccounts: [
-        {
-          email: "demo@example.com",
-          name: "Demo User",
-          gaiaId: "demo-gaia"
-        }
-      ],
-      path: "/Users/demo/Library/Application Support/Google/Chrome/Default",
-      isLastUsed: true,
-      isSelected: true
-    }
-  ]
+  }
 };

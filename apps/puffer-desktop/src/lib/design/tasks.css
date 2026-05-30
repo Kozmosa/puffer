@@ -427,6 +427,18 @@
   overflow: hidden;
 }
 
+.pf-task-history {
+  width: min(1040px, calc(100vw - 32px));
+  height: min(760px, calc(100vh - 32px));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .pf-task-config-head {
   min-height: 54px;
   padding: 12px 14px;
@@ -443,6 +455,185 @@
   font-size: 15px;
   font-weight: 650;
   line-height: 1.2;
+}
+
+.pf-task-history-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pf-task-history-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.38fr) minmax(0, 1fr);
+}
+
+.pf-task-history-sidebar {
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  background: color-mix(in oklab, var(--background) 97%, var(--muted));
+}
+
+.pf-task-history-message {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.pf-task-history-message:hover,
+.pf-task-history-message[data-selected="true"] {
+  background: var(--pf-selected-bg);
+}
+
+.pf-task-history-message-top {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pf-task-history-message strong,
+.pf-task-history-message span,
+.pf-task-history-message small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-task-history-message strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pf-task-history-message span {
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.pf-task-history-message small {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+}
+
+.pf-task-history-detail {
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.pf-task-history-selected {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.pf-task-history-selected div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pf-task-history-selected span,
+.pf-task-history-selected code,
+.pf-task-history-agent-result span,
+.pf-task-history-agent-result small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.pf-task-history-selected strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.pf-task-history-selected code {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.pf-task-history-agent-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pf-task-history-agent-card p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pf-task-history-agent-card pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pf-task-history-agent-result {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pf-task-history-agent-result:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.pf-task-history-agent-result div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pf-task-history-agent-result strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .pf-task-config-head span,
@@ -719,6 +910,21 @@
   .pf-task-config {
     width: 100%;
     max-height: calc(100vh - 20px);
+  }
+
+  .pf-task-history {
+    width: 100%;
+    height: calc(100vh - 20px);
+  }
+
+  .pf-task-history-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pf-task-history-sidebar {
+    max-height: 34vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .pf-task-config-row,

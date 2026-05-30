@@ -16,6 +16,8 @@ mod daemon;
 mod daemon_browser;
 mod daemon_files;
 mod daemon_fs_watch;
+mod daemon_gcal_browser_setup;
+mod daemon_gmail_browser_setup;
 mod daemon_lambda_skills;
 mod daemon_local_model;
 mod daemon_lsp;
@@ -28,6 +30,7 @@ mod daemon_workflows;
 mod desktop_activity;
 mod desktop_api;
 mod desktop_api_types;
+mod gcal_browser;
 mod gmail_browser;
 mod heartbeat;
 mod internal_tools;
@@ -1333,6 +1336,7 @@ fn run_subscriber(id: &str) -> Result<()> {
         match id {
             "telegram-user" => puffer_subscriber_telegram_user::run().await,
             "email" => puffer_subscriber_email::run().await,
+            "gcal-browser" => crate::gcal_browser::run_subscriber().await,
             "gmail-browser" => crate::gmail_browser::run_subscriber().await,
             other => Err(anyhow::anyhow!(
                 "unknown subscriber id `{other}`; this puffer build does not bundle a driver for it"
