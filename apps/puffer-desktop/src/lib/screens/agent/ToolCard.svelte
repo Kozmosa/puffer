@@ -31,7 +31,7 @@
     if (!name) return "bolt";
     const t = name.toLowerCase();
     if (t.includes("edit") || t.includes("write")) return "edit";
-    if (t.includes("read") || t.includes("view") || t.includes("image")) return "file";
+    if (t.includes("read") || t.includes("view") || t.includes("image") || t.includes("doc")) return "file";
     if (t.includes("grep") || t.includes("search")) return "search";
     if (t.includes("bash") || t.includes("shell") || t.includes("exec")) return "terminal";
     if (t.includes("browser") || t.includes("fetch") || t.includes("web")) return "globe";
