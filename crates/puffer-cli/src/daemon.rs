@@ -46,7 +46,6 @@ use puffer_core::{
 };
 use puffer_provider_openai::{
     build_realtime_client_secret_request,
-    exchange_authorization_code as exchange_openai_authorization_code,
     parse_authorization_input as parse_openai_authorization_input, BuiltOpenAIRequest, OpenAIAuth,
     OpenAIRealtimeClientSecretRequest, OpenAIRequestConfig,
 };

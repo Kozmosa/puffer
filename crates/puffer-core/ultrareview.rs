@@ -176,11 +176,13 @@ pub async fn orchestrate_async(
         bail!("agents dir does not exist: {:?}", agents_dir);
     }
 
-    let base_url = req.base_url
+    let base_url = req
+        .base_url
         .map(|u| u.trim().trim_end_matches('/').to_string())
         .filter(|u| !u.is_empty())
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-    let api_key = req.api_key
+    let api_key = req
+        .api_key
         .filter(|k| !k.trim().is_empty())
         .ok_or_else(|| anyhow!("no API key supplied; configure the `openai` provider in puffer"))?;
     let model = if req.model.is_empty() {
@@ -210,7 +212,15 @@ pub async fn orchestrate_async(
             "--- diff ---\n{}\n--- end diff ---\n\nOutput the JSON object now.",
             truncate(&req.diff, DIFF_TRUNCATE_LANES)
         );
-        call_planner(&client, &base_url, &api_key, &model, &planner_prompt, &planner_user).await
+        call_planner(
+            &client,
+            &base_url,
+            &api_key,
+            &model,
+            &planner_prompt,
+            &planner_user,
+        )
+        .await
     };
     let planner_secs = t_planner.elapsed().as_secs_f64();
     progress(format!(
@@ -228,8 +238,16 @@ pub async fn orchestrate_async(
         let mut lanes_iter = planner_lanes.iter();
         for _ in 0..MAX_LANE_CONCURRENCY {
             if let Some(lane_name) = lanes_iter.next() {
-                spawn_lane(&mut joinset, &client, &base_url, &api_key, &model,
-                            &agents_dir, &diff_clipped, lane_name.clone());
+                spawn_lane(
+                    &mut joinset,
+                    &client,
+                    &base_url,
+                    &api_key,
+                    &model,
+                    &agents_dir,
+                    &diff_clipped,
+                    lane_name.clone(),
+                );
             }
         }
         while let Some(joined) = joinset.join_next().await {
@@ -246,8 +264,16 @@ pub async fn orchestrate_async(
                 break;
             }
             if let Some(lane_name) = lanes_iter.next() {
-                spawn_lane(&mut joinset, &client, &base_url, &api_key, &model,
-                            &agents_dir, &diff_clipped, lane_name.clone());
+                spawn_lane(
+                    &mut joinset,
+                    &client,
+                    &base_url,
+                    &api_key,
+                    &model,
+                    &agents_dir,
+                    &diff_clipped,
+                    lane_name.clone(),
+                );
             }
         }
     }
@@ -264,17 +290,23 @@ pub async fn orchestrate_async(
                 if f.confidence > existing.confidence {
                     let mut merged = existing.lanes.clone();
                     for ln in &f.lanes {
-                        if !merged.contains(ln) { merged.push(ln.clone()); }
+                        if !merged.contains(ln) {
+                            merged.push(ln.clone());
+                        }
                     }
                     *existing = f;
                     existing.lanes = merged;
                 } else {
                     for ln in f.lanes {
-                        if !existing.lanes.contains(&ln) { existing.lanes.push(ln); }
+                        if !existing.lanes.contains(&ln) {
+                            existing.lanes.push(ln);
+                        }
                     }
                 }
             }
-            None => { by_loc.insert(f.file_line.clone(), f); }
+            None => {
+                by_loc.insert(f.file_line.clone(), f);
+            }
         }
     }
     let aggregated: Vec<Finding> = by_loc.into_values().collect();
@@ -288,11 +320,22 @@ pub async fn orchestrate_async(
     let filter_user = build_filter_user(&req.diff, &aggregated);
     // On filter error, fail open (keep everything) to preserve recall, but
     // flag the degradation so the reader knows the findings are unfiltered.
-    let (keep_set, filter_failed) =
-        match call_filter(&client, &base_url, &api_key, &model, &filter_prompt, &filter_user).await {
-            Ok(keep) => (keep, false),
-            Err(_) => (aggregated.iter().map(|f| f.file_line.clone()).collect(), true),
-        };
+    let (keep_set, filter_failed) = match call_filter(
+        &client,
+        &base_url,
+        &api_key,
+        &model,
+        &filter_prompt,
+        &filter_user,
+    )
+    .await
+    {
+        Ok(keep) => (keep, false),
+        Err(_) => (
+            aggregated.iter().map(|f| f.file_line.clone()).collect(),
+            true,
+        ),
+    };
     let final_findings: Vec<Finding> = aggregated
         .iter()
         .filter(|f| keep_set.contains(&f.file_line))
@@ -303,7 +346,11 @@ pub async fn orchestrate_async(
 
     let dropped = aggregated_count.saturating_sub(final_count);
     let markdown = render_markdown(
-        &final_findings, &planner_lanes, &planner_rationale, dropped, filter_failed,
+        &final_findings,
+        &planner_lanes,
+        &planner_rationale,
+        dropped,
+        filter_failed,
     );
 
     Ok(OrchestrateResult {
@@ -344,7 +391,11 @@ fn fetch_diff_via_gh_in(cwd: &Path, pr_url: &str) -> Result<String> {
 
 pub fn default_agents_dir() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+        if let Some(root) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
             let candidate = root.join("resources/agents");
             if candidate.exists() {
                 return candidate;
@@ -356,17 +407,20 @@ pub fn default_agents_dir() -> PathBuf {
 
 fn load_agent_prompt(agents_dir: &Path, id: &str) -> Result<String> {
     let path = agents_dir.join(format!("{id}.yaml"));
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("read agent {:?}", path))?;
-    let agent: AgentDef = serde_yaml::from_str(&text)
-        .with_context(|| format!("parse agent {:?}", path))?;
+    let text = std::fs::read_to_string(&path).with_context(|| format!("read agent {:?}", path))?;
+    let agent: AgentDef =
+        serde_yaml::from_str(&text).with_context(|| format!("parse agent {:?}", path))?;
     Ok(agent.prompt)
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { return s; }
+    if s.len() <= max {
+        return s;
+    }
     let mut end = max;
-    while !s.is_char_boundary(end) && end > 0 { end -= 1; }
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
     &s[..end]
 }
 
@@ -383,8 +437,12 @@ fn build_filter_user(diff: &str, findings: &[Finding]) -> String {
             let lane_tag = f.lanes.join(", ");
             format!(
                 "- [{}] ({}) [conf={:.2}] {}\n  reasoning: {}\n  body: {}",
-                f.file_line, lane_tag, f.confidence, f.title,
-                truncate(&f.reasoning, 300), truncate(&f.body, 300),
+                f.file_line,
+                lane_tag,
+                f.confidence,
+                f.title,
+                truncate(&f.reasoning, 300),
+                truncate(&f.body, 300),
             )
         })
         .collect();
@@ -409,13 +467,24 @@ fn spawn_lane(
         .iter()
         .find(|(name, _)| *name == lane_name.as_str())
         .map(|(_, id)| id.to_string())
-    else { return };
+    else {
+        return;
+    };
     let prompt = match load_agent_prompt(agents_dir, &lane_id) {
         Ok(p) => p,
         Err(e) => {
             let error = format!("load prompt {lane_id}: {e}");
             joinset.spawn(async move {
-                (lane_name, LaneRun { ok: false, duration_s: 0.0, finding_count: 0, error: Some(error) }, vec![])
+                (
+                    lane_name,
+                    LaneRun {
+                        ok: false,
+                        duration_s: 0.0,
+                        finding_count: 0,
+                        error: Some(error),
+                    },
+                    vec![],
+                )
             });
             return;
         }
@@ -426,7 +495,10 @@ fn spawn_lane(
     let model = model.to_string();
     let user = build_lane_user(diff_clipped);
     joinset.spawn(async move {
-        run_lane(client, base_url, api_key, model, lane_name, lane_id, prompt, user).await
+        run_lane(
+            client, base_url, api_key, model, lane_name, lane_id, prompt, user,
+        )
+        .await
     });
 }
 
@@ -478,14 +550,20 @@ async fn call_planner(
     match chat_completion(client, base_url, api_key, model, prompt, user).await {
         Ok(text) => match serde_json::from_str::<Value>(strip_json_fence(&text)) {
             Ok(obj) => {
-                let rationale = obj.get("rationale").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let rationale = obj
+                    .get("rationale")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let lanes: Vec<String> = obj
                     .get("lanes_to_run")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .filter(|s| LANE_TO_ID.iter().any(|(name, _)| *name == s.as_str()))
-                        .collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .filter(|s| LANE_TO_ID.iter().any(|(name, _)| *name == s.as_str()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 if lanes.is_empty() {
                     fallback_planner("planner returned empty lane list")
@@ -510,7 +588,10 @@ fn fallback_planner(reason: &str) -> (Vec<String>, String) {
 /// full lane set. A no-op when the planner already complies.
 fn normalize_planner_lanes(lanes: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
-    let mut out: Vec<String> = lanes.into_iter().filter(|l| seen.insert(l.clone())).collect();
+    let mut out: Vec<String> = lanes
+        .into_iter()
+        .filter(|l| seen.insert(l.clone()))
+        .collect();
     if !out.iter().any(|l| l == "logic") {
         out.insert(0, "logic".to_string());
     }
@@ -535,40 +616,65 @@ async fn run_lane(
 ) -> (String, LaneRun, Vec<Finding>) {
     let t0 = Instant::now();
     if prompt.is_empty() {
-        return (lane_name, LaneRun {
-            ok: false, duration_s: 0.0, finding_count: 0,
-            error: Some(format!("missing prompt for {lane_id}")),
-        }, vec![]);
+        return (
+            lane_name,
+            LaneRun {
+                ok: false,
+                duration_s: 0.0,
+                finding_count: 0,
+                error: Some(format!("missing prompt for {lane_id}")),
+            },
+            vec![],
+        );
     }
     let result = chat_completion(&client, &base_url, &api_key, &model, &prompt, &user).await;
     let duration = t0.elapsed().as_secs_f64();
     match result {
         Ok(text) => match parse_lane_findings(&text, &lane_name) {
-            Ok(findings) => (lane_name, LaneRun {
-                ok: true, duration_s: round2(duration),
-                finding_count: findings.len(), error: None,
-            }, findings),
-            Err(e) => (lane_name, LaneRun {
-                ok: false, duration_s: round2(duration), finding_count: 0,
-                error: Some(format!("parse: {e}")),
-            }, vec![]),
+            Ok(findings) => (
+                lane_name,
+                LaneRun {
+                    ok: true,
+                    duration_s: round2(duration),
+                    finding_count: findings.len(),
+                    error: None,
+                },
+                findings,
+            ),
+            Err(e) => (
+                lane_name,
+                LaneRun {
+                    ok: false,
+                    duration_s: round2(duration),
+                    finding_count: 0,
+                    error: Some(format!("parse: {e}")),
+                },
+                vec![],
+            ),
         },
-        Err(e) => (lane_name, LaneRun {
-            ok: false, duration_s: round2(duration), finding_count: 0,
-            error: Some(format!("http: {e}")),
-        }, vec![]),
+        Err(e) => (
+            lane_name,
+            LaneRun {
+                ok: false,
+                duration_s: round2(duration),
+                finding_count: 0,
+                error: Some(format!("http: {e}")),
+            },
+            vec![],
+        ),
     }
 }
 
 fn parse_lane_findings(text: &str, lane_name: &str) -> Result<Vec<Finding>> {
-    let v: Value = serde_json::from_str(strip_json_fence(text))
-        .context("lane JSON parse")?;
+    let v: Value = serde_json::from_str(strip_json_fence(text)).context("lane JSON parse")?;
     let arr: Vec<Value> = match v {
         Value::Array(arr) => arr,
         Value::Object(map) => {
             // The request forces response_format=json_object, so lanes return
             // an object envelope; accept the common keys models pick.
-            for key in &["findings", "issues", "items", "results", "comments", "review"] {
+            for key in &[
+                "findings", "issues", "items", "results", "comments", "review",
+            ] {
                 if let Some(Value::Array(arr)) = map.get(*key) {
                     return Ok(arr_to_findings(arr.clone(), lane_name));
                 }
@@ -594,7 +700,10 @@ fn arr_to_findings(arr: Vec<Value>, lane_name: &str) -> Vec<Finding> {
     arr.into_iter()
         .filter_map(|v| serde_json::from_value::<Finding>(v).ok())
         .filter(|f| !f.file_line.is_empty())
-        .map(|mut f| { f.lanes = vec![lane_name.to_string()]; f })
+        .map(|mut f| {
+            f.lanes = vec![lane_name.to_string()];
+            f
+        })
         .collect()
 }
 
@@ -621,14 +730,18 @@ async fn call_filter(
 
 fn strip_json_fence(text: &str) -> &str {
     let t = text.trim();
-    if !t.starts_with("```") { return t; }
+    if !t.starts_with("```") {
+        return t;
+    }
     let mut rest = &t[3..];
     if let Some(idx) = rest.find('\n') {
         if rest[..idx].starts_with("json") {
             rest = &rest[idx + 1..];
         }
     }
-    if let Some(idx) = rest.rfind("```") { return rest[..idx].trim(); }
+    if let Some(idx) = rest.rfind("```") {
+        return rest[..idx].trim();
+    }
     t
 }
 
@@ -639,36 +752,65 @@ fn render_markdown(
     dropped_by_filter: usize,
     filter_failed: bool,
 ) -> String {
-    let blockers: Vec<&Finding> = findings.iter()
-        .filter(|f| f.severity.eq_ignore_ascii_case("BLOCKER")).collect();
-    let shouldfix: Vec<&Finding> = findings.iter()
-        .filter(|f| f.severity.eq_ignore_ascii_case("SHOULD-FIX")).collect();
-    let nits: Vec<&Finding> = findings.iter()
-        .filter(|f| f.severity.eq_ignore_ascii_case("NIT")).collect();
+    let blockers: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| f.severity.eq_ignore_ascii_case("BLOCKER"))
+        .collect();
+    let shouldfix: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| f.severity.eq_ignore_ascii_case("SHOULD-FIX"))
+        .collect();
+    let nits: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| f.severity.eq_ignore_ascii_case("NIT"))
+        .collect();
 
     let mut out = String::new();
     out.push_str("# Ultrareview Report\n\n");
     if filter_failed {
         out.push_str("> ⚠️ Filter stage failed — findings below are unfiltered and may include false positives.\n\n");
     }
-    out.push_str(&format!("**Lanes run:** {} ({})\n",
-        lanes.len(), truncate(rationale, 120)));
-    out.push_str(&format!("**Total findings:** {} kept after filter (filter dropped {})\n",
-        findings.len(), dropped_by_filter));
-    out.push_str(&format!("  Blockers: {}, Should-fix: {}, Nits: {}\n\n",
-        blockers.len(), shouldfix.len(), nits.len()));
+    out.push_str(&format!(
+        "**Lanes run:** {} ({})\n",
+        lanes.len(),
+        truncate(rationale, 120)
+    ));
+    out.push_str(&format!(
+        "**Total findings:** {} kept after filter (filter dropped {})\n",
+        findings.len(),
+        dropped_by_filter
+    ));
+    out.push_str(&format!(
+        "  Blockers: {}, Should-fix: {}, Nits: {}\n\n",
+        blockers.len(),
+        shouldfix.len(),
+        nits.len()
+    ));
 
-    for (title, group) in [("Blockers", &blockers), ("Should-fix", &shouldfix), ("Nits", &nits)] {
+    for (title, group) in [
+        ("Blockers", &blockers),
+        ("Should-fix", &shouldfix),
+        ("Nits", &nits),
+    ] {
         out.push_str(&format!("## {title}\n"));
         if group.is_empty() {
             out.push_str("- (none)\n");
         } else {
             for f in group {
-                let lane_tag = if f.lanes.is_empty() { "?".to_string() } else { f.lanes.join(", ") };
-                out.push_str(&format!("- [{}] ({}) [conf={:.2}] {}\n",
-                    f.file_line, lane_tag, f.confidence, f.title));
+                let lane_tag = if f.lanes.is_empty() {
+                    "?".to_string()
+                } else {
+                    f.lanes.join(", ")
+                };
+                out.push_str(&format!(
+                    "- [{}] ({}) [conf={:.2}] {}\n",
+                    f.file_line, lane_tag, f.confidence, f.title
+                ));
                 if !f.body.is_empty() {
-                    out.push_str(&format!("  {}\n", truncate(&f.body, 500).replace('\n', " ")));
+                    out.push_str(&format!(
+                        "  {}\n",
+                        truncate(&f.body, 500).replace('\n', " ")
+                    ));
                 }
                 if !f.fix.is_empty() {
                     out.push_str(&format!("  Fix: {}\n", truncate(&f.fix, 200)));
@@ -678,9 +820,14 @@ fn render_markdown(
         out.push('\n');
     }
     out.push_str("## Executive summary\n");
-    out.push_str(&format!("{} findings retained from {} planner-selected lanes after filter pass.\n",
-        findings.len(), lanes.len()));
+    out.push_str(&format!(
+        "{} findings retained from {} planner-selected lanes after filter pass.\n",
+        findings.len(),
+        lanes.len()
+    ));
     out
 }
 
-fn round2(v: f64) -> f64 { (v * 100.0).round() / 100.0 }
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}

@@ -93,11 +93,7 @@ pub(crate) fn execute_ultrareview(
     Ok(())
 }
 
-fn emit_system_line(
-    state: &mut AppState,
-    session_store: &SessionStore,
-    text: &str,
-) -> Result<()> {
+fn emit_system_line(state: &mut AppState, session_store: &SessionStore, text: &str) -> Result<()> {
     state.push_message(MessageRole::System, text.to_string());
     session_store.append_event(
         state.session.id,

@@ -38,9 +38,18 @@ fn ultrareview_command_registered_as_local_with_pr_hint() {
 fn ultrareview_command_sits_between_theme_and_usage() {
     let commands = supported_commands();
     let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
-    let theme_idx = names.iter().position(|n| *n == "theme").expect("theme present");
-    let ultra_idx = names.iter().position(|n| *n == "ultrareview").expect("ultrareview present");
-    let usage_idx = names.iter().position(|n| *n == "usage").expect("usage present");
+    let theme_idx = names
+        .iter()
+        .position(|n| *n == "theme")
+        .expect("theme present");
+    let ultra_idx = names
+        .iter()
+        .position(|n| *n == "ultrareview")
+        .expect("ultrareview present");
+    let usage_idx = names
+        .iter()
+        .position(|n| *n == "usage")
+        .expect("usage present");
     assert!(
         theme_idx < ultra_idx && ultra_idx < usage_idx,
         "expected theme < ultrareview < usage, got indices {theme_idx} {ultra_idx} {usage_idx}"
@@ -53,7 +62,10 @@ fn ultrareview_agents_all_load_with_expected_fields() {
         let path = format!("resources/agents/{agent}.yaml");
         let spec = load_agent(&path);
         assert_eq!(spec.id, *agent, "id mismatch in {path}");
-        assert!(!spec.description.is_empty(), "missing description in {path}");
+        assert!(
+            !spec.description.is_empty(),
+            "missing description in {path}"
+        );
         assert!(!spec.prompt.is_empty(), "missing prompt in {path}");
         assert_eq!(
             spec.isolation.as_deref(),
@@ -71,13 +83,17 @@ fn ultrareview_lane_agents_restrict_to_read_only_tools() {
         let spec = load_agent(&path);
         for forbidden in disallowed {
             assert!(
-                spec.disallowed_tools.iter().any(|t| t.eq_ignore_ascii_case(forbidden)),
+                spec.disallowed_tools
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(forbidden)),
                 "{path} must disallow {forbidden}"
             );
         }
         let allowed: Vec<&str> = spec.tools.iter().map(|s| s.as_str()).collect();
         assert!(
-            allowed.iter().all(|t| matches!(*t, "Read" | "Glob" | "Grep" | "Bash")),
+            allowed
+                .iter()
+                .all(|t| matches!(*t, "Read" | "Glob" | "Grep" | "Bash")),
             "{path} allowed_tools must be a subset of read-only tools, got {allowed:?}"
         );
     }
@@ -95,7 +111,10 @@ fn ultrareview_lane_agents_declare_severity_vocabulary() {
             "{path} must define SHOULD-FIX/NIT"
         );
         if *agent != "reviewer-duplication" {
-            assert!(spec.prompt.contains("BLOCKER"), "{path} must define BLOCKER");
+            assert!(
+                spec.prompt.contains("BLOCKER"),
+                "{path} must define BLOCKER"
+            );
         }
     }
 }
