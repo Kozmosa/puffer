@@ -3,6 +3,7 @@ target/
 .worktree/
 .worktrees/
 .puffer/
+.superpowers/
 .DS_Store
 **/.DS_Store
 resources/subscribers/*/state/
