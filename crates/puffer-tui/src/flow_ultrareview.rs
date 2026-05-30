@@ -59,13 +59,23 @@ pub(crate) fn execute_ultrareview(
     let pr_arg = pr_arg.to_string();
     let (event_tx, event_rx) = mpsc::channel();
     let progress_tx = event_tx.clone();
+    // Shared cancel token: the original stays on PendingSubmit so ESC can flip
+    // it; the clone lets the worker stop at the next phase boundary.
+    let cancel = puffer_core::CancelToken::new();
+    let worker_cancel = cancel.clone();
     thread::spawn(move || {
         let progress = move |line: String| {
             let _ = progress_tx.send(PendingSubmitEvent::UltrareviewProgress(line));
         };
-        let result =
-            puffer_core::ultrareview::run_review_blocking(&cwd, &pr_arg, base_url, api_key, &progress)
-                .map_err(|error| error.to_string());
+        let result = puffer_core::ultrareview::run_review_blocking(
+            &cwd,
+            &pr_arg,
+            base_url,
+            api_key,
+            &progress,
+            &worker_cancel,
+        )
+        .map_err(|error| error.to_string());
         let _ = event_tx.send(PendingSubmitEvent::UltrareviewFinished(result));
     });
 
@@ -78,7 +88,7 @@ pub(crate) fn execute_ultrareview(
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: Some("ultrareview: starting…".to_string()),
-        cancel: puffer_core::CancelToken::new(),
+        cancel,
     });
     Ok(())
 }

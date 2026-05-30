@@ -132,12 +132,14 @@ pub fn run_review_blocking(
     base_url: Option<String>,
     api_key: Option<String>,
     progress: &dyn Fn(String),
+    cancel: &crate::CancelToken,
 ) -> Result<String> {
     progress("fetching diff…".to_string());
     let diff = fetch_diff_via_gh_in(cwd, pr_arg)?;
     if diff.trim().is_empty() {
         bail!("empty diff for {pr_arg}");
     }
+    cancel.check()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -150,6 +152,7 @@ pub fn run_review_blocking(
             agents_dir: None,
         },
         progress,
+        cancel,
     ))?;
     let footer = format!(
         "\n_planner: {:.0}s · lanes: {:.0}s · filter: {:.0}s · total: {:.0}s · aggregated: {} → kept: {}_",
@@ -166,6 +169,7 @@ pub fn run_review_blocking(
 pub async fn orchestrate_async(
     req: OrchestrateRequest,
     progress: &dyn Fn(String),
+    cancel: &crate::CancelToken,
 ) -> Result<OrchestrateResult> {
     let agents_dir = req.agents_dir.unwrap_or_else(default_agents_dir);
     if !agents_dir.exists() {
@@ -190,6 +194,7 @@ pub async fn orchestrate_async(
         .build()?;
     let t_start = Instant::now();
 
+    cancel.check()?;
     let t_planner = Instant::now();
     let force_all = std::env::var("PUFFER_ULTRAREVIEW_FORCE_ALL_LANES")
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
@@ -236,12 +241,16 @@ pub async fn orchestrate_async(
                 }
                 Err(e) => eprintln!("ultrareview lane join error: {e}"),
             }
+            if cancel.is_cancelled() {
+                continue; // stop spawning new lanes; drain those in flight
+            }
             if let Some(lane_name) = lanes_iter.next() {
                 spawn_lane(&mut joinset, &client, &base_url, &api_key, &model,
                             &agents_dir, &diff_clipped, lane_name.clone());
             }
         }
     }
+    cancel.check()?;
     let lanes_secs = t_lanes.elapsed().as_secs_f64();
 
     let mut by_loc: HashMap<String, Finding> = HashMap::new();
@@ -276,11 +285,13 @@ pub async fn orchestrate_async(
     let t_filter = Instant::now();
     let filter_prompt = load_agent_prompt(&agents_dir, FILTER_ID)?;
     let filter_user = build_filter_user(&req.diff, &aggregated);
-    let keep_set = call_filter(
-        &client, &base_url, &api_key, &model, &filter_prompt, &filter_user,
-    )
-    .await
-    .unwrap_or_else(|_| aggregated.iter().map(|f| f.file_line.clone()).collect());
+    // On filter error, fail open (keep everything) to preserve recall, but
+    // flag the degradation so the reader knows the findings are unfiltered.
+    let (keep_set, filter_failed) =
+        match call_filter(&client, &base_url, &api_key, &model, &filter_prompt, &filter_user).await {
+            Ok(keep) => (keep, false),
+            Err(_) => (aggregated.iter().map(|f| f.file_line.clone()).collect(), true),
+        };
     let final_findings: Vec<Finding> = aggregated
         .iter()
         .filter(|f| keep_set.contains(&f.file_line))
@@ -290,7 +301,9 @@ pub async fn orchestrate_async(
     let final_count = final_findings.len();
 
     let dropped = aggregated_count.saturating_sub(final_count);
-    let markdown = render_markdown(&final_findings, &planner_lanes, &planner_rationale, dropped);
+    let markdown = render_markdown(
+        &final_findings, &planner_lanes, &planner_rationale, dropped, filter_failed,
+    );
 
     Ok(OrchestrateResult {
         markdown,
@@ -396,7 +409,16 @@ fn spawn_lane(
         .find(|(name, _)| *name == lane_name.as_str())
         .map(|(_, id)| id.to_string())
     else { return };
-    let prompt = load_agent_prompt(agents_dir, &lane_id).unwrap_or_default();
+    let prompt = match load_agent_prompt(agents_dir, &lane_id) {
+        Ok(p) => p,
+        Err(e) => {
+            let error = format!("load prompt {lane_id}: {e}");
+            joinset.spawn(async move {
+                (lane_name, LaneRun { ok: false, duration_s: 0.0, finding_count: 0, error: Some(error) }, vec![])
+            });
+            return;
+        }
+    };
     let client = client.clone();
     let base_url = base_url.to_string();
     let api_key = api_key.to_string();
@@ -467,7 +489,7 @@ async fn call_planner(
                 if lanes.is_empty() {
                     fallback_planner("planner returned empty lane list")
                 } else {
-                    (lanes, rationale)
+                    (normalize_planner_lanes(lanes), rationale)
                 }
             }
             Err(e) => fallback_planner(&format!("planner JSON parse: {e}")),
@@ -480,6 +502,24 @@ fn fallback_planner(reason: &str) -> (Vec<String>, String) {
     eprintln!("  planner fallback: {reason}");
     let all = LANE_TO_ID.iter().map(|(n, _)| n.to_string()).collect();
     (all, format!("fallback: {reason}"))
+}
+
+/// Enforces the planner invariants the prompt documents but cannot guarantee:
+/// dedupe, always include `logic`, ensure at least two lanes, and clamp to the
+/// full lane set. A no-op when the planner already complies.
+fn normalize_planner_lanes(lanes: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out: Vec<String> = lanes.into_iter().filter(|l| seen.insert(l.clone())).collect();
+    if !out.iter().any(|l| l == "logic") {
+        out.insert(0, "logic".to_string());
+    }
+    if out.len() < 2 {
+        if let Some((name, _)) = LANE_TO_ID.iter().find(|(n, _)| !out.iter().any(|l| l == n)) {
+            out.push(name.to_string());
+        }
+    }
+    out.truncate(LANE_TO_ID.len());
+    out
 }
 
 async fn run_lane(
@@ -525,7 +565,9 @@ fn parse_lane_findings(text: &str, lane_name: &str) -> Result<Vec<Finding>> {
     let arr: Vec<Value> = match v {
         Value::Array(arr) => arr,
         Value::Object(map) => {
-            for key in &["findings", "issues", "items"] {
+            // The request forces response_format=json_object, so lanes return
+            // an object envelope; accept the common keys models pick.
+            for key in &["findings", "issues", "items", "results", "comments", "review"] {
                 if let Some(Value::Array(arr)) = map.get(*key) {
                     return Ok(arr_to_findings(arr.clone(), lane_name));
                 }
@@ -584,6 +626,7 @@ fn render_markdown(
     lanes: &[String],
     rationale: &str,
     dropped_by_filter: usize,
+    filter_failed: bool,
 ) -> String {
     let blockers: Vec<&Finding> = findings.iter()
         .filter(|f| f.severity.eq_ignore_ascii_case("BLOCKER")).collect();
@@ -594,6 +637,9 @@ fn render_markdown(
 
     let mut out = String::new();
     out.push_str("# Ultrareview Report\n\n");
+    if filter_failed {
+        out.push_str("> ⚠️ Filter stage failed — findings below are unfiltered and may include false positives.\n\n");
+    }
     out.push_str(&format!("**Lanes run:** {} ({})\n",
         lanes.len(), truncate(rationale, 120)));
     out.push_str(&format!("**Total findings:** {} kept after filter (filter dropped {})\n",
