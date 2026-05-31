@@ -15,6 +15,7 @@ use puffer_workflow::{
     TriggerSpec, WorkflowStore,
 };
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -60,6 +61,7 @@ pub(crate) fn install(
         providers: providers.clone(),
         auth_store: auth_store.clone(),
         lock: Mutex::new(()),
+        triage_sessions: Mutex::new(HashMap::new()),
     });
     install_workflow_runner(runner.clone()).context("failed to install workflow runner")?;
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -81,6 +83,7 @@ struct ProcessWorkflowRunner {
     providers: ProviderRegistry,
     auth_store: AuthStore,
     lock: Mutex<()>,
+    triage_sessions: Mutex<HashMap<String, AppState>>,
 }
 
 impl WorkflowActionRunner for ProcessWorkflowRunner {
@@ -137,9 +140,18 @@ impl WorkflowActionRunner for ProcessWorkflowRunner {
         model: Option<&str>,
         trigger: serde_json::Value,
     ) -> Result<WorkflowActionOutput> {
-        let trigger = serde_json::to_string_pretty(&trigger)?;
-        let prompt = format!("{prompt}\n\nWorkflow trigger:\n```json\n{trigger}\n```");
-        self.run_task_agent_prompt(prompt, model)
+        self.triage_agent_batch(prompt, model, vec![trigger])
+    }
+
+    fn triage_agent_batch(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        triggers: Vec<serde_json::Value>,
+    ) -> Result<WorkflowActionOutput> {
+        let prompt = render_triage_batch_prompt(prompt, &triggers)?;
+        let session_key = triage_session_key(model, &triggers);
+        self.run_task_agent_prompt_for_session(prompt, model, &session_key)
     }
 
     fn ignore_analysis_agent(
@@ -176,17 +188,27 @@ impl ProcessWorkflowRunner {
         Ok(state)
     }
 
-    fn run_task_agent_prompt(
+    fn run_task_agent_prompt_for_session(
         &self,
         prompt: String,
         model: Option<&str>,
+        session_key: &str,
     ) -> Result<WorkflowActionOutput> {
+        let _guard = self.lock.lock().unwrap();
         let cwd = self.paths.workspace_root.clone();
-        let mut state = self.new_task_app_state(cwd, model)?;
+        let mut sessions = self.triage_sessions.lock().unwrap();
+        if !sessions.contains_key(session_key) {
+            let mut state = self.new_task_app_state(cwd, model)?;
+            state.prompt_cache_key_override = Some(session_key.to_string());
+            sessions.insert(session_key.to_string(), state);
+        }
+        let state = sessions
+            .get_mut(session_key)
+            .expect("triage session inserted above");
         let mut auth_store = self.auth_store.clone();
         let mut usage = None;
         let output = execute_user_turn_streaming(
-            &mut state,
+            state,
             &self.resources,
             &self.providers,
             &mut auth_store,
@@ -262,6 +284,31 @@ fn merge_usage(total: &mut Option<ActionUsage>, next: ActionUsage) {
     current.cache_creation_tokens = current
         .cache_creation_tokens
         .saturating_add(next.cache_creation_tokens);
+}
+
+fn render_triage_batch_prompt(prompt: &str, triggers: &[serde_json::Value]) -> Result<String> {
+    if triggers.len() == 1 {
+        let trigger = serde_json::to_string_pretty(&triggers[0])?;
+        return Ok(format!(
+            "{prompt}\n\nWorkflow trigger:\n```json\n{trigger}\n```"
+        ));
+    }
+    let trigger_batch = serde_json::to_string_pretty(triggers)?;
+    Ok(format!(
+        "{prompt}\n\nThis turn contains {} new connector events for the same connection. Process them together in one pass. You may call TaskCreate and TaskUpdate multiple times before finishing.\n\nWorkflow trigger batch:\n```json\n{trigger_batch}\n```",
+        triggers.len()
+    ))
+}
+
+fn triage_session_key(model: Option<&str>, triggers: &[serde_json::Value]) -> String {
+    let connection = triggers
+        .first()
+        .and_then(|trigger| trigger.get("connection_id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("unknown");
+    let model = model.and_then(non_empty_trimmed).unwrap_or("default");
+    format!("monitor-triage:{connection}:{model}")
 }
 
 struct PufferAgentExecutor {
@@ -511,12 +558,13 @@ fn local_now() -> OffsetDateTime {
 mod tests {
     use super::{
         apply_authenticated_provider_fallback, apply_task_agent_model_default,
-        authenticated_fallback_provider, selected_provider_id_for_model, AuthStore,
-        ProviderRegistry,
+        authenticated_fallback_provider, render_triage_batch_prompt,
+        selected_provider_id_for_model, triage_session_key, AuthStore, ProviderRegistry,
     };
     use puffer_config::PufferConfig;
     use puffer_provider_registry::{AuthMode, Modality, ModelDescriptor, ProviderDescriptor};
     use puffer_session_store::SessionMetadata;
+    use serde_json::json;
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -581,6 +629,34 @@ mod tests {
                 note: None,
             },
         )
+    }
+
+    #[test]
+    fn triage_session_key_uses_connection_and_model() {
+        let triggers = vec![json!({
+            "connection_id": "telegram-user",
+            "text": "hello"
+        })];
+
+        assert_eq!(
+            triage_session_key(Some("gpt-5.4-mini"), &triggers),
+            "monitor-triage:telegram-user:gpt-5.4-mini"
+        );
+    }
+
+    #[test]
+    fn render_triage_batch_prompt_keeps_all_triggers_in_one_turn() {
+        let triggers = vec![
+            json!({"connection_id": "telegram-user", "text": "first"}),
+            json!({"connection_id": "telegram-user", "text": "second"}),
+        ];
+
+        let prompt = render_triage_batch_prompt("Monitor prompt", &triggers).unwrap();
+
+        assert!(prompt.contains("This turn contains 2 new connector events"));
+        assert!(prompt.contains("Workflow trigger batch"));
+        assert!(prompt.contains("\"first\""));
+        assert!(prompt.contains("\"second\""));
     }
 
     #[test]
