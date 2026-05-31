@@ -10,6 +10,7 @@ use crate::spec::{
 use crate::store::WorkflowBindingStore;
 use puffer_subscriber_runtime::{EventBus, EventEnvelope, EventReceiver};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -408,6 +409,302 @@ pub fn process_envelope_result(
         }
     }
     result
+}
+
+/// Processes a same-connection envelope batch and batches triage-agent
+/// actions per matching binding.
+pub fn process_envelope_batch_result(
+    envelopes: &[EventEnvelope],
+    store: &WorkflowBindingStore,
+    history_store: Option<&WorkflowHistoryStore>,
+    dispatcher: &Arc<dyn ActionDispatcher>,
+    classifier: &Arc<dyn Classifier>,
+    stats: Option<&RouterStats>,
+) -> EnvelopeProcessResult {
+    let mut result = EnvelopeProcessResult::default();
+    let envelopes: Vec<&EventEnvelope> = envelopes
+        .iter()
+        .filter(|envelope| !envelope.event.control)
+        .collect();
+    if envelopes.is_empty() {
+        return result;
+    }
+    for spec in store.list() {
+        if spec.status == WorkflowBindingStatus::Paused {
+            continue;
+        }
+        let mut triage_batch = Vec::new();
+        for envelope in &envelopes {
+            let Some(prefiltered) =
+                prefilter_envelope_for_spec(&spec, envelope, history_store, classifier)
+            else {
+                continue;
+            };
+            result.matched = true;
+            if matches!(spec.action, ActionSpec::TriageAgent { .. }) {
+                triage_batch.push(prefiltered);
+                continue;
+            }
+            dispatch_one_matched_envelope(
+                &spec,
+                prefiltered,
+                history_store,
+                dispatcher,
+                stats,
+                &mut result,
+            );
+        }
+        if !triage_batch.is_empty() {
+            dispatch_matched_batch(
+                &spec,
+                &triage_batch,
+                history_store,
+                dispatcher,
+                stats,
+                &mut result,
+            );
+        }
+    }
+    result
+}
+
+fn prefilter_envelope_for_spec<'a>(
+    spec: &WorkflowBindingSpec,
+    envelope: &'a EventEnvelope,
+    history_store: Option<&WorkflowHistoryStore>,
+    classifier: &Arc<dyn Classifier>,
+) -> Option<&'a EventEnvelope> {
+    let topic_matches = spec.connection_slug == envelope.event.topic
+        || spec
+            .connector_slug
+            .as_deref()
+            .is_some_and(|connector_slug| connector_slug == envelope.event.topic);
+    if !topic_matches {
+        return None;
+    }
+    if event_dedup_key_seen(history_store, spec, envelope) {
+        return None;
+    }
+    if monitor_binding_should_skip_event(spec, &envelope.event.payload) {
+        record_monitor_router_outcome(
+            history_store,
+            spec,
+            envelope,
+            "monitor_muted_skip",
+            "Muted or silent notification skipped before monitor triage.",
+        );
+        return None;
+    }
+    if ignore_filter_matches(spec, &envelope.event.text, &envelope.event.payload) {
+        record_monitor_router_outcome(
+            history_store,
+            spec,
+            envelope,
+            "monitor_ignore_filter",
+            "Matched an installed monitor ignore filter before triage.",
+        );
+        return None;
+    }
+    if !filter_matches(
+        spec.filter.as_ref(),
+        &envelope.event.text,
+        &envelope.event.payload,
+    ) {
+        record_monitor_router_outcome(
+            history_store,
+            spec,
+            envelope,
+            "monitor_filter_skip",
+            "Did not match the monitor trigger filter.",
+        );
+        return None;
+    }
+    if spec.classify_prompt.is_some() {
+        match classifier.classify(spec, &envelope.event) {
+            ClassifyDecision::Pass => {}
+            ClassifyDecision::Reject | ClassifyDecision::Inconclusive => {
+                record_monitor_router_outcome(
+                    history_store,
+                    spec,
+                    envelope,
+                    "monitor_classifier_skip",
+                    "Classifier rejected the event before monitor triage.",
+                );
+                return None;
+            }
+        }
+    }
+    Some(envelope)
+}
+
+fn dispatch_one_matched_envelope(
+    spec: &WorkflowBindingSpec,
+    envelope: &EventEnvelope,
+    history_store: Option<&WorkflowHistoryStore>,
+    dispatcher: &Arc<dyn ActionDispatcher>,
+    stats: Option<&RouterStats>,
+    result: &mut EnvelopeProcessResult,
+) {
+    let started_at_ms = now_ms();
+    let started_history_idx = history_store.and_then(|history_store| {
+        match history_store.append_action_started(spec, envelope, &spec.action, started_at_ms) {
+            Ok(run) => Some(run.idx),
+            Err(error) => {
+                tracing::warn!(
+                    workflow_binding = %spec.slug,
+                    envelope = %envelope.envelope_id,
+                    %error,
+                    "failed to persist started workflow binding run history"
+                );
+                None
+            }
+        }
+    });
+    let action_result = dispatcher.dispatch(&spec.action, envelope);
+    let ended_at_ms = now_ms();
+    persist_action_result(
+        spec,
+        envelope,
+        &action_result,
+        started_at_ms,
+        ended_at_ms,
+        started_history_idx,
+        history_store,
+    );
+    account_action_result(spec, envelope, &action_result, stats, result);
+}
+
+fn dispatch_matched_batch(
+    spec: &WorkflowBindingSpec,
+    envelopes: &[&EventEnvelope],
+    history_store: Option<&WorkflowHistoryStore>,
+    dispatcher: &Arc<dyn ActionDispatcher>,
+    stats: Option<&RouterStats>,
+    result: &mut EnvelopeProcessResult,
+) {
+    let started_at_ms = now_ms();
+    let mut started_history = HashMap::new();
+    if let Some(history_store) = history_store {
+        for envelope in envelopes {
+            match history_store.append_action_started(spec, envelope, &spec.action, started_at_ms) {
+                Ok(run) => {
+                    started_history.insert(envelope.envelope_id.clone(), run.idx);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        workflow_binding = %spec.slug,
+                        envelope = %envelope.envelope_id,
+                        %error,
+                        "failed to persist started workflow binding run history"
+                    );
+                }
+            }
+        }
+    }
+    let batch: Vec<EventEnvelope> = envelopes
+        .iter()
+        .map(|envelope| (*envelope).clone())
+        .collect();
+    let action_result = dispatcher.dispatch_batch(&spec.action, &batch);
+    let ended_at_ms = now_ms();
+    for envelope in envelopes {
+        let started_history_idx = started_history.get(&envelope.envelope_id).copied();
+        persist_action_result(
+            spec,
+            envelope,
+            &action_result,
+            started_at_ms,
+            ended_at_ms,
+            started_history_idx,
+            history_store,
+        );
+        account_action_result(spec, envelope, &action_result, stats, result);
+    }
+}
+
+fn persist_action_result(
+    spec: &WorkflowBindingSpec,
+    envelope: &EventEnvelope,
+    action_result: &crate::action::ActionResult,
+    started_at_ms: i128,
+    ended_at_ms: i128,
+    started_history_idx: Option<u64>,
+    history_store: Option<&WorkflowHistoryStore>,
+) {
+    if let Some(history_store) = history_store {
+        let persist_result = match started_history_idx {
+            Some(idx) => match history_store.complete_action_result(
+                idx,
+                &spec.action,
+                action_result,
+                started_at_ms,
+                ended_at_ms,
+            ) {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => history_store
+                    .append_action_result(
+                        spec,
+                        envelope,
+                        &spec.action,
+                        action_result,
+                        started_at_ms,
+                        ended_at_ms,
+                    )
+                    .map(|_| ()),
+                Err(error) => Err(error),
+            },
+            None => history_store
+                .append_action_result(
+                    spec,
+                    envelope,
+                    &spec.action,
+                    action_result,
+                    started_at_ms,
+                    ended_at_ms,
+                )
+                .map(|_| ()),
+        };
+        if let Err(error) = persist_result {
+            tracing::warn!(
+                workflow_binding = %spec.slug,
+                envelope = %envelope.envelope_id,
+                %error,
+                "failed to persist workflow binding run history"
+            );
+        }
+    }
+}
+
+fn account_action_result(
+    spec: &WorkflowBindingSpec,
+    envelope: &EventEnvelope,
+    action_result: &crate::action::ActionResult,
+    stats: Option<&RouterStats>,
+    result: &mut EnvelopeProcessResult,
+) {
+    if action_result.success {
+        result.acted += 1;
+        if let Some(stats) = stats {
+            stats.events_acted.fetch_add(1, Ordering::Relaxed);
+        }
+        tracing::info!(
+            workflow_binding = %spec.slug,
+            envelope = %envelope.envelope_id,
+            "{}",
+            action_result.summary
+        );
+    } else {
+        result.failed += 1;
+        if let Some(stats) = stats {
+            stats.events_failed.fetch_add(1, Ordering::Relaxed);
+        }
+        tracing::warn!(
+            workflow_binding = %spec.slug,
+            envelope = %envelope.envelope_id,
+            "{}",
+            action_result.summary
+        );
+    }
 }
 
 fn event_dedup_key_seen(

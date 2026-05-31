@@ -65,8 +65,8 @@ pub use proxy::{
     AgentProxyDecision, AgentProxyStore, AgentProxyStoreError, TelegramBotAgentProxy,
 };
 pub use router::{
-    prefilter_passes, process_envelope, process_envelope_result, EnvelopeProcessResult,
-    RouterStats, SubscriptionRouter,
+    prefilter_passes, process_envelope, process_envelope_batch_result, process_envelope_result,
+    EnvelopeProcessResult, RouterStats, SubscriptionRouter,
 };
 pub use spec::{
     filter_matches, render_value_templates, validate_action_spec, validate_spec, ActionGraphNode,

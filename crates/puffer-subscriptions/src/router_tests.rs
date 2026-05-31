@@ -7,6 +7,7 @@ mod tests {
     use puffer_subscriber_runtime::{Event, EventBus, EventEnvelope};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
     use tempfile::tempdir;
 
     #[test]
@@ -136,6 +137,104 @@ mod tests {
         assert!(result.matched);
         assert_eq!(result.acted, 0);
         assert_eq!(result.failed, 1);
+    }
+
+    #[test]
+    fn batch_result_groups_triage_events_for_one_dispatch_call() {
+        struct BatchRecordingDispatcher {
+            batches: StdMutex<Vec<Vec<String>>>,
+        }
+
+        impl ActionDispatcher for BatchRecordingDispatcher {
+            fn dispatch(&self, _action: &ActionSpec, _envelope: &EventEnvelope) -> ActionResult {
+                ActionResult::failure("single dispatch should not run")
+            }
+
+            fn dispatch_batch(
+                &self,
+                _action: &ActionSpec,
+                envelopes: &[EventEnvelope],
+            ) -> ActionResult {
+                self.batches.lock().unwrap().push(
+                    envelopes
+                        .iter()
+                        .map(|envelope| envelope.event.text.clone())
+                        .collect(),
+                );
+                ActionResult::success("batched triage")
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let store = WorkflowBindingStore::load(dir.path().join("bindings.json")).unwrap();
+        store
+            .create(WorkflowBindingSpec {
+                slug: "monitor-telegram-user".into(),
+                description: "Monitor telegram-user for actionable tasks".into(),
+                connection_slug: "telegram-user".into(),
+                connector_slug: Some("telegram-login".into()),
+                status: WorkflowBindingStatus::Enabled,
+                filter: None,
+                ignore_filters: Vec::new(),
+                classify_prompt: None,
+                classify_model: None,
+                action: ActionSpec::TriageAgent {
+                    prompt: "triage".into(),
+                    model: None,
+                },
+                created_at_ms: 0,
+            })
+            .unwrap();
+        let dispatcher = Arc::new(BatchRecordingDispatcher {
+            batches: StdMutex::new(Vec::new()),
+        });
+        let classifier: Arc<dyn Classifier> = Arc::new(NullClassifier);
+        let envelopes = vec![
+            EventEnvelope {
+                envelope_id: "env-1".into(),
+                subscriber_id: "telegram-user".into(),
+                received_at_ms: 0,
+                event: Event {
+                    topic: "telegram-user".into(),
+                    kind: "message".into(),
+                    control: false,
+                    dedup_key: Some("chat:1".into()),
+                    text: "first".into(),
+                    payload: serde_json::json!({"message":"first"}),
+                },
+            },
+            EventEnvelope {
+                envelope_id: "env-2".into(),
+                subscriber_id: "telegram-user".into(),
+                received_at_ms: 0,
+                event: Event {
+                    topic: "telegram-user".into(),
+                    kind: "message".into(),
+                    control: false,
+                    dedup_key: Some("chat:2".into()),
+                    text: "second".into(),
+                    payload: serde_json::json!({"message":"second"}),
+                },
+            },
+        ];
+        let dispatcher_trait: Arc<dyn ActionDispatcher> = dispatcher.clone();
+
+        let result = process_envelope_batch_result(
+            &envelopes,
+            &store,
+            None,
+            &dispatcher_trait,
+            &classifier,
+            None,
+        );
+
+        assert!(result.matched);
+        assert_eq!(result.acted, 2);
+        assert_eq!(result.failed, 0);
+        assert_eq!(
+            dispatcher.batches.lock().unwrap().as_slice(),
+            &[vec!["first".to_string(), "second".to_string()]]
+        );
     }
 
     #[test]
