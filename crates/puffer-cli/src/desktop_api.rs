@@ -18,12 +18,11 @@ use uuid::Uuid;
 use crate::cli_args::DesktopApiCommand;
 use crate::desktop_activity::session_activity_status;
 use crate::desktop_api_types::{
-    AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
-    DiffSummaryDto, DivergenceReportDto, ExternalCredentialDto, FolderGroupDto,
-    NetworkProxySettingsDto, ProviderSummaryDto, RepoActionResultDto, RepoPullRequestDto,
-    RepoStatusDto, ResourceCountsDto, SanitizedProxyEndpointDto, SessionDetailDto,
-    SessionGroupsPageDto, SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto,
-    SettingsSnapshotDto, TimelineItemDto,
+    AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto, DiffSummaryDto,
+    DivergenceReportDto, ExternalCredentialDto, FolderGroupDto, NetworkProxySettingsDto,
+    ProviderSummaryDto, RepoActionResultDto, RepoPullRequestDto, RepoStatusDto, ResourceCountsDto,
+    SanitizedProxyEndpointDto, SessionDetailDto, SessionGroupsPageDto, SessionListItemDto,
+    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.

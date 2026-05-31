@@ -610,19 +610,16 @@ mod tests {
         let yaml = include_str!("../../../resources/providers/worldrouter.yaml");
         let pack: ProviderPack = serde_yaml::from_str(yaml).expect("worldrouter.yaml parses");
         assert_eq!(pack.id, "worldrouter");
-        assert_eq!(
-            pack.base_url,
-            "https://inference-api.worldrouter.ai/v1"
-        );
+        assert_eq!(pack.base_url, "https://inference-api.worldrouter.ai/v1");
         assert_eq!(pack.default_api, "openai-completions");
         assert_eq!(
             pack.chat_completions_path.as_deref(),
             Some("/chat/completions")
         );
-        assert!(pack.auth_modes.iter().any(|mode| matches!(
-            mode,
-            puffer_provider_registry::AuthMode::ApiKey
-        )));
+        assert!(pack
+            .auth_modes
+            .iter()
+            .any(|mode| matches!(mode, puffer_provider_registry::AuthMode::ApiKey)));
         let descriptor = pack.into_descriptor();
         assert!(
             descriptor.models.iter().any(|model| model.id == "auto"),

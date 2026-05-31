@@ -44,7 +44,11 @@ use puffer_core::{
     PermissionPromptAction, PermissionPromptRequest, ToolCallRequest, ToolInvocation,
     TurnStreamEvent, UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
-use puffer_provider_openai::parse_authorization_input as parse_openai_authorization_input;
+use puffer_provider_openai::{
+    build_realtime_client_secret_request,
+    parse_authorization_input as parse_openai_authorization_input, BuiltOpenAIRequest, OpenAIAuth,
+    OpenAIRealtimeClientSecretRequest, OpenAIRequestConfig,
+};
 use puffer_provider_registry::{
     AuthStore, ModelDescriptor, ProviderDescriptor, ProviderRegistry, StoredCredential,
 };
@@ -954,6 +958,11 @@ async fn dispatch_request(
         }
         "save_proxy_settings" => respond!(detached!(|s, p| handle_save_proxy_settings(&s, &p))),
         "test_proxy" => respond!(detached!(|s, p| handle_test_proxy(&s, &p))),
+        "create_openai_realtime_client_secret" => {
+            respond!(detached!(|s, p| {
+                handle_create_openai_realtime_client_secret(&s, &p)
+            }))
+        }
         "list_permissions" => respond!(handle_list_permissions(&state)),
         "save_permissions" => respond!(handle_save_permissions(&state, &params)),
         "update_config" => respond!(detached!(|s, p| handle_update_config(&s, &p))),
@@ -1967,6 +1976,192 @@ fn handle_list_provider_models(state: &DaemonState, params: &Value) -> Result<Va
         .map(|model| model_descriptor_dto(family, model))
         .collect();
     Ok(json!({ "providerId": provider_id, "models": models }))
+}
+
+const DEFAULT_REALTIME_MODEL: &str = "gpt-realtime-2";
+const DEFAULT_REALTIME_VOICE: &str = "marin";
+
+fn handle_create_openai_realtime_client_secret(
+    state: &DaemonState,
+    params: &Value,
+) -> Result<Value> {
+    let requested_provider_id = optional_trimmed_value(params, &["providerId", "provider_id"])
+        .unwrap_or_else(|| "openai".to_string());
+    let provider_id = canonical_desktop_provider_id(&requested_provider_id);
+    let inputs = state.build_runtime_inputs_without_discovery()?;
+    let provider = inputs
+        .providers
+        .provider(&provider_id)
+        .with_context(|| format!("unknown provider `{provider_id}`"))?;
+    let request_config = openai_realtime_request_config(provider, &inputs.auth_store)?;
+    let (session, model, voice) = realtime_session_config_from_params(params)?;
+    let request = build_realtime_client_secret_request(
+        &request_config,
+        &OpenAIRealtimeClientSecretRequest { session },
+    )?;
+    let response = send_openai_realtime_request(&request)?;
+    let client_secret = response
+        .get("value")
+        .and_then(Value::as_str)
+        .context("malformed Realtime client-secret response: missing value")?;
+    let expires_at = response.get("expires_at").and_then(Value::as_i64);
+
+    Ok(json!({
+        "providerId": provider_id,
+        "model": model,
+        "voice": voice,
+        "clientSecret": client_secret,
+        "expiresAt": expires_at,
+    }))
+}
+
+fn openai_realtime_request_config(
+    provider: &ProviderDescriptor,
+    auth_store: &AuthStore,
+) -> Result<OpenAIRequestConfig> {
+    let key = match auth_store.get(provider.id.as_str()) {
+        Some(StoredCredential::ApiKey { key }) => key.clone(),
+        Some(StoredCredential::OAuth(_)) => {
+            anyhow::bail!("OpenAI Realtime client-secret minting requires an API key credential")
+        }
+        None => anyhow::bail!("missing OpenAI API key credential for `{}`", provider.id),
+    };
+
+    Ok(OpenAIRequestConfig {
+        base_url: provider.base_url.clone(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        auth: OpenAIAuth::ApiKey(key),
+        originator: "puffer_desktop".to_string(),
+        session_id: None,
+        account_id: None,
+        custom_headers: provider
+            .headers
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        query_params: provider
+            .query_params
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        chat_completions_path: None,
+        responses_path: None,
+    })
+}
+
+fn realtime_session_config_from_params(params: &Value) -> Result<(Value, String, String)> {
+    let mut session = params.get("session").cloned().unwrap_or_else(|| json!({}));
+    let model = optional_trimmed_value(params, &["model", "modelId", "model_id"])
+        .or_else(|| nested_trimmed_string(&session, &["model"]))
+        .unwrap_or_else(|| DEFAULT_REALTIME_MODEL.to_string());
+    let explicit_voice = optional_trimmed_value(params, &["voice"]);
+    let voice = explicit_voice
+        .clone()
+        .or_else(|| nested_trimmed_string(&session, &["audio", "output", "voice"]))
+        .unwrap_or_else(|| DEFAULT_REALTIME_VOICE.to_string());
+    let reasoning_effort = optional_trimmed_value(params, &["reasoningEffort", "reasoning_effort"]);
+
+    let session_object = session
+        .as_object_mut()
+        .context("Realtime session config must be a JSON object")?;
+    session_object
+        .entry("type".to_string())
+        .or_insert_with(|| json!("realtime"));
+    if session_object.get("type").and_then(Value::as_str) != Some("realtime") {
+        anyhow::bail!("Realtime session type must be `realtime`");
+    }
+    session_object.insert("model".to_string(), json!(model));
+    if let Some(reasoning_effort) = reasoning_effort {
+        session_object.insert(
+            "reasoning".to_string(),
+            json!({ "effort": reasoning_effort }),
+        );
+    }
+    ensure_realtime_audio_defaults(session_object, &voice, explicit_voice.is_some());
+
+    Ok((session, model, voice))
+}
+
+fn nested_trimmed_string(value: &Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn ensure_realtime_audio_defaults(
+    session: &mut serde_json::Map<String, Value>,
+    voice: &str,
+    override_voice: bool,
+) {
+    let audio = session
+        .entry("audio".to_string())
+        .or_insert_with(|| json!({}));
+    if !audio.is_object() {
+        *audio = json!({});
+    }
+    let Some(audio) = audio.as_object_mut() else {
+        return;
+    };
+
+    let input = audio
+        .entry("input".to_string())
+        .or_insert_with(|| json!({}));
+    if !input.is_object() {
+        *input = json!({});
+    }
+    if let Some(input) = input.as_object_mut() {
+        input
+            .entry("transcription".to_string())
+            .or_insert(Value::Null);
+    }
+
+    let output = audio
+        .entry("output".to_string())
+        .or_insert_with(|| json!({}));
+    if !output.is_object() {
+        *output = json!({});
+    }
+    if let Some(output) = output.as_object_mut() {
+        if override_voice {
+            output.insert("voice".to_string(), json!(voice));
+        } else {
+            output
+                .entry("voice".to_string())
+                .or_insert_with(|| json!(voice));
+        }
+    }
+}
+
+fn send_openai_realtime_request(request: &BuiltOpenAIRequest) -> Result<Value> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let mut builder = client.post(&request.url);
+    for (key, value) in &request.headers {
+        builder = builder.header(key, value);
+    }
+    let response = builder
+        .body(request.body.clone())
+        .send()
+        .with_context(|| format!("request to {} failed", request.url))?;
+    let status = response.status();
+    let body = response.text().context("read Realtime response body")?;
+    let parsed = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({ "text": body }));
+    if !status.is_success() {
+        let message = parsed
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("OpenAI Realtime request failed");
+        anyhow::bail!("OpenAI Realtime request failed with status {status}: {message}");
+    }
+    Ok(parsed)
 }
 
 fn model_descriptor_dto(
@@ -4522,15 +4717,15 @@ mod tests {
     use super::{
         apply_daemon_yolo_mode, apply_turn_model_override, apply_turn_request_options,
         browser_permission_payload_json, connector_setup_connect_args, connector_setup_id,
-        handle_create_session, handle_import_external_credential,
-        handle_list_lambda_skill_libraries, handle_list_permissions, handle_list_provider_models,
-        handle_local_model_status, handle_login_with_api_key, handle_logout_provider,
-        handle_remove_lambda_skill_library, handle_save_lambda_skill_library,
-        handle_save_permissions, handle_save_proxy_settings, handle_set_lambda_skill_approval,
-        handle_set_lambda_skill_enabled, model_descriptor_dto, permission_review_payload_json,
-        report_cancelled_turn, requires_explicit_subscription, resolve_create_session_model_id,
-        run_off_runtime, start_connector_setup_turn, DaemonState, ServerEnvelope, TurnProgress,
-        TurnRequestOptions,
+        handle_create_openai_realtime_client_secret, handle_create_session,
+        handle_import_external_credential, handle_list_lambda_skill_libraries,
+        handle_list_permissions, handle_list_provider_models, handle_local_model_status,
+        handle_login_with_api_key, handle_logout_provider, handle_remove_lambda_skill_library,
+        handle_save_lambda_skill_library, handle_save_permissions, handle_save_proxy_settings,
+        handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled, model_descriptor_dto,
+        permission_review_payload_json, realtime_session_config_from_params, report_cancelled_turn,
+        requires_explicit_subscription, resolve_create_session_model_id, run_off_runtime,
+        start_connector_setup_turn, DaemonState, ServerEnvelope, TurnProgress, TurnRequestOptions,
     };
     use indexmap::IndexMap;
     use puffer_config::{
@@ -4858,6 +5053,44 @@ mod tests {
                 }
             }
             panic!("discovery server was not contacted");
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn spawn_realtime_client_secret_server(
+        captured: Arc<Mutex<String>>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind realtime server");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking realtime server");
+        let address = listener.local_addr().expect("realtime server address");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..100 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let request = read_discovery_http_request(&mut stream)
+                            .expect("read realtime request");
+                        *captured.lock().expect("captured request") =
+                            String::from_utf8_lossy(&request).to_string();
+                        let body =
+                            r#"{"value":"ephemeral-test-client-secret","expires_at":1234567890}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write realtime response");
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept realtime request: {error}"),
+                }
+            }
+            panic!("realtime server was not contacted");
         });
         (format!("http://{address}"), handle)
     }
@@ -5446,6 +5679,65 @@ mod tests {
         let oauth = super::proxy_oauth_client(&config, puffer_provider_openai::OPENAI_TOKEN_URL)
             .expect("oauth client");
         let _ = (discovery, oauth);
+    }
+
+    #[test]
+    fn realtime_session_config_defaults_to_only_realtime() {
+        let (session, model, voice) =
+            realtime_session_config_from_params(&json!({})).expect("session config");
+
+        assert_eq!(model, "gpt-realtime-2");
+        assert_eq!(voice, "marin");
+        assert_eq!(session["type"], "realtime");
+        assert_eq!(session["model"], "gpt-realtime-2");
+        assert!(session["audio"]["input"]["transcription"].is_null());
+        assert_eq!(session["audio"]["output"]["voice"], "marin");
+    }
+
+    #[test]
+    fn realtime_client_secret_rpc_mints_without_returning_api_key() {
+        let captured = Arc::new(Mutex::new(String::new()));
+        let (openai_base_url, server) = spawn_realtime_client_secret_server(captured.clone());
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let auth_path = paths.user_config_dir.join("auth.json");
+        let mut auth = AuthStore::default();
+        auth.set_api_key("openai", "test-api-key");
+        auth.save(&auth_path).expect("save auth");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+        state.config.lock().unwrap().openai_base_url = Some(openai_base_url);
+
+        let response = handle_create_openai_realtime_client_secret(
+            &state,
+            &json!({
+                "model": "gpt-realtime-2",
+                "voice": "marin",
+                "reasoningEffort": "low"
+            }),
+        )
+        .expect("create realtime client secret");
+
+        server.join().expect("realtime server");
+        let request = captured.lock().expect("captured request").clone();
+        assert!(request.starts_with("POST /v1/realtime/client_secrets "));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-api-key"));
+        assert!(request.contains("\"transcription\":null"));
+        assert_eq!(response["providerId"], "openai");
+        assert_eq!(response["model"], "gpt-realtime-2");
+        assert_eq!(response["voice"], "marin");
+        assert_eq!(response["clientSecret"], "ephemeral-test-client-secret");
+        assert_eq!(response["expiresAt"], 1234567890);
+        assert!(!response.to_string().contains("test-api-key"));
     }
 
     #[test]

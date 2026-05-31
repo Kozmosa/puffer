@@ -225,6 +225,12 @@ pub struct OpenAIResponsesFunctionCallOutput {
     pub output: String,
 }
 
+/// A Realtime API client-secret minting request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIRealtimeClientSecretRequest {
+    pub session: Value,
+}
+
 /// Runtime request configuration for the OpenAI provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAIRequestConfig {
@@ -296,6 +302,14 @@ pub(crate) fn build_json_post_request(
     build_request_to_path(config, body, path, wants_event_stream(body))
 }
 
+/// Builds an ordered Realtime API client-secret request.
+pub(crate) fn build_realtime_client_secret_request(
+    config: &OpenAIRequestConfig,
+    request: &OpenAIRealtimeClientSecretRequest,
+) -> anyhow::Result<BuiltOpenAIRequest> {
+    build_request_to_path(config, request, "/v1/realtime/client_secrets", false)
+}
+
 fn build_request<T: Serialize>(
     config: &OpenAIRequestConfig,
     request: &T,
@@ -324,7 +338,7 @@ fn build_request_to_path<T: Serialize>(
         .map(|(name, _)| name.to_ascii_lowercase())
         .collect();
     let mut headers = Vec::new();
-    let mut push_default = |headers: &mut Vec<(String, String)>, name: &str, value: String| {
+    let push_default = |headers: &mut Vec<(String, String)>, name: &str, value: String| {
         if !custom_keys.contains(&name.to_ascii_lowercase()) {
             headers.push((name.to_string(), value));
         }
@@ -454,6 +468,46 @@ mod tests {
             .headers
             .iter()
             .any(|(key, _)| key.eq_ignore_ascii_case("authorization")));
+    }
+
+    #[test]
+    fn realtime_client_secret_request_targets_realtime_endpoint() {
+        let request = build_realtime_client_secret_request(
+            &OpenAIRequestConfig {
+                base_url: "https://api.openai.com/v1".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("test-api-key".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
+                chat_completions_path: None,
+                responses_path: None,
+            },
+            &OpenAIRealtimeClientSecretRequest {
+                session: json!({
+                    "type": "realtime",
+                    "model": "gpt-realtime-2",
+                    "audio": {"output": {"voice": "marin"}}
+                }),
+            },
+        )
+        .unwrap();
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(
+            request.url,
+            "https://api.openai.com/v1/realtime/client_secrets"
+        );
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "Authorization" && value == "Bearer test-api-key"));
+        assert_eq!(body["session"]["type"], "realtime");
+        assert_eq!(body["session"]["model"], "gpt-realtime-2");
+        assert_eq!(body["session"]["audio"]["output"]["voice"], "marin");
     }
 
     #[test]
