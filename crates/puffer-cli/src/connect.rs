@@ -262,19 +262,10 @@ fn connections_store_path(paths: &ConfigPaths) -> PathBuf {
 }
 
 fn telegram_state_dir(paths: &ConfigPaths, connection_slug: &str) -> PathBuf {
-    const TELEGRAM_DEFAULT_TOPIC: &str = "telegram-user";
-    if connection_slug == TELEGRAM_DEFAULT_TOPIC {
-        paths
-            .user_config_dir
-            .join("subscribers")
-            .join(TELEGRAM_DEFAULT_TOPIC)
-            .join("state")
-    } else {
-        paths
-            .user_config_dir
-            .join("telegram-accounts")
-            .join(connection_slug)
-    }
+    paths
+        .user_config_dir
+        .join("telegram-accounts")
+        .join(connection_slug)
 }
 
 fn register_connection(
@@ -316,4 +307,42 @@ fn register_telegram_connection(paths: &ConfigPaths, slug: &str) -> Result<()> {
 
 fn register_email_connection(paths: &ConfigPaths, slug: &str) -> Result<()> {
     register_connection(paths, slug, EMAIL_CONNECTOR_SLUG, "Email (IMAP/SMTP)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telegram_default_state_dir_uses_account_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+
+        assert_eq!(
+            telegram_state_dir(&paths, "telegram-user"),
+            paths
+                .user_config_dir
+                .join("telegram-accounts/telegram-user")
+        );
+    }
+
+    #[test]
+    fn telegram_alternate_state_dir_uses_account_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+
+        assert_eq!(
+            telegram_state_dir(&paths, "tg-alt"),
+            paths.user_config_dir.join("telegram-accounts/tg-alt")
+        );
+    }
+
+    fn paths(root: &std::path::Path) -> ConfigPaths {
+        ConfigPaths {
+            workspace_root: root.join("workspace"),
+            workspace_config_dir: root.join("workspace/.puffer"),
+            user_config_dir: root.join("home/.puffer"),
+            builtin_resources_dir: root.join("resources"),
+        }
+    }
 }

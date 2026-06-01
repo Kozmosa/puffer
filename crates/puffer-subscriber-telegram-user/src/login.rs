@@ -244,10 +244,18 @@ pub async fn submit_password(
 /// book; without it the next start would force the operator through the full
 /// login flow again.
 pub fn save_session(env: &SkillEnv, client: &Client) -> anyhow::Result<()> {
-    client
-        .session()
-        .save_to_file(&env.session_path)
-        .with_context(|| format!("save session to {}", env.session_path.display()))
+    save_session_bytes(&env.session_path, client.session().save())
+}
+
+fn save_session_bytes(path: &std::path::Path, bytes: Vec<u8>) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create session parent dir {}", parent.display()))?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
 }
 
 async fn connect_fresh_login_client(api_id: i32, api_hash: String) -> anyhow::Result<Client> {
@@ -316,5 +324,16 @@ mod tests {
         ));
         assert!(is_auth_restart_error_text("auth_restart"));
         assert!(!is_auth_restart_error_text("PHONE_NUMBER_INVALID"));
+    }
+
+    #[test]
+    fn save_session_bytes_creates_missing_session_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state/telegram.session");
+
+        save_session_bytes(&path, b"session-bytes".to_vec()).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"session-bytes");
+        assert!(!path.with_extension("tmp").exists());
     }
 }
