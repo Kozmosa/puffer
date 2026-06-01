@@ -50,6 +50,53 @@ fn user_question_answer(question: &str, answer: &str) -> UserQuestionPromptRespo
 }
 
 #[test]
+fn monitor_action_submission_uses_concise_visible_message() {
+    let submitted = concat!(
+        "Act on monitored task monitor-1: Answer Telegram support ping\n\n",
+        "Task description:\nAlice asked whether the deployment is finished.\n\n",
+        "Selected action: Draft reply\n\n",
+        "Draft a concise reply to Alice with the deployment status.\n\n",
+        "When the action is fully handled, update task monitor-1 with TaskUpdate status=completed."
+    );
+
+    assert_eq!(
+        visible_user_message_for_submission(submitted),
+        "Act on monitored task monitor-1: Draft reply"
+    );
+}
+
+#[test]
+fn regular_submission_keeps_original_visible_message() {
+    let submitted = "Act on monitored task monitor-1: please do this manually";
+
+    assert_eq!(visible_user_message_for_submission(submitted), submitted);
+}
+
+#[test]
+fn provider_submission_text_can_restore_visible_message() {
+    let tempdir = tempdir().unwrap();
+    let mut state = sample_state(transient_session(tempdir.path()), tempdir.path());
+    state.push_message(
+        MessageRole::User,
+        "Act on monitored task monitor-1: Draft reply",
+    );
+    let index = state.transcript.len() - 1;
+
+    set_provider_submission_text(&mut state, index, "full hidden monitor prompt");
+    assert_eq!(state.transcript[index].text, "full hidden monitor prompt");
+
+    set_visible_submission_text(
+        &mut state,
+        index,
+        "Act on monitored task monitor-1: Draft reply",
+    );
+    assert_eq!(
+        state.transcript[index].text,
+        "Act on monitored task monitor-1: Draft reply"
+    );
+}
+
+#[test]
 fn autodream_suggestion_action_queues_genskill_once() {
     let mut tui = TuiState {
         overlay: Some(flow::autodream_suggestion_overlay()),
