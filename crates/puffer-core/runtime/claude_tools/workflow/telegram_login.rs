@@ -736,15 +736,15 @@ fn telegram_connection_manifest(paths: &ConfigPaths, connection_slug: &str) -> R
         manifest.spec.id = connection_slug.to_string();
         manifest.spec.topic = Some(connection_slug.to_string());
         manifest.spec.display_name = Some(format!("Telegram ({connection_slug})"));
-        manifest.spec.state = Some(StateSpec {
-            dir: paths
-                .user_config_dir
-                .join("telegram-accounts")
-                .join(connection_slug)
-                .to_string_lossy()
-                .to_string(),
-        });
     }
+    manifest.spec.state = Some(StateSpec {
+        dir: paths
+            .user_config_dir
+            .join("telegram-accounts")
+            .join(connection_slug)
+            .to_string_lossy()
+            .to_string(),
+    });
     Ok(manifest)
 }
 
@@ -888,6 +888,78 @@ mod tests {
                 .display()
                 .to_string()
         ));
+    }
+
+    #[test]
+    fn default_telegram_connection_uses_account_state_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths {
+            workspace_root: root.path().join("workspace"),
+            workspace_config_dir: root.path().join("workspace").join(".puffer"),
+            user_config_dir: root.path().join("home").join(".puffer"),
+            builtin_resources_dir: root.path().join("bundle").join("resources"),
+        };
+        write_telegram_manifest(&paths);
+
+        let manifest = telegram_connection_manifest(&paths, "telegram-user").unwrap();
+
+        assert_eq!(manifest.spec.id, "telegram-user");
+        assert_eq!(manifest.topic(), "telegram-user");
+        assert_eq!(
+            manifest.spec.state.unwrap().dir,
+            paths
+                .user_config_dir
+                .join("telegram-accounts/telegram-user")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn alternate_telegram_connection_uses_account_state_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths {
+            workspace_root: root.path().join("workspace"),
+            workspace_config_dir: root.path().join("workspace").join(".puffer"),
+            user_config_dir: root.path().join("home").join(".puffer"),
+            builtin_resources_dir: root.path().join("bundle").join("resources"),
+        };
+        write_telegram_manifest(&paths);
+
+        let manifest = telegram_connection_manifest(&paths, "tg-alt").unwrap();
+
+        assert_eq!(manifest.spec.id, "tg-alt");
+        assert_eq!(manifest.topic(), "tg-alt");
+        assert_eq!(
+            manifest.spec.state.unwrap().dir,
+            paths
+                .user_config_dir
+                .join("telegram-accounts/tg-alt")
+                .to_string_lossy()
+        );
+    }
+
+    fn write_telegram_manifest(paths: &ConfigPaths) {
+        let manifest_dir = paths
+            .builtin_resources_dir
+            .join("subscribers")
+            .join("telegram-user");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        std::fs::write(
+            manifest_dir.join("manifest.toml"),
+            r#"manifest_version = 1
+id = "telegram-user"
+kind = "subscriber"
+topic = "telegram-user"
+display_name = "Telegram (user account)"
+
+[run]
+cmd = ["puffer", "__subscriber", "telegram-user"]
+
+[state]
+dir = "state"
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
