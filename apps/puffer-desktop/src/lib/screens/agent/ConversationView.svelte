@@ -1913,6 +1913,7 @@
                                       item={selected.child as ToolTimelineItem}
                                       sessionId={session?.id ?? null}
                                       defaultCollapsed={false}
+                                      onOpenFile={onOpenFileLink}
                                     />
                                   {:else if selected.child.kind === "diff"}
                                     <DiffCard item={selected.child as DiffTimelineItem} defaultCollapsed={false} />
@@ -1945,6 +1946,7 @@
                             <ToolCard
                               item={child as ToolTimelineItem}
                               sessionId={session?.id ?? null}
+                              onOpenFile={onOpenFileLink}
                             />
                           {:else if child.kind === "diff"}
                             <DiffCard item={child as DiffTimelineItem} />

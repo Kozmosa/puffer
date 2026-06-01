@@ -1561,6 +1561,61 @@ test("Files tab jumps to the line from a chat file link", async ({ page }) => {
   await expect(editor).toBeFocused();
 });
 
+test("chat messages and generated artifact rows expose local file links", async ({ page }) => {
+  const linkedPath = "/tmp/puffer/src/main.rs";
+  const artifactPath = "/tmp/puffer/generated/output.png";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-message-link-rendering",
+        displayName: "Message link rendering",
+        title: "Message link rendering",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "message-link-rendering-assistant",
+            text:
+              "See [](https://example.com/docs), run_xiaohongshu_pet_feeding_notes.sh, " +
+              `and ${linkedPath}:7 before opening the generated artifact.`
+          },
+          {
+            kind: "tool_call",
+            id: "message-link-rendering-tool",
+            toolId: "image_generation",
+            status: "success",
+            inputText: JSON.stringify({ prompt: "preview image" }),
+            outputText: JSON.stringify({ status: "completed", savedPath: artifactPath })
+          }
+        ]
+      }
+    ]
+  });
+  daemon.seedFile(linkedPath, "fn main() {}\n");
+  daemon.seedFile(artifactPath, "generated image bytes\n");
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await page
+    .locator(".pf-sidebar-agents-list")
+    .getByRole("button", { name: /^Message link rendering\b/ })
+    .click();
+  await expect(page.getByRole("link", { name: "example.com" })).toBeVisible();
+  await expect(page.getByText("run_xiaohongshu_pet_feeding_notes.sh")).toBeVisible();
+
+  await page.getByRole("link", { name: `${linkedPath}:7` }).click();
+  await daemon.waitForRequest("read_file", (request) => request.params.path === linkedPath);
+
+  await page.locator(".pf-agent-tabs").getByRole("button", { name: "Chat", exact: true }).click();
+  await page.getByRole("button", { name: /Agent activity/ }).click();
+  const action = page.locator(".activity-action").filter({ hasText: "Generate image" });
+  await action.click();
+  const panel = page.locator(".activity-panel").filter({ hasText: "Image generation" });
+  await panel.getByRole("button", { name: artifactPath }).click();
+  await daemon.waitForRequest("read_file", (request) => request.params.path === artifactPath);
+});
+
 test("Files tab ignores late read failures from the previous session", async ({ page }) => {
   const path = "/tmp/puffer/src/main.rs";
   const daemon = new FakeDaemon({
