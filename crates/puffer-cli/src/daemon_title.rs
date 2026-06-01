@@ -75,6 +75,7 @@ pub(crate) fn generate_title_with_model(
     let mut title_resources = resources.clone();
     title_resources.tools.clear();
 
+    let project = project_name(&state.cwd);
     let prompt = title_prompt(message, &state.cwd);
     let response = execute_user_turn_streaming(
         &mut title_state,
@@ -90,7 +91,11 @@ pub(crate) fn generate_title_with_model(
             provider.id, model_id
         )
     })?;
-    Ok(parse_generated_title(&response.assistant_text))
+    Ok(parse_generated_title_for_message(
+        &response.assistant_text,
+        message,
+        &project,
+    ))
 }
 
 /// Builds a deterministic session title from the first user message.
@@ -144,26 +149,46 @@ fn title_model_for_provider(provider: &ProviderDescriptor) -> Option<&'static st
     }
 }
 
-fn title_prompt(message: &str, cwd: &Path) -> String {
-    let project = cwd
-        .file_name()
+fn project_name(cwd: &Path) -> String {
+    cwd.file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("project");
+        .unwrap_or("project")
+        .to_string()
+}
+
+fn title_prompt(message: &str, cwd: &Path) -> String {
+    title_prompt_for_project(message, &project_name(cwd))
+}
+
+fn title_prompt_for_project(message: &str, project: &str) -> String {
     format!(
-        "Generate a concise 3-7 word title for this coding session.\n\
+        "Generate a concise 3-7 word JSON title for this coding session.\n\
+Return only {{\"title\":\"...\"}}.\n\
 Use sentence case. Do not end with punctuation. Do not mention tools, models, or providers.\n\
-Do not copy the user's wording verbatim; summarize the intent as a task title.\n\
-For vague questions about the current project, use the project name when it helps.\n\
+Use the same language as the user message.\n\
+Preserve explicit project names, package names, file names, quoted terms, and unusual proper nouns exactly.\n\
+Do not merely echo the full message; summarize the intent as a task title.\n\
+For vague questions about the current project, use the project name when it helps, but do not drop specific user-supplied names.\n\
 \n\
 Examples:\n\
 - User: \"Whats up? What is this project\" / Project: \"puffer\" -> {{\"title\":\"Puffer project overview\"}}\n\
 - User: \"Fix the login button on mobile\" / Project: \"app\" -> {{\"title\":\"Fix mobile login button\"}}\n\
 - User: \"Add OAuth authentication\" / Project: \"app\" -> {{\"title\":\"Add OAuth authentication\"}}\n\
+- User: \"check momo and bobo bugs\" / Project: \"app\" -> {{\"title\":\"Investigate momo and bobo bugs\"}}\n\
+- User: \"arreglar login movil\" / Project: \"app\" -> {{\"title\":\"Arreglar login movil\"}}\n\
 \n\
 Project: {project}\n\
 User message:\n{message}"
     )
+}
+
+fn parse_generated_title_for_message(text: &str, message: &str, project: &str) -> Option<String> {
+    let title = parse_generated_title(text)?;
+    if should_fallback_to_first_message_title(&title, message, project) {
+        return title_from_first_message(message);
+    }
+    Some(title)
 }
 
 fn parse_generated_title(text: &str) -> Option<String> {
@@ -219,6 +244,82 @@ fn sanitize_title(value: &str) -> Option<String> {
         return None;
     }
     Some(title)
+}
+
+fn should_fallback_to_first_message_title(title: &str, message: &str, project: &str) -> bool {
+    let message_terms = distinctive_title_terms(message, project);
+    if message_terms.len() < 2 {
+        return false;
+    }
+    let title_terms = title_terms(title);
+    let retained_terms = message_terms
+        .iter()
+        .filter(|term| title_terms.contains(*term))
+        .count();
+    retained_terms * 2 < message_terms.len()
+}
+
+fn distinctive_title_terms(text: &str, project: &str) -> Vec<String> {
+    let project_terms = title_terms(project);
+    title_terms(text)
+        .into_iter()
+        .filter(|term| !is_title_stopword(term))
+        .filter(|term| !project_terms.contains(term))
+        .collect()
+}
+
+fn title_terms(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut term = String::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() || matches!(ch, '_' | '-') {
+            term.extend(ch.to_lowercase());
+        } else if !term.is_empty() {
+            push_unique_term(&mut terms, &term);
+            term.clear();
+        }
+    }
+    if !term.is_empty() {
+        push_unique_term(&mut terms, &term);
+    }
+    terms
+}
+
+fn push_unique_term(terms: &mut Vec<String>, term: &str) {
+    if term.chars().count() >= 3 && !terms.iter().any(|existing| existing == term) {
+        terms.push(term.to_string());
+    }
+}
+
+fn is_title_stopword(term: &str) -> bool {
+    matches!(
+        term,
+        "add"
+            | "are"
+            | "bug"
+            | "can"
+            | "check"
+            | "code"
+            | "does"
+            | "fix"
+            | "for"
+            | "from"
+            | "how"
+            | "into"
+            | "issue"
+            | "make"
+            | "please"
+            | "project"
+            | "task"
+            | "the"
+            | "this"
+            | "what"
+            | "whats"
+            | "when"
+            | "where"
+            | "why"
+            | "with"
+    )
 }
 
 fn slash_command_name(message: &str) -> Option<&str> {
@@ -325,12 +426,15 @@ mod tests {
     }
 
     #[test]
-    fn title_prompt_discourages_echoes_for_project_questions() {
+    fn title_prompt_preserves_specific_user_terms_and_language() {
         let prompt = title_prompt(
-            "Whats up? What is this project",
+            "check momo and bobo bugs",
             std::path::Path::new("/Users/shou/puffer"),
         );
-        assert!(prompt.contains("Do not copy"));
+        assert!(prompt.contains("Use the same language as the user message"));
+        assert!(prompt.contains("do not drop specific user-supplied names"));
+        assert!(prompt.contains("momo and bobo"));
+        assert!(prompt.contains("arreglar login movil"));
         assert!(prompt.contains("Puffer project overview"));
         assert!(prompt.contains("Project: puffer"));
     }
@@ -340,6 +444,45 @@ mod tests {
         assert_eq!(
             parse_generated_title(r#"{"title":"Puffer project overview?"}"#).as_deref(),
             Some("Puffer project overview")
+        );
+    }
+
+    #[test]
+    fn generic_generated_title_falls_back_when_specific_terms_are_dropped() {
+        assert_eq!(
+            parse_generated_title_for_message(
+                r#"{"title":"Investigate project issue"}"#,
+                "check momo and bobo bugs",
+                "app",
+            )
+            .as_deref(),
+            Some("check momo and bobo bugs")
+        );
+    }
+
+    #[test]
+    fn generated_title_is_kept_when_specific_terms_are_retained() {
+        assert_eq!(
+            parse_generated_title_for_message(
+                r#"{"title":"Investigate momo and bobo bugs"}"#,
+                "check momo and bobo bugs",
+                "app",
+            )
+            .as_deref(),
+            Some("Investigate momo and bobo bugs")
+        );
+    }
+
+    #[test]
+    fn translated_generated_title_falls_back_to_user_language() {
+        assert_eq!(
+            parse_generated_title_for_message(
+                r#"{"title":"Fix mobile login"}"#,
+                "arreglar login movil",
+                "app",
+            )
+            .as_deref(),
+            Some("arreglar login movil")
         );
     }
 }
