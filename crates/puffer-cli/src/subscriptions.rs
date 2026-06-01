@@ -374,9 +374,10 @@ impl puffer_subscriptions::ConnectionAuthChecker for BuiltinConnectionAuthChecke
         connection_slug: &str,
     ) -> Result<Option<bool>> {
         if template.slug == crate::gmail_browser::CONNECTOR_SLUG {
-            let configured = crate::gmail_browser::load_config(&self.paths, connection_slug)?
-                .is_some_and(|config| config.is_configured());
-            return Ok(Some(configured));
+            return Ok(Some(crate::gmail_browser::connection_auth_ok(
+                &self.paths,
+                connection_slug,
+            )?));
         }
         if template.slug == crate::gcal_browser::CONNECTOR_SLUG {
             let configured = crate::gcal_browser::load_config(&self.paths, connection_slug)?

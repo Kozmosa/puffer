@@ -220,6 +220,63 @@ fn autostart_topics_use_connection_topic_for_configured_subscribers() {
 }
 
 #[test]
+fn builtin_auth_checker_reports_gmail_browser_auth_required_state() {
+    let runtime = test_subscription_runtime();
+    let paths = temp_config_paths();
+    crate::gmail_browser::save_config(
+        &paths,
+        &paths.workspace_root,
+        "work",
+        vec!["me@example.com".to_string()],
+    )
+    .unwrap();
+    let checker = BuiltinConnectionAuthChecker {
+        paths: paths.clone(),
+    };
+    let template = gmail_browser_template();
+
+    assert_eq!(
+        puffer_subscriptions::ConnectionAuthChecker::check(
+            &checker,
+            &runtime.manager(),
+            &template,
+            "work"
+        )
+        .unwrap(),
+        Some(true)
+    );
+
+    let dir = crate::gmail_browser::state_dir(&paths, "work");
+    std::fs::write(
+        dir.join("auth_state.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "auth_required_accounts": {
+                "me@example.com": {
+                    "url": "https://accounts.google.com/signin",
+                    "title": "Sign in - Google Accounts",
+                    "updated_at_ms": 1
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        puffer_subscriptions::ConnectionAuthChecker::check(
+            &checker,
+            &runtime.manager(),
+            &template,
+            "work"
+        )
+        .unwrap(),
+        Some(false)
+    );
+
+    runtime.shutdown();
+}
+
+#[test]
 fn autostart_manifest_instantiates_connector_subscriber_without_connection_row() {
     let runtime = test_subscription_runtime();
     runtime
@@ -313,6 +370,22 @@ fn configured_subscriber_template() -> ConnectorTemplate {
             state_root: Some("shared-accounts".to_string()),
             display_name: Some("Shared".to_string()),
         }),
+        output_schema: Value::Null,
+        actions: BTreeMap::new(),
+    }
+}
+
+fn gmail_browser_template() -> ConnectorTemplate {
+    ConnectorTemplate {
+        slug: crate::gmail_browser::CONNECTOR_SLUG.to_string(),
+        description: "Gmail browser".to_string(),
+        skill: "gmail".to_string(),
+        binary: "gmail".to_string(),
+        command: Vec::new(),
+        requires_auth: true,
+        can_subscribe: true,
+        can_proxy_agent: false,
+        subscriber: None,
         output_schema: Value::Null,
         actions: BTreeMap::new(),
     }

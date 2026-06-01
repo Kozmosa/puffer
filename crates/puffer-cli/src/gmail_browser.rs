@@ -5,9 +5,9 @@ use puffer_config::ConfigPaths;
 use puffer_subscriber_runtime::{Event, SubscriberCommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write as _;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
@@ -24,6 +24,7 @@ pub(crate) const STATE_ROOT: &str = "gmail-browser-accounts";
 
 const CONFIG_FILE: &str = "config.toml";
 const SEEN_FILE: &str = "seen.json";
+const AUTH_STATE_FILE: &str = "auth_state.json";
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const ERROR_BACKOFF: Duration = Duration::from_secs(10);
 const GMAIL_LOAD_TIMEOUT: Duration = Duration::from_secs(20);
@@ -54,6 +55,36 @@ struct SeenState {
     initialized: bool,
     #[serde(default)]
     seen: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+struct AuthState {
+    #[serde(default)]
+    auth_required_accounts: BTreeMap<String, AuthRequiredAccount>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AuthRequiredAccount {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default)]
+    updated_at_ms: u128,
+}
+
+impl AuthState {
+    fn has_auth_required_for(&self, accounts: &[String]) -> bool {
+        accounts
+            .iter()
+            .any(|account| self.auth_required_accounts.contains_key(account))
+    }
+
+    fn retain_configured_accounts(&mut self, accounts: &[String]) {
+        let configured = accounts.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        self.auth_required_accounts
+            .retain(|account, _| configured.contains(account.as_str()));
+    }
 }
 
 struct SubscriberEnv {
@@ -109,6 +140,18 @@ pub(crate) fn load_config(
     load_config_from_dir(&state_dir(paths, connection_slug))
 }
 
+/// Returns whether one Gmail browser connection is currently usable for polling.
+pub(crate) fn connection_auth_ok(paths: &ConfigPaths, connection_slug: &str) -> Result<bool> {
+    let Some(config) = load_config(paths, connection_slug)? else {
+        return Ok(false);
+    };
+    if !config.is_configured() {
+        return Ok(false);
+    }
+    let auth_state = load_auth_state(&state_dir(paths, connection_slug))?;
+    Ok(!auth_state.has_auth_required_for(&config.accounts))
+}
+
 /// Saves Gmail browser config for one connection.
 pub(crate) fn save_config(
     paths: &ConfigPaths,
@@ -130,6 +173,7 @@ pub(crate) fn save_config(
     let raw = toml::to_string_pretty(&config).context("serialize Gmail browser config")?;
     let path = dir.join(CONFIG_FILE);
     fs::write(&path, raw).with_context(|| format!("write {}", path.display()))?;
+    clear_auth_state(&dir)?;
     Ok(config)
 }
 
@@ -170,6 +214,7 @@ pub(crate) async fn run_subscriber() -> Result<()> {
         }
         let config_key = config.accounts.join(",");
         if config_key != last_config_key {
+            prune_auth_state(&env.state_dir, &config.accounts)?;
             emit_control(
                 &env.topic,
                 "ready",
@@ -311,6 +356,71 @@ fn save_seen(state_dir: &Path, seen: &SeenState) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
+fn load_auth_state(state_dir: &Path) -> Result<AuthState> {
+    let path = state_dir.join(AUTH_STATE_FILE);
+    if !path.exists() {
+        return Ok(AuthState::default());
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
+}
+
+fn save_auth_state(state_dir: &Path, auth_state: &AuthState) -> Result<()> {
+    if auth_state.auth_required_accounts.is_empty() {
+        return clear_auth_state(state_dir);
+    }
+    fs::create_dir_all(state_dir).with_context(|| format!("create {}", state_dir.display()))?;
+    let path = state_dir.join(AUTH_STATE_FILE);
+    fs::write(&path, serde_json::to_vec_pretty(auth_state)?)
+        .with_context(|| format!("write {}", path.display()))
+}
+
+fn clear_auth_state(state_dir: &Path) -> Result<()> {
+    let path = state_dir.join(AUTH_STATE_FILE);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
+fn prune_auth_state(state_dir: &Path, accounts: &[String]) -> Result<()> {
+    let mut auth_state = load_auth_state(state_dir)?;
+    let initial_len = auth_state.auth_required_accounts.len();
+    auth_state.retain_configured_accounts(accounts);
+    if auth_state.auth_required_accounts.len() != initial_len {
+        save_auth_state(state_dir, &auth_state)?;
+    }
+    Ok(())
+}
+
+fn mark_account_auth_required(state_dir: &Path, account: &str, result: &Value) -> Result<()> {
+    let mut auth_state = load_auth_state(state_dir)?;
+    auth_state.auth_required_accounts.insert(
+        account.to_string(),
+        AuthRequiredAccount {
+            url: result
+                .get("href")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            title: result
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            updated_at_ms: now_ms(),
+        },
+    );
+    save_auth_state(state_dir, &auth_state)
+}
+
+fn clear_account_auth_required(state_dir: &Path, account: &str) -> Result<()> {
+    let mut auth_state = load_auth_state(state_dir)?;
+    if auth_state.auth_required_accounts.remove(account).is_some() {
+        save_auth_state(state_dir, &auth_state)?;
+    }
+    Ok(())
+}
+
 async fn poll_once(
     env: &SubscriberEnv,
     config: &GmailBrowserConfig,
@@ -326,8 +436,10 @@ async fn poll_once(
         match status {
             "ok" => {
                 successful_poll = true;
+                clear_account_auth_required(&env.state_dir, account)?;
             }
             "auth_required" => {
+                mark_account_auth_required(&env.state_dir, account, &result)?;
                 emit_control(
                     &env.topic,
                     "auth_required",
@@ -677,6 +789,104 @@ mod tests {
     }
 
     #[test]
+    fn connection_auth_ok_tracks_auth_required_accounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(&temp);
+        save_config(
+            &paths,
+            &paths.workspace_root,
+            "work",
+            vec!["Me@Example.com".to_string()],
+        )
+        .unwrap();
+
+        assert!(connection_auth_ok(&paths, "work").unwrap());
+
+        let dir = state_dir(&paths, "work");
+        mark_account_auth_required(
+            &dir,
+            "me@example.com",
+            &json!({
+                "href": "https://accounts.google.com/signin",
+                "title": "Sign in - Google Accounts"
+            }),
+        )
+        .unwrap();
+
+        assert!(!connection_auth_ok(&paths, "work").unwrap());
+
+        clear_account_auth_required(&dir, "me@example.com").unwrap();
+
+        assert!(connection_auth_ok(&paths, "work").unwrap());
+        assert!(!dir.join(AUTH_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn save_config_clears_prior_auth_required_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(&temp);
+        save_config(
+            &paths,
+            &paths.workspace_root,
+            "work",
+            vec!["me@example.com".to_string()],
+        )
+        .unwrap();
+        let dir = state_dir(&paths, "work");
+        mark_account_auth_required(
+            &dir,
+            "me@example.com",
+            &json!({
+                "href": "https://accounts.google.com/signin",
+                "title": "Sign in - Google Accounts"
+            }),
+        )
+        .unwrap();
+
+        assert!(!connection_auth_ok(&paths, "work").unwrap());
+
+        save_config(
+            &paths,
+            &paths.workspace_root,
+            "work",
+            vec!["me@example.com".to_string()],
+        )
+        .unwrap();
+
+        assert!(connection_auth_ok(&paths, "work").unwrap());
+        assert!(!dir.join(AUTH_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn auth_state_prune_drops_unconfigured_accounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(&temp);
+        save_config(
+            &paths,
+            &paths.workspace_root,
+            "work",
+            vec!["new@example.com".to_string()],
+        )
+        .unwrap();
+        let dir = state_dir(&paths, "work");
+        mark_account_auth_required(
+            &dir,
+            "old@example.com",
+            &json!({
+                "href": "https://accounts.google.com/signin",
+                "title": "Sign in - Google Accounts"
+            }),
+        )
+        .unwrap();
+
+        assert!(connection_auth_ok(&paths, "work").unwrap());
+
+        prune_auth_state(&dir, &["new@example.com".to_string()]).unwrap();
+
+        assert!(!dir.join(AUTH_STATE_FILE).exists());
+    }
+
+    #[test]
     fn first_snapshot_only_emits_the_top_row() {
         let seen = SeenState::default();
 
@@ -736,5 +946,15 @@ mod tests {
             "status": "auth_required",
             "rows": []
         })));
+    }
+
+    fn test_paths(temp: &tempfile::TempDir) -> ConfigPaths {
+        let workspace_root = temp.path().join("workspace");
+        ConfigPaths {
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: temp.path().join("resources"),
+            workspace_root,
+        }
     }
 }
