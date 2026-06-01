@@ -317,7 +317,7 @@ pub(crate) struct ProxyTestResultDto {
     pub(crate) proxy_id: Option<String>,
     pub(crate) ok: bool,
     pub(crate) message: String,
-    pub(crate) latency_ms: Option<u128>,
+    pub(crate) latency_ms: Option<u64>,
     pub(crate) status_code: Option<u16>,
 }
 
