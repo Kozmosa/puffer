@@ -26,6 +26,7 @@
   export let onOpenFile: ((path: string, line?: number | null) => void) | undefined = undefined;
 
   const urlPattern = /^(https?:\/\/[^\s<]+|file:\/\/[^\s<]+|\/[^\s<]+)$/;
+  const bareLocalPathPattern = /(file:\/\/[^\s<>()]+|\/[^\s<>()]+)/g;
 
   function fileTarget(href: string): { path: string; line: number | null } | null {
     let value = href;
@@ -74,6 +75,50 @@
     parts.push({ kind: "text", text, ...flags });
   }
 
+  function appendAutolinkedText(
+    parts: InlineSegment[],
+    text: string,
+    flags: Omit<InlineSegment, "kind" | "text"> = {}
+  ) {
+    if (!text) return;
+    let cursor = 0;
+    for (const match of text.matchAll(bareLocalPathPattern)) {
+      const raw = match[0];
+      const start = match.index ?? 0;
+      if (start > cursor) appendText(parts, text.slice(cursor, start), flags);
+      const { target, suffix } = splitTrailingPathPunctuation(raw);
+      if (target.startsWith("/") && text[start - 1] === ":") {
+        appendText(parts, target, flags);
+      } else if (fileTarget(target)) {
+        appendText(parts, target, { ...flags, href: target });
+      } else {
+        appendText(parts, target, flags);
+      }
+      if (suffix) appendText(parts, suffix, flags);
+      cursor = start + raw.length;
+    }
+    if (cursor < text.length) appendText(parts, text.slice(cursor), flags);
+  }
+
+  function splitTrailingPathPunctuation(value: string): { target: string; suffix: string } {
+    const match = value.match(/^(.*?)([.,;!?]+)$/);
+    if (!match || !match[1]) return { target: value, suffix: "" };
+    return { target: match[1], suffix: match[2] };
+  }
+
+  function fallbackLinkLabel(href: string): string {
+    if (href.startsWith("/")) return href.split("/").filter(Boolean).at(-1) ?? href;
+    try {
+      const url = new URL(href);
+      if (url.protocol === "file:") {
+        return decodeURIComponent(url.pathname.split("/").filter(Boolean).at(-1) ?? url.pathname);
+      }
+      return url.hostname || href;
+    } catch {
+      return href;
+    }
+  }
+
   function findClosing(source: string, marker: string, start: number): number {
     let index = start;
     while (index < source.length) {
@@ -114,7 +159,8 @@
           if (hrefEnd !== -1) {
             const label = text.slice(index + 1, labelEnd);
             const href = text.slice(labelEnd + 2, hrefEnd).trim();
-            const nested = parseInline(label, { ...flags, href });
+            const displayLabel = label.trim() ? label : fallbackLinkLabel(href);
+            const nested = parseInline(displayLabel, { ...flags, href });
             parts.push(...nested);
             index = hrefEnd + 1;
             continue;
@@ -152,8 +198,8 @@
       }
 
       const emphasisMarker = rest.startsWith("*") ? "*" : rest.startsWith("_") ? "_" : null;
-      if (emphasisMarker) {
-        const close = findClosing(text, emphasisMarker, index + 1);
+      if (emphasisMarker && canOpenEmphasis(text, index, emphasisMarker)) {
+        const close = findClosingEmphasis(text, emphasisMarker, index + 1);
         if (close !== -1 && close > index + 1) {
           parts.push(
             ...parseInline(text.slice(index + 1, close), {
@@ -172,11 +218,46 @@
           return found === -1 ? text.length : found;
         })
         .reduce((left, right) => Math.min(left, right), text.length);
-      appendText(parts, text.slice(index, nextMarkers), flags);
+      appendAutolinkedText(parts, text.slice(index, nextMarkers), flags);
       index = nextMarkers;
     }
 
     return parts.length > 0 ? parts : [{ kind: "text", text, ...flags }];
+  }
+
+  function findClosingEmphasis(source: string, marker: string, start: number): number {
+    let index = start;
+    while (index < source.length) {
+      const found = source.indexOf(marker, index);
+      if (found === -1) return -1;
+      if ((found === 0 || source[found - 1] !== "\\") && canCloseEmphasis(source, found, marker)) {
+        return found;
+      }
+      index = found + marker.length;
+    }
+    return -1;
+  }
+
+  function canOpenEmphasis(source: string, index: number, marker: string): boolean {
+    if (marker !== "_") return true;
+    const previous = source[index - 1] ?? "";
+    const next = source[index + 1] ?? "";
+    return !isWordChar(previous) && !isWhitespace(next);
+  }
+
+  function canCloseEmphasis(source: string, index: number, marker: string): boolean {
+    if (marker !== "_") return true;
+    const previous = source[index - 1] ?? "";
+    const next = source[index + 1] ?? "";
+    return !isWhitespace(previous) && !isWordChar(next);
+  }
+
+  function isWordChar(value: string): boolean {
+    return /^[A-Za-z0-9]$/.test(value);
+  }
+
+  function isWhitespace(value: string): boolean {
+    return value === "" || /\s/.test(value);
   }
 
   function taskState(text: string): { checked: boolean | null; text: string } {

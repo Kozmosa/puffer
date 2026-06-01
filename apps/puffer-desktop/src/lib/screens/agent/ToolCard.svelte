@@ -10,11 +10,13 @@
     item: ToolTimelineItem;
     sessionId?: string | null;
     defaultCollapsed?: boolean;
+    onOpenFile?: (path: string, line?: number | null) => void;
   };
   let {
     item,
     sessionId = null,
-    defaultCollapsed = true
+    defaultCollapsed = true,
+    onOpenFile
   }: Props = $props();
   type RenderRow = { kind: "ctx" | "add" | "del" | "omit"; line: number | null; text: string };
   type FileRender = { mode: "read" | "diff"; path: string; rows: RenderRow[] };
@@ -95,6 +97,32 @@
 
   function shortUnknown(value: unknown, max = 80): string | null {
     return shortValue(valueText(value), max);
+  }
+
+  function fileTarget(href: string): { path: string; line: number | null } | null {
+    let value = href.trim();
+    if (value.startsWith("file://")) {
+      try {
+        value = decodeURIComponent(new URL(value).pathname);
+      } catch {
+        value = value.slice("file://".length);
+      }
+    }
+    if (!value.startsWith("/")) return null;
+    const match = value.match(/^(.*?):(\d+)(?::\d+)?$/);
+    if (match) {
+      return {
+        path: match[1],
+        line: Number(match[2])
+      };
+    }
+    return { path: value, line: null };
+  }
+
+  function openFilePath(path: string) {
+    const target = fileTarget(path);
+    if (!target) return;
+    onOpenFile?.(target.path, target.line);
   }
 
   function browserArgLine(input: Record<string, unknown> | null): string | null {
@@ -1135,7 +1163,19 @@
           {#if toolRender.rows.length}
             <div class="pf-result-list">
               {#each toolRender.rows as row, i (i)}
-                <div class="pf-result-row">{row}</div>
+                {@const target = fileTarget(row)}
+                {#if target}
+                  <button
+                    type="button"
+                    class="pf-result-row pf-result-link"
+                    title={row}
+                    onclick={() => openFilePath(row)}
+                  >
+                    {row}
+                  </button>
+                {:else}
+                  <div class="pf-result-row">{row}</div>
+                {/if}
               {/each}
             </div>
           {:else if !toolRender.body}
@@ -1170,7 +1210,19 @@
               {#if section.rows.length}
                 <div class="pf-result-list">
                   {#each section.rows as row, i (i)}
-                    <div class="pf-result-row">{row}</div>
+                    {@const target = fileTarget(row)}
+                    {#if target}
+                      <button
+                        type="button"
+                        class="pf-result-row pf-result-link"
+                        title={row}
+                        onclick={() => openFilePath(row)}
+                      >
+                        {row}
+                      </button>
+                    {:else}
+                      <div class="pf-result-row">{row}</div>
+                    {/if}
                   {/each}
                 </div>
               {:else if !section.body}
@@ -1437,6 +1489,8 @@
     overflow: hidden;
   }
   .pf-result-row {
+    display: block;
+    width: 100%;
     padding: 5px 8px;
     white-space: pre;
     overflow: hidden;
@@ -1444,9 +1498,24 @@
     border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
     font-family: var(--font-mono);
     font-size: var(--pf-chat-code-size);
+    color: inherit;
+    text-align: left;
+    background: transparent;
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
   }
   .pf-result-row:last-child {
     border-bottom: 0;
+  }
+  .pf-result-link {
+    cursor: pointer;
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 0.16em;
+  }
+  .pf-result-link:hover {
+    color: var(--foreground);
   }
   .pf-mcp-details {
     display: grid;
