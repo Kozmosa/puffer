@@ -1,0 +1,35 @@
+id: Remember
+name: Remember
+description: |-
+  Persist a durable fact or preference about the USER so it survives across
+  sessions (stored in the global ~/.puffer/user.md and injected into context
+  every session). Use this when you learn something stable and reusable about
+  the person you are helping - their home/work address, timezone, preferred
+  tools or services ("prefers Meituan for delivery"), name conventions, recurring
+  preferences. Do NOT use it for project facts (those belong in the project
+  Memory tool) or for transient task state.
+
+  Facts are keyed: `set` upserts the value for a key, `append` adds a line,
+  `forget` removes a key, `list` returns all stored facts. Keys are normalized
+  to dash-slugs (e.g. "Home Address" -> "home-address").
+
+  Input: { action: set|append|forget|list, key?: string, value?: string }
+handler: runtime:workflow:remember
+approval_policy: auto
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  required:
+    - action
+  properties:
+    action:
+      type: string
+      enum: [set, append, forget, list]
+      description: set (upsert), append (add a line), forget (remove), or list.
+    key:
+      type: string
+      description: The fact's key, e.g. "home-address" or "food-delivery". Required for set/append/forget.
+    value:
+      type: string
+      description: The fact's value. Required for set/append.
+  additionalProperties: false

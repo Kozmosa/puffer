@@ -975,6 +975,10 @@ async fn dispatch_request(
         "list_permissions" => respond!(handle_list_permissions(&state)),
         "save_permissions" => respond!(handle_save_permissions(&state, &params)),
         "update_config" => respond!(detached!(|s, p| handle_update_config(&s, &p))),
+        "user_memory_list" => respond!(handle_user_memory_list()),
+        "user_memory_get" => respond!(handle_user_memory_get(&params)),
+        "user_memory_set" => respond!(handle_user_memory_set(&params)),
+        "user_memory_delete" => respond!(handle_user_memory_delete(&params)),
         "create_pull_request" => respond!(handle_create_pull_request(&state, &params)),
         "merge_pull_request" => respond!(handle_merge_pull_request(&state, &params)),
         "create_session" => {
@@ -2644,6 +2648,52 @@ fn handle_default_workspace(state: &DaemonState) -> Result<Value> {
         "cwd": state.cwd.display().to_string(),
         "workspaceRoot": state.paths.workspace_root.display().to_string(),
     }))
+}
+
+// ---- global user memory (~/.puffer/user.md) CRUD over the daemon RPC ----
+// Mirrors the agent-side `Remember` tool; lets the desktop UI list/get/set/
+// delete the same keyed user facts the agent reads from context.
+fn user_memory_required_key(params: &Value) -> Result<String> {
+    params
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("key is required"))
+}
+
+fn handle_user_memory_list() -> Result<Value> {
+    let memory = puffer_core::user_memory::UserMemory::global()?;
+    Ok(json!({
+        "facts": memory.list()?,
+        "path": memory.path().display().to_string(),
+    }))
+}
+
+fn handle_user_memory_get(params: &Value) -> Result<Value> {
+    let key = user_memory_required_key(params)?;
+    let memory = puffer_core::user_memory::UserMemory::global()?;
+    Ok(json!({
+        "key": puffer_core::user_memory::normalize_key(&key),
+        "value": memory.get(&key)?,
+    }))
+}
+
+fn handle_user_memory_set(params: &Value) -> Result<Value> {
+    let key = user_memory_required_key(params)?;
+    let value = params
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("value is required"))?;
+    let memory = puffer_core::user_memory::UserMemory::global()?;
+    let block = memory.set(&key, value)?;
+    Ok(json!({ "success": true, "key": block.key }))
+}
+
+fn handle_user_memory_delete(params: &Value) -> Result<Value> {
+    let key = user_memory_required_key(params)?;
+    let memory = puffer_core::user_memory::UserMemory::global()?;
+    Ok(json!({ "success": true, "removed": memory.delete(&key)? }))
 }
 
 fn local_model_id_param(params: &Value) -> &str {

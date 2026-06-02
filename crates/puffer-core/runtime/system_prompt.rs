@@ -112,6 +112,10 @@ pub(super) fn render_runtime_system_prompt(
         prompt.push_str("\n\n");
         prompt.push_str(&soul);
     }
+    if let Some(user) = load_user_prompt(&state.cwd) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&user);
+    }
     if let Some(memory) = load_memory_prompt(&state.cwd, provider_id) {
         prompt.push_str("\n\n");
         prompt.push_str(&memory);
@@ -122,6 +126,8 @@ pub(super) fn render_runtime_system_prompt(
 const MEMORY_INSTRUCTION_PROMPT: &str = "Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
 
 const SOUL_INSTRUCTION_PROMPT: &str = "The following describes your identity: who you are, your values, your voice, and your boundaries. Embody it consistently across the session. A direct user instruction takes precedence - this is context, not a hard rule.";
+
+const USER_INSTRUCTION_PROMPT: &str = "The following are durable facts and preferences about the user you are helping (their environment, tools, and personal preferences). Use them to tailor your work. They are user-provided context, not a hard rule.";
 
 enum MemorySource {
     Project,
@@ -445,6 +451,23 @@ fn load_soul_prompt(cwd: &Path) -> Option<String> {
     }
 }
 
+/// Loads the agent-writable user-facts file (`user.md`) from the project +
+/// user-global dirs. The same file the `Remember` tool and the daemon's
+/// `user_memory_*` RPC write to (see `crate::user_memory`). Universal across
+/// providers.
+fn load_user_prompt(cwd: &Path) -> Option<String> {
+    let blocks = load_context_blocks(cwd, "user.md");
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{}\n\n{}",
+            USER_INSTRUCTION_PROMPT,
+            blocks.join("\n\n")
+        ))
+    }
+}
+
 fn is_git_repository(cwd: &Path) -> bool {
     Command::new("git")
         .arg("-C")
@@ -492,7 +515,9 @@ fn os_version() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_memory_prompt, load_soul_prompt, render_runtime_system_prompt};
+    use super::{
+        load_memory_prompt, load_soul_prompt, load_user_prompt, render_runtime_system_prompt,
+    };
     use crate::runtime::tests::state;
     use puffer_resources::{
         LoadedItem, LoadedResources, PromptTemplate, SkillSpec, SkillVerificationSpec, SourceInfo,
@@ -804,9 +829,21 @@ mod tests {
     }
 
     #[test]
-    fn render_runtime_system_prompt_injects_soul_before_memory() {
+    fn load_user_prompt_loads_user_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_user_prompt(tmp.path()).is_none());
+        std::fs::write(tmp.path().join("user.md"), "## home-address\n\n123 Main St").unwrap();
+        let user = load_user_prompt(tmp.path()).unwrap();
+        assert!(user.contains("facts and preferences about the user"));
+        assert!(user.contains("user.md"));
+        assert!(user.contains("123 Main St"));
+    }
+
+    #[test]
+    fn render_runtime_system_prompt_orders_soul_user_memory() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("soul.md"), "SOUL_IDENTITY_MARKER").unwrap();
+        std::fs::write(tmp.path().join("user.md"), "## x\n\nUSER_FACTS_MARKER").unwrap();
         std::fs::write(tmp.path().join("AGENTS.md"), "MEMORY_RULES_MARKER").unwrap();
         let mut state = state();
         state.cwd = tmp.path().to_path_buf();
@@ -814,11 +851,12 @@ mod tests {
         let resources = LoadedResources::default();
         let enabled_tools = BTreeSet::new();
 
-        // openai loads AGENTS.md as memory; soul.md loads regardless.
         let prompt =
             render_runtime_system_prompt(&state, &resources, "gpt-5", &enabled_tools).unwrap();
         let soul_at = prompt.find("SOUL_IDENTITY_MARKER").expect("soul not injected");
+        let user_at = prompt.find("USER_FACTS_MARKER").expect("user facts not injected");
         let mem_at = prompt.find("MEMORY_RULES_MARKER").expect("memory not injected");
-        assert!(soul_at < mem_at, "identity must precede project memory");
+        assert!(soul_at < user_at, "identity must precede user facts");
+        assert!(user_at < mem_at, "user facts must precede project memory");
     }
 }

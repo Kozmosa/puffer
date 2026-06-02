@@ -32,6 +32,7 @@ pub mod native_mcp_action;
 pub mod powershell;
 pub mod process_control;
 pub mod recall;
+pub mod remember;
 pub mod request_secret;
 pub mod request_user_browser_action;
 pub mod secret_value;

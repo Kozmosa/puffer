@@ -7,6 +7,7 @@ mod config_settings;
 mod hooks;
 mod memory;
 mod model_preferences;
+pub mod user_memory;
 mod network;
 mod permissions;
 mod plan_mode;

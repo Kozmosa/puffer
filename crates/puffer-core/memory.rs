@@ -483,7 +483,7 @@ fn unique_match(entries: &[String], old_text: &str) -> Result<usize> {
     }
 }
 
-fn validate_content(content: &str) -> Result<()> {
+pub(crate) fn validate_content(content: &str) -> Result<()> {
     let lowered = content.to_ascii_lowercase();
     for needle in [
         "ignore previous instructions",
@@ -513,12 +513,12 @@ fn validate_content(content: &str) -> Result<()> {
     Ok(())
 }
 
-struct FileLockGuard {
+pub(crate) struct FileLockGuard {
     path: PathBuf,
 }
 
 impl FileLockGuard {
-    fn acquire(target: &Path) -> Result<Self> {
+    pub(crate) fn acquire(target: &Path) -> Result<Self> {
         let path = target.with_extension("lock");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
