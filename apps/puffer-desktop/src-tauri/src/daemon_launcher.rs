@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -25,7 +25,7 @@ pub(crate) struct DaemonHandshake {
 }
 
 pub(crate) struct DaemonChild {
-    child: Child,
+    child: Option<Child>,
     handshake: DaemonHandshake,
 }
 
@@ -34,11 +34,34 @@ impl DaemonChild {
     pub(crate) fn handshake(&self) -> &DaemonHandshake {
         &self.handshake
     }
+
+    fn spawned(child: Child, handshake: DaemonHandshake) -> Self {
+        Self {
+            child: Some(child),
+            handshake,
+        }
+    }
+
+    fn attached(handshake: DaemonHandshake) -> Self {
+        Self {
+            child: None,
+            handshake,
+        }
+    }
+
+    fn is_alive(&self) -> bool {
+        match &self.child {
+            Some(child) => matches!(child.try_wait_unchecked(), Ok(None)),
+            None => daemon_handshake_reachable(&self.handshake),
+        }
+    }
 }
 
 impl Drop for DaemonChild {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+        }
     }
 }
 
@@ -88,11 +111,7 @@ impl DaemonLauncher {
     pub(crate) fn ensure_started(&self) -> Result<DaemonHandshake> {
         let mut guard = self.child.lock().unwrap();
         if let Some(existing) = guard.as_ref() {
-            let still_alive = match existing.child.try_wait_unchecked() {
-                Ok(None) => true,
-                _ => false,
-            };
-            if still_alive {
+            if existing.is_alive() {
                 return Ok(existing.handshake.clone());
             }
             *guard = None;
@@ -138,14 +157,14 @@ impl DaemonLauncher {
             spawn_remote_daemon(ssh_target, remote_binary, remote_workspace)?;
 
         // Parse the remote port from the daemon's announced URL.
-        let remote_port = parse_ws_port(&remote_handshake.url)
-            .context("parsing remote daemon WebSocket port")?;
+        let remote_port =
+            parse_ws_port(&remote_handshake.url).context("parsing remote daemon WebSocket port")?;
 
         // Pick a free local port. Small race window between drop + forward
         // bind — tolerable since we immediately try to forward.
         let local_port = {
-            let listener = TcpListener::bind("127.0.0.1:0")
-                .context("picking local forward port")?;
+            let listener =
+                TcpListener::bind("127.0.0.1:0").context("picking local forward port")?;
             listener.local_addr()?.port()
         };
 
@@ -249,7 +268,7 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
         .arg("--print-handshake")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     if std::env::var_os("PUFFER_CEF_REMOTE_DEBUGGING_PORT").is_none() {
         cmd.env("PUFFER_CEF_REMOTE_DEBUGGING_PORT", "9333");
     }
@@ -266,6 +285,7 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning `{}` daemon", binary.display()))?;
+    let stderr = child.stderr.take();
 
     // Read the first line of stdout — the handshake JSON.
     let stdout = child.stdout.take().context("daemon stdout missing")?;
@@ -276,13 +296,116 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
         .context("reading daemon handshake line")?;
     let line = line.trim();
     if line.is_empty() {
-        anyhow::bail!("daemon printed empty handshake line");
+        let mut stderr_text = String::new();
+        if let Some(mut pipe) = stderr {
+            let _ = pipe.read_to_string(&mut stderr_text);
+        }
+        let status = child.wait().ok();
+        let message = daemon_handshake_failure_message(status, &stderr_text);
+        if message.contains("another Puffer daemon is already running") {
+            if let Some(handshake) = existing_daemon_handshake(&workspace_cwd) {
+                return Ok(DaemonChild::attached(handshake));
+            }
+        }
+        anyhow::bail!("{message}");
     }
     let handshake: DaemonHandshake =
         serde_json::from_str(line).context("parsing daemon handshake JSON")?;
     // Drop the reader — further daemon stdout just goes to /dev/null.
     drop(reader);
-    Ok(DaemonChild { child, handshake })
+    drain_daemon_stderr(stderr);
+    Ok(DaemonChild::spawned(child, handshake))
+}
+
+fn existing_daemon_handshake(workspace_cwd: &Path) -> Option<DaemonHandshake> {
+    read_existing_daemon_handshake(&daemon_handshake_paths(workspace_cwd), workspace_cwd)
+        .ok()
+        .flatten()
+}
+
+fn read_existing_daemon_handshake(
+    paths: &[PathBuf],
+    workspace_cwd: &Path,
+) -> Result<Option<DaemonHandshake>> {
+    for path in paths {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading daemon handshake {}", path.display()));
+            }
+        };
+        let handshake: DaemonHandshake = serde_json::from_str(&text)
+            .with_context(|| format!("parsing daemon handshake {}", path.display()))?;
+        if !handshake_matches_workspace(&handshake, workspace_cwd) {
+            continue;
+        }
+        if daemon_handshake_reachable(&handshake) {
+            return Ok(Some(handshake));
+        }
+    }
+    Ok(None)
+}
+
+fn daemon_handshake_paths(workspace_cwd: &Path) -> Vec<PathBuf> {
+    let workspace = workspace_cwd.join(".puffer").join("daemon.handshake");
+    let user = user_config_dir().join("daemon.handshake");
+    if workspace == user {
+        vec![workspace]
+    } else {
+        vec![workspace, user]
+    }
+}
+
+fn user_config_dir() -> PathBuf {
+    std::env::var_os("PUFFER_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs_home)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".puffer")
+}
+
+fn handshake_matches_workspace(handshake: &DaemonHandshake, workspace_cwd: &Path) -> bool {
+    canonical_workspace_root(Path::new(&handshake.workspace_root))
+        == canonical_workspace_root(workspace_cwd)
+}
+
+fn canonical_workspace_root(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn daemon_handshake_reachable(handshake: &DaemonHandshake) -> bool {
+    let Some(port) = parse_ws_port(&handshake.url) else {
+        return false;
+    };
+    let Ok(addr) = format!("127.0.0.1:{port}").parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+}
+
+fn daemon_handshake_failure_message(
+    status: Option<std::process::ExitStatus>,
+    stderr_text: &str,
+) -> String {
+    let status = status
+        .map(|status| format!(" with status {status}"))
+        .unwrap_or_default();
+    let stderr_text = stderr_text.trim();
+    if stderr_text.is_empty() {
+        return format!("daemon exited before printing handshake{status}");
+    }
+    format!("daemon exited before printing handshake{status}: {stderr_text}")
+}
+
+fn drain_daemon_stderr(stderr: Option<std::process::ChildStderr>) {
+    let Some(mut stderr) = stderr else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+    });
 }
 
 /// The default workspace cwd — `$HOME` unless the caller overrides it via
@@ -341,7 +464,10 @@ fn spawn_remote_daemon(
             binary
         )
     } else {
-        format!("cd ~ && {} daemon --bind 127.0.0.1:0 --print-handshake", binary)
+        format!(
+            "cd ~ && {} daemon --bind 127.0.0.1:0 --print-handshake",
+            binary
+        )
     };
 
     let mut cmd = Command::new("ssh");
@@ -355,9 +481,9 @@ fn spawn_remote_daemon(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().with_context(|| {
-        format!("spawning ssh {ssh_target} `{remote_cmd}`")
-    })?;
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning ssh {ssh_target} `{remote_cmd}`"))?;
 
     let stdout = child
         .stdout
@@ -402,18 +528,14 @@ fn spawn_remote_daemon(
             "tried `{binary}` on {ssh_target}; pass `remoteBinary` if puffer is installed elsewhere"
         );
         if ssh_stderr.is_empty() {
-            anyhow::bail!(
-                "remote daemon printed empty handshake — no ssh stderr captured. {hint}"
-            );
+            anyhow::bail!("remote daemon printed empty handshake — no ssh stderr captured. {hint}");
         } else {
-            anyhow::bail!(
-                "remote daemon handshake failed: {ssh_stderr}\n({hint})"
-            );
+            anyhow::bail!("remote daemon handshake failed: {ssh_stderr}\n({hint})");
         }
     }
 
-    let handshake: DaemonHandshake = serde_json::from_str(trimmed)
-        .context("parsing remote daemon handshake JSON")?;
+    let handshake: DaemonHandshake =
+        serde_json::from_str(trimmed).context("parsing remote daemon handshake JSON")?;
     drop(reader);
     Ok((child, handshake))
 }
@@ -428,7 +550,10 @@ struct StderrTail {
 
 impl StderrTail {
     fn new(cap: usize) -> Self {
-        Self { cap, buf: Vec::with_capacity(cap) }
+        Self {
+            cap,
+            buf: Vec::with_capacity(cap),
+        }
     }
     fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
@@ -444,7 +569,9 @@ impl StderrTail {
 
 fn parse_ws_port(url: &str) -> Option<u16> {
     // ws://host:port/path
-    let rest = url.strip_prefix("ws://").or_else(|| url.strip_prefix("wss://"))?;
+    let rest = url
+        .strip_prefix("ws://")
+        .or_else(|| url.strip_prefix("wss://"))?;
     let host_port = rest.split('/').next()?;
     let port_str = host_port.rsplit(':').next()?;
     port_str.parse::<u16>().ok()
@@ -469,7 +596,11 @@ fn shell_quote(s: &str) -> String {
 /// target directory); in release builds we fall back to the first `puffer`
 /// on `PATH`.
 fn resolve_puffer_binary() -> Result<PathBuf> {
-    let bin_name = if cfg!(windows) { "puffer.exe" } else { "puffer" };
+    let bin_name = if cfg!(windows) {
+        "puffer.exe"
+    } else {
+        "puffer"
+    };
     if let Ok(explicit) = std::env::var("PUFFER_BINARY") {
         let path = PathBuf::from(explicit);
         if path.exists() {
@@ -528,4 +659,96 @@ pub(crate) fn resolve_builtin_resources_dir(binary: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local_handshake(workspace_root: &Path, port: u16) -> DaemonHandshake {
+        DaemonHandshake {
+            url: format!("ws://127.0.0.1:{port}/ws"),
+            token: "test-token".to_string(),
+            protocol_version: "1".to_string(),
+            workspace_root: workspace_root.display().to_string(),
+        }
+    }
+
+    fn write_handshake(path: &Path, handshake: &DaemonHandshake) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let text = serde_json::to_string(handshake).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn daemon_handshake_failure_includes_stderr() {
+        let message = daemon_handshake_failure_message(
+            None,
+            "Error: another Puffer daemon is already running on this host\n",
+        );
+
+        assert!(message.contains("daemon exited before printing handshake"));
+        assert!(message.contains("another Puffer daemon is already running"));
+    }
+
+    #[test]
+    fn daemon_handshake_failure_handles_missing_stderr() {
+        let message = daemon_handshake_failure_message(None, "");
+
+        assert_eq!(message, "daemon exited before printing handshake");
+    }
+
+    #[test]
+    fn existing_daemon_handshake_reuses_reachable_matching_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let path = temp.path().join("daemon.handshake");
+        let handshake = local_handshake(&workspace, port);
+        write_handshake(&path, &handshake);
+
+        let found = read_existing_daemon_handshake(&[path], &workspace)
+            .unwrap()
+            .expect("existing daemon handshake");
+
+        assert_eq!(found.url, handshake.url);
+        assert_eq!(found.workspace_root, handshake.workspace_root);
+    }
+
+    #[test]
+    fn existing_daemon_handshake_ignores_mismatched_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let other_workspace = temp.path().join("other");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&other_workspace).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let path = temp.path().join("daemon.handshake");
+        write_handshake(&path, &local_handshake(&other_workspace, port));
+
+        let found = read_existing_daemon_handshake(&[path], &workspace).unwrap();
+
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn existing_daemon_handshake_ignores_stale_port() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let path = temp.path().join("daemon.handshake");
+        write_handshake(&path, &local_handshake(&workspace, port));
+
+        let found = read_existing_daemon_handshake(&[path], &workspace).unwrap();
+
+        assert!(found.is_none());
+    }
 }

@@ -250,6 +250,7 @@ pub(crate) struct SecretsSettingsDto {
 pub(crate) struct SecretSummaryDto {
     pub id: String,
     pub label: String,
+    pub description: Option<String>,
     pub username: Option<String>,
     pub origin: Option<String>,
     pub source: String,

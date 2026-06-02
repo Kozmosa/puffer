@@ -12,6 +12,7 @@
   let props: Props = $props();
   let form = $state({
     label: "",
+    description: "",
     value: "",
     username: "",
     origin: ""
@@ -28,6 +29,7 @@
   function sourceLabel(source: string): string {
     if (source === "chrome") return "Chrome";
     if (source === "manual") return "Manual";
+    if (source === "agent") return "Agent";
     return source;
   }
 
@@ -46,10 +48,11 @@
       await saveSecret({
         label,
         value: form.value,
+        description: form.description.trim() || null,
         username: form.username.trim() || null,
         origin: form.origin.trim() || null
       });
-      form = { label: "", value: "", username: "", origin: "" };
+      form = { label: "", description: "", value: "", username: "", origin: "" };
       saved = `Saved ${label}`;
       props.onRefresh();
     } catch (e) {
@@ -83,7 +86,7 @@
     try {
       const result = await importChromeSecrets();
       const { imported, skipped, errors } = result.report;
-      saved = `Imported ${imported} Chrome credential${imported === 1 ? "" : "s"}${
+      saved = `Synced ${imported} Chrome credential${imported === 1 ? "" : "s"}${
         skipped ? `, skipped ${skipped}` : ""
       }.`;
       if (errors.length > 0) {
@@ -130,13 +133,23 @@
   <div class="pf-mcp-form">
     <div class="pf-mcp-form-grid">
       <label>
-        Label
+        Name
         <input
           class="sc-input"
           placeholder="GitHub token"
           value={form.label}
           disabled={disabled}
           oninput={(e) => (form.label = (e.currentTarget as HTMLInputElement).value)}
+        />
+      </label>
+      <label>
+        Description
+        <input
+          class="sc-input"
+          placeholder="What this secret is for"
+          value={form.description}
+          disabled={disabled}
+          oninput={(e) => (form.description = (e.currentTarget as HTMLInputElement).value)}
         />
       </label>
       <label>
@@ -180,7 +193,7 @@
         disabled={disabled || !props.snapshot?.secrets?.chromeImportSupported}
         onclick={importFromChrome}
       >
-        <Icon name="key" size={12} />{importing ? "Importing..." : "Import from Chrome"}
+        <Icon name="key" size={12} />{importing ? "Syncing..." : "Sync from Chrome"}
       </button>
       <button
         type="button"
@@ -205,7 +218,7 @@
         <div class="desc">
           {sourceLabel(secret.source)}
           {#if secret.username} · {secret.username}{/if}
-          {#if secret.origin} · {secret.origin}{/if}
+          {#if secret.description} · {secret.description}{:else if secret.origin} · {secret.origin}{/if}
           {#if updatedLabel(secret)} · updated {updatedLabel(secret)}{/if}
         </div>
       </div>

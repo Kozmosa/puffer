@@ -376,6 +376,7 @@ export type SaveProxySettingsInput = {
 export type SecretSummary = {
   id: string;
   label: string;
+  description: string | null;
   username: string | null;
   origin: string | null;
   source: string;
@@ -394,6 +395,7 @@ export type SaveSecretInput = {
   id?: string | null;
   label: string;
   value: string;
+  description?: string | null;
   username?: string | null;
   origin?: string | null;
 };

@@ -5,8 +5,8 @@
 //! `Page.screencastFrame` images onto the daemon event bus, and forwards the
 //! small navigation/input surface the Svelte Browser pane needs for v1.
 
-use anyhow::{Context, Result, anyhow, bail};
-use serde_json::{Value, json};
+use anyhow::{anyhow, bail, Context, Result};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
+use tungstenite::{connect, Message, WebSocket};
 
 use crate::events::EventEmitter;
 
@@ -32,8 +32,8 @@ mod selection;
 mod tabs;
 mod types;
 
-use agent::BrowserElementRef;
 pub(crate) use agent::handle_browser_agent;
+use agent::BrowserElementRef;
 use cdp::{apply_viewport, set_read_timeout, start_screencast};
 pub(super) use cdp::{frame_session_id_string, normalize_url, send_cdp};
 use chrome::{
@@ -43,12 +43,12 @@ use chrome::{
 use cursor::{cursor_eval_expression, parse_cursor_response};
 use devtools::emit_devtools_event;
 use input::send_input;
-use network_idle::{NetworkIdleTracker, NetworkIdleWaiter, drain_network_idle_waiters};
+use network_idle::{drain_network_idle_waiters, NetworkIdleTracker, NetworkIdleWaiter};
 use recording::BrowserRecordingRegistry;
 use selection::{parse_copy_selection_response, selection_eval_expression};
 use tabs::{
-    BrowserTabInfo, BrowserTabRegistry, BrowserTabsState, backend_session_id,
-    parse_backend_session_id,
+    backend_session_id, parse_backend_session_id, BrowserTabInfo, BrowserTabRegistry,
+    BrowserTabsState,
 };
 pub(crate) use types::{
     BrowserCopySelection, BrowserCursor, BrowserEvaluation, BrowserHistoryDirection,
@@ -324,25 +324,23 @@ fn active_or_first_tab(tabs: &BrowserTabsState) -> Option<BrowserTabInfo> {
 }
 
 fn spawn_idle_pruner(sessions: Arc<Mutex<HashMap<String, BrowserSession>>>) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(60));
-            let stale = {
-                let mut sessions = sessions.lock().unwrap();
-                let stale = sessions
-                    .iter()
-                    .filter_map(|(id, session)| {
-                        (session.idle_for() >= SESSION_IDLE_TIMEOUT).then(|| id.clone())
-                    })
-                    .collect::<Vec<_>>();
-                stale
-                    .iter()
-                    .filter_map(|id| sessions.remove(id))
-                    .collect::<Vec<_>>()
-            };
-            for session in stale {
-                let _ = session.close();
-            }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60));
+        let stale = {
+            let mut sessions = sessions.lock().unwrap();
+            let stale = sessions
+                .iter()
+                .filter_map(|(id, session)| {
+                    (session.idle_for() >= SESSION_IDLE_TIMEOUT).then(|| id.clone())
+                })
+                .collect::<Vec<_>>();
+            stale
+                .iter()
+                .filter_map(|id| sessions.remove(id))
+                .collect::<Vec<_>>()
+        };
+        for session in stale {
+            let _ = session.close();
         }
     });
 }
@@ -699,16 +697,22 @@ fn handle_command(
             );
         }
         BrowserCommand::History(direction) => {
-            let expression = match direction {
-                BrowserHistoryDirection::Back => "history.back()",
-                BrowserHistoryDirection::Forward => "history.forward()",
-            };
-            let _ = send_cdp(
+            {
+                let mut state = state.lock().unwrap();
+                state.loading = true;
+                emit_state(events, channel_state, &state);
+            }
+            let id = send_cdp(
                 socket,
                 next_id,
                 "Runtime.evaluate",
-                json!({ "expression": expression }),
+                json!({
+                    "expression": history_state_expression(direction),
+                    "returnByValue": true,
+                    "awaitPromise": true
+                }),
             );
+            pending.insert(id, PendingKind::StateEval);
         }
         BrowserCommand::Resize { width, height } => {
             {
@@ -946,6 +950,39 @@ fn send_state_eval(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, next_id: &
             "returnByValue": true
         }),
     )
+}
+
+fn history_state_expression(direction: BrowserHistoryDirection) -> &'static str {
+    match direction {
+        BrowserHistoryDirection::Back => {
+            r#"(() => new Promise((resolve) => {
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    window.removeEventListener("popstate", finish);
+    setTimeout(() => resolve({ url: location.href, title: document.title }), 0);
+  };
+  window.addEventListener("popstate", finish, { once: true });
+  history.back();
+  setTimeout(finish, 250);
+}))()"#
+        }
+        BrowserHistoryDirection::Forward => {
+            r#"(() => new Promise((resolve) => {
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    window.removeEventListener("popstate", finish);
+    setTimeout(() => resolve({ url: location.href, title: document.title }), 0);
+  };
+  window.addEventListener("popstate", finish, { once: true });
+  history.forward();
+  setTimeout(finish, 250);
+}))()"#
+        }
+    }
 }
 
 fn parse_evaluation_response(value: &Value) -> Result<BrowserEvaluation> {

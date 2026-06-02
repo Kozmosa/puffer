@@ -1,7 +1,7 @@
 //! Shared Chrome DevTools Protocol helpers for browser sessions.
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::net::TcpStream;
 use std::time::Duration;
 use tungstenite::stream::MaybeTlsStream;

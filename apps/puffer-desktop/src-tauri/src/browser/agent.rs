@@ -1,15 +1,15 @@
 //! Agent-facing browser actions layered over the managed Chrome sessions.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::thread;
 use std::time::Duration;
 
 use crate::events::EventEmitter;
 
 use super::params::{optional_u32, required_string};
-use super::tabs::{BrowserTabInfo, BrowserTabsState, backend_session_id};
+use super::tabs::{backend_session_id, BrowserTabInfo, BrowserTabsState};
 use super::{
     BrowserHistoryDirection, BrowserInputEvent, BrowserRegistry, DEFAULT_URL, INITIAL_HEIGHT,
     INITIAL_WIDTH,

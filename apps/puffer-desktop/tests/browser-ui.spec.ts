@@ -144,6 +144,54 @@ test("Status bar shows loading state on back/forward navigation", async ({ page 
   await expect(statusBar).toContainText("Loading");
 });
 
+test("History navigation keeps active URL while stale tab metadata arrives", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openBrowserAgent(page);
+  await openBrowserPane(page, daemon);
+
+  const addressBar = page.locator(".pf-browser-address");
+  await addressBar.fill("https://current.example.test");
+  await addressBar.press("Enter");
+  await daemon.waitForRequest("browser_navigate", (request) =>
+    request.params.url === "https://current.example.test"
+  );
+  await expect(addressBar).toHaveValue("https://current.example.test");
+
+  await page.locator("button[title='Back']").click();
+  await daemon.waitForRequest("browser_history", (request) =>
+    request.params.direction === "back"
+  );
+  daemon.emit("browser:session-browser:tabs", {
+    activeTabId: "tab-1",
+    tabs: [
+      {
+        tabId: "tab-1",
+        label: "Stale tab",
+        url: "https://stale.example.test",
+        title: "Stale tab",
+        loading: false,
+        connected: true,
+        active: true,
+        backendSessionId: "session-browser:browser:tab-1"
+      }
+    ]
+  });
+
+  await page.waitForTimeout(50);
+  await expect(addressBar).toHaveValue("https://current.example.test");
+
+  daemon.emit("browser:session-browser:browser:tab-1:state", {
+    url: "https://back.example.test",
+    title: "Back page",
+    loading: false,
+    updatedAtMs: Date.now()
+  });
+  await expect(addressBar).toHaveValue("https://back.example.test");
+});
+
 test("Stale Browser tab list does not clear reload loading feedback", async ({ page }) => {
   const daemon = new FakeDaemon();
   await daemon.install(page);

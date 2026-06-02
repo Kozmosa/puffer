@@ -278,6 +278,7 @@ export class FakeDaemon {
   private groupedSessionFilter: ((metadata: JsonRecord) => boolean) | null = null;
   private readonly files = new Map<string, FakeFileValue>();
   private readonly canonicalFilePaths = new Map<string, string>();
+  private readonly dirResponses = new Map<string, unknown>();
   private fileTabsState: JsonRecord | null = null;
   private readonly lspLocations = new Map<string, string>();
   private readonly providerModels: Record<string, JsonRecord[]>;
@@ -779,6 +780,14 @@ export class FakeDaemon {
       tabs: tabs.map((tab) => ({ ...tab })),
       activePath
     };
+  }
+
+  setRawFileTabsState(state: JsonRecord): void {
+    this.fileTabsState = state;
+  }
+
+  setDirResponse(path: string, response: unknown): void {
+    this.dirResponses.set(path, response);
   }
 
   seedBinaryFile(
@@ -1719,6 +1728,7 @@ export class FakeDaemon {
     const summary = {
       id,
       label: String(params.label ?? "Secret"),
+      description: typeof params.description === "string" ? params.description : null,
       username: typeof params.username === "string" ? params.username : null,
       origin: typeof params.origin === "string" ? params.origin : null,
       source: "manual",
@@ -1746,6 +1756,7 @@ export class FakeDaemon {
       {
         id: `sec_chrome_${now}`,
         label: "Chrome developer@example.com @ example.test",
+        description: "example.test",
         username: "developer@example.com",
         origin: "https://example.test",
         source: "chrome",
@@ -2207,8 +2218,11 @@ export class FakeDaemon {
     return {};
   }
 
-  private listDir(params: JsonRecord): JsonRecord {
+  private listDir(params: JsonRecord): unknown {
     const path = String(params.path ?? "");
+    if (this.dirResponses.has(path)) {
+      return this.dirResponses.get(path);
+    }
     const entries = new Map<string, JsonRecord>();
     if (path === "/tmp/puffer") {
       entries.set("src", { name: "src", kind: "directory", size: 0, modifiedMs: now });

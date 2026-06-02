@@ -12,9 +12,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 const MINI_LABEL: &str = "mini";
 
@@ -85,8 +83,16 @@ fn coldest_placement(img: &image::RgbaImage) -> Placement {
     for y in 0..gh {
         for x in 0..gw {
             let l = lum(x, y);
-            let dx = if x > 0 { (l - lum(x - 1, y)).abs() } else { 0.0 };
-            let dy = if y > 0 { (l - lum(x, y - 1)).abs() } else { 0.0 };
+            let dx = if x > 0 {
+                (l - lum(x - 1, y)).abs()
+            } else {
+                0.0
+            };
+            let dy = if y > 0 {
+                (l - lum(x, y - 1)).abs()
+            } else {
+                0.0
+            };
             act[(y * gw + x) as usize] = dx + dy;
         }
     }

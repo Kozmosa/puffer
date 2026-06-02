@@ -294,6 +294,9 @@ mod tests {
         assert!(missing.is_none());
         let state = registry.list("session");
         assert_eq!(state.active_tab_id.as_deref(), Some("tab-1"));
-        assert!(state.tabs.iter().any(|tab| tab.tab_id == "tab-1" && tab.active));
+        assert!(state
+            .tabs
+            .iter()
+            .any(|tab| tab.tab_id == "tab-1" && tab.active));
     }
 }

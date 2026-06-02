@@ -44,6 +44,7 @@ struct SaveSecretParams {
     id: Option<String>,
     label: String,
     value: String,
+    description: Option<String>,
     username: Option<String>,
     origin: Option<String>,
 }
@@ -571,6 +572,7 @@ impl BackendState {
         self.secret_vault()?.put(SecretUpsert {
             id: input.id,
             label: input.label,
+            description: input.description,
             value: input.value,
             username: input.username,
             origin: input.origin,
@@ -2347,6 +2349,7 @@ fn secret_summary(summary: SecretSummary) -> SecretSummaryDto {
     SecretSummaryDto {
         id: summary.id,
         label: summary.label,
+        description: summary.description,
         username: summary.username,
         origin: summary.origin,
         source: summary.source,

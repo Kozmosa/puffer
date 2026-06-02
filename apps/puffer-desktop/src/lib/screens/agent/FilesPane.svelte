@@ -89,6 +89,7 @@
   let lspResult = $state<LspInspectResult | null>(null);
   let lspAnchor = $state<{ line: number; character: number } | null>(null);
   let fileReadGeneration = 0;
+  let fileReadRequestId = 0;
   let filePreviewGeneration = 0;
   let lspInspectGeneration = 0;
   let editorEl = $state<HTMLTextAreaElement | null>(null);
@@ -359,11 +360,12 @@
     try {
       const state = await loadFileTabs(expectedSessionId);
       if (destroyed || root !== expectedRoot || sessionId !== expectedSessionId) return;
-      const restoredTabs = state.tabs.map((tab) => tabFor(tab.path, 0, tab.pinned));
+      const stateObject = state && typeof state === "object" ? state as FileTabsState : null;
+      const restoredTabs = restoredFileTabs(stateObject?.tabs, expectedRoot);
       openTabs = restoredTabs;
       const restoredActive =
-        state.activePath && restoredTabs.some((tab) => tab.path === state.activePath)
-          ? state.activePath
+        stateObject?.activePath && restoredTabs.some((tab) => tab.path === stateObject.activePath)
+          ? stateObject.activePath
           : restoredTabs[0]?.path;
       if (restoredActive) {
         await activateFile(restoredActive, restoredTabs.find((tab) => tab.path === restoredActive)?.size);
@@ -375,6 +377,29 @@
         fileTabsReady = true;
       }
     }
+  }
+
+  function restoredFileTabs(tabs: unknown, expectedRoot: string): OpenFileTab[] {
+    if (!Array.isArray(tabs)) return [];
+    const seen = new Set<string>();
+    const restored: OpenFileTab[] = [];
+    for (const tab of tabs) {
+      if (!isRestorableFileTab(tab) || !isPathInsideRoot(tab.path, expectedRoot)) continue;
+      if (seen.has(tab.path)) continue;
+      seen.add(tab.path);
+      restored.push(tabFor(tab.path, 0, Boolean(tab.pinned)));
+    }
+    return restored;
+  }
+
+  function isRestorableFileTab(tab: unknown): tab is { path: string; pinned?: boolean } {
+    if (!tab || typeof tab !== "object") return false;
+    const path = (tab as { path?: unknown }).path;
+    return typeof path === "string" && path.length > 0;
+  }
+
+  function isPathInsideRoot(path: string, expectedRoot: string): boolean {
+    return path === expectedRoot || path.startsWith(`${expectedRoot}/`);
   }
 
   function fileTabsState(): FileTabsState {
@@ -427,7 +452,34 @@
   }
 
   function readPreviewFile(path: string): Promise<ReadFileResult> {
-    return readFile(path, hasRichFilePreviewPath(path) ? RICH_PREVIEW_MAX_BYTES : undefined);
+    return readFile(path, hasRichFilePreviewPath(path) ? RICH_PREVIEW_MAX_BYTES : undefined)
+      .then((result) => normalizeReadFileResult(result, path));
+  }
+
+  function normalizeReadFileResult(result: unknown, fallbackPath: string): ReadFileResult {
+    const raw = result && typeof result === "object"
+      ? result as Partial<ReadFileResult>
+      : {};
+    const path = typeof raw.path === "string" && raw.path.length > 0
+      ? raw.path
+      : fallbackPath;
+    const encoding = raw.encoding === "base64" ? "base64" : "utf8";
+    const content = typeof raw.content === "string" ? raw.content : "";
+    const size = Number.isFinite(raw.size) && Number(raw.size) >= 0
+      ? Number(raw.size)
+      : content.length;
+    return {
+      ...raw,
+      path,
+      encoding,
+      content,
+      size,
+      truncated: Boolean(raw.truncated),
+      textPreview: Array.isArray(raw.textPreview)
+        ? raw.textPreview.filter((line): line is string => typeof line === "string")
+        : undefined,
+      htmlPreview: typeof raw.htmlPreview === "string" ? raw.htmlPreview : undefined
+    };
   }
 
   function tabFor(path: string, size: number, pinned: boolean): OpenFileTab {
@@ -547,7 +599,7 @@
     nextLoading.add(path);
     loading = nextLoading;
     try {
-      const entries = await listDir(path);
+      const entries = normalizeDirEntries(await listDir(path));
       const nextCache = new Map(cache);
       nextCache.set(path, entries);
       cache = nextCache;
@@ -563,6 +615,28 @@
       next.delete(path);
       loading = next;
     }
+  }
+
+  function normalizeDirEntries(entries: unknown): DirEntry[] {
+    if (!Array.isArray(entries)) return [];
+    const seen = new Set<string>();
+    const normalized: DirEntry[] = [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const raw = entry as Partial<DirEntry>;
+      if (typeof raw.name !== "string" || raw.name.length === 0) continue;
+      if (raw.name === "." || raw.name === ".." || raw.name.includes("/")) continue;
+      if (seen.has(raw.name)) continue;
+      if (raw.kind !== "file" && raw.kind !== "directory" && raw.kind !== "symlink") continue;
+      seen.add(raw.name);
+      normalized.push({
+        name: raw.name,
+        kind: raw.kind,
+        size: Number.isFinite(raw.size) && Number(raw.size) >= 0 ? Number(raw.size) : 0,
+        modifiedMs: Number.isFinite(raw.modifiedMs) ? Number(raw.modifiedMs) : 0
+      });
+    }
+    return normalized;
   }
 
   function joinPath(parent: string, name: string): string {
@@ -626,6 +700,36 @@
     await activateFile(path, size, options.line, options.character);
   }
 
+  function openFileSafely(path: string, size: number, options: OpenFileOptions = {}) {
+    void openFile(path, size, options).catch((err) => {
+      showOpenFileError(path, size, err);
+    });
+  }
+
+  function showOpenFileError(path: string, size: number, err: unknown) {
+    activePath = path;
+    activeSize = size;
+    activeFile = null;
+    activeLoading = false;
+    activeError = err instanceof Error ? err.message : String(err);
+    draftContent = "";
+    saveError = null;
+    viewerMode = "preview";
+    clearActivePreview();
+    clearLspState();
+    if (!openTabs.some((tab) => tab.path === path)) {
+      openTabs = [...openTabs, tabFor(path, size, true)];
+    }
+  }
+
+  function handleTreeRowClick(row: TreeRow) {
+    if (row.kind === "directory" || (row.kind === "symlink" && !errors.has(row.path))) {
+      toggleDir(row.path);
+      return;
+    }
+    openFileSafely(row.path, row.size);
+  }
+
   async function activateFile(
     path: string,
     size?: number,
@@ -635,6 +739,13 @@
     const expectedRoot = root;
     const expectedSessionId = sessionId;
     const generation = fileReadGeneration;
+    const requestId = ++fileReadRequestId;
+    const isCurrentRead = () =>
+      requestId === fileReadRequestId &&
+      generation === fileReadGeneration &&
+      activePath === path &&
+      root === expectedRoot &&
+      sessionId === expectedSessionId;
     activePath = path;
     activeSize = size ?? openTabs.find((tab) => tab.path === path)?.size ?? 0;
     activeError = null;
@@ -660,31 +771,16 @@
     let loaded = false;
     try {
       const result = await readPreviewFile(path);
-      if (
-        generation === fileReadGeneration &&
-        activePath === path &&
-        root === expectedRoot &&
-        sessionId === expectedSessionId
-      ) {
+      if (isCurrentRead()) {
         cacheFileResult(result, false, path);
         loaded = true;
       }
     } catch (err) {
-      if (
-        generation === fileReadGeneration &&
-        activePath === path &&
-        root === expectedRoot &&
-        sessionId === expectedSessionId
-      ) {
+      if (isCurrentRead()) {
         activeError = err instanceof Error ? err.message : String(err);
       }
     } finally {
-      if (
-        generation === fileReadGeneration &&
-        activePath === path &&
-        root === expectedRoot &&
-        sessionId === expectedSessionId
-      ) activeLoading = false;
+      if (isCurrentRead()) activeLoading = false;
     }
     if (loaded) await focusEditorLine(path, line, character);
   }
@@ -1124,7 +1220,9 @@
 
   async function openLocation(location: LspLocation) {
     const path = resolvedLocationPath(location.file);
-    await openFile(path, 0, { line: location.line, character: location.character });
+    await openFile(path, 0, { line: location.line, character: location.character }).catch((err) => {
+      showOpenFileError(path, 0, err);
+    });
   }
 
   type TreeRow = {
@@ -1201,14 +1299,11 @@
             class="row"
             class:active={activePath === row.path}
             style="padding-left: {8 + row.depth * 14}px"
-            onclick={() =>
-              row.kind === "directory" || (row.kind === "symlink" && !errors.has(row.path))
-                ? toggleDir(row.path)
-                : openFile(row.path, row.size)}
+            onclick={() => handleTreeRowClick(row)}
             ondblclick={(event) => {
               if (row.kind !== "file") return;
               event.preventDefault();
-              void openFile(row.path, row.size, { pinned: true });
+              openFileSafely(row.path, row.size, { pinned: true });
             }}
             aria-expanded={row.kind === "directory" || row.kind === "symlink" ? expanded.has(row.path) : undefined}
             title={row.path}
@@ -1277,7 +1372,7 @@
             class:preview={!tab.pinned}
             class:dirty={isTabDirty(tab.path)}
             title={tab.path}
-            onclick={() => void activateFile(tab.path, tab.size)}
+            onclick={() => void activateFile(tab.path, tab.size).catch((err) => showOpenFileError(tab.path, tab.size, err))}
             ondblclick={() => pinTab(tab.path)}
             onkeydown={(event) => handleFileTabKeydown(event, tab.path, tab.size)}
           >

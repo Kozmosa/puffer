@@ -134,10 +134,14 @@ fn virtual_key_code(key: &str, code: &str) -> Option<u32> {
 
 fn virtual_key_code_from_code(code: &str) -> Option<u32> {
     if let Some(letter) = code.strip_prefix("Key") {
-        return single_ascii(letter).filter(u8::is_ascii_uppercase).map(u32::from);
+        return single_ascii(letter)
+            .filter(u8::is_ascii_uppercase)
+            .map(u32::from);
     }
     if let Some(digit) = code.strip_prefix("Digit") {
-        return single_ascii(digit).filter(u8::is_ascii_digit).map(u32::from);
+        return single_ascii(digit)
+            .filter(u8::is_ascii_digit)
+            .map(u32::from);
     }
     None
 }

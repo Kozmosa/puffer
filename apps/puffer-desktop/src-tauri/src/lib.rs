@@ -59,6 +59,7 @@ const REGISTERED_TAURI_COMMANDS: &[&str] = &[
     "browser_cef_native_open",
     "browser_cef_native_resize",
     "browser_cef_native_navigate",
+    "browser_cef_native_state",
     "browser_cef_native_reload",
     "browser_cef_native_history",
     "browser_cef_native_close",
@@ -303,9 +304,7 @@ fn write_remote_file(
 fn ensure_local_daemon(
     launcher: State<'_, SharedDaemonLauncher>,
 ) -> Result<daemon_launcher::DaemonHandshake, String> {
-    launcher
-        .ensure_started()
-        .map_err(|error| error.to_string())
+    launcher.ensure_started().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -425,14 +424,8 @@ pub fn run() {
         )
         .setup(move |app| {
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
-            #[cfg(target_os = "macos")]
-            if let Err(err) = cef_host::warm_up_native() {
-                eprintln!("native CEF unavailable; using screencast fallback: {err}");
-            }
             if let Err(err) = app.global_shortcut().register(mini_shortcut) {
-                eprintln!(
-                    "mini-window shortcut unavailable (continuing without it): {err}"
-                );
+                eprintln!("mini-window shortcut unavailable (continuing without it): {err}");
             }
             Ok(())
         })
@@ -468,6 +461,7 @@ pub fn run() {
             cef_host::browser_cef_native_open,
             cef_host::browser_cef_native_resize,
             cef_host::browser_cef_native_navigate,
+            cef_host::browser_cef_native_state,
             cef_host::browser_cef_native_reload,
             cef_host::browser_cef_native_history,
             cef_host::browser_cef_native_close,

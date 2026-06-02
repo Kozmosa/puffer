@@ -1555,7 +1555,8 @@ test("Secrets settings save and import without rendering raw secret values", asy
   const pane = page.locator(".pf-settings-pane");
   await expect(pane.locator(".label").filter({ hasText: "Secret store" })).toBeVisible();
 
-  await pane.getByLabel("Label").fill("Build token");
+  await pane.getByLabel("Name").fill("Build token");
+  await pane.getByLabel("Description").fill("CI deployment token");
   await pane.getByLabel("Username").fill("ci");
   await pane.getByLabel("Origin").fill("https://build.example");
   await pane.getByLabel("Value").fill("super-secret-token");
@@ -1564,6 +1565,7 @@ test("Secrets settings save and import without rendering raw secret values", asy
   const saveRequest = await daemon.waitForRequest("save_secret");
   expect(saveRequest.params).toMatchObject({
     label: "Build token",
+    description: "CI deployment token",
     username: "ci",
     origin: "https://build.example",
     value: "super-secret-token"
@@ -1571,7 +1573,7 @@ test("Secrets settings save and import without rendering raw secret values", asy
   await expect(page.getByText("super-secret-token")).toHaveCount(0);
   await expect(pane.locator(".pf-mcp-card").filter({ hasText: "Build token" })).toBeVisible();
 
-  await pane.getByRole("button", { name: "Import from Chrome" }).click();
+  await pane.getByRole("button", { name: "Sync from Chrome" }).click();
   await daemon.waitForRequest("import_chrome_secrets");
   await expect(
     pane.locator(".pf-mcp-card").filter({ hasText: "Chrome developer@example.com" })

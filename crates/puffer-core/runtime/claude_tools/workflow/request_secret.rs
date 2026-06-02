@@ -5,7 +5,7 @@ use crate::runtime::secrets::register_masked_secret;
 use crate::AppState;
 use anyhow::{bail, Context, Result};
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
-use puffer_secrets::SecretVault;
+use puffer_secrets::{SecretSummary, SecretUpsert, SecretVault};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -14,26 +14,60 @@ use std::path::Path;
 #[serde(rename_all = "camelCase")]
 struct RequestSecretInput {
     #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
     id: Option<String>,
     #[serde(default, alias = "name")]
     label: Option<String>,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
     reason: Option<String>,
 }
 
-/// Requests access to one encrypted user secret and returns a masked placeholder.
+/// Searches, creates, or requests one encrypted user secret.
 pub fn execute_request_secret(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
     let parsed: RequestSecretInput =
         serde_json::from_value(input).context("invalid RequestSecret input")?;
+    let action = parsed
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "request".to_string());
+    let paths = ConfigPaths::discover(cwd);
+    ensure_workspace_dirs(&paths)?;
+    let vault = SecretVault::open(SecretVault::default_path(&paths.user_config_dir))?;
+    match action.as_str() {
+        "request" | "get" | "reveal" => request_secret(state, vault, parsed),
+        "search" | "list" => search_secrets(vault, parsed),
+        "create" => create_secret(vault, parsed),
+        other => bail!("unsupported RequestSecret action `{other}`"),
+    }
+}
+
+fn request_secret(
+    state: &mut AppState,
+    vault: SecretVault,
+    parsed: RequestSecretInput,
+) -> Result<String> {
     let selector = parsed
         .id
         .or(parsed.label)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .context("RequestSecret requires `id` or `label`")?;
-    let paths = ConfigPaths::discover(cwd);
-    ensure_workspace_dirs(&paths)?;
-    let vault = SecretVault::open(SecretVault::default_path(&paths.user_config_dir))?;
     let secret = vault.reveal(&selector)?;
     if !state.secret_access_state.allows(&secret.id) {
         match prompt_for_secret(&secret.id, &secret.label, parsed.reason.as_deref()) {
@@ -51,7 +85,55 @@ pub fn execute_request_secret(state: &mut AppState, cwd: &Path, input: Value) ->
     Ok(serde_json::to_string_pretty(&json!({
         "secret": token,
         "id": secret.id,
+        "name": secret.label,
         "label": secret.label,
+        "description": secret.description,
+    }))?)
+}
+
+fn search_secrets(vault: SecretVault, parsed: RequestSecretInput) -> Result<String> {
+    let query = parsed.query.or(parsed.label).unwrap_or_default();
+    let limit = parsed.limit.unwrap_or(20).clamp(1, 100);
+    let secrets = vault
+        .search(&query, limit)?
+        .into_iter()
+        .map(secret_summary_json)
+        .collect::<Vec<_>>();
+    Ok(serde_json::to_string_pretty(&json!({
+        "secrets": secrets,
+        "count": secrets.len(),
+        "query": query,
+    }))?)
+}
+
+fn create_secret(vault: SecretVault, parsed: RequestSecretInput) -> Result<String> {
+    let label = parsed
+        .label
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .context("RequestSecret create requires `name` or `label`")?;
+    let value = parsed
+        .value
+        .filter(|value| !value.trim().is_empty())
+        .context("RequestSecret create requires non-empty `value`")?;
+    match prompt_for_secret_create(&label, parsed.reason.as_deref()) {
+        PermissionPromptAction::AllowOnce
+        | PermissionPromptAction::AllowSession
+        | PermissionPromptAction::AllowAllSession => {}
+        PermissionPromptAction::Deny => bail!("permission denied by user"),
+    }
+    let summary = vault.put(SecretUpsert {
+        id: parsed.id,
+        label,
+        description: parsed.description,
+        value,
+        username: parsed.username,
+        origin: parsed.origin,
+        source: "agent".to_string(),
+    })?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "secret": secret_summary_json(summary),
+        "created": true,
     }))?)
 }
 
@@ -71,6 +153,36 @@ fn prompt_for_secret(secret_id: &str, label: &str, reason: Option<&str>) -> Perm
     })
 }
 
+fn prompt_for_secret_create(label: &str, reason: Option<&str>) -> PermissionPromptAction {
+    let summary = format!("Agent wants to save encrypted secret `{label}`");
+    let reason = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{value} Approve saving this secret to the encrypted vault."))
+        .unwrap_or_else(|| "Approve saving this secret to the encrypted vault.".to_string());
+    prompt_for_permission(PermissionPromptRequest {
+        tool_id: "RequestSecret".to_string(),
+        summary,
+        reason: Some(reason),
+        browser: None,
+        review: None,
+    })
+}
+
+fn secret_summary_json(summary: SecretSummary) -> Value {
+    json!({
+        "id": summary.id,
+        "name": summary.label,
+        "label": summary.label,
+        "description": summary.description,
+        "username": summary.username,
+        "origin": summary.origin,
+        "source": summary.source,
+        "createdAtMs": summary.created_at_ms,
+        "updatedAtMs": summary.updated_at_ms,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,10 +190,11 @@ mod tests {
     use crate::AppState;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine;
-    use puffer_config::PufferConfig;
+    use puffer_config::{set_puffer_home_override, PufferConfig, PufferHomeOverride};
     use puffer_secrets::SecretUpsert;
     use puffer_session_store::SessionMetadata;
     use serde_json::json;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use uuid::Uuid;
 
     fn temp_state(cwd: &Path) -> AppState {
@@ -103,10 +216,36 @@ mod tests {
         )
     }
 
+    struct SecretTestEnv {
+        _lock: MutexGuard<'static, ()>,
+        _home: PufferHomeOverride,
+    }
+
+    impl Drop for SecretTestEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("PUFFER_SECRET_STORE_KEY");
+        }
+    }
+
+    fn secret_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn secret_test_env(home: &Path) -> SecretTestEnv {
+        let lock = secret_env_lock().lock().unwrap();
+        std::env::set_var("PUFFER_SECRET_STORE_KEY", BASE64.encode([9u8; 32]));
+        let home = set_puffer_home_override(home);
+        SecretTestEnv {
+            _lock: lock,
+            _home: home,
+        }
+    }
+
     #[test]
     fn request_secret_returns_masked_token_only() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("PUFFER_SECRET_STORE_KEY", BASE64.encode([9u8; 32]));
+        let _secret_env = secret_test_env(dir.path());
         let mut state = temp_state(dir.path());
         let paths = ConfigPaths::discover(dir.path());
         ensure_workspace_dirs(&paths).unwrap();
@@ -115,6 +254,7 @@ mod tests {
             .put(SecretUpsert {
                 id: None,
                 label: "Demo".to_string(),
+                description: None,
                 value: "raw-secret".to_string(),
                 username: None,
                 origin: None,
@@ -128,6 +268,71 @@ mod tests {
         .unwrap();
         assert!(output.contains("PUFFER_SECRET_"));
         assert!(!output.contains("raw-secret"));
-        std::env::remove_var("PUFFER_SECRET_STORE_KEY");
+    }
+
+    #[test]
+    fn request_secret_search_returns_metadata_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let _secret_env = secret_test_env(dir.path());
+        let mut state = temp_state(dir.path());
+        let paths = ConfigPaths::discover(dir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let vault = SecretVault::open(SecretVault::default_path(&paths.user_config_dir)).unwrap();
+        vault
+            .put(SecretUpsert {
+                id: None,
+                label: "Deploy token".to_string(),
+                description: Some("production deploy token".to_string()),
+                value: "raw-deploy-secret".to_string(),
+                username: None,
+                origin: Some("https://deploy.example".to_string()),
+                source: "manual".to_string(),
+            })
+            .unwrap();
+
+        let output = execute_request_secret(
+            &mut state,
+            dir.path(),
+            json!({"action": "search", "query": "production"}),
+        )
+        .unwrap();
+
+        assert!(output.contains("Deploy token"));
+        assert!(output.contains("production deploy token"));
+        assert!(!output.contains("raw-deploy-secret"));
+    }
+
+    #[test]
+    fn request_secret_create_saves_metadata_without_echoing_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let _secret_env = secret_test_env(dir.path());
+        let mut state = temp_state(dir.path());
+
+        let output = with_permission_prompt_handler(
+            |_| PermissionPromptAction::AllowOnce,
+            || {
+                execute_request_secret(
+                    &mut state,
+                    dir.path(),
+                    json!({
+                        "action": "create",
+                        "name": "Pager token",
+                        "description": "PagerDuty API token",
+                        "value": "raw-pager-secret"
+                    }),
+                )
+            },
+        )
+        .unwrap();
+
+        assert!(output.contains("Pager token"));
+        assert!(output.contains("PagerDuty API token"));
+        assert!(!output.contains("raw-pager-secret"));
+        let paths = ConfigPaths::discover(dir.path());
+        let vault = SecretVault::open(SecretVault::default_path(&paths.user_config_dir)).unwrap();
+        assert_eq!(
+            vault.reveal("Pager token").unwrap().value,
+            "raw-pager-secret"
+        );
     }
 }

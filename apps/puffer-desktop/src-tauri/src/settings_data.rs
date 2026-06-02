@@ -130,6 +130,7 @@ fn secret_summary(summary: SecretSummary) -> SecretSummaryDto {
     SecretSummaryDto {
         id: summary.id,
         label: summary.label,
+        description: summary.description,
         username: summary.username,
         origin: summary.origin,
         source: summary.source,

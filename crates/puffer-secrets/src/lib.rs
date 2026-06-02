@@ -27,6 +27,8 @@ pub struct SecretSummary {
     pub id: String,
     /// User-facing label for the secret.
     pub label: String,
+    /// Optional non-secret description for display and search.
+    pub description: Option<String>,
     /// Optional login username associated with imported credentials.
     pub username: Option<String>,
     /// Optional origin URL or domain associated with the secret.
@@ -46,6 +48,8 @@ pub struct SecretUpsert {
     pub id: Option<String>,
     /// User-facing label for the secret.
     pub label: String,
+    /// Optional non-secret description for display and search.
+    pub description: Option<String>,
     /// Raw secret value to encrypt.
     pub value: String,
     /// Optional login username associated with the secret.
@@ -63,6 +67,8 @@ pub struct ResolvedSecret {
     pub id: String,
     /// User-facing label for the secret.
     pub label: String,
+    /// Optional non-secret description for display and search.
+    pub description: Option<String>,
     /// Decrypted secret value.
     pub value: String,
 }
@@ -98,6 +104,8 @@ struct SecretStoreFile {
 struct SecretRecord {
     id: String,
     label: String,
+    #[serde(default)]
+    description: Option<String>,
     username: Option<String>,
     origin: Option<String>,
     source: String,
@@ -154,6 +162,39 @@ impl SecretVault {
             .collect())
     }
 
+    /// Searches stored secret metadata without decrypting secret material.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SecretSummary>> {
+        let terms = query
+            .split_whitespace()
+            .map(str::trim)
+            .filter(|term| !term.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        let limit = limit.max(1);
+        let mut matches = self
+            .load_store()?
+            .secrets
+            .into_iter()
+            .filter(|record| {
+                terms.is_empty()
+                    || terms.iter().all(|term| {
+                        secret_search_text(record)
+                            .to_ascii_lowercase()
+                            .contains(term)
+                    })
+            })
+            .map(|record| secret_summary(&record))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right
+                .updated_at_ms
+                .cmp(&left.updated_at_ms)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        matches.truncate(limit);
+        Ok(matches)
+    }
+
     /// Creates or updates one encrypted secret and returns its public summary.
     pub fn put(&self, input: SecretUpsert) -> Result<SecretSummary> {
         let label = normalized_required("secret label", &input.label)?;
@@ -162,6 +203,9 @@ impl SecretVault {
             bail!("secret value cannot be empty");
         }
         let source = normalized_source(&input.source);
+        let description = non_empty_option(input.description);
+        let username = non_empty_option(input.username);
+        let origin = non_empty_option(input.origin);
         let now = now_ms();
         let encrypted = self.encrypt(&value)?;
         let mut store = self.load_store()?;
@@ -172,15 +216,16 @@ impl SecretVault {
             .or_else(|| {
                 store.secrets.iter().position(|record| {
                     record.label == label
-                        && record.username == input.username
-                        && record.origin == input.origin
+                        && record.username == username
+                        && record.origin == origin
                         && record.source == source
                 })
             });
         let index = if let Some(index) = existing_index {
             store.secrets[index].label = label;
-            store.secrets[index].username = input.username;
-            store.secrets[index].origin = input.origin;
+            store.secrets[index].description = description;
+            store.secrets[index].username = username;
+            store.secrets[index].origin = origin;
             store.secrets[index].source = source;
             store.secrets[index].updated_at_ms = now;
             store.secrets[index].encrypted = encrypted;
@@ -189,8 +234,9 @@ impl SecretVault {
             store.secrets.push(SecretRecord {
                 id: format!("sec_{}", Uuid::new_v4().simple()),
                 label,
-                username: input.username,
-                origin: input.origin,
+                description,
+                username,
+                origin,
                 source,
                 created_at_ms: now,
                 updated_at_ms: now,
@@ -245,12 +291,18 @@ impl SecretVault {
         Ok(ResolvedSecret {
             id: record.id.clone(),
             label: record.label.clone(),
+            description: record.description.clone(),
             value: self.decrypt(&record.encrypted)?,
         })
     }
 
     /// Imports decryptable Chrome saved credentials into the encrypted vault.
     pub fn import_chrome_saved_credentials(&self) -> Result<ChromeImportReport> {
+        self.sync_chrome_saved_credentials()
+    }
+
+    /// Syncs decryptable Chrome saved credentials into the encrypted vault.
+    pub fn sync_chrome_saved_credentials(&self) -> Result<ChromeImportReport> {
         let credentials = chrome::load_saved_credentials()?;
         let mut imported = 0usize;
         let mut skipped = 0usize;
@@ -264,8 +316,9 @@ impl SecretVault {
             match self.put(SecretUpsert {
                 id: None,
                 label,
+                description: Some(chrome_site_description(&credential.origin_url)),
                 value: credential.password,
-                username: non_empty_option(credential.username),
+                username: non_empty_option(Some(credential.username)),
                 origin: Some(credential.origin_url),
                 source: "chrome".to_string(),
             }) {
@@ -361,6 +414,7 @@ fn secret_summary(record: &SecretRecord) -> SecretSummary {
     SecretSummary {
         id: record.id.clone(),
         label: record.label.clone(),
+        description: record.description.clone(),
         username: record.username.clone(),
         origin: record.origin.clone(),
         source: record.source.clone(),
@@ -369,19 +423,37 @@ fn secret_summary(record: &SecretRecord) -> SecretSummary {
     }
 }
 
+fn secret_search_text(record: &SecretRecord) -> String {
+    [
+        record.id.as_str(),
+        record.label.as_str(),
+        record.description.as_deref().unwrap_or_default(),
+        record.username.as_deref().unwrap_or_default(),
+        record.origin.as_deref().unwrap_or_default(),
+        record.source.as_str(),
+    ]
+    .join(" ")
+}
+
 fn chrome_secret_label(credential: &chrome::ChromeCredential) -> String {
-    let host = credential
-        .origin_url
-        .split("://")
-        .nth(1)
-        .unwrap_or(&credential.origin_url)
-        .split('/')
-        .next()
-        .unwrap_or(&credential.origin_url);
+    let host = chrome_site_description(&credential.origin_url);
     match credential.username.trim() {
         "" => format!("Chrome {host}"),
         username => format!("Chrome {username} @ {host}"),
     }
+}
+
+fn chrome_site_description(origin_url: &str) -> String {
+    origin_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(origin_url)
+        .split('/')
+        .next()
+        .unwrap_or(origin_url)
+        .trim()
+        .trim_end_matches(':')
+        .to_string()
 }
 
 fn normalized_required(field: &str, value: &str) -> Result<String> {
@@ -401,13 +473,15 @@ fn normalized_source(source: &str) -> String {
     }
 }
 
-fn non_empty_option(value: String) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn non_empty_option(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn now_ms() -> u64 {
@@ -442,6 +516,7 @@ mod tests {
             .put(SecretUpsert {
                 id: None,
                 label: "GitHub token".to_string(),
+                description: Some("GitHub personal access token".to_string()),
                 value: "ghp_secret".to_string(),
                 username: Some("octo".to_string()),
                 origin: Some("https://github.com".to_string()),
@@ -457,7 +532,37 @@ mod tests {
         );
         let revealed = vault.reveal("GitHub token").unwrap();
         assert_eq!(revealed.id, summary.id);
+        assert_eq!(
+            revealed.description.as_deref(),
+            Some("GitHub personal access token")
+        );
         assert_eq!(revealed.value, "ghp_secret");
+    }
+
+    #[test]
+    fn searches_secret_metadata_without_decrypting_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = SecretVault::open_with_key(dir.path().join("secrets.json"), test_key());
+        vault
+            .put(SecretUpsert {
+                id: None,
+                label: "Deploy token".to_string(),
+                description: Some("production deploys".to_string()),
+                value: "secret-value".to_string(),
+                username: Some("ci".to_string()),
+                origin: Some("https://deploy.example".to_string()),
+                source: "manual".to_string(),
+            })
+            .unwrap();
+
+        let results = vault.search("deploy production", 10).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].label, "Deploy token");
+        assert_eq!(
+            results[0].description.as_deref(),
+            Some("production deploys")
+        );
     }
 
     #[test]
@@ -468,6 +573,7 @@ mod tests {
             .put(SecretUpsert {
                 id: None,
                 label: "API".to_string(),
+                description: None,
                 value: "old".to_string(),
                 username: None,
                 origin: None,
@@ -478,6 +584,7 @@ mod tests {
             .put(SecretUpsert {
                 id: Some(first.id.clone()),
                 label: "API".to_string(),
+                description: Some("updated API key".to_string()),
                 value: "new".to_string(),
                 username: None,
                 origin: None,
@@ -485,6 +592,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(first.id, second.id);
+        assert_eq!(second.description.as_deref(), Some("updated API key"));
         assert_eq!(vault.list().unwrap().len(), 1);
         assert_eq!(vault.reveal(&first.id).unwrap().value, "new");
     }

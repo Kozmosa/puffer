@@ -12,6 +12,8 @@ struct SaveSecretParams {
     label: String,
     value: String,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     username: Option<String>,
     #[serde(default)]
     origin: Option<String>,
@@ -30,6 +32,7 @@ pub(crate) fn save_secret(paths: &ConfigPaths, params: &Value) -> Result<()> {
     vault(paths)?.put(SecretUpsert {
         id: input.id,
         label: input.label,
+        description: input.description,
         value: input.value,
         username: input.username,
         origin: input.origin,

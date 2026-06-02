@@ -56,18 +56,22 @@ mod macos {
         let home = dirs::home_dir().context("resolve home directory")?;
         let root = home.join("Library/Application Support/Google/Chrome");
         let mut out = Vec::new();
-        for profile in [
-            "Default",
-            "Profile 1",
-            "Profile 2",
-            "Profile 3",
-            "Profile 4",
-        ] {
-            let path = root.join(profile).join("Login Data");
-            if path.exists() {
-                out.push(path);
+        if !root.exists() {
+            return Ok(out);
+        }
+        for entry in fs::read_dir(&root).with_context(|| format!("read {}", root.display()))? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let login_data = path.join("Login Data");
+            if login_data.exists() {
+                out.push(login_data);
             }
         }
+        out.sort();
+        out.dedup();
         Ok(out)
     }
 

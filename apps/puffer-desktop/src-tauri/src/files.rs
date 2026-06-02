@@ -202,8 +202,8 @@ fn read_file_path(path: &Path, max_bytes: usize) -> Result<Value> {
 }
 
 fn read_file_prefix(path: &Path, cap: usize) -> Result<Vec<u8>> {
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let mut bytes = Vec::with_capacity(cap);
     file.by_ref()
         .take(cap as u64)
@@ -269,7 +269,12 @@ fn native_html_preview(path: &Path) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    Some(normalized.chars().take(NATIVE_HTML_PREVIEW_MAX_BYTES).collect())
+    Some(
+        normalized
+            .chars()
+            .take(NATIVE_HTML_PREVIEW_MAX_BYTES)
+            .collect(),
+    )
 }
 
 fn is_native_preview_candidate(path: &Path) -> bool {
@@ -380,8 +385,14 @@ mod tests {
         std::io::Write::write_all(&mut file, b"%PDF-1.4\n").unwrap();
         file.set_len(READ_HARD_MAX_BYTES + 1).unwrap();
         let result = read_file_path(&path, 32).unwrap();
-        assert_eq!(result.get("encoding").and_then(Value::as_str), Some("base64"));
-        assert_eq!(result.get("size").and_then(Value::as_u64), Some(READ_HARD_MAX_BYTES + 1));
+        assert_eq!(
+            result.get("encoding").and_then(Value::as_str),
+            Some("base64")
+        );
+        assert_eq!(
+            result.get("size").and_then(Value::as_u64),
+            Some(READ_HARD_MAX_BYTES + 1)
+        );
         assert_eq!(result.get("truncated").and_then(Value::as_bool), Some(true));
     }
 

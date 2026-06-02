@@ -1751,6 +1751,7 @@ export type BrowserState = {
   url: string;
   title: string;
   loading: boolean;
+  connected?: boolean;
   updatedAtMs?: number;
   width?: number;
   height?: number;
@@ -1953,6 +1954,11 @@ export async function browserCefNativeNavigate(
   url: string
 ): Promise<BrowserCefNativeState> {
   return invoke<BrowserCefNativeState>("browser_cef_native_navigate", { sessionId, url });
+}
+
+/** Return the last known state for a native CEF browser. */
+export async function browserCefNativeState(sessionId: string): Promise<BrowserCefNativeState> {
+  return invoke<BrowserCefNativeState>("browser_cef_native_state", { sessionId });
 }
 
 /** Reload a native CEF browser. */

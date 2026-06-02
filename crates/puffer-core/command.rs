@@ -27,7 +27,6 @@ use std::fmt::Write as _;
 mod registry;
 pub use registry::{command_surface, find_command, supported_commands, CommandKind, CommandSpec};
 
-
 /// Dispatches a slash-command against the current application state.
 pub fn dispatch_command(
     state: &mut AppState,

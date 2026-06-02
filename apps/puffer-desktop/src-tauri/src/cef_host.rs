@@ -40,11 +40,6 @@ struct CefRuntime {
 
 static CEF_INITIALIZATION: OnceLock<Result<CefRuntime, String>> = OnceLock::new();
 
-/// Initializes native CEF before Tauri enters the AppKit event loop.
-pub(crate) fn warm_up_native() -> Result<()> {
-    initialize_native_once().map(|_| ())
-}
-
 /// Returns native CEF availability for the current desktop process.
 #[tauri::command]
 pub(crate) fn browser_cef_native_status() -> Value {
@@ -57,20 +52,15 @@ pub(crate) fn browser_cef_native_status() -> Value {
         .map(|error| error.to_string());
     let diagnostic_runtime = initialized_runtime.or_else(|| discovered_runtime.as_ref().ok());
     let initialization_error = initialization.and_then(|value| value.as_ref().err().cloned());
-    let not_initialized_error = (initialization.is_none()
-        && discovery_error.is_none()
-        && native_enabled())
-    .then_some("native CEF was not initialized before the desktop event loop started".to_string());
+    let available = initialization_error.is_none() && diagnostic_runtime.is_some();
     json!(CefNativeStatus {
-        available: initialized_runtime.is_some(),
+        available,
         active: initialized_runtime.is_some(),
         root: diagnostic_runtime.map(|value| display_path(&value.root)),
         helper: diagnostic_runtime.map(|value| display_path(&value.helper)),
         remote_debugging_port: remote_debugging_port(),
         build_enabled: native_enabled(),
-        error: initialization_error
-            .or(discovery_error)
-            .or(not_initialized_error),
+        error: initialization_error.or(discovery_error),
     })
 }
 
@@ -118,6 +108,16 @@ pub(crate) fn browser_cef_native_navigate(
         .map_err(|error| error.to_string())
 }
 
+/// Returns the last known state for a native CEF browser.
+#[tauri::command]
+pub(crate) fn browser_cef_native_state(session_id: String) -> Result<Value, String> {
+    match CEF_INITIALIZATION.get() {
+        Some(Ok(_)) => native_state(&session_id).map_err(|error| error.to_string()),
+        Some(Err(error)) => Err(error.clone()),
+        None => Ok(native_disconnected_state()),
+    }
+}
+
 /// Reloads a native CEF browser.
 #[tauri::command]
 pub(crate) fn browser_cef_native_reload(session_id: String) -> Result<Value, String> {
@@ -147,10 +147,13 @@ pub(crate) fn browser_cef_native_history(
 /// Closes a native CEF browser.
 #[tauri::command]
 pub(crate) fn browser_cef_native_close(session_id: String) -> Result<Value, String> {
-    ensure_native_initialized()
-        .and_then(|()| native_close(&session_id))
-        .map(|()| json!({ "ok": true }))
-        .map_err(|error| error.to_string())
+    match CEF_INITIALIZATION.get() {
+        Some(Ok(_)) => native_close(&session_id)
+            .map(|()| json!({ "ok": true }))
+            .map_err(|error| error.to_string()),
+        Some(Err(error)) => Err(error.clone()),
+        None => Ok(json!({ "ok": true })),
+    }
 }
 
 fn with_native_browser<F>(session_id: &str, action: F) -> Result<Value, String>
@@ -164,11 +167,17 @@ where
 }
 
 fn ensure_native_initialized() -> Result<()> {
-    match CEF_INITIALIZATION.get() {
-        Some(Ok(_)) => Ok(()),
-        Some(Err(error)) => bail!("{error}"),
-        None => bail!("native CEF was not initialized before the desktop event loop started"),
-    }
+    initialize_native_once().map(|_| ())
+}
+
+fn native_disconnected_state() -> Value {
+    json!({
+        "connected": false,
+        "url": "about:blank",
+        "title": "",
+        "loading": false,
+        "error": null,
+    })
 }
 
 fn window_handle(window: &Window) -> Result<*mut c_void> {
@@ -590,12 +599,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_status_is_unavailable_before_setup_initialization() {
+    fn native_status_does_not_treat_lazy_initialization_as_error() {
         if CEF_INITIALIZATION.get().is_some() {
             return;
         }
         let status = browser_cef_native_status();
-        assert_eq!(status["available"], serde_json::json!(false));
         assert_eq!(status["active"], serde_json::json!(false));
+        assert_ne!(
+            status["error"],
+            serde_json::json!(
+                "native CEF was not initialized before the desktop event loop started"
+            )
+        );
+    }
+
+    #[test]
+    fn native_state_before_initialization_is_disconnected() {
+        if CEF_INITIALIZATION.get().is_some() {
+            return;
+        }
+        let state = browser_cef_native_state("tab-1".to_string()).unwrap();
+        assert_eq!(state["connected"], serde_json::json!(false));
+        assert_eq!(state["url"], serde_json::json!("about:blank"));
     }
 }
