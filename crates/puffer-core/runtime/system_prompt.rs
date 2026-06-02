@@ -105,17 +105,13 @@ pub(super) fn render_runtime_system_prompt(
     )
     .unwrap_or_else(|| render_fallback_prompt(&variables));
     let mut prompt = normalize_prompt_whitespace(&rendered);
-    // Identity first (who the agent is), then project memory (how it operates).
-    // soul.md is universal across providers; AGENTS.md/CLAUDE.md follow the
-    // provider convention in load_memory_prompt.
-    if let Some(soul) = load_soul_prompt(&state.cwd) {
-        prompt.push_str("\n\n");
-        prompt.push_str(&soul);
-    }
-    if let Some(user) = load_user_prompt(&state.cwd) {
-        prompt.push_str("\n\n");
-        prompt.push_str(&user);
-    }
+    // soul.md / user.md are intentionally NOT appended to the system prompt.
+    // The Anthropic system prompt carries `cache_control: ephemeral`, so it is
+    // the cached prefix; user.md is agent-mutable, and even soul edits would
+    // bust the cache. They are injected per-turn in `build_system_reminder`
+    // (the `<system-reminder>` block after the cache breakpoint), which is
+    // rebuilt each turn and never rewrites prior messages. See
+    // openai::conversation::build_system_reminder.
     if let Some(memory) = load_memory_prompt(&state.cwd, provider_id) {
         prompt.push_str("\n\n");
         prompt.push_str(&memory);
@@ -438,7 +434,8 @@ fn load_memory_prompt_for_filename(cwd: &Path, filename: &str) -> Option<String>
 /// Loads the agent identity file (soul.md) from the project + user-global dirs.
 /// Universal across providers: identity is not a provider-specific convention
 /// the way AGENTS.md (Codex) vs CLAUDE.md (Anthropic) operating docs are.
-fn load_soul_prompt(cwd: &Path) -> Option<String> {
+/// Injected per-turn via `build_system_reminder`, not the cached system prompt.
+pub(crate) fn load_soul_prompt(cwd: &Path) -> Option<String> {
     let blocks = load_context_blocks(cwd, "soul.md");
     if blocks.is_empty() {
         None
@@ -454,8 +451,9 @@ fn load_soul_prompt(cwd: &Path) -> Option<String> {
 /// Loads the agent-writable user-facts file (`user.md`) from the project +
 /// user-global dirs. The same file the `Remember` tool and the daemon's
 /// `user_memory_*` RPC write to (see `crate::user_memory`). Universal across
-/// providers.
-fn load_user_prompt(cwd: &Path) -> Option<String> {
+/// providers. Injected per-turn via `build_system_reminder` (not the cached
+/// system prompt) because it is agent-mutable.
+pub(crate) fn load_user_prompt(cwd: &Path) -> Option<String> {
     let blocks = load_context_blocks(cwd, "user.md");
     if blocks.is_empty() {
         None
@@ -840,7 +838,10 @@ mod tests {
     }
 
     #[test]
-    fn render_runtime_system_prompt_orders_soul_user_memory() {
+    fn render_system_prompt_keeps_memory_but_excludes_soul_and_user() {
+        // soul.md / user.md must NOT be in the (cache_control'd) system prompt —
+        // they ride in the per-turn build_system_reminder instead. Project
+        // memory (AGENTS.md/CLAUDE.md) stays in the system prompt as before.
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("soul.md"), "SOUL_IDENTITY_MARKER").unwrap();
         std::fs::write(tmp.path().join("user.md"), "## x\n\nUSER_FACTS_MARKER").unwrap();
@@ -853,10 +854,17 @@ mod tests {
 
         let prompt =
             render_runtime_system_prompt(&state, &resources, "gpt-5", &enabled_tools).unwrap();
-        let soul_at = prompt.find("SOUL_IDENTITY_MARKER").expect("soul not injected");
-        let user_at = prompt.find("USER_FACTS_MARKER").expect("user facts not injected");
-        let mem_at = prompt.find("MEMORY_RULES_MARKER").expect("memory not injected");
-        assert!(soul_at < user_at, "identity must precede user facts");
-        assert!(user_at < mem_at, "user facts must precede project memory");
+        assert!(
+            prompt.contains("MEMORY_RULES_MARKER"),
+            "project memory should stay in the system prompt"
+        );
+        assert!(
+            !prompt.contains("SOUL_IDENTITY_MARKER"),
+            "soul.md must NOT be in the cached system prompt"
+        );
+        assert!(
+            !prompt.contains("USER_FACTS_MARKER"),
+            "user.md must NOT be in the cached system prompt"
+        );
     }
 }

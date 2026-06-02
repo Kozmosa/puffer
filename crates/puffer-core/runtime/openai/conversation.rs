@@ -1191,6 +1191,18 @@ pub(crate) fn build_system_reminder(state: &AppState, git_status: &str) -> Strin
         reminder.push_str("\n\n");
         reminder.push_str(&project_memory);
     }
+    // Agent identity (soul.md) + durable user facts (user.md) ride here, in the
+    // per-turn reminder AFTER the cache breakpoint, NOT in the cached system
+    // prompt: user.md is agent-mutable, so injecting it into the system prompt
+    // would bust the prompt cache on every change.
+    if let Some(soul) = crate::runtime::system_prompt::load_soul_prompt(&state.cwd) {
+        reminder.push_str("\n\n");
+        reminder.push_str(&soul);
+    }
+    if let Some(user) = crate::runtime::system_prompt::load_user_prompt(&state.cwd) {
+        reminder.push_str("\n\n");
+        reminder.push_str(&user);
+    }
     reminder
 }
 
@@ -1779,6 +1791,20 @@ mod tests {
         let reminder = build_system_reminder(&state, "On branch main");
         assert!(reminder.contains("gitStatus"));
         assert!(reminder.contains("On branch main"));
+    }
+
+    #[test]
+    fn build_system_reminder_carries_soul_and_user_not_system_prompt() {
+        // soul.md + user.md ride in the per-turn reminder (after the cache
+        // breakpoint), so a mutating user.md never busts the system-prompt cache.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("soul.md"), "SOUL_REMINDER_MARKER").unwrap();
+        std::fs::write(tmp.path().join("user.md"), "## addr\n\nUSER_REMINDER_MARKER").unwrap();
+        let mut state = crate::runtime::tests::state();
+        state.cwd = tmp.path().to_path_buf();
+        let reminder = build_system_reminder(&state, "");
+        assert!(reminder.contains("SOUL_REMINDER_MARKER"), "soul.md must be in the reminder");
+        assert!(reminder.contains("USER_REMINDER_MARKER"), "user.md must be in the reminder");
     }
 
     #[test]
