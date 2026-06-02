@@ -63,6 +63,7 @@ const REGISTERED_TAURI_COMMANDS: &[&str] = &[
     "browser_cef_native_reload",
     "browser_cef_native_history",
     "browser_cef_native_close",
+    "browser_cef_native_hide",
 ];
 
 fn backend_call(
@@ -465,6 +466,7 @@ pub fn run() {
             cef_host::browser_cef_native_reload,
             cef_host::browser_cef_native_history,
             cef_host::browser_cef_native_close,
+            cef_host::browser_cef_native_hide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Corbina desktop");

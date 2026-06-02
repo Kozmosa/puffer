@@ -45,6 +45,7 @@ struct BrowserSlot {
   std::string error;
   int64_t updated_at_ms = 0;
   bool loading = false;
+  bool creating = false;
   bool closing = false;
   NSView* container = nil;
   CefRefPtr<CefBrowser> browser;
@@ -188,10 +189,21 @@ class PufferCefClient : public CefClient,
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     if (auto* slot = FindSlot(session_id_)) {
       slot->browser = browser;
+      slot->creating = false;
       slot->error.clear();
       slot->loading = false;
       TouchSlot(slot);
+      if (slot->closing) {
+        if (slot->container) {
+          [slot->container setHidden:YES];
+        }
+        browser->GetHost()->CloseBrowser(true);
+        ScheduleMessagePumpWork(0);
+      }
+      return;
     }
+    browser->GetHost()->CloseBrowser(true);
+    ScheduleMessagePumpWork(0);
   }
 
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
@@ -204,6 +216,7 @@ class PufferCefClient : public CefClient,
       return;
     }
     slot->browser = nullptr;
+    slot->creating = false;
     slot->loading = false;
     TouchSlot(slot);
     if (slot->closing) {
@@ -735,19 +748,24 @@ extern "C" int puffer_cef_open(const char* session_id,
       return 0;
     }
     if (!slot->browser) {
-      CefWindowInfo window_info;
-      window_info.SetAsChild((__bridge CefWindowHandle)slot->container,
-                             CefRect(0, 0, static_cast<int>(width),
-                                     static_cast<int>(height)));
-      CefBrowserSettings settings;
-      slot->loading = true;
-      if (!CefBrowserHost::CreateBrowser(window_info, slot->client, target_url,
-                                         settings, nullptr, nullptr)) {
-        slot->loading = false;
-        message = "CefBrowserHost::CreateBrowser returned false";
-        slot->error = message;
+      if (!slot->creating) {
+        CefWindowInfo window_info;
+        window_info.SetAsChild((__bridge CefWindowHandle)slot->container,
+                               CefRect(0, 0, static_cast<int>(width),
+                                       static_cast<int>(height)));
+        CefBrowserSettings settings;
+        slot->loading = true;
+        slot->creating = true;
         TouchSlot(slot);
-        return 0;
+        if (!CefBrowserHost::CreateBrowser(window_info, slot->client, target_url,
+                                           settings, nullptr, nullptr)) {
+          slot->creating = false;
+          slot->loading = false;
+          message = "CefBrowserHost::CreateBrowser returned false";
+          slot->error = message;
+          TouchSlot(slot);
+          return 0;
+        }
       }
     } else {
       [slot->container setHidden:NO];
@@ -912,12 +930,41 @@ extern "C" int puffer_cef_close(const char* session_id,
       ScheduleMessagePumpWork(0);
       return 1;
     }
+    if (slot->creating) {
+      if (slot->container) {
+        [slot->container setHidden:YES];
+      }
+      ScheduleMessagePumpWork(0);
+      return 1;
+    }
     if (slot->container) {
       [slot->container removeFromSuperview];
       slot->container = nil;
     }
     g_slots.erase(id);
     delete slot;
+    ScheduleMessagePumpWork(0);
+    return 1;
+  });
+  if (!result) {
+    WriteError(error, error_len, message);
+  }
+  return result;
+}
+
+extern "C" int puffer_cef_hide(const char* session_id,
+                                char* error,
+                                size_t error_len) {
+  const std::string id = session_id ? session_id : "";
+  std::string message;
+  int result = RunIntOnMain([&]() {
+    BrowserSlot* slot = FindSlot(id);
+    if (!slot) {
+      return 1;
+    }
+    if (slot->container) {
+      [slot->container setHidden:YES];
+    }
     ScheduleMessagePumpWork(0);
     return 1;
   });

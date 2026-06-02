@@ -1979,6 +1979,11 @@ export async function browserCefNativeClose(sessionId: string): Promise<void> {
   await invoke("browser_cef_native_close", { sessionId });
 }
 
+/** Hide a native CEF browser without closing its renderer process. */
+export async function browserCefNativeHide(sessionId: string): Promise<void> {
+  await invoke("browser_cef_native_hide", { sessionId });
+}
+
 /** Open or reuse the Chrome-backed browser session for a Puffer session. */
 export async function browserOpen(params: {
   sessionId: string;
