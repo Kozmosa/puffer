@@ -6,6 +6,7 @@
     browserBackendStatus,
     browserCefNativeClose,
     browserCefNativeHistory,
+    browserCefNativeHide,
     browserCefNativeNavigate,
     browserCefNativeOpen,
     browserCefNativeReload,
@@ -268,7 +269,7 @@
     clearCursorTimer();
     clearNativeCefHealthTimer();
     clearNavigationFallbackTimers();
-    closeNativeTabs();
+    hideNativeTabs();
     disposeActiveSubscriptions();
     for (const dispose of disposers) {
       try {
@@ -280,9 +281,17 @@
     disposers = [];
   });
 
-  function closeNativeTabs() {
+  function hideNativeTabs() {
     if (effectiveRenderer !== "cef") return;
-    closeNativeCefSessions();
+    hideNativeCefSessions();
+  }
+
+  function hideNativeCefSessions() {
+    for (const tab of tabs) {
+      void browserCefNativeHide(tab.backendSessionId).catch(() => {
+        /* Native CEF may already be unavailable during teardown or fallback. */
+      });
+    }
   }
 
   function closeNativeCefSessions() {

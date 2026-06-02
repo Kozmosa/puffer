@@ -156,6 +156,18 @@ pub(crate) fn browser_cef_native_close(session_id: String) -> Result<Value, Stri
     }
 }
 
+/// Hides a native CEF browser without closing its renderer process.
+#[tauri::command]
+pub(crate) fn browser_cef_native_hide(session_id: String) -> Result<Value, String> {
+    match CEF_INITIALIZATION.get() {
+        Some(Ok(_)) => native_hide(&session_id)
+            .map(|()| json!({ "ok": true }))
+            .map_err(|error| error.to_string()),
+        Some(Err(error)) => Err(error.clone()),
+        None => Ok(json!({ "ok": true })),
+    }
+}
+
 fn with_native_browser<F>(session_id: &str, action: F) -> Result<Value, String>
 where
     F: FnOnce(&str) -> Result<()>,
@@ -377,6 +389,11 @@ mod ffi {
             error: *mut c_char,
             error_len: usize,
         ) -> i32;
+        pub(super) fn puffer_cef_hide(
+            session_id: *const c_char,
+            error: *mut c_char,
+            error_len: usize,
+        ) -> i32;
         pub(super) fn puffer_cef_state_json(session_id: *const c_char) -> *mut c_char;
         pub(super) fn puffer_cef_free_string(value: *mut c_char);
     }
@@ -531,6 +548,19 @@ fn native_close(session_id: &str) -> Result<()> {
 
 #[cfg(not(all(target_os = "macos", puffer_desktop_cef_native)))]
 fn native_close(_session_id: &str) -> Result<()> {
+    bail!("native CEF bridge was not compiled for this desktop build")
+}
+
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+fn native_hide(session_id: &str) -> Result<()> {
+    let session_id = CString::new(session_id).context("encode CEF session id")?;
+    let mut error = ErrorBuffer::new();
+    let ok = unsafe { ffi::puffer_cef_hide(session_id.as_ptr(), error.as_mut_ptr(), error.len()) };
+    error.result(ok, "hide native CEF browser")
+}
+
+#[cfg(not(all(target_os = "macos", puffer_desktop_cef_native)))]
+fn native_hide(_session_id: &str) -> Result<()> {
     bail!("native CEF bridge was not compiled for this desktop build")
 }
 
