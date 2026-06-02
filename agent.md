@@ -18,12 +18,12 @@ cargo fmt --all
 cargo clippy --workspace --all-targets
 ```
 
-There is no `justfile`/`Makefile` — use cargo directly. Test narrow first, then `--workspace` before calling it done; wire tests in the same change that adds the behavior.
+The dev loop is plain cargo. The root `Makefile` only wraps release/packaging (`scripts/release.sh`), not build/test. Test narrow first, then `--workspace`.
 
 ## Gotchas not covered in AGENTS.md
 
-- **System-prompt drift trap.** The runtime system prompt is `resources/prompts/system-base.yaml`, assembled in `crates/puffer-core/runtime/system_prompt.rs`. That template body is **also mirrored verbatim** as the `SYSTEM_PROMPT_TEMPLATE` const in the same module (used as the fallback when the YAML fails to load). If you edit the YAML body, mirror the const too, or they silently diverge.
-- **Project docs are loaded by name, and not these two.** `load_memory_prompt` (in `system_prompt.rs`) injects `AGENTS.md` for the OpenAI provider and `CLAUDE.md` for the others. `soul.md` and `agent.md` are **not** read at runtime — they are contributor docs. To make the soul load-bearing, author it as `resources/prompts/soul.yaml` and chain it in via the `chained_from` field (and respect the drift trap above).
+- **System-prompt drift trap.** The runtime system prompt is `resources/prompts/system-base.yaml`, assembled in `crates/puffer-core/runtime/system_prompt.rs`. The same body is *also* hand-mirrored as the `SYSTEM_PROMPT_TEMPLATE` const in that module (used when the `system-base` prompt resource isn't found/registered). It is meant to be kept in sync but has **already drifted** — the const carries non-ASCII em-dashes and a "tool calls are visible in the terminal" sentence that directly contradicts the YAML's "users can't see most tool calls." If you edit one, fix the other.
+- **Project docs are loaded by name, and not these two.** `load_memory_prompt` (in `system_prompt.rs`) loads `CLAUDE.md` for all providers; the OpenAI provider prefers `AGENTS.md` and falls back to `CLAUDE.md`. `soul.md` and `agent.md` are **not** read at runtime — they are contributor docs. (The persona could be made load-bearing via a chained `resources/prompts/soul.yaml`, but that is not currently wired.)
 - **Personas and task prompts** are declarative: sub-agents in `resources/agents/*.yaml`, prompts in `resources/prompts/*.yaml`. Prompts support `provider_override` / `model_override` / `chained_from`.
 
 Everything else — the hard constraints, the `specs/<component>/NN.md` convention, commit/worktree rules, Anthropic-path fidelity — is in `AGENTS.md`. Follow it.
