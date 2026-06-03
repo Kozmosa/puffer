@@ -22,6 +22,7 @@ mod cdp;
 mod cef;
 mod chrome;
 mod client;
+mod command;
 mod console;
 mod ct_runtime;
 mod cursor;
@@ -29,6 +30,7 @@ mod devtools;
 mod extension_seed;
 mod input;
 mod launch_settings;
+mod network_idle;
 mod params;
 mod recording;
 mod ref_resolution;
@@ -211,9 +213,12 @@ impl BrowserRegistry {
             height,
             foreground,
         )?;
-        if let Some(url) = normalized_url.as_deref().filter(|url| *url != DEFAULT_URL) {
-            session.navigate(url.to_string())?;
-        }
+        session.navigate(
+            normalized_url
+                .as_deref()
+                .unwrap_or(DEFAULT_URL)
+                .to_string(),
+        )?;
         let browser_state = session.state();
         self.sessions
             .lock()
@@ -238,6 +243,16 @@ impl BrowserRegistry {
     /// Waits for a live page worker to report that navigation has completed.
     pub(crate) fn wait_for_load(&self, session_id: &str, timeout: Duration) -> Result<()> {
         self.get(session_id)?.wait_for_load(timeout)
+    }
+
+    /// Waits for a live page worker to report a quiet network window.
+    pub(crate) fn wait_for_network_idle(
+        &self,
+        session_id: &str,
+        idle: Duration,
+        timeout: Duration,
+    ) -> Result<()> {
+        self.get(session_id)?.wait_for_network_idle(idle, timeout)
     }
 
     /// Reloads a live page worker.

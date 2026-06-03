@@ -235,6 +235,52 @@ fn rect_summary(rect: CefBrowserRect) -> String {
     )
 }
 
+/// Opens a native CEF browser over the main window for packaged-app smoke tests.
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+pub(crate) fn browser_cef_native_smoke_open(
+    window: Window,
+    url: String,
+) -> Result<Value, String> {
+    let rect = CefBrowserRect {
+        x: 120.0,
+        y: 120.0,
+        width: 960.0,
+        height: 600.0,
+    };
+    let state = with_native_browser("__cef_smoke__", |session_id| {
+        native_open(session_id, window_handle(&window)?, &url, rect)
+    })?;
+    Ok(state)
+}
+
+/// Creates hidden native CEF browser targets for daemon-owned browser sessions.
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+pub(crate) fn browser_cef_native_prewarm_targets(
+    window: Window,
+    count: usize,
+) -> Result<(), String> {
+    let rect = CefBrowserRect {
+        x: -10_000.0,
+        y: -10_000.0,
+        width: 1.0,
+        height: 1.0,
+    };
+    for index in 0..count {
+        let session_id = format!("__cef_prewarm_{index}__");
+        with_native_browser(&session_id, |session_id| {
+            native_open(session_id, window_handle(&window)?, "about:blank", rect)?;
+            native_hide(session_id)
+        })?;
+    }
+    Ok(())
+}
+
+/// Initializes native CEF before the desktop WebView starts using WebKit.
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+pub(crate) fn browser_cef_native_preinitialize() -> Result<(), String> {
+    ensure_native_initialized().map_err(|error| error.to_string())
+}
+
 fn with_native_browser<F>(session_id: &str, action: F) -> Result<Value, String>
 where
     F: FnOnce(&str) -> Result<()>,
