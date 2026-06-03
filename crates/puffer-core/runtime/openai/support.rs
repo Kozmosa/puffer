@@ -7,11 +7,18 @@ use puffer_provider_openai::{OpenAIResponsesTextConfig, OpenAIResponsesTool};
 use puffer_provider_registry::{
     ModelCompat, ModelDescriptor, OAuthCredential, ProviderDescriptor, ResponsesPath,
 };
+use rand::Rng;
 use serde_json::{json, Value};
 use std::io;
 use std::time::Duration;
 
 pub(super) const OPENAI_STRUCTURED_OUTPUT_FAMILY: &str = "openai";
+const OPENAI_TRANSPORT_DEFAULT_MAX_ATTEMPTS: usize = 5;
+const OPENAI_STREAM_DEFAULT_MAX_ATTEMPTS: usize = 6;
+const OPENAI_RETRY_MAX_ATTEMPTS_CAP: usize = 101;
+const OPENAI_RETRY_DEFAULT_BASE_DELAY_MS: u64 = 200;
+const OPENAI_RETRY_BASE_DELAY_CAP_MS: u64 = 10_000;
+const OPENAI_RETRY_BACKOFF_CAP_MS: u64 = 60_000;
 
 pub(crate) fn build_codex_openai_request_body(
     state: &AppState,
@@ -138,11 +145,20 @@ where
     F: FnMut() -> Result<T>,
 {
     let attempts = openai_transport_max_attempts();
-    let delay = openai_transport_retry_delay();
+    let base_delay = openai_transport_retry_base_delay();
     for attempt in 1..=attempts {
         match operation() {
             Ok(value) => return Ok(value),
             Err(error) if attempt < attempts && is_retryable_openai_transport_error(&error) => {
+                let delay = openai_retry_backoff(base_delay, attempt);
+                tracing::warn!(
+                    target: "puffer::runtime::openai",
+                    attempt,
+                    max_attempts = attempts,
+                    retry_delay_ms = delay.as_millis(),
+                    error = %error,
+                    "OpenAI transport failed; retrying request"
+                );
                 on_retry(attempt, attempts, &error.to_string());
                 if !delay.is_zero() {
                     std::thread::sleep(delay);
@@ -164,17 +180,17 @@ fn openai_transport_max_attempts() -> usize {
     std::env::var("PUFFER_OPENAI_HTTP_MAX_ATTEMPTS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(3)
-        .clamp(1, 5)
+        .unwrap_or(OPENAI_TRANSPORT_DEFAULT_MAX_ATTEMPTS)
+        .clamp(1, OPENAI_RETRY_MAX_ATTEMPTS_CAP)
 }
 
-fn openai_transport_retry_delay() -> Duration {
-    let delay_ms = std::env::var("PUFFER_OPENAI_HTTP_RETRY_DELAY_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1_000)
-        .min(10_000);
-    Duration::from_millis(delay_ms)
+fn openai_transport_retry_base_delay() -> Duration {
+    retry_base_delay_ms(&[
+        "PUFFER_OPENAI_HTTP_RETRY_BASE_DELAY_MS",
+        "PUFFER_OPENAI_HTTP_RETRY_DELAY_MS",
+    ])
+    .map(Duration::from_millis)
+    .unwrap_or(Duration::from_millis(OPENAI_RETRY_DEFAULT_BASE_DELAY_MS))
 }
 
 /// Maximum attempts for full OpenAI stream restarts after a dropped SSE body.
@@ -182,19 +198,48 @@ pub(super) fn openai_stream_max_attempts() -> usize {
     std::env::var("PUFFER_OPENAI_STREAM_MAX_ATTEMPTS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(3)
-        .clamp(1, 10)
+        .unwrap_or(OPENAI_STREAM_DEFAULT_MAX_ATTEMPTS)
+        .clamp(1, OPENAI_RETRY_MAX_ATTEMPTS_CAP)
 }
 
-/// Delay between full OpenAI stream restart attempts.
-pub(super) fn openai_stream_retry_delay() -> Duration {
-    let delay_ms = std::env::var("PUFFER_OPENAI_STREAM_RETRY_DELAY_MS")
-        .or_else(|_| std::env::var("PUFFER_OPENAI_HTTP_RETRY_DELAY_MS"))
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1_000)
-        .min(10_000);
-    Duration::from_millis(delay_ms)
+/// Delay before a full OpenAI stream restart attempt.
+pub(super) fn openai_stream_retry_delay(attempt: usize) -> Duration {
+    openai_retry_backoff(openai_stream_retry_base_delay(), attempt)
+}
+
+fn openai_stream_retry_base_delay() -> Duration {
+    retry_base_delay_ms(&[
+        "PUFFER_OPENAI_STREAM_RETRY_BASE_DELAY_MS",
+        "PUFFER_OPENAI_STREAM_RETRY_DELAY_MS",
+        "PUFFER_OPENAI_HTTP_RETRY_BASE_DELAY_MS",
+        "PUFFER_OPENAI_HTTP_RETRY_DELAY_MS",
+    ])
+    .map(Duration::from_millis)
+    .unwrap_or(Duration::from_millis(OPENAI_RETRY_DEFAULT_BASE_DELAY_MS))
+}
+
+fn retry_base_delay_ms(env_names: &[&str]) -> Option<u64> {
+    env_names.iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|value| value.min(OPENAI_RETRY_BASE_DELAY_CAP_MS))
+    })
+}
+
+fn openai_retry_backoff(base: Duration, attempt: usize) -> Duration {
+    if base.is_zero() {
+        return Duration::ZERO;
+    }
+    let exponent = (attempt as u32).saturating_sub(1);
+    let factor = 2u128.saturating_pow(exponent);
+    let nominal_ms = base
+        .as_millis()
+        .saturating_mul(factor)
+        .min(OPENAI_RETRY_BACKOFF_CAP_MS as u128) as u64;
+    let jitter = rand::thread_rng().gen_range(0.9_f64..1.1_f64);
+    let jittered_ms = ((nominal_ms as f64 * jitter) as u64).min(OPENAI_RETRY_BACKOFF_CAP_MS);
+    Duration::from_millis(jittered_ms)
 }
 
 pub(super) fn openai_stream_read_timeout() -> Duration {
@@ -558,7 +603,12 @@ mod tests {
     use super::build_codex_openai_request_body_with_reasoning_include;
     use super::is_openai_include_validation_error;
     use super::is_retryable_openai_transport_error;
+    use super::openai_retry_backoff;
+    use super::openai_stream_max_attempts;
+    use super::openai_stream_retry_base_delay;
     use super::openai_supports_response_threading;
+    use super::openai_transport_max_attempts;
+    use super::openai_transport_retry_base_delay;
     use crate::runtime::openai_sse::parse_openai_sse_response;
     use crate::runtime::tests::state;
     use crate::runtime::OPENAI_CHATGPT_BASE_URL;
@@ -566,6 +616,7 @@ mod tests {
     use puffer_provider_registry::ProviderDescriptor;
     use serde_json::{json, Value};
     use std::ffi::OsString;
+    use std::time::Duration;
 
     struct ScopedEnvVar {
         name: &'static str,
@@ -609,6 +660,95 @@ mod tests {
             models: Vec::new(),
             chat_completions_path: None,
         }
+    }
+
+    #[test]
+    fn openai_retry_defaults_match_codex_retry_budgets() {
+        let _guard = crate::test_locks::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _vars = vec![
+            ScopedEnvVar::unset("PUFFER_OPENAI_HTTP_MAX_ATTEMPTS"),
+            ScopedEnvVar::unset("PUFFER_OPENAI_STREAM_MAX_ATTEMPTS"),
+            ScopedEnvVar::unset("PUFFER_OPENAI_HTTP_RETRY_BASE_DELAY_MS"),
+            ScopedEnvVar::unset("PUFFER_OPENAI_HTTP_RETRY_DELAY_MS"),
+            ScopedEnvVar::unset("PUFFER_OPENAI_STREAM_RETRY_BASE_DELAY_MS"),
+            ScopedEnvVar::unset("PUFFER_OPENAI_STREAM_RETRY_DELAY_MS"),
+        ];
+
+        assert_eq!(openai_transport_max_attempts(), 5);
+        assert_eq!(openai_stream_max_attempts(), 6);
+        assert_eq!(
+            openai_transport_retry_base_delay(),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            openai_stream_retry_base_delay(),
+            Duration::from_millis(200)
+        );
+    }
+
+    #[test]
+    fn openai_retry_env_values_clamp_attempts_and_base_delay() {
+        let _guard = crate::test_locks::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _http_attempts = ScopedEnvVar::set("PUFFER_OPENAI_HTTP_MAX_ATTEMPTS", "999");
+        let _stream_attempts = ScopedEnvVar::set("PUFFER_OPENAI_STREAM_MAX_ATTEMPTS", "0");
+        let _http_delay = ScopedEnvVar::set("PUFFER_OPENAI_HTTP_RETRY_BASE_DELAY_MS", "999999");
+
+        assert_eq!(openai_transport_max_attempts(), 101);
+        assert_eq!(openai_stream_max_attempts(), 1);
+        assert_eq!(
+            openai_transport_retry_base_delay(),
+            Duration::from_millis(10_000)
+        );
+    }
+
+    #[test]
+    fn openai_stream_retry_delay_aliases_preserve_legacy_env() {
+        let _guard = crate::test_locks::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _stream_base = ScopedEnvVar::unset("PUFFER_OPENAI_STREAM_RETRY_BASE_DELAY_MS");
+        let _stream_delay = ScopedEnvVar::set("PUFFER_OPENAI_STREAM_RETRY_DELAY_MS", "400");
+        let _http_base = ScopedEnvVar::set("PUFFER_OPENAI_HTTP_RETRY_BASE_DELAY_MS", "800");
+        let _http_delay = ScopedEnvVar::set("PUFFER_OPENAI_HTTP_RETRY_DELAY_MS", "900");
+
+        assert_eq!(
+            openai_stream_retry_base_delay(),
+            Duration::from_millis(400)
+        );
+    }
+
+    #[test]
+    fn openai_stream_retry_base_delay_falls_back_to_http_base_delay() {
+        let _guard = crate::test_locks::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _stream_base = ScopedEnvVar::unset("PUFFER_OPENAI_STREAM_RETRY_BASE_DELAY_MS");
+        let _stream_delay = ScopedEnvVar::unset("PUFFER_OPENAI_STREAM_RETRY_DELAY_MS");
+        let _http_base = ScopedEnvVar::set("PUFFER_OPENAI_HTTP_RETRY_BASE_DELAY_MS", "350");
+        let _http_delay = ScopedEnvVar::set("PUFFER_OPENAI_HTTP_RETRY_DELAY_MS", "900");
+
+        assert_eq!(
+            openai_stream_retry_base_delay(),
+            Duration::from_millis(350)
+        );
+    }
+
+    #[test]
+    fn openai_retry_backoff_scales_with_jitter_and_caps() {
+        let first = openai_retry_backoff(Duration::from_millis(200), 1);
+        assert!(first >= Duration::from_millis(180), "{first:?}");
+        assert!(first <= Duration::from_millis(220), "{first:?}");
+
+        let second = openai_retry_backoff(Duration::from_millis(200), 2);
+        assert!(second >= Duration::from_millis(360), "{second:?}");
+        assert!(second <= Duration::from_millis(440), "{second:?}");
+        assert_eq!(openai_retry_backoff(Duration::ZERO, 10), Duration::ZERO);
+        let capped = openai_retry_backoff(Duration::from_millis(10_000), 20);
+        assert!(capped <= Duration::from_millis(60_000), "{capped:?}");
     }
 
     #[test]

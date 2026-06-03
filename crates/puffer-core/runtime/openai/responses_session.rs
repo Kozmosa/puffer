@@ -188,13 +188,13 @@ impl OpenAIResponsesTurnSession {
         on_event: &mut dyn FnMut(TurnStreamEvent),
     ) -> Result<OpenAISseResult> {
         let max_attempts = openai_stream_max_attempts();
-        let delay = openai_stream_retry_delay();
         for attempt in 1..=max_attempts {
             match self.send_streaming_attempt(state, auth_store, wire_input, on_event) {
                 Ok(response) => return Ok(response),
                 Err(error)
                     if attempt < max_attempts && is_retryable_openai_stream_error(&error) =>
                 {
+                    let delay = openai_stream_retry_delay(attempt);
                     tracing::warn!(
                         target: "puffer::runtime::openai",
                         attempt,
