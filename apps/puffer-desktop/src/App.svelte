@@ -3060,16 +3060,6 @@
     return items.some((item) => item.kind === kind && timelineItemBody(item).includes(trimmed));
   }
 
-  function timelineHasExactBody(
-    items: TimelineItem[],
-    kind: TimelineItem["kind"],
-    body: string
-  ): boolean {
-    const trimmed = body.trim();
-    if (!trimmed) return true;
-    return items.some((item) => item.kind === kind && timelineItemBody(item).trim() === trimmed);
-  }
-
   function transientMessageSignature(item: TimelineItem): string | null {
     if (item.kind !== "user" && item.kind !== "assistant") return null;
     const body = timelineItemBody(item).trim();
@@ -3229,6 +3219,16 @@
     return pending.filter((item) => !timelineHasTransientMatch(items, item));
   }
 
+  function isTransientOrderingAnchor(item: TimelineItem): boolean {
+    return item.meta.includes("transient-order-anchor");
+  }
+
+  function asTransientOrderingAnchor(item: TimelineItem): TimelineItem {
+    return item.meta.includes("transient-order-anchor")
+      ? item
+      : { ...item, meta: [...item.meta, "transient-order-anchor"] };
+  }
+
   function findTransientMatchIndex(
     items: TimelineItem[],
     pending: TimelineItem,
@@ -3251,6 +3251,7 @@
     for (const item of transient) {
       const matchIndex = findTransientMatchIndex(merged, item, searchStart);
       if (matchIndex < 0) {
+        if (isTransientOrderingAnchor(item)) continue;
         pendingUnmatched = [...pendingUnmatched, item];
         continue;
       }
@@ -3281,7 +3282,7 @@
       }
       searchStart = matchIndex + 1;
       if (pendingUnmatched.length === 0) continue;
-      anchored = [...anchored, ...pendingUnmatched, item];
+      anchored = [...anchored, ...pendingUnmatched, asTransientOrderingAnchor(item)];
       pendingUnmatched = [];
     }
     if (pendingUnmatched.length > 0) anchored = [...anchored, ...pendingUnmatched];
@@ -3311,8 +3312,39 @@
   ): TimelineItem[] {
     const trimmed = text.trim();
     if (!trimmed) return items;
+    if (
+      items.some(
+        (item) =>
+          item.kind === "assistant" &&
+          !isStreamingAssistantForTurn(item, turnId) &&
+          timelineItemBody(item).trim() === trimmed
+      )
+    ) {
+      return items;
+    }
+    let lastStreamingIndex = -1;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (isStreamingAssistantForTurn(items[index], turnId)) {
+        lastStreamingIndex = index;
+        break;
+      }
+    }
+    if (lastStreamingIndex >= 0) {
+      const lastStreaming = items[lastStreamingIndex];
+      if (lastStreaming.kind === "assistant" && lastStreaming.body.trim() === trimmed) {
+        return [
+          ...items.slice(0, lastStreamingIndex),
+          {
+            ...lastStreaming,
+            id: `live-complete-assistant-${turnId}`,
+            summary: trimmed,
+            body: trimmed
+          },
+          ...items.slice(lastStreamingIndex + 1)
+        ];
+      }
+    }
     const streamingItems = items.filter((item) => isStreamingAssistantForTurn(item, turnId));
-    if (streamingItems.length > 0 && timelineHasExactBody(items, "assistant", trimmed)) return items;
     if (streamingItems.length === 0 && timelineHasBody(items, "assistant", trimmed)) return items;
     return [
       ...items,
