@@ -321,7 +321,13 @@ where
                                 input: input_payload,
                                 output: output_payload,
                                 success,
-                                metadata: Value::Null,
+                                metadata: json!({
+                                    "puffer": {
+                                        "provider": "openai",
+                                        "provider_stream_invocation": true,
+                                        "response_item_type": "web_search_call",
+                                    },
+                                }),
                                 terminate: false,
                             },
                         ]));
@@ -729,6 +735,7 @@ mod tests {
         assert_eq!(invocation.tool_id, "web_search");
         assert_eq!(invocation.call_id, "ws_1");
         assert!(invocation.success);
+        assert!(invocation.is_provider_stream_invocation());
         assert!(
             invocation.input.contains("rust async tokio"),
             "input carries the search query: {}",

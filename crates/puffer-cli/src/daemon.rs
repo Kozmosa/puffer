@@ -332,7 +332,9 @@ struct TurnHandle {
 #[derive(Default)]
 struct TurnProgress {
     assistant_text: String,
+    assistant_text_retry_checkpoint: usize,
     tool_invocations: Vec<ToolInvocation>,
+    tool_invocations_retry_checkpoint: usize,
     pending_tool_calls: Vec<ToolCallRequest>,
     persisted_on_cancel: bool,
 }
@@ -3801,9 +3803,22 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                 TurnStreamEvent::ToolInvocations(invs) => {
                     {
                         let mut progress = ev_progress.lock().unwrap();
-                        let completed = invs.len().min(progress.pending_tool_calls.len());
+                        let advances_stream_attempt = invs
+                            .iter()
+                            .any(|invocation| !invocation.is_provider_stream_invocation());
+                        let completed = invs
+                            .iter()
+                            .filter(|invocation| !invocation.is_provider_stream_invocation())
+                            .count()
+                            .min(progress.pending_tool_calls.len());
                         progress.pending_tool_calls.drain(0..completed);
                         progress.tool_invocations.extend(invs.clone());
+                        if advances_stream_attempt {
+                            progress.assistant_text_retry_checkpoint =
+                                progress.assistant_text.len();
+                            progress.tool_invocations_retry_checkpoint =
+                                progress.tool_invocations.len();
+                        }
                     }
                     let mut before_gates = Vec::new();
                     let mut after_gates = Vec::new();
@@ -3882,13 +3897,25 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                     attempt,
                     max_attempts,
                     error,
-                } => json!({
-                    "type": "retry-attempt",
-                    "turnId": ev_turn,
-                    "attempt": attempt,
-                    "maxAttempts": max_attempts,
-                    "error": error,
-                }),
+                } => {
+                    let mut progress = ev_progress.lock().unwrap();
+                    let checkpoint = progress
+                        .assistant_text_retry_checkpoint
+                        .min(progress.assistant_text.len());
+                    progress.assistant_text.truncate(checkpoint);
+                    let tool_checkpoint = progress
+                        .tool_invocations_retry_checkpoint
+                        .min(progress.tool_invocations.len());
+                    progress.tool_invocations.truncate(tool_checkpoint);
+                    progress.pending_tool_calls.clear();
+                    json!({
+                        "type": "retry-attempt",
+                        "turnId": ev_turn,
+                        "attempt": attempt,
+                        "maxAttempts": max_attempts,
+                        "error": error,
+                    })
+                }
             };
             let payload = event_payload_with_actor(payload, &ev_actor);
             ev_state.publish_event(ServerEnvelope::Event {
@@ -5470,6 +5497,7 @@ mod tests {
         .expect("daemon state");
         let progress = Arc::new(Mutex::new(TurnProgress {
             assistant_text: "partial answer".to_string(),
+            assistant_text_retry_checkpoint: 0,
             tool_invocations: vec![ToolInvocation {
                 call_id: "call-done".to_string(),
                 tool_id: "Bash".to_string(),
@@ -5479,6 +5507,7 @@ mod tests {
                 metadata: serde_json::Value::Null,
                 terminate: false,
             }],
+            tool_invocations_retry_checkpoint: 0,
             pending_tool_calls: vec![ToolCallRequest {
                 call_id: "call-pending".to_string(),
                 tool_id: "Bash".to_string(),

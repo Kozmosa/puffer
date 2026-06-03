@@ -268,6 +268,17 @@ pub struct ToolInvocation {
     pub terminate: bool,
 }
 
+impl ToolInvocation {
+    /// Returns true when the invocation was synthesized from a provider stream
+    /// item before the provider response reached a terminal event.
+    pub fn is_provider_stream_invocation(&self) -> bool {
+        self.metadata
+            .pointer("/puffer/provider_stream_invocation")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+}
+
 /// Describes one tool call requested by the model before execution finishes.
 /// The `call_id` matches the paired `ToolInvocation` when execution
 /// completes — callers can use it to upgrade a pending UI card in place
@@ -321,7 +332,11 @@ pub enum TurnStreamEvent {
     },
     ReflectionTrace(ReflectionTraceEvent),
     ReflectionCheckpoint(String),
-    /// A transport-level retry is about to be attempted.
+    /// A transport-level or stream-level retry is about to be attempted.
+    ///
+    /// Consumers that render live deltas should discard in-flight assistant
+    /// text, thinking, and tool-call previews from the failed attempt before
+    /// rendering the next attempt.
     RetryAttempt {
         attempt: usize,
         max_attempts: usize,

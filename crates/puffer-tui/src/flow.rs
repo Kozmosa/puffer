@@ -558,8 +558,10 @@ pub(crate) fn handle_prompt_submit(
         prompt: visible_submitted,
         receiver,
         transcript_persisted_len: transcript_start_len,
+        stream_attempt_transcript_len: transcript_start_len,
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: None,
@@ -632,8 +634,10 @@ fn execute_connect_command(
         prompt: submitted,
         receiver,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: Some("Connecting...".to_string()),
@@ -723,8 +727,10 @@ fn execute_autodream_command(
         prompt: submitted,
         receiver,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: Some("Initializing project memory...".to_string()),
@@ -779,16 +785,28 @@ fn persist_pending_submit_progress_on_cancel(
                 pending.pending_tool_calls.extend(requests);
             }
             PendingSubmitEvent::ToolInvocations(invocations) => {
+                let advances_stream_attempt = invocations
+                    .iter()
+                    .any(|invocation| !invocation.is_provider_stream_invocation());
                 persist_pending_assistant_drafts(
                     state,
                     session_store,
                     pending.transcript_persisted_len,
                 )?;
-                let completed = invocations.len().min(pending.pending_tool_calls.len());
+                let completed = invocations
+                    .iter()
+                    .filter(|invocation| !invocation.is_provider_stream_invocation())
+                    .count()
+                    .min(pending.pending_tool_calls.len());
                 pending.pending_tool_calls.drain(0..completed);
                 pending.rendered_tool_invocations += invocations.len();
                 append_tool_messages(state, session_store, &invocations)?;
                 pending.transcript_persisted_len = state.transcript.len();
+                if advances_stream_attempt {
+                    pending.stream_attempt_transcript_len = pending.transcript_persisted_len;
+                    pending.stream_attempt_rendered_tool_invocations =
+                        pending.rendered_tool_invocations;
+                }
             }
             PendingSubmitEvent::PermissionRequest(_, response_tx) => {
                 let _ = response_tx.send(PermissionPromptAction::Deny);
@@ -819,8 +837,10 @@ fn persist_pending_submit_progress_on_cancel(
                     pending.transcript_persisted_len = state.transcript.len();
                 }
             }
+            PendingSubmitEvent::RetryAttempt { .. } => {
+                reset_pending_stream_attempt(state, session_store, pending)?;
+            }
             PendingSubmitEvent::ReflectionCheckpoint(_)
-            | PendingSubmitEvent::RetryAttempt { .. }
             | PendingSubmitEvent::Usage(_)
             | PendingSubmitEvent::UltrareviewProgress(_)
             | PendingSubmitEvent::UltrareviewFinished(_) => {}
@@ -932,16 +952,28 @@ pub(crate) fn poll_pending_submit(
                 break;
             }
             PendingSubmitEvent::ToolInvocations(invocations) => {
+                let advances_stream_attempt = invocations
+                    .iter()
+                    .any(|invocation| !invocation.is_provider_stream_invocation());
                 persist_pending_assistant_drafts(
                     state,
                     session_store,
                     pending.transcript_persisted_len,
                 )?;
-                let completed = invocations.len().min(pending.pending_tool_calls.len());
+                let completed = invocations
+                    .iter()
+                    .filter(|invocation| !invocation.is_provider_stream_invocation())
+                    .count()
+                    .min(pending.pending_tool_calls.len());
                 pending.pending_tool_calls.drain(0..completed);
                 pending.rendered_tool_invocations += invocations.len();
                 append_tool_messages(state, session_store, &invocations)?;
                 pending.transcript_persisted_len = state.transcript.len();
+                if advances_stream_attempt {
+                    pending.stream_attempt_transcript_len = pending.transcript_persisted_len;
+                    pending.stream_attempt_rendered_tool_invocations =
+                        pending.rendered_tool_invocations;
+                }
             }
             PendingSubmitEvent::ReflectionCheckpoint(summary) => {
                 pending.status_hint = Some(summary);
@@ -951,6 +983,7 @@ pub(crate) fn poll_pending_submit(
                 max_attempts,
                 error: _,
             } => {
+                reset_pending_stream_attempt(state, session_store, pending)?;
                 pending.status_hint =
                     Some(format!("Retrying ({}/{})\u{2026}", attempt, max_attempts));
             }
@@ -1492,6 +1525,33 @@ fn discard_pending_assistant_drafts(state: &mut AppState, transcript_start_len: 
             index += 1;
         }
     }
+}
+
+fn reset_pending_stream_attempt(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    pending: &mut PendingSubmit,
+) -> Result<()> {
+    let persisted_start = pending
+        .stream_attempt_transcript_len
+        .min(pending.transcript_persisted_len);
+    let persisted_count = pending
+        .transcript_persisted_len
+        .saturating_sub(persisted_start);
+    if persisted_count > 0 {
+        session_store.append_transcript_pop_last(state.session.id, persisted_count)?;
+    }
+    let attempt_start = pending
+        .stream_attempt_transcript_len
+        .min(state.transcript.len());
+    state.transcript.truncate(attempt_start);
+    pending.transcript_persisted_len = attempt_start;
+    pending.rendered_tool_invocations = pending
+        .stream_attempt_rendered_tool_invocations
+        .min(pending.rendered_tool_invocations);
+    pending.pending_tool_calls.clear();
+    pending.thinking_active = false;
+    Ok(())
 }
 
 fn persist_pending_assistant_drafts(

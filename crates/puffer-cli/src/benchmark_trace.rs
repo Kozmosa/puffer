@@ -111,6 +111,15 @@ impl PendingTraceStep {
             || !self.usage.is_empty()
     }
 
+    fn discard_stream_attempt(&mut self) {
+        self.message.clear();
+        self.thinking.clear();
+        self.requested_tool_calls.clear();
+        self.tool_calls.clear();
+        self.observations.clear();
+        self.usage.clear();
+    }
+
     fn step_message(&self) -> String {
         if !self.message.trim().is_empty() {
             return self.message.clone();
@@ -342,6 +351,7 @@ fn build_trajectory_json(
                 error,
                 ..
             } => {
+                pending.discard_stream_attempt();
                 pending.retry_attempts.push(json!({
                     "attempt": attempt,
                     "max_attempts": max_attempts,

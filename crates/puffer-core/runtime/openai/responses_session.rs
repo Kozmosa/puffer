@@ -29,7 +29,8 @@ use super::conversation::{
 };
 use super::support::{
     apply_previous_response_id, build_codex_openai_request_body,
-    is_openai_include_validation_error, openai_responses_path,
+    is_openai_include_validation_error, is_retryable_openai_stream_error, openai_responses_path,
+    openai_stream_max_attempts, openai_stream_retry_delay,
 };
 use super::support::{openai_model_supports_reasoning, openai_supports_response_threading};
 use super::{
@@ -38,6 +39,7 @@ use super::{
 };
 use crate::permissions::{load_runtime_permission_context_with_inputs, RuntimePermissionInputs};
 use crate::runtime::agent_loop::{AssistantTurn, TurnSession};
+use crate::runtime::openai_sse::OpenAISseResult;
 use crate::runtime::structured_output_support::StructuredOutputConfig;
 use crate::runtime::structured_output_support::{
     openai_responses_text_config, openai_tool_definitions_for_request,
@@ -138,6 +140,84 @@ impl OpenAIResponsesTurnSession {
         body
     }
 
+    fn send_streaming_attempt(
+        &mut self,
+        state: &AppState,
+        auth_store: &mut AuthStore,
+        wire_input: &Value,
+        on_event: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<OpenAISseResult> {
+        let primary_body = self.build_request_body(wire_input.clone(), state, true);
+        let mut emit = |event: TurnStreamEvent| on_event(event);
+        send_openai_request_with_refresh_streaming(
+            auth_store,
+            &mut self.execution,
+            &state.config.network.proxy,
+            request_builder_from_body(primary_body),
+            &mut emit,
+        )
+        .or_else(|error| {
+            if !self.supports_reasoning || !is_openai_include_validation_error(&error) {
+                return Err(error);
+            }
+            self.supports_reasoning = false;
+            emit(TurnStreamEvent::RetryAttempt {
+                attempt: 1,
+                max_attempts: 2,
+                error:
+                    "OpenAI rejected the reasoning include selector; retrying without reasoning."
+                        .to_string(),
+            });
+            let fallback_body =
+                self.build_request_body_with_reasoning(wire_input.clone(), state, true, false);
+            send_openai_request_with_refresh_streaming(
+                auth_store,
+                &mut self.execution,
+                &state.config.network.proxy,
+                request_builder_from_body(fallback_body),
+                &mut emit,
+            )
+        })
+    }
+
+    fn send_streaming_with_retries(
+        &mut self,
+        state: &AppState,
+        auth_store: &mut AuthStore,
+        wire_input: &Value,
+        on_event: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<OpenAISseResult> {
+        let max_attempts = openai_stream_max_attempts();
+        for attempt in 1..=max_attempts {
+            match self.send_streaming_attempt(state, auth_store, wire_input, on_event) {
+                Ok(response) => return Ok(response),
+                Err(error)
+                    if attempt < max_attempts && is_retryable_openai_stream_error(&error) =>
+                {
+                    let delay = openai_stream_retry_delay(attempt);
+                    tracing::warn!(
+                        target: "puffer::runtime::openai",
+                        attempt,
+                        max_attempts,
+                        retry_delay_ms = delay.as_millis(),
+                        error = %error,
+                        "OpenAI Responses stream failed before a terminal event; restarting sampling request"
+                    );
+                    on_event(TurnStreamEvent::RetryAttempt {
+                        attempt,
+                        max_attempts,
+                        error: error.to_string(),
+                    });
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("OpenAI stream retry loop always returns or errors")
+    }
+
     /// Writes per-turn token counts onto `state` (guards placeholder zeros).
     fn record_usage(
         state: &mut AppState,
@@ -165,40 +245,8 @@ impl TurnSession for OpenAIResponsesTurnSession {
         let items_len_at_request = items.len();
         let wire_input = self.build_wire_input(items);
 
-        // Pre-render the body so the per-attempt closure stays cheap
-        // and avoids re-borrowing `state` mutably from inside a nested
-        // closure (which the borrow checker rejects).
-        let primary_body = self.build_request_body(wire_input.clone(), state, true);
-        let mut sized = |event: TurnStreamEvent| on_event(event);
-        let response = send_openai_request_with_refresh_streaming(
-            auth_store,
-            &mut self.execution,
-            &state.config.network.proxy,
-            request_builder_from_body(primary_body),
-            &mut sized,
-        )
-        .or_else(|error| {
-            if !self.supports_reasoning || !is_openai_include_validation_error(&error) {
-                return Err(error);
-            }
-            self.supports_reasoning = false;
-            sized(TurnStreamEvent::RetryAttempt {
-                attempt: 1,
-                max_attempts: 2,
-                error:
-                    "OpenAI rejected the reasoning include selector; retrying without reasoning."
-                        .to_string(),
-            });
-            let fallback_body =
-                self.build_request_body_with_reasoning(wire_input, state, true, false);
-            send_openai_request_with_refresh_streaming(
-                auth_store,
-                &mut self.execution,
-                &state.config.network.proxy,
-                request_builder_from_body(fallback_body),
-                &mut sized,
-            )
-        })?;
+        let response =
+            self.send_streaming_with_retries(state, auth_store, &wire_input, on_event)?;
 
         // Update threading state.
         if self.supports_response_threading {

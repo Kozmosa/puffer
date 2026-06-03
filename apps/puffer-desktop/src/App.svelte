@@ -101,10 +101,20 @@
 
   const STALE_TURN_RETRY_AFTER_MS = 120_000;
 
+  type StreamAttemptSnapshot = {
+    liveStreamItems: TimelineItem[];
+    replayTextByTurn: Record<string, string>;
+    turnPermissionLookup: Record<string, { turnId: string; requestId: string }>;
+    turnQuestionLookup: Record<string, { turnId: string; requestId: string }>;
+    resolvingPermissionIds: string[];
+    resolvingQuestionIds: string[];
+  };
+
   type TransientConversationState = {
     submittedMessages: TimelineItem[];
     submittedMessageBaselineIds: Record<string, string[]>;
     liveStreamItems: TimelineItem[];
+    streamAttempt: StreamAttemptSnapshot;
     replayTextByTurn: Record<string, string>;
     turnPermissionLookup: Record<string, { turnId: string; requestId: string }>;
     turnQuestionLookup: Record<string, { turnId: string; requestId: string }>;
@@ -202,6 +212,12 @@
   let turnPermissionLookup = $state<Record<string, { turnId: string; requestId: string }>>({});
   let turnQuestionLookup = $state<Record<string, { turnId: string; requestId: string }>>({});
   let replayTextByTurn: Record<string, string> = {};
+  let streamAttemptLiveItems: TimelineItem[] = [];
+  let streamAttemptReplayTextByTurn: Record<string, string> = {};
+  let streamAttemptTurnPermissionLookup: Record<string, { turnId: string; requestId: string }> = {};
+  let streamAttemptTurnQuestionLookup: Record<string, { turnId: string; requestId: string }> = {};
+  let streamAttemptResolvingPermissionIds: string[] = [];
+  let streamAttemptResolvingQuestionIds: string[] = [];
   let sessionEventUnlisten: UnlistenFn | null = null;
   let subscribedSessionId: string | null = null;
   let sessionSubscriptionGeneration = 0;
@@ -1506,10 +1522,57 @@
     resetLiveState?: boolean;
   };
 
+  function emptyStreamAttemptSnapshot(): StreamAttemptSnapshot {
+    return {
+      liveStreamItems: [],
+      replayTextByTurn: {},
+      turnPermissionLookup: {},
+      turnQuestionLookup: {},
+      resolvingPermissionIds: [],
+      resolvingQuestionIds: []
+    };
+  }
+
+  function captureStreamAttemptSnapshot(): StreamAttemptSnapshot {
+    return {
+      liveStreamItems: streamAttemptLiveItems,
+      replayTextByTurn: { ...streamAttemptReplayTextByTurn },
+      turnPermissionLookup: { ...streamAttemptTurnPermissionLookup },
+      turnQuestionLookup: { ...streamAttemptTurnQuestionLookup },
+      resolvingPermissionIds: [...streamAttemptResolvingPermissionIds],
+      resolvingQuestionIds: [...streamAttemptResolvingQuestionIds]
+    };
+  }
+
+  function currentLiveStreamSnapshot(): StreamAttemptSnapshot {
+    return {
+      liveStreamItems,
+      replayTextByTurn: { ...replayTextByTurn },
+      turnPermissionLookup: { ...turnPermissionLookup },
+      turnQuestionLookup: { ...turnQuestionLookup },
+      resolvingPermissionIds: [...resolvingPermissionIds],
+      resolvingQuestionIds: [...resolvingQuestionIds]
+    };
+  }
+
+  function setStreamAttemptSnapshot(snapshot: StreamAttemptSnapshot) {
+    streamAttemptLiveItems = snapshot.liveStreamItems;
+    streamAttemptReplayTextByTurn = { ...snapshot.replayTextByTurn };
+    streamAttemptTurnPermissionLookup = { ...snapshot.turnPermissionLookup };
+    streamAttemptTurnQuestionLookup = { ...snapshot.turnQuestionLookup };
+    streamAttemptResolvingPermissionIds = [...snapshot.resolvingPermissionIds];
+    streamAttemptResolvingQuestionIds = [...snapshot.resolvingQuestionIds];
+  }
+
+  function markLiveStreamAttemptBaseline() {
+    setStreamAttemptSnapshot(currentLiveStreamSnapshot());
+  }
+
   function resetLiveTurnState() {
     submittedMessages = [];
     submittedMessageBaselineIds = {};
     liveStreamItems = [];
+    setStreamAttemptSnapshot(emptyStreamAttemptSnapshot());
     replayTextByTurn = {};
     turnPermissionLookup = {};
     turnQuestionLookup = {};
@@ -1527,6 +1590,7 @@
       submittedMessages,
       submittedMessageBaselineIds: { ...submittedMessageBaselineIds },
       liveStreamItems,
+      streamAttempt: captureStreamAttemptSnapshot(),
       replayTextByTurn: { ...replayTextByTurn },
       turnPermissionLookup: { ...turnPermissionLookup },
       turnQuestionLookup: { ...turnQuestionLookup },
@@ -1545,6 +1609,7 @@
       submittedMessages: [],
       submittedMessageBaselineIds: {},
       liveStreamItems: [],
+      streamAttempt: emptyStreamAttemptSnapshot(),
       replayTextByTurn: {},
       turnPermissionLookup: {},
       turnQuestionLookup: {},
@@ -1791,6 +1856,7 @@
   ) {
     const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
     let liveItems = cached.liveStreamItems;
+    let advancesStreamAttempt = false;
     for (const inv of ev.invocations) {
       if (isAskUserQuestionToolName(inv.toolId)) continue;
       const id = liveToolId(ev.turnId, inv.callId);
@@ -1809,6 +1875,7 @@
         metadata: inv.metadata
       };
       const existingIdx = liveItems.findIndex((item) => item.id === id);
+      if (!isProviderStreamInvocationMetadata(inv.metadata)) advancesStreamAttempt = true;
       liveItems = existingIdx >= 0
         ? [
             ...liveItems.slice(0, existingIdx),
@@ -1817,13 +1884,16 @@
           ]
         : appendCachedLiveItem({ ...cached, liveStreamItems: liveItems }, payload);
     }
+    const next = withCachedTurnState(cached, ev.turnId, {
+      liveStreamItems: liveItems,
+      turnThinking: false,
+      turnStatusHint: null
+    });
     setTransientConversationState(
       sessionId,
-      withCachedTurnState(cached, ev.turnId, {
-        liveStreamItems: liveItems,
-        turnThinking: false,
-        turnStatusHint: null
-      })
+      advancesStreamAttempt
+        ? { ...next, streamAttempt: snapshotFromTransientState(next) }
+        : next
     );
   }
 
@@ -2078,14 +2148,20 @@
       case "reflection-checkpoint":
       case "retry-attempt": {
         const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
+        const base = ev.type === "retry-attempt"
+          ? resetCachedStreamAttempt(cached)
+          : cached;
+        const next = withCachedTurnState(base, ev.turnId, {
+          turnThinking: true,
+          turnStatusHint: ev.type === "retry-attempt"
+            ? `Retrying ${ev.attempt}/${ev.maxAttempts}`
+            : "Thinking"
+        });
         setTransientConversationState(
           sessionId,
-          withCachedTurnState(cached, ev.turnId, {
-            turnThinking: true,
-            turnStatusHint: ev.type === "retry-attempt"
-              ? `Retrying ${ev.attempt}/${ev.maxAttempts}`
-              : "Thinking"
-          })
+          ev.type === "turn-start"
+            ? { ...next, streamAttempt: snapshotFromTransientState(next) }
+            : next
         );
         break;
       }
@@ -2121,6 +2197,7 @@
     submittedMessages = cached.submittedMessages;
     submittedMessageBaselineIds = { ...cached.submittedMessageBaselineIds };
     liveStreamItems = cached.liveStreamItems;
+    setStreamAttemptSnapshot(cached.streamAttempt);
     replayTextByTurn = { ...cached.replayTextByTurn };
     turnPermissionLookup = { ...cached.turnPermissionLookup };
     turnQuestionLookup = { ...cached.turnQuestionLookup };
@@ -3501,6 +3578,38 @@
     return items.filter((item) => !liveItemBelongsToTurn(item, turnId));
   }
 
+  function snapshotFromTransientState(state: TransientConversationState): StreamAttemptSnapshot {
+    return {
+      liveStreamItems: state.liveStreamItems,
+      replayTextByTurn: { ...state.replayTextByTurn },
+      turnPermissionLookup: { ...state.turnPermissionLookup },
+      turnQuestionLookup: { ...state.turnQuestionLookup },
+      resolvingPermissionIds: [...state.resolvingPermissionIds],
+      resolvingQuestionIds: [...state.resolvingQuestionIds]
+    };
+  }
+
+  function resetCachedStreamAttempt(state: TransientConversationState): TransientConversationState {
+    return {
+      ...state,
+      liveStreamItems: state.streamAttempt.liveStreamItems,
+      replayTextByTurn: { ...state.streamAttempt.replayTextByTurn },
+      turnPermissionLookup: { ...state.streamAttempt.turnPermissionLookup },
+      turnQuestionLookup: { ...state.streamAttempt.turnQuestionLookup },
+      resolvingPermissionIds: [...state.streamAttempt.resolvingPermissionIds],
+      resolvingQuestionIds: [...state.streamAttempt.resolvingQuestionIds]
+    };
+  }
+
+  function resetLiveStreamAttempt() {
+    liveStreamItems = streamAttemptLiveItems;
+    replayTextByTurn = { ...streamAttemptReplayTextByTurn };
+    turnPermissionLookup = { ...streamAttemptTurnPermissionLookup };
+    turnQuestionLookup = { ...streamAttemptTurnQuestionLookup };
+    resolvingPermissionIds = [...streamAttemptResolvingPermissionIds];
+    resolvingQuestionIds = [...streamAttemptResolvingQuestionIds];
+  }
+
   function upsertStreamingAssistant(turnId: string, delta: string) {
     liveStreamItems = upsertStreamingAssistantItems(liveStreamItems, turnId, delta);
   }
@@ -3608,6 +3717,7 @@
           const { [ev.turnId]: _drop, ...rest } = replayTextByTurn;
           replayTextByTurn = rest;
         }
+        markLiveStreamAttemptBaseline();
         break;
       case "thinking-delta":
         markTurnActive(sid, ev.turnId);
@@ -3650,14 +3760,16 @@
           });
         }
         break;
-      case "tool-invocations":
+      case "tool-invocations": {
         markTurnActive(sid, ev.turnId);
         turnThinking = false;
         turnStatusHint = null;
+        let advancesStreamAttempt = false;
         for (const inv of ev.invocations) {
           if (isAskUserQuestionToolName(inv.toolId)) continue;
           const id = liveToolId(ev.turnId, inv.callId);
           const existingIdx = liveStreamItems.findIndex((x) => x.id === id);
+          if (!isProviderStreamInvocationMetadata(inv.metadata)) advancesStreamAttempt = true;
           const payload: TimelineItem = {
             id,
             kind: "tool",
@@ -3684,7 +3796,9 @@
             appendLive(payload);
           }
         }
+        if (advancesStreamAttempt) markLiveStreamAttemptBaseline();
         break;
+      }
       case "lambda-gate":
         markTurnActive(sid, ev.turnId);
         turnThinking = false;
@@ -3729,6 +3843,7 @@
         turnStatusHint = "Thinking";
         break;
       case "retry-attempt":
+        resetLiveStreamAttempt();
         markTurnActive(sid, ev.turnId);
         turnThinking = true;
         turnStatusHint = `Retrying ${ev.attempt}/${ev.maxAttempts}`;
@@ -3849,6 +3964,14 @@
     } catch {
       return null;
     }
+  }
+
+  function isProviderStreamInvocationMetadata(metadata: unknown): boolean {
+    if (typeof metadata !== "object" || metadata === null) return false;
+    const root = metadata as Record<string, unknown>;
+    const puffer = root.puffer;
+    if (typeof puffer !== "object" || puffer === null) return false;
+    return (puffer as Record<string, unknown>).provider_stream_invocation === true;
   }
 
   function normalizeUserQuestions(raw: unknown[]): AskUserQuestionItem[] {

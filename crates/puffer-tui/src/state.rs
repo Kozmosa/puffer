@@ -149,8 +149,12 @@ pub(crate) struct PendingSubmit {
     pub(crate) receiver: Receiver<PendingSubmitEvent>,
     /// Transcript index through which live turn rows are already persisted.
     pub(crate) transcript_persisted_len: usize,
+    /// Transcript index at the start of the current provider stream attempt.
+    pub(crate) stream_attempt_transcript_len: usize,
     pub(crate) pending_tool_calls: Vec<ToolCallRequest>,
     pub(crate) rendered_tool_invocations: usize,
+    /// Tool invocation count committed before the current provider stream attempt.
+    pub(crate) stream_attempt_rendered_tool_invocations: usize,
     pub(crate) started_at: std::time::Instant,
     /// Set to true when the model is actively producing thinking/reasoning tokens.
     pub(crate) thinking_active: bool,

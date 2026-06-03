@@ -8,7 +8,7 @@ use puffer_config::{
 use puffer_core::{ToolCallRequest, ToolInvocation, TurnExecution};
 use puffer_provider_registry::{AuthMode, ModelDescriptor, ProviderDescriptor};
 use puffer_resources::{LoadedItem, SourceInfo, SourceKind, ToolSpec};
-use puffer_session_store::{SessionMetadata, TranscriptEvent};
+use puffer_session_store::{SessionMetadata, TranscriptEvent, TranscriptRewrite};
 use serde_json::{json, Map};
 use std::sync::mpsc;
 use tempfile::tempdir;
@@ -46,6 +46,22 @@ fn user_question_answer(question: &str, answer: &str) -> UserQuestionPromptRespo
     UserQuestionPromptResponse {
         answers: Map::from_iter([(question.to_string(), json!(answer))]),
         annotations: Map::new(),
+    }
+}
+
+fn provider_stream_invocation(call_id: &str) -> ToolInvocation {
+    ToolInvocation {
+        call_id: call_id.to_string(),
+        tool_id: "web_search".to_string(),
+        input: "{\"query\":\"rust\"}".to_string(),
+        output: "{\"status\":\"completed\"}".to_string(),
+        success: true,
+        metadata: json!({
+            "puffer": {
+                "provider_stream_invocation": true,
+            },
+        }),
+        terminate: false,
     }
 }
 
@@ -915,8 +931,10 @@ fn queued_empty_model_command_opens_picker_after_turn_finishes() {
         prompt: "first".to_string(),
         receiver,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: None,
@@ -1010,8 +1028,10 @@ fn poll_pending_submit_syncs_project_memory_review_turns_back_to_main_state() {
         prompt: "remember this".to_string(),
         receiver,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: None,
@@ -1041,7 +1061,6 @@ fn poll_pending_submit_syncs_project_memory_review_turns_back_to_main_state() {
         &mut tui,
     )
     .unwrap();
-
     assert!(completed);
     assert_eq!(state.project_memory_review_turns, 1);
     assert!(state
@@ -1183,8 +1202,10 @@ fn cancel_pending_submit_preserves_streamed_progress() {
         prompt: "work".to_string(),
         receiver,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: None,
@@ -1428,8 +1449,10 @@ fn poll_pending_submit_skips_empty_assistant_message_after_tool_only_turn() {
         prompt: "run the tool".to_string(),
         receiver,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         started_at: std::time::Instant::now(),
         thinking_active: false,
         status_hint: None,
@@ -1468,7 +1491,6 @@ fn poll_pending_submit_skips_empty_assistant_message_after_tool_only_turn() {
         &mut tui,
     )
     .unwrap();
-
     assert!(completed);
     assert!(!state
         .transcript
@@ -1486,6 +1508,322 @@ fn poll_pending_submit_skips_empty_assistant_message_after_tool_only_turn() {
         matches!(
             event,
             TranscriptEvent::AssistantMessage { text, .. } if text.is_empty()
+        )
+    }));
+}
+
+#[test]
+fn poll_pending_submit_retry_attempt_discards_failed_stream_preview() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = sample_state(session, tempdir.path());
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::default();
+    let mut tui = TuiState::default();
+    let (sender, receiver) = mpsc::channel();
+    tui.pending_submit = Some(PendingSubmit {
+        prompt: "work".to_string(),
+        receiver,
+        transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
+        pending_tool_calls: Vec::new(),
+        rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
+        started_at: std::time::Instant::now(),
+        thinking_active: false,
+        status_hint: None,
+        cancel: puffer_core::CancelToken::new(),
+    });
+
+    sender
+        .send(PendingSubmitEvent::TextDelta("partial answer".to_string()))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::ToolCallsRequested(vec![
+            ToolCallRequest {
+                call_id: "call-pending".to_string(),
+                tool_id: "Bash".to_string(),
+                input: "{\"command\":\"sleep 10\"}".to_string(),
+            },
+        ]))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::ToolInvocations(vec![
+            provider_stream_invocation("web-search-preview"),
+        ]))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::RetryAttempt {
+            attempt: 1,
+            max_attempts: 2,
+            error: "stream closed before response.completed".to_string(),
+        })
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::TextDelta("pong".to_string()))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::Finished(PendingSubmitResult {
+            outcome: Ok(TurnExecution {
+                assistant_text: "pong".to_string(),
+                tool_invocations: Vec::new(),
+                reflection_traces: Vec::new(),
+            }),
+            auth_store: auth_store.clone(),
+            session_permission_state: Default::default(),
+            session_allow_all: false,
+            project_memory_review_turns: 0,
+            autodream_review_turns: 0,
+            autodream_suggest_skill: false,
+        }))
+        .unwrap();
+
+    let completed = poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap();
+    assert!(!completed);
+    assert!(tui.has_pending_submit());
+
+    let completed = poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap();
+    assert!(completed);
+    assert!(!tui.has_pending_submit());
+    assert!(state
+        .transcript
+        .iter()
+        .any(|message| message.role == MessageRole::Assistant && message.text == "pong"));
+    assert!(!state.transcript.iter().any(|message| {
+        message.role == MessageRole::Assistant && message.text.contains("partial")
+    }));
+
+    let record = session_store.load_session(state.session.id).unwrap();
+    assert!(record.events.iter().any(|event| {
+        matches!(
+            event,
+            TranscriptEvent::AssistantMessage { text, .. } if text == "pong"
+        )
+    }));
+    assert!(record.events.iter().any(|event| {
+        matches!(
+            event,
+            TranscriptEvent::TranscriptRewritten {
+                rewrite: TranscriptRewrite::PopLast { count },
+            } if *count >= 2
+        )
+    }));
+}
+
+#[test]
+fn poll_pending_submit_provider_stream_invocation_keeps_pending_local_call() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = sample_state(session, tempdir.path());
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::default();
+    let mut tui = TuiState::default();
+    let (sender, receiver) = mpsc::channel();
+    tui.pending_submit = Some(PendingSubmit {
+        prompt: "work".to_string(),
+        receiver,
+        transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
+        pending_tool_calls: Vec::new(),
+        rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
+        started_at: std::time::Instant::now(),
+        thinking_active: false,
+        status_hint: None,
+        cancel: puffer_core::CancelToken::new(),
+    });
+
+    sender
+        .send(PendingSubmitEvent::ToolCallsRequested(vec![
+            ToolCallRequest {
+                call_id: "call-local".to_string(),
+                tool_id: "Bash".to_string(),
+                input: "{\"command\":\"pwd\"}".to_string(),
+            },
+        ]))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::ToolInvocations(vec![
+            provider_stream_invocation("web-search-preview"),
+        ]))
+        .unwrap();
+
+    assert!(!poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap());
+    assert!(!poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap());
+    let pending = tui.pending_submit.as_ref().unwrap();
+    assert_eq!(pending.pending_tool_calls.len(), 1);
+    assert_eq!(pending.pending_tool_calls[0].call_id, "call-local");
+}
+
+#[test]
+fn poll_pending_submit_retry_attempt_preserves_completed_local_tool() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = sample_state(session, tempdir.path());
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::default();
+    let mut tui = TuiState::default();
+    let (sender, receiver) = mpsc::channel();
+    tui.pending_submit = Some(PendingSubmit {
+        prompt: "work".to_string(),
+        receiver,
+        transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
+        pending_tool_calls: Vec::new(),
+        rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
+        started_at: std::time::Instant::now(),
+        thinking_active: false,
+        status_hint: None,
+        cancel: puffer_core::CancelToken::new(),
+    });
+    let completed_tool = ToolInvocation {
+        call_id: "call-done".to_string(),
+        tool_id: "Bash".to_string(),
+        input: "{\"command\":\"pwd\"}".to_string(),
+        output: "/tmp/work\n".to_string(),
+        success: true,
+        metadata: serde_json::Value::Null,
+        terminate: false,
+    };
+
+    sender
+        .send(PendingSubmitEvent::TextDelta("I'll check.\n".to_string()))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::ToolCallsRequested(vec![
+            ToolCallRequest {
+                call_id: completed_tool.call_id.clone(),
+                tool_id: completed_tool.tool_id.clone(),
+                input: completed_tool.input.clone(),
+            },
+        ]))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::ToolInvocations(vec![
+            completed_tool.clone()
+        ]))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::TextDelta(
+            "partial after tool".to_string(),
+        ))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::RetryAttempt {
+            attempt: 1,
+            max_attempts: 2,
+            error: "stream closed before response.completed".to_string(),
+        })
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::TextDelta("done".to_string()))
+        .unwrap();
+    sender
+        .send(PendingSubmitEvent::Finished(PendingSubmitResult {
+            outcome: Ok(TurnExecution {
+                assistant_text: "done".to_string(),
+                tool_invocations: vec![completed_tool],
+                reflection_traces: Vec::new(),
+            }),
+            auth_store: auth_store.clone(),
+            session_permission_state: Default::default(),
+            session_allow_all: false,
+            project_memory_review_turns: 0,
+            autodream_review_turns: 0,
+            autodream_suggest_skill: false,
+        }))
+        .unwrap();
+
+    assert!(!poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap());
+    assert!(poll_pending_submit(
+        &mut state,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+    )
+    .unwrap());
+
+    assert!(state
+        .transcript
+        .iter()
+        .any(|message| message.role == MessageRole::Assistant && message.text == "I'll check.\n"));
+    assert!(state
+        .transcript
+        .iter()
+        .any(|message| message.role == MessageRole::Assistant && message.text == "done"));
+    assert!(!state.transcript.iter().any(|message| {
+        message.role == MessageRole::Assistant && message.text.contains("partial after tool")
+    }));
+
+    let record = session_store.load_session(state.session.id).unwrap();
+    assert!(record.events.iter().any(|event| {
+        matches!(
+            event,
+            TranscriptEvent::ToolInvocation { call_id, .. } if call_id == "call-done"
+        )
+    }));
+    assert!(record.events.iter().any(|event| {
+        matches!(
+            event,
+            TranscriptEvent::AssistantMessage { text, .. } if text == "done"
+        )
+    }));
+    assert!(!record.events.iter().any(|event| {
+        matches!(
+            event,
+            TranscriptEvent::AssistantMessage { text, .. } if text.contains("partial after tool")
         )
     }));
 }
@@ -1542,7 +1880,9 @@ fn poll_pending_submit_preserves_browser_category_session_grants() {
         prompt: "hi".to_string(),
         receiver: event_rx,
         transcript_persisted_len: state.transcript.len(),
+        stream_attempt_transcript_len: state.transcript.len(),
         rendered_tool_invocations: 0,
+        stream_attempt_rendered_tool_invocations: 0,
         pending_tool_calls: Vec::new(),
         started_at: std::time::Instant::now(),
         thinking_active: false,
