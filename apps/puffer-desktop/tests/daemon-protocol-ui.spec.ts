@@ -8,6 +8,18 @@ async function openRegressionAgent(page: Page): Promise<void> {
     .click();
 }
 
+function orderIndex(order: string[], needles: string[]): number {
+  return order.findIndex((text) => needles.some((needle) => text.includes(needle)));
+}
+
+function expectBefore(order: string[], before: string[], after: string[]): void {
+  const beforeIndex = orderIndex(order, before);
+  const afterIndex = orderIndex(order, after);
+  expect(beforeIndex).toBeGreaterThanOrEqual(0);
+  expect(afterIndex).toBeGreaterThanOrEqual(0);
+  expect(beforeIndex).toBeLessThan(afterIndex);
+}
+
 test("desktop client speaks the real daemon WebSocket protocol", async ({ page }) => {
   const daemon = new FakeDaemon({ protocol: "real" });
   await daemon.install(page);
@@ -52,6 +64,158 @@ test("desktop client speaks the real daemon WebSocket protocol", async ({ page }
   });
 
   await expect(page.getByText("Real daemon completion arrived.")).toBeVisible();
+});
+
+test("streams intermediate assistant messages inside agent activity", async ({ page }) => {
+  const daemon = new FakeDaemon({ protocol: "real" });
+  daemon.setSessionTimeline("session-browser", []);
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openRegressionAgent(page);
+  await page.locator(".pf-composer textarea").fill("Interleave live activity");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await daemon.waitForRequest(
+    "run_agent_turn",
+    (request) => request.params.message === "Interleave live activity"
+  );
+  const turnId = "turn-session-browser";
+  const channel = "session:session-browser:event";
+  daemon.emit(channel, { type: "turn-start", turnId });
+  daemon.emit(channel, {
+    type: "text-delta",
+    turnId,
+    delta: "First intermediate."
+  });
+  daemon.emit(channel, {
+    type: "tool-calls-requested",
+    turnId,
+    requests: [
+      {
+        callId: "call-read",
+        toolId: "Read",
+        input: "{\"path\":\"README.md\"}"
+      }
+    ]
+  });
+  daemon.emit(channel, {
+    type: "tool-invocations",
+    turnId,
+    invocations: [
+      {
+        callId: "call-read",
+        toolId: "Read",
+        input: "{\"path\":\"README.md\"}",
+        output: "{\"content\":\"read output\"}",
+        success: true
+      }
+    ]
+  });
+  daemon.emit(channel, {
+    type: "text-delta",
+    turnId,
+    delta: "Second intermediate."
+  });
+  daemon.emit(channel, {
+    type: "tool-calls-requested",
+    turnId,
+    requests: [
+      {
+        callId: "call-bash",
+        toolId: "Bash",
+        input: "{\"command\":\"npm test\"}"
+      }
+    ]
+  });
+  daemon.emit(channel, {
+    type: "tool-invocations",
+    turnId,
+    invocations: [
+      {
+        callId: "call-bash",
+        toolId: "Bash",
+        input: "{\"command\":\"npm test\"}",
+        output: "{\"stdout\":\"ok\"}",
+        success: true
+      }
+    ]
+  });
+
+  await expect(
+    page.locator(".agent-tools .activity-message").filter({ hasText: "First intermediate." })
+  ).toBeVisible();
+  await expect(
+    page.locator(".agent-tools .activity-message").filter({ hasText: "Second intermediate." })
+  ).toBeVisible();
+  const runningOrder = await page
+    .locator(".agent-tools .activity-message, .agent-tools .pf-tool")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.textContent?.replace(/\s+/g, " ").trim() ?? "")
+    );
+  expectBefore(runningOrder, ["First intermediate."], ["Read"]);
+  expectBefore(runningOrder, ["Read"], ["Second intermediate."]);
+  expectBefore(runningOrder, ["Second intermediate."], ["Bash", "Shell", "npm test"]);
+
+  const completedAtMs = Date.now();
+  daemon.setSessionTimeline("session-browser", [
+    {
+      kind: "user_message",
+      id: "interleaved-user",
+      text: "Interleave live activity",
+      createdAtMs: completedAtMs - 4000
+    },
+    {
+      kind: "tool_call",
+      id: "persisted-read",
+      toolId: "Read",
+      status: "success",
+      inputText: "{\"path\":\"README.md\"}",
+      inputJson: { path: "README.md" },
+      outputText: "{\"content\":\"read output\"}",
+      createdAtMs: completedAtMs - 3000
+    },
+    {
+      kind: "tool_call",
+      id: "persisted-bash",
+      toolId: "Bash",
+      status: "success",
+      inputText: "{\"command\":\"npm test\"}",
+      inputJson: { command: "npm test" },
+      outputText: "{\"stdout\":\"ok\"}",
+      createdAtMs: completedAtMs - 2000
+    },
+    {
+      kind: "assistant_message",
+      id: "persisted-final",
+      text: "Final answer.",
+      createdAtMs: completedAtMs - 1000
+    }
+  ]);
+  daemon.emit(channel, {
+    type: "turn-complete",
+    turnId,
+    assistantText: "Final answer."
+  });
+
+  await expect(page.getByText("Final answer.")).toBeVisible();
+  const activity = page.locator(".activity-group").filter({ hasText: "Agent activity" });
+  await expect(activity).toBeVisible();
+  await activity.getByRole("button", { name: /Agent activity/ }).click();
+  await expect(
+    activity.locator(".activity-message").filter({ hasText: "First intermediate." })
+  ).toBeVisible();
+  await expect(
+    activity.locator(".activity-message").filter({ hasText: "Second intermediate." })
+  ).toBeVisible();
+  const foldedOrder = await activity
+    .locator(".activity-details > .activity-message, .activity-details > .activity-action")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.textContent?.replace(/\s+/g, " ").trim() ?? "")
+    );
+  expectBefore(foldedOrder, ["First intermediate."], ["Read"]);
+  expectBefore(foldedOrder, ["Read"], ["Second intermediate."]);
+  expectBefore(foldedOrder, ["Second intermediate."], ["Bash", "Shell", "npm test"]);
 });
 
 test("backend reconnect button reports failed retries", async ({ page }) => {

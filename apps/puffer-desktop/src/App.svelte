@@ -80,6 +80,7 @@
     ExternalCredential,
     FolderGroup,
     AskUserQuestionItem,
+    MessageTimelineItem,
     PermissionTimelineItem,
     RemoteConnection,
     RemoteOperation,
@@ -275,20 +276,13 @@
   //   done    = merged / clean on a branch with closed PR
   //   idle    = otherwise
   // ─────────────────────────────────────────────────────────────
-  let renderedSubmittedMessages = $derived<TimelineItem[]>(
-    stillMissingFromPersisted(sessionDetail?.timeline ?? [], submittedMessages)
-  );
-  let renderedLiveStreamItems = $derived<TimelineItem[]>(
-    stillMissingFromPersisted(
-      [...(sessionDetail?.timeline ?? []), ...renderedSubmittedMessages],
+  let persistedTimeline = $derived<TimelineItem[]>(sessionDetail?.timeline ?? []);
+  let combinedTimeline = $derived<TimelineItem[]>(
+    mergeTransientTimeline(
+      mergeTransientTimeline(persistedTimeline, submittedMessages),
       liveStreamItems
     )
   );
-  let combinedTimeline = $derived<TimelineItem[]>([
-    ...(sessionDetail?.timeline ?? []),
-    ...renderedSubmittedMessages,
-    ...renderedLiveStreamItems
-  ]);
   function isPendingPermission(item: PermissionTimelineItem): boolean {
     const status = item.status?.toLowerCase() ?? "";
     const state = item.permissionDialog.state?.toLowerCase() ?? "";
@@ -1714,11 +1708,10 @@
   ): { delta: string; replayTextByTurn: Record<string, string> } {
     const replayText = `${state.replayTextByTurn[turnId] ?? ""}${delta}`;
     const replayTextByTurn = { ...state.replayTextByTurn, [turnId]: replayText };
-    const currentItem = state.liveStreamItems.find((item) => item.id === streamingAssistantId(turnId));
-    if (!currentItem || currentItem.kind !== "assistant") {
+    const current = streamingAssistantTextForTurn(state.liveStreamItems, turnId);
+    if (!current) {
       return { delta, replayTextByTurn };
     }
-    const current = currentItem.body;
     if (current.startsWith(replayText)) return { delta: "", replayTextByTurn };
     if (replayText.startsWith(current)) {
       return { delta: replayText.slice(current.length), replayTextByTurn };
@@ -1731,32 +1724,7 @@
     turnId: string,
     delta: string
   ): TimelineItem[] {
-    const id = streamingAssistantId(turnId);
-    const existingIdx = state.liveStreamItems.findIndex(
-      (item) => item.id === id && item.kind === "assistant"
-    );
-    if (existingIdx >= 0) {
-      const existing = state.liveStreamItems[existingIdx];
-      if (existing.kind !== "assistant") return state.liveStreamItems;
-      const body = existing.body + delta;
-      return [
-        ...state.liveStreamItems.slice(0, existingIdx),
-        {
-          ...existing,
-          body,
-          summary: body
-        },
-        ...state.liveStreamItems.slice(existingIdx + 1)
-      ];
-    }
-    return appendCachedLiveItem(state, {
-      id,
-      kind: "assistant",
-      title: "Assistant",
-      summary: delta,
-      body: delta,
-      meta: []
-    });
+    return upsertStreamingAssistantItems(state.liveStreamItems, turnId, delta);
   }
 
   function cacheBackgroundTextDelta(
@@ -2437,7 +2405,7 @@
         resetLiveTurnState();
       } else {
         const remainingSubmittedMessages = submittedStillMissingFromPersisted(timeline, submittedMessages);
-        const remainingLiveItems = stillMissingFromPersisted(timeline, liveStreamItems);
+        const remainingLiveItems = missingWithOrderingAnchors(timeline, liveStreamItems);
         const restoredPendingMessages = restorePendingSubmittedMessage(detail.session.id, timeline);
         submittedMessages = [
           ...remainingSubmittedMessages,
@@ -3092,6 +3060,16 @@
     return items.some((item) => item.kind === kind && timelineItemBody(item).includes(trimmed));
   }
 
+  function timelineHasExactBody(
+    items: TimelineItem[],
+    kind: TimelineItem["kind"],
+    body: string
+  ): boolean {
+    const trimmed = body.trim();
+    if (!trimmed) return true;
+    return items.some((item) => item.kind === kind && timelineItemBody(item).trim() === trimmed);
+  }
+
   function transientMessageSignature(item: TimelineItem): string | null {
     if (item.kind !== "user" && item.kind !== "assistant") return null;
     const body = timelineItemBody(item).trim();
@@ -3217,39 +3195,29 @@
     return Math.abs(persistedAt - pendingAt) <= 5 * 60 * 1000;
   }
 
-  function timelineHasTransientMatch(items: TimelineItem[], pending: TimelineItem): boolean {
+  function transientItemsMatch(persisted: TimelineItem, pending: TimelineItem): boolean {
+    if (wasPersistedBeforeSubmit(pending.id, persisted.id)) return false;
     const gateSignature = transientGateSignature(pending);
     if (gateSignature) {
-      return items.some(
-        (item) =>
-          !wasPersistedBeforeSubmit(pending.id, item.id) &&
-          transientGateSignature(item) === gateSignature
-      );
+      return transientGateSignature(persisted) === gateSignature;
     }
     const toolSignature = transientToolSignature(pending);
     if (toolSignature) {
-      return items.some(
-        (item) =>
-          !wasPersistedBeforeSubmit(pending.id, item.id) &&
-          transientToolSignature(item) === toolSignature &&
-          transientTimestampsMatch(item, pending)
-      );
+      return transientToolSignature(persisted) === toolSignature &&
+        transientTimestampsMatch(persisted, pending);
     }
     const body = timelineItemBody(pending).trim();
     if (!body) {
-      return items.some(
-        (item) =>
-          !wasPersistedBeforeSubmit(pending.id, item.id) &&
-          item.kind === pending.kind &&
-          item.id === pending.id
-      );
+      return persisted.kind === pending.kind && persisted.id === pending.id;
     }
+    return persisted.kind === pending.kind &&
+      ((persisted.id && persisted.id === pending.id) ||
+        (timelineItemBody(persisted).trim() === body && transientTimestampsMatch(persisted, pending)));
+  }
+
+  function timelineHasTransientMatch(items: TimelineItem[], pending: TimelineItem): boolean {
     return items.some(
-      (item) =>
-        !wasPersistedBeforeSubmit(pending.id, item.id) &&
-        item.kind === pending.kind &&
-        ((item.id && item.id === pending.id) ||
-          (timelineItemBody(item).trim() === body && transientTimestampsMatch(item, pending)))
+      (item) => transientItemsMatch(item, pending)
     );
   }
 
@@ -3259,6 +3227,65 @@
 
   function stillMissingFromPersisted(items: TimelineItem[], pending: TimelineItem[]): TimelineItem[] {
     return pending.filter((item) => !timelineHasTransientMatch(items, item));
+  }
+
+  function findTransientMatchIndex(
+    items: TimelineItem[],
+    pending: TimelineItem,
+    startIndex: number
+  ): number {
+    for (let index = startIndex; index < items.length; index += 1) {
+      if (transientItemsMatch(items[index], pending)) return index;
+    }
+    return -1;
+  }
+
+  function mergeTransientTimeline(
+    persisted: TimelineItem[],
+    transient: TimelineItem[]
+  ): TimelineItem[] {
+    if (transient.length === 0) return persisted;
+    const merged = [...persisted];
+    let searchStart = 0;
+    let pendingUnmatched: TimelineItem[] = [];
+    for (const item of transient) {
+      const matchIndex = findTransientMatchIndex(merged, item, searchStart);
+      if (matchIndex < 0) {
+        pendingUnmatched = [...pendingUnmatched, item];
+        continue;
+      }
+      if (pendingUnmatched.length > 0) {
+        merged.splice(matchIndex, 0, ...pendingUnmatched);
+        searchStart = matchIndex + pendingUnmatched.length + 1;
+        pendingUnmatched = [];
+      } else {
+        searchStart = matchIndex + 1;
+      }
+    }
+    if (pendingUnmatched.length > 0) merged.push(...pendingUnmatched);
+    return merged;
+  }
+
+  function missingWithOrderingAnchors(
+    persisted: TimelineItem[],
+    pending: TimelineItem[]
+  ): TimelineItem[] {
+    let searchStart = 0;
+    let pendingUnmatched: TimelineItem[] = [];
+    let anchored: TimelineItem[] = [];
+    for (const item of pending) {
+      const matchIndex = findTransientMatchIndex(persisted, item, searchStart);
+      if (matchIndex < 0) {
+        pendingUnmatched = [...pendingUnmatched, item];
+        continue;
+      }
+      searchStart = matchIndex + 1;
+      if (pendingUnmatched.length === 0) continue;
+      anchored = [...anchored, ...pendingUnmatched, item];
+      pendingUnmatched = [];
+    }
+    if (pendingUnmatched.length > 0) anchored = [...anchored, ...pendingUnmatched];
+    return anchored;
   }
 
   function submittedStillMissingFromPersisted(
@@ -3284,22 +3311,9 @@
   ): TimelineItem[] {
     const trimmed = text.trim();
     if (!trimmed) return items;
-    const streamingId = streamingAssistantId(turnId);
-    const streamingIndex = items.findIndex((item) => item.kind === "assistant" && item.id === streamingId);
-    if (streamingIndex >= 0) {
-      const existing = items[streamingIndex];
-      if (existing.kind !== "assistant" || existing.body.trim() === trimmed) return items;
-      return [
-        ...items.slice(0, streamingIndex),
-        {
-          ...existing,
-          summary: trimmed,
-          body: trimmed
-        },
-        ...items.slice(streamingIndex + 1)
-      ];
-    }
-    if (timelineHasBody(items, "assistant", trimmed)) return items;
+    const streamingItems = items.filter((item) => isStreamingAssistantForTurn(item, turnId));
+    if (streamingItems.length > 0 && timelineHasExactBody(items, "assistant", trimmed)) return items;
+    if (streamingItems.length === 0 && timelineHasBody(items, "assistant", trimmed)) return items;
     return [
       ...items,
       {
@@ -3342,7 +3356,7 @@
         submittedMessages = submittedStillMissingFromPersisted(persistedTimeline, submittedAtCompletion);
         return;
       }
-      liveStreamItems = stillMissingFromPersisted(persistedTimeline, liveItemsAtCompletion);
+      liveStreamItems = missingWithOrderingAnchors(persistedTimeline, liveItemsAtCompletion);
       submittedMessages = submittedStillMissingFromPersisted(persistedTimeline, submittedAtCompletion);
     } catch (error) {
       if (loadGeneration !== sessionLoadGeneration || selectedSession?.id !== sessionToRefresh.id) {
@@ -3354,8 +3368,77 @@
     }
   }
 
-  function streamingAssistantId(turnId: string): string {
+  function streamingAssistantPrefix(turnId: string): string {
     return `live-stream-assistant-${turnId}`;
+  }
+
+  function streamingAssistantId(turnId: string): string {
+    return streamingAssistantPrefix(turnId);
+  }
+
+  function isStreamingAssistantForTurn(item: TimelineItem, turnId: string): item is MessageTimelineItem {
+    if (item.kind !== "assistant") return false;
+    const prefix = streamingAssistantPrefix(turnId);
+    return item.id === prefix || item.id.startsWith(`${prefix}-`);
+  }
+
+  function streamingAssistantTextForTurn(items: TimelineItem[], turnId: string): string {
+    return items
+      .filter((item): item is MessageTimelineItem => isStreamingAssistantForTurn(item, turnId))
+      .map((item) => item.body)
+      .join("");
+  }
+
+  function latestTurnLiveItemIndex(items: TimelineItem[], turnId: string): number {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (liveItemBelongsToTurn(items[index], turnId)) return index;
+    }
+    return -1;
+  }
+
+  function nextStreamingAssistantId(items: TimelineItem[], turnId: string): string {
+    const baseId = streamingAssistantId(turnId);
+    const usedIds = new Set(
+      items
+        .filter((item) => isStreamingAssistantForTurn(item, turnId))
+        .map((item) => item.id)
+    );
+    if (!usedIds.has(baseId)) return baseId;
+    let segment = 2;
+    while (usedIds.has(`${baseId}-${segment}`)) segment += 1;
+    return `${baseId}-${segment}`;
+  }
+
+  function upsertStreamingAssistantItems(
+    items: TimelineItem[],
+    turnId: string,
+    delta: string
+  ): TimelineItem[] {
+    const latestIndex = latestTurnLiveItemIndex(items, turnId);
+    const latest = latestIndex >= 0 ? items[latestIndex] : null;
+    if (latest && isStreamingAssistantForTurn(latest, turnId)) {
+      const body = latest.body + delta;
+      return [
+        ...items.slice(0, latestIndex),
+        {
+          ...latest,
+          body,
+          summary: body
+        },
+        ...items.slice(latestIndex + 1)
+      ];
+    }
+    return [
+      ...items,
+      {
+        id: nextStreamingAssistantId(items, turnId),
+        kind: "assistant",
+        title: "Assistant",
+        summary: delta,
+        body: delta,
+        meta: []
+      }
+    ];
   }
 
   function livePermissionId(turnId: string, requestId: string): string {
@@ -3372,7 +3455,7 @@
 
   function liveItemBelongsToTurn(item: TimelineItem, turnId: string): boolean {
     return (
-      item.id === streamingAssistantId(turnId) ||
+      isStreamingAssistantForTurn(item, turnId) ||
       item.id === `live-complete-assistant-${turnId}` ||
       item.id === `live-error-turn-error-${turnId}` ||
       item.id.startsWith(`live-tool-${turnId}-`) ||
@@ -3387,26 +3470,7 @@
   }
 
   function upsertStreamingAssistant(turnId: string, delta: string) {
-    const id = streamingAssistantId(turnId);
-    const existingIdx = liveStreamItems.findIndex((item) => item.id === id && item.kind === "assistant");
-    if (existingIdx >= 0) {
-      const existing = liveStreamItems[existingIdx];
-      const updated = { ...existing, body: existing.body + delta, summary: existing.body + delta };
-      liveStreamItems = [
-        ...liveStreamItems.slice(0, existingIdx),
-        updated,
-        ...liveStreamItems.slice(existingIdx + 1)
-      ];
-    } else {
-      appendLive({
-        id,
-        kind: "assistant",
-        title: "Assistant",
-        summary: delta,
-        body: delta,
-        meta: []
-      });
-    }
+    liveStreamItems = upsertStreamingAssistantItems(liveStreamItems, turnId, delta);
   }
 
   function turnKey(sessionId: string, turnId: string): string {
@@ -3468,11 +3532,10 @@
   function replaySafeDelta(turnId: string, delta: string): string {
     const replayText = `${replayTextByTurn[turnId] ?? ""}${delta}`;
     replayTextByTurn = { ...replayTextByTurn, [turnId]: replayText };
-    const currentItem = liveStreamItems.find((item) => item.id === streamingAssistantId(turnId));
-    if (!currentItem || currentItem.kind !== "assistant") {
+    const current = streamingAssistantTextForTurn(liveStreamItems, turnId);
+    if (!current) {
       return delta;
     }
-    const current = currentItem.body;
     if (current.startsWith(replayText)) return "";
     if (replayText.startsWith(current)) return replayText.slice(current.length);
     return delta;

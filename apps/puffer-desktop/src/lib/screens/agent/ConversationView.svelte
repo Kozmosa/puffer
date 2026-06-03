@@ -625,6 +625,10 @@
     return child.kind === "assistant" || child.kind === "command";
   }
 
+  function isLiveStreamingAssistant(child: ActivityChild): boolean {
+    return child.kind === "assistant" && child.id.startsWith("live-stream-assistant-");
+  }
+
   function isThinkingActivity(child: ActivityChild): child is ToolTimelineItem {
     return child.kind === "tool" && child.toolName.toLowerCase() === "thinking";
   }
@@ -706,10 +710,12 @@
     const flushCurrent = () => {
       if (!current) return;
       current.children = normalizeLegacyActivityOrder(current.children);
+      const hasActionChildren = current.children.some((child) => !isActivityMessage(child));
       let finalIndex = -1;
       for (let index = current.children.length - 1; index >= 0; index -= 1) {
         const child = current.children[index];
         if (isActivityMessage(child)) {
+          if (hasActionChildren && isLiveStreamingAssistant(child)) continue;
           finalIndex = index;
           break;
         }
