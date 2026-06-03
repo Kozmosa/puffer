@@ -141,6 +141,11 @@ test("streams intermediate assistant messages inside agent activity", async ({ p
       }
     ]
   });
+  daemon.emit(channel, {
+    type: "text-delta",
+    turnId,
+    delta: "Final answer."
+  });
 
   await expect(
     page.locator(".agent-tools .activity-message").filter({ hasText: "First intermediate." })
@@ -201,13 +206,18 @@ test("streams intermediate assistant messages inside agent activity", async ({ p
   await expect(page.getByText("Final answer.")).toBeVisible();
   const activity = page.locator(".activity-group").filter({ hasText: "Agent activity" });
   await expect(activity).toBeVisible();
-  await activity.getByRole("button", { name: /Agent activity/ }).click();
+  const activityButton = activity.getByRole("button", { name: /Agent activity/ });
+  await expect(activityButton).toHaveAttribute("aria-expanded", "false");
+  await activityButton.click();
   await expect(
     activity.locator(".activity-message").filter({ hasText: "First intermediate." })
   ).toBeVisible();
   await expect(
     activity.locator(".activity-message").filter({ hasText: "Second intermediate." })
   ).toBeVisible();
+  await expect(
+    activity.locator(".activity-message").filter({ hasText: "Final answer." })
+  ).toHaveCount(0);
   const foldedOrder = await activity
     .locator(".activity-details > .activity-message, .activity-details > .activity-action")
     .evaluateAll((nodes) =>
