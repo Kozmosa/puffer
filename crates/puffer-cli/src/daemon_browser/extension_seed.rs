@@ -1,6 +1,7 @@
 //! CDP helpers for seeding bundled extension storage.
 
 use anyhow::{bail, Context, Result};
+use puffer_config::CaptchaExtensionSeed;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::net::TcpStream;
@@ -11,7 +12,6 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
 use super::chrome::devtools_http_base;
-use super::launch_settings::BrowserExtensionSeed;
 
 const EXTENSION_TARGET_WAIT: Duration = Duration::from_secs(2);
 const EXTENSION_TARGET_POLL: Duration = Duration::from_millis(100);
@@ -47,7 +47,7 @@ pub(super) fn ensure_extensions_registered(
 }
 
 /// Seeds local storage for bundled CAPTCHA extensions that are loaded in Chrome.
-pub(super) fn seed_extensions(browser_ws: &str, seeds: &[BrowserExtensionSeed]) -> Result<()> {
+pub(super) fn seed_extensions(browser_ws: &str, seeds: &[CaptchaExtensionSeed]) -> Result<()> {
     if seeds.is_empty() {
         return Ok(());
     }
@@ -188,7 +188,7 @@ fn is_extension_target(target: &Value) -> bool {
     ) && url.starts_with("chrome-extension://")
 }
 
-fn seed_extension_target(target: &ExtensionTarget, seed: &BrowserExtensionSeed) -> Result<bool> {
+fn seed_extension_target(target: &ExtensionTarget, seed: &CaptchaExtensionSeed) -> Result<bool> {
     let (mut socket, _) =
         connect(&target.websocket_url).context("connect to Chrome extension target")?;
     set_socket_timeout(&mut socket);
@@ -231,7 +231,7 @@ fn seed_extension_target(target: &ExtensionTarget, seed: &BrowserExtensionSeed) 
     }
 }
 
-fn seed_expression(seed: &BrowserExtensionSeed) -> Result<String> {
+fn seed_expression(seed: &CaptchaExtensionSeed) -> Result<String> {
     let api_key = serde_json::to_string(seed.api_key())?;
     let base_url = serde_json::to_string(seed.base_url())?;
     match seed.solver_id() {

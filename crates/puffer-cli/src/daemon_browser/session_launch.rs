@@ -1,7 +1,7 @@
 //! Browser root launch helpers shared by Chrome and CEF-backed sessions.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::browser_profiles::ChromeProfileLaunch;
@@ -70,6 +70,24 @@ pub(super) fn cef_remote_debugging_port() -> Option<u16> {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .filter(|port| *port >= 1024)
+}
+
+/// Returns the CEF profile directory advertised by the desktop launcher.
+pub(super) fn cef_profile_dir() -> Option<PathBuf> {
+    std::env::var_os("PUFFER_CEF_PROFILE_DIR")
+        .map(PathBuf::from)
+        .or_else(default_cef_profile_dir)
+}
+
+fn default_cef_profile_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    Some(
+        PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library/Application Support/Puffer")
+            .join("cef-profile"),
+    )
 }
 
 #[cfg(test)]

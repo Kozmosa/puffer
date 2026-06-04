@@ -2,6 +2,10 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+use puffer_config::{stage_builtin_captcha_extension, CaptchaExtensionSeed, ConfigPaths};
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+use puffer_secrets::SecretVault;
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -510,12 +514,15 @@ fn remote_debugging_port() -> u16 {
 }
 
 fn cache_root() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("HOME is not set"))?;
-    let root = home
-        .join("Library/Application Support/Puffer")
-        .join("cef-profile");
+    let root = if let Some(root) = std::env::var_os("PUFFER_CEF_PROFILE_DIR") {
+        PathBuf::from(root)
+    } else {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("HOME is not set"))?;
+        home.join("Library/Application Support/Puffer")
+            .join("cef-profile")
+    };
     std::fs::create_dir_all(root.join("Default")).context("create CEF cache directory")?;
     Ok(root)
 }
@@ -527,6 +534,21 @@ fn display_path(path: &Path) -> String {
 fn push_extension_dir(extension_dirs: &mut Vec<PathBuf>, path: PathBuf) {
     if path.join("manifest.json").is_file() {
         extension_dirs.push(path);
+    }
+}
+
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+fn reveal_secret_value(paths: &ConfigPaths, secret_id: &str) -> Option<String> {
+    let store_path = SecretVault::default_path(&paths.user_config_dir);
+    let vault = SecretVault::open(store_path).ok()?;
+    match vault.reveal(secret_id) {
+        Ok(secret) => Some(secret.value),
+        Err(error) => {
+            eprintln!(
+                "puffer browser: captcha API key `{secret_id}` could not be revealed: {error}"
+            );
+            None
+        }
     }
 }
 
@@ -631,7 +653,7 @@ fn native_initialize(runtime: &CefRuntime) -> Result<()> {
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 fn native_cef_extension_dirs() -> Result<String> {
     let cwd = std::env::current_dir().context("read current directory")?;
-    let paths = puffer_config::ConfigPaths::discover(&cwd);
+    let paths = ConfigPaths::discover(&cwd);
     let config = puffer_config::load_config(&paths).context("load browser extension config")?;
     let browser = config.browser;
     if !browser.extensions_enabled {
@@ -649,7 +671,23 @@ fn native_cef_extension_dirs() -> Result<String> {
             let configured = browser.captcha.solvers.get(solver.id);
             let enabled = configured.map(|item| item.enabled).unwrap_or(true);
             if enabled {
-                push_extension_dir(&mut dirs, paths.builtin_resources_dir.join(solver.extension_path));
+                let source_dir = paths.builtin_resources_dir.join(solver.extension_path);
+                let mut extension_dir = source_dir.clone();
+                if let Some(secret_id) = configured.and_then(|item| item.api_key_secret_id.as_ref())
+                {
+                    if let Some(api_key) = reveal_secret_value(&paths, secret_id) {
+                        let base_url = configured
+                            .and_then(|item| item.base_url.clone())
+                            .unwrap_or_else(|| solver.default_base_url.to_string());
+                        let seed = CaptchaExtensionSeed::new(solver.id, api_key, base_url);
+                        extension_dir = stage_builtin_captcha_extension(
+                            &source_dir,
+                            &paths.user_config_dir.join("browser-extension-stage"),
+                            &seed,
+                        )?;
+                    }
+                }
+                push_extension_dir(&mut dirs, extension_dir);
             }
         }
     }

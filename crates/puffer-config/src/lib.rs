@@ -1,4 +1,5 @@
 mod browser;
+mod browser_extension_stage;
 pub mod env_vars;
 mod home_override;
 mod project_memory;
@@ -20,6 +21,7 @@ pub use browser::{
     builtin_captcha_solvers, is_builtin_solver, BrowserConfig, BrowserExtensionConfig,
     BuiltinCaptchaSolver, CaptchaConfig, CaptchaSolverConfig,
 };
+pub use browser_extension_stage::{stage_builtin_captcha_extension, CaptchaExtensionSeed};
 pub use home_override::{set_puffer_home_override, PufferHomeOverride};
 pub use project_memory::{
     ensure_project_memory, load_project_registry, resolve_project_memory, ProjectEntry,

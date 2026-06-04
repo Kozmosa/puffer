@@ -1,7 +1,10 @@
 //! Browser extension launch settings derived from Puffer config.
 
 use anyhow::Result;
-use puffer_config::{builtin_captcha_solvers, ConfigPaths, PufferConfig};
+use puffer_config::{
+    builtin_captcha_solvers, stage_builtin_captcha_extension, CaptchaExtensionSeed, ConfigPaths,
+    PufferConfig,
+};
 use puffer_secrets::SecretVault;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -10,15 +13,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BrowserLaunchSettings {
     extension_dirs: Vec<PathBuf>,
-    seeds: Vec<BrowserExtensionSeed>,
-}
-
-/// Local-storage values that should be injected into a bundled extension.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BrowserExtensionSeed {
-    solver_id: String,
-    api_key: String,
-    base_url: String,
+    seeds: Vec<CaptchaExtensionSeed>,
 }
 
 impl BrowserLaunchSettings {
@@ -45,23 +40,26 @@ impl BrowserLaunchSettings {
                 .find(|solver| solver.id == browser.captcha.selected_solver)
             {
                 let configured = browser.captcha.solvers.get(solver.id);
-                push_extension_dir(
-                    &mut extension_dirs,
-                    paths.builtin_resources_dir.join(solver.extension_path),
-                );
+                let source_dir = paths.builtin_resources_dir.join(solver.extension_path);
+                let mut extension_dir = source_dir.clone();
                 if let Some(secret_id) = configured.and_then(|item| item.api_key_secret_id.as_ref())
                 {
                     if let Some(api_key) = reveal_secret_value(paths, secret_id) {
                         let base_url = configured
                             .and_then(|item| item.base_url.clone())
                             .unwrap_or_else(|| solver.default_base_url.to_string());
-                        seeds.push(BrowserExtensionSeed {
-                            solver_id: solver.id.to_string(),
-                            api_key,
-                            base_url,
-                        });
+                        let seed = CaptchaExtensionSeed::new(solver.id, api_key, base_url);
+                        extension_dir = stage_builtin_captcha_extension(
+                            &source_dir,
+                            &paths.user_config_dir.join("browser-extension-stage"),
+                            &seed,
+                        )?;
+                        if seed.solver_id() != "nopecha" {
+                            seeds.push(seed);
+                        }
                     }
                 }
+                push_extension_dir(&mut extension_dirs, extension_dir);
             }
         }
 
@@ -78,7 +76,7 @@ impl BrowserLaunchSettings {
     }
 
     /// Returns extension local-storage seed values for bundled captcha solvers.
-    pub(crate) fn seeds(&self) -> &[BrowserExtensionSeed] {
+    pub(crate) fn seeds(&self) -> &[CaptchaExtensionSeed] {
         &self.seeds
     }
 
@@ -89,23 +87,6 @@ impl BrowserLaunchSettings {
             extension_dirs,
             seeds: Vec::new(),
         }
-    }
-}
-
-impl BrowserExtensionSeed {
-    /// Returns the built-in captcha solver id this seed targets.
-    pub(crate) fn solver_id(&self) -> &str {
-        &self.solver_id
-    }
-
-    /// Returns the decrypted API key for the extension.
-    pub(crate) fn api_key(&self) -> &str {
-        &self.api_key
-    }
-
-    /// Returns the base URL configured for the extension.
-    pub(crate) fn base_url(&self) -> &str {
-        &self.base_url
     }
 }
 

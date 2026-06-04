@@ -583,6 +583,17 @@ pub const ALL_ENV_VARS: &[EnvVar] = &[
         ],
     },
     EnvVar {
+        name: "PUFFER_CEF_PROFILE_DIR",
+        description: "CEF browser profile directory shared by the desktop native CEF bridge and \
+             daemon Browser backend extension-registration checks.",
+        default: Some("$HOME/Library/Application Support/Puffer/cef-profile"),
+        source_files: &[
+            "puffer-cli/src/daemon_browser/session_launch.rs",
+            "apps/puffer-desktop/src-tauri/src/cef_host.rs",
+            "apps/puffer-desktop/src-tauri/src/daemon_launcher.rs",
+        ],
+    },
+    EnvVar {
         name: "PUFFER_CEF_ROOT",
         description: "Compatibility alias for a Puffer CT CEF runtime root. Used with \
              `PUFFER_CEF_PATH` and `CEF_PATH` for native CEF discovery.",

@@ -35,7 +35,8 @@ use super::screenshot::{
 };
 use super::selection::{parse_copy_selection_response, selection_eval_expression};
 use super::session_launch::{
-    cef_remote_debugging_port, configure_chrome_command, remove_stale_devtools_port,
+    cef_profile_dir, cef_remote_debugging_port, configure_chrome_command,
+    remove_stale_devtools_port,
 };
 use super::state_events::{emit_state, emit_state_error, update_state_from_eval};
 use super::upload::{
@@ -158,11 +159,16 @@ impl BrowserRootSession {
                     Err(_) => return Ok(None),
                 },
             };
-        ensure_extensions_registered(&browser_ws, None, launch_settings.extension_dirs())?;
+        let cef_profile_dir = cef_profile_dir().unwrap_or_else(|| profile_dir.clone());
+        ensure_extensions_registered(
+            &browser_ws,
+            Some(&cef_profile_dir),
+            launch_settings.extension_dirs(),
+        )?;
         seed_extensions(&browser_ws, launch_settings.seeds())?;
         Ok(Some(Self {
             inner: Arc::new(Mutex::new(BrowserRootState {
-                profile_dir: profile_dir.clone(),
+                profile_dir: cef_profile_dir,
                 browser_ws,
                 child: None,
                 owns_targets: false,

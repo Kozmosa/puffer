@@ -272,6 +272,11 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
     if std::env::var_os("PUFFER_CEF_REMOTE_DEBUGGING_PORT").is_none() {
         cmd.env("PUFFER_CEF_REMOTE_DEBUGGING_PORT", "9333");
     }
+    if std::env::var_os("PUFFER_CEF_PROFILE_DIR").is_none() {
+        if let Some(profile_dir) = default_cef_profile_dir() {
+            cmd.env("PUFFER_CEF_PROFILE_DIR", profile_dir);
+        }
+    }
     // Resources (providers, tools, prompts…) load relative to the workspace
     // root by default. When the daemon is rooted at $HOME there's no
     // bundled `resources/` next to it, so the LoginView shows "No
@@ -315,6 +320,14 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
     drop(reader);
     drain_daemon_stderr(stderr);
     Ok(DaemonChild::spawned(child, handshake))
+}
+
+fn default_cef_profile_dir() -> Option<PathBuf> {
+    Some(
+        PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library/Application Support/Puffer")
+            .join("cef-profile"),
+    )
 }
 
 fn existing_daemon_handshake(workspace_cwd: &Path) -> Option<DaemonHandshake> {
