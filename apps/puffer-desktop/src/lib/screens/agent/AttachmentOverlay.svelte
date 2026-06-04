@@ -28,6 +28,8 @@
 
   $effect(() => {
     if (!attachment || typeof window === "undefined") return;
+    const previouslyFocusedEl =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void tick().then(() => closeButtonEl?.focus());
     const handleKeydown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -35,7 +37,10 @@
       close();
     };
     window.addEventListener("keydown", handleKeydown);
-    return () => window.removeEventListener("keydown", handleKeydown);
+    return () => {
+      window.removeEventListener("keydown", handleKeydown);
+      if (previouslyFocusedEl?.isConnected) void tick().then(() => previouslyFocusedEl.focus());
+    };
   });
 </script>
 

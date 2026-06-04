@@ -34,6 +34,24 @@
   }
 </script>
 
+{#snippet attachmentPreviewContent(attachment: AttachmentPreviewItem)}
+  {#if attachment.previewUrl && attachment.kind === "image"}
+    <div class="pf-attachment-thumb">
+      <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
+    </div>
+  {:else}
+    <div class="pf-attachment-file-card" data-kind={attachment.kind}>
+      <span class="pf-attachment-file-icon">
+        <Icon name="file" size={18} />
+      </span>
+      <span class="pf-attachment-file-copy">
+        <span class="pf-attachment-file-name">{attachment.name}</span>
+        <span class="pf-attachment-file-ext">{attachment.extension}</span>
+      </span>
+    </div>
+  {/if}
+{/snippet}
+
 {#if attachments.length > 0}
   <div
     class="pf-attachment-preview-strip"
@@ -49,39 +67,11 @@
           title={attachment.name}
           onclick={() => onOpenChatIntent?.(attachmentOpenIntent(attachment))}
         >
-          {#if attachment.previewUrl && attachment.kind === "image"}
-            <div class="pf-attachment-thumb">
-              <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
-            </div>
-          {:else}
-            <div class="pf-attachment-file-card" data-kind={attachment.kind}>
-              <span class="pf-attachment-file-icon">
-                <Icon name="file" size={18} />
-              </span>
-              <span class="pf-attachment-file-copy">
-                <span class="pf-attachment-file-name">{attachment.name}</span>
-                <span class="pf-attachment-file-ext">{attachment.extension}</span>
-              </span>
-            </div>
-          {/if}
+          {@render attachmentPreviewContent(attachment)}
         </button>
       {:else}
         <div class="pf-attachment-preview">
-          {#if attachment.previewUrl && attachment.kind === "image"}
-            <div class="pf-attachment-thumb">
-              <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
-            </div>
-          {:else}
-            <div class="pf-attachment-file-card" data-kind={attachment.kind}>
-              <span class="pf-attachment-file-icon">
-                <Icon name="file" size={18} />
-              </span>
-              <span class="pf-attachment-file-copy">
-                <span class="pf-attachment-file-name">{attachment.name}</span>
-                <span class="pf-attachment-file-ext">{attachment.extension}</span>
-              </span>
-            </div>
-          {/if}
+          {@render attachmentPreviewContent(attachment)}
           {#if removable}
             <button
               type="button"

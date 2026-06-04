@@ -4,7 +4,7 @@
   import { browserRecording, type BrowserRecordedFrame } from "../../api/desktop";
   import Icon, { type IconName } from "../../design/Icon.svelte";
   import HighlightedLine from "../../components/HighlightedLine.svelte";
-  import { fileOpenIntent, type ChatOpenIntent } from "../../chatOpenIntent";
+  import { chatFileTarget, fileOpenIntent, type ChatOpenIntent } from "../../chatOpenIntent";
   import type { ToolTimelineItem } from "../../types";
 
   type Props = {
@@ -100,28 +100,8 @@
     return shortValue(valueText(value), max);
   }
 
-  function fileTarget(href: string): { path: string; line: number | null } | null {
-    let value = href.trim();
-    if (value.startsWith("file://")) {
-      try {
-        value = decodeURIComponent(new URL(value).pathname);
-      } catch {
-        value = value.slice("file://".length);
-      }
-    }
-    if (!value.startsWith("/")) return null;
-    const match = value.match(/^(.*?):(\d+)(?::\d+)?$/);
-    if (match) {
-      return {
-        path: match[1],
-        line: Number(match[2])
-      };
-    }
-    return { path: value, line: null };
-  }
-
   function openFilePath(path: string) {
-    const target = fileTarget(path);
+    const target = chatFileTarget(path);
     if (!target) return;
     onOpenChatIntent?.(fileOpenIntent(target.path, target.line));
   }
@@ -1171,7 +1151,7 @@
           {#if toolRender.rows.length}
             <div class="pf-result-list">
               {#each toolRender.rows as row, i (i)}
-                {@const target = fileTarget(row)}
+                {@const target = chatFileTarget(row)}
                 {#if target}
                   <button
                     type="button"
@@ -1218,7 +1198,7 @@
               {#if section.rows.length}
                 <div class="pf-result-list">
                   {#each section.rows as row, i (i)}
-                    {@const target = fileTarget(row)}
+                    {@const target = chatFileTarget(row)}
                     {#if target}
                       <button
                         type="button"
@@ -1327,6 +1307,8 @@
   .pf-file-path-button {
     width: 100%;
     border: 0;
+    background: transparent;
+    font: inherit;
     text-align: left;
     cursor: pointer;
   }

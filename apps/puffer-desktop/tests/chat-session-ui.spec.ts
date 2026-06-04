@@ -263,13 +263,15 @@ test("message attachments open image preview and file details", async ({ page })
       request.params.message === "[Image: sample.png]\n[File: notes.md]"
   );
 
-  await page.getByRole("button", { name: "Open image attachment sample.png" }).click();
+  const sampleAttachmentButton = page.getByRole("button", { name: "Open image attachment sample.png" });
+  await sampleAttachmentButton.click();
   const previewDialog = page.getByRole("dialog", { name: "sample.png" });
   await expect(previewDialog).toBeVisible();
   await expect(previewDialog.getByAltText("sample.png")).toBeVisible();
   await expect(previewDialog).toContainText("PNG");
   await page.keyboard.press("Escape");
   await expect(page.locator('[data-testid="attachment-overlay"]')).toHaveCount(0);
+  await expect(sampleAttachmentButton).toBeFocused();
 
   await page.getByRole("button", { name: "Open attachment details for notes.md" }).click();
   const detailsDialog = page.getByRole("dialog", { name: "notes.md" });

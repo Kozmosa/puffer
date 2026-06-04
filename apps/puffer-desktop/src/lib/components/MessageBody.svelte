@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fileOpenIntent, type ChatOpenIntent } from "../chatOpenIntent";
+  import { chatFileTarget, fileOpenIntent, type ChatOpenIntent } from "../chatOpenIntent";
 
   type InlineSegment = {
     kind: "text" | "code";
@@ -30,28 +30,8 @@
   const urlPattern = /^(https?:\/\/[^\s<]+|file:\/\/[^\s<]+|\/[^\s<]+)$/;
   const bareLocalPathPattern = /(file:\/\/[^\s<>()]+|\/[^\s<>()]+)/g;
 
-  function fileTarget(href: string): { path: string; line: number | null } | null {
-    let value = href;
-    if (value.startsWith("file://")) {
-      try {
-        value = decodeURIComponent(new URL(value).pathname);
-      } catch {
-        value = value.slice("file://".length);
-      }
-    }
-    if (!value.startsWith("/")) return null;
-    const match = value.match(/^(.*?):(\d+)(?::\d+)?$/);
-    if (match) {
-      return {
-        path: match[1],
-        line: Number(match[2])
-      };
-    }
-    return { path: value, line: null };
-  }
-
   function openFileLink(event: MouseEvent, href: string) {
-    const target = fileTarget(href);
+    const target = chatFileTarget(href);
     if (!target) return;
     event.preventDefault();
     onOpenChatIntent?.(fileOpenIntent(target.path, target.line));
@@ -91,7 +71,7 @@
       const { target, suffix } = splitTrailingPathPunctuation(raw);
       if (target.startsWith("/") && text[start - 1] === ":") {
         appendText(parts, target, flags);
-      } else if (fileTarget(target)) {
+      } else if (chatFileTarget(target)) {
         appendText(parts, target, { ...flags, href: target });
       } else {
         appendText(parts, target, flags);
@@ -429,7 +409,7 @@
     {#if segment.kind === "code"}
       <code>{segment.text}</code>
     {:else if segment.href && urlPattern.test(segment.href)}
-      {@const localFile = fileTarget(segment.href)}
+      {@const localFile = chatFileTarget(segment.href)}
       <a
         href={segment.href}
         target={localFile ? undefined : "_blank"}
