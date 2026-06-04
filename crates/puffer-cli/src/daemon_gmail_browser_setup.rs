@@ -44,23 +44,7 @@ const DISCOVER_ACCOUNTS_SCRIPT: &str = r#"
     }
     return values.join("\n");
   };
-  const bodyText = document.body ? document.body.innerText || "" : "";
-  const href = location.href;
-  const host = location.hostname;
-  const title = document.title || "";
-  const haystack = `${title}\n${bodyText}\n${href}`.toLowerCase();
-  const accountIdentityNodes = Array.from(document.querySelectorAll([
-    "[data-identifier]",
-    "[data-email]",
-    "[email]",
-    "[aria-label*='@']",
-    "[title*='@']",
-    "img[alt*='@']",
-    "a[href*='authuser=']",
-    "a[href*='Email=']",
-    "a[href*='SignOutOptions']"
-  ].join(",")));
-  for (const node of accountIdentityNodes.slice(0, 250)) {
+  const addAccountAttributes = (node) => {
     addEmails(node.getAttribute("data-identifier"));
     addEmails(node.getAttribute("data-email"));
     addEmails(node.getAttribute("email"));
@@ -68,7 +52,26 @@ const DISCOVER_ACCOUNTS_SCRIPT: &str = r#"
     addEmails(node.getAttribute("title"));
     addEmails(node.getAttribute("alt"));
     addEmails(node.getAttribute("href"));
-  }
+  };
+  const addAccountNode = (node) => {
+    addEmails(separatedText(node));
+    addAccountAttributes(node);
+    const nested = Array.from(node.querySelectorAll([
+      "[data-identifier]",
+      "[data-email]",
+      "[email]",
+      "[aria-label]",
+      "[title]",
+      "img[alt]",
+      "a[href]"
+    ].join(",")));
+    for (const child of nested.slice(0, 50)) addAccountAttributes(child);
+  };
+  const bodyText = document.body ? document.body.innerText || "" : "";
+  const href = location.href;
+  const host = location.hostname;
+  const title = document.title || "";
+  const haystack = `${title}\n${bodyText}\n${href}`.toLowerCase();
   if (host.includes("accounts.google.")) {
     const chooserNodes = Array.from(document.querySelectorAll([
       "[data-identifier]",
@@ -79,13 +82,21 @@ const DISCOVER_ACCOUNTS_SCRIPT: &str = r#"
       "button"
     ].join(",")));
     for (const node of chooserNodes.slice(0, 250)) {
-      addEmails(separatedText(node));
-      addEmails(node.getAttribute("aria-label"));
-      addEmails(node.getAttribute("title"));
-      addEmails(node.getAttribute("data-identifier"));
-      addEmails(node.getAttribute("data-email"));
-      addEmails(node.getAttribute("email"));
+      addAccountNode(node);
     }
+  } else if (host.includes("mail.google.")) {
+    // On Gmail itself, many message rows expose sender addresses through
+    // aria-label/title attributes. Only inspect Google account chrome; never
+    // scan the inbox body for arbitrary email-looking strings.
+    const currentAccountNodes = Array.from(document.querySelectorAll([
+      "[aria-label^='Google Account']",
+      "[aria-label*='Google Account']",
+      "[aria-label*='Google account']",
+      "a[href*='SignOutOptions']",
+      "a[href*='AccountChooser']",
+      "a[href*='myaccount.google.']"
+    ].join(",")));
+    for (const node of currentAccountNodes.slice(0, 25)) addAccountNode(node);
   }
   let status = "unknown";
   if (accounts.size > 0) {
@@ -531,6 +542,15 @@ mod tests {
             discovery.accounts,
             vec!["me@example.com", "other@example.com"]
         );
+    }
+
+    #[test]
+    fn discovery_script_does_not_scan_gmail_message_email_attributes() {
+        assert!(!DISCOVER_ACCOUNTS_SCRIPT.contains("[aria-label*='@']"));
+        assert!(!DISCOVER_ACCOUNTS_SCRIPT.contains("[title*='@']"));
+        assert!(!DISCOVER_ACCOUNTS_SCRIPT.contains("img[alt*='@']"));
+        assert!(DISCOVER_ACCOUNTS_SCRIPT.contains("host.includes(\"mail.google.\")"));
+        assert!(DISCOVER_ACCOUNTS_SCRIPT.contains("Google account chrome"));
     }
 
     #[test]

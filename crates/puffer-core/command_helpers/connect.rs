@@ -402,15 +402,19 @@ fn connect_lark_cli(
     if !lark_cli_available(&bin) {
         ensure_lark_cli_installed(state, resources, &bin)?;
     }
-    // Both connectors verify their lark-cli identity before connecting. When it
-    // is missing, the recovery differs: lark-login (user identity) drives the
-    // device-flow OAuth login; lark-bot (app/bot identity) has no OAuth login in
-    // lark-cli, so it drives `config init` to set the app id/secret instead.
+    // Both connectors verify their lark-cli identity before connecting. The CLI
+    // needs app configuration before any identity can log in, so recover that
+    // first when auth status reports `config.not_configured`.
     let identity = lark_connector_identity(connector_slug);
+    if !lark_cli_identity_ready(&bin, identity) {
+        if lark_cli_config_not_configured(&bin) {
+            ensure_lark_cli_app_configured(state, resources, &bin, identity)?;
+        }
+    }
     if !lark_cli_identity_ready(&bin, identity) {
         match identity {
             "user" => ensure_lark_cli_logged_in(state, resources, &bin)?,
-            _ => ensure_lark_cli_app_configured(state, resources, &bin)?,
+            _ => ensure_lark_cli_app_configured(state, resources, &bin, identity)?,
         }
     }
     // Idempotent: re-running /connect with an existing connection name just
@@ -541,6 +545,34 @@ fn lark_cli_identity_ready(bin: &str, identity: &str) -> bool {
     }
 }
 
+/// Returns whether `lark-cli auth status` reports that app configuration is
+/// missing. `auth login` cannot start in this state, so `/connect lark-login`
+/// must run app setup before the user OAuth flow.
+fn lark_cli_config_not_configured(bin: &str) -> bool {
+    let output = match std::process::Command::new(bin)
+        .args(["auth", "status"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+    lark_cli_status_payload(&output)
+        .as_ref()
+        .is_some_and(lark_cli_status_is_config_not_configured)
+}
+
+fn lark_cli_status_payload(output: &std::process::Output) -> Option<Value> {
+    serde_json::from_slice::<Value>(&output.stdout)
+        .or_else(|_| serde_json::from_slice::<Value>(&output.stderr))
+        .ok()
+}
+
+fn lark_cli_status_is_config_not_configured(payload: &Value) -> bool {
+    payload.pointer("/error/type").and_then(Value::as_str) == Some("config")
+        && payload.pointer("/error/subtype").and_then(Value::as_str) == Some("not_configured")
+}
+
 /// Generates a scannable PNG QR for `url` via `lark-cli auth qrcode --output`
 /// (written to the temp dir, since the CLI only accepts a cwd-relative path) and
 /// returns its absolute path, or `None` on failure. Callers point the user at
@@ -605,6 +637,48 @@ fn first_http_url(line: &str) -> Option<String> {
         .trim_end_matches(['"', ')', ']', ',', '.'])
         .to_string();
     url.starts_with("http").then_some(url)
+}
+
+fn safe_lark_log_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches(['"', '\'', ')', ']', ',', '.']);
+    let suffix = &url[trimmed.len()..];
+    let base = trimmed.split('?').next().unwrap_or(trimmed);
+    if trimmed.contains('?') {
+        format!("{base}?<redacted>{suffix}")
+    } else {
+        format!("{base}{suffix}")
+    }
+}
+
+fn sanitize_lark_cli_log_line(line: &str) -> String {
+    line.split_whitespace()
+        .map(|token| {
+            if let Some(start) = token.find("http") {
+                let (prefix, url) = token.split_at(start);
+                format!("{prefix}{}", safe_lark_log_url(url))
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn push_lark_cli_log_line(lines: &std::sync::Arc<std::sync::Mutex<Vec<String>>>, line: String) {
+    let mut lines = lines.lock().unwrap();
+    lines.push(line);
+    if lines.len() > 20 {
+        lines.remove(0);
+    }
+}
+
+fn lark_cli_log_tail(lines: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {
+    let lines = lines.lock().unwrap();
+    if lines.is_empty() {
+        "no stderr lines captured".to_string()
+    } else {
+        lines.join(" | ")
+    }
 }
 
 /// Drives the `lark-cli` device-flow login: show the verification URL/QR, wait
@@ -677,7 +751,7 @@ fn ensure_lark_cli_logged_in(
     Ok(())
 }
 
-/// Sets up the app credentials backing the bot identity: either creates a new
+/// Sets up the app credentials backing lark-cli: either creates a new Feishu or
 /// Lark app in the browser (`config init --new`) or configures an existing app
 /// id + secret. lark-cli stores credentials in the OS keychain — Puffer never
 /// persists them.
@@ -685,17 +759,22 @@ fn ensure_lark_cli_app_configured(
     state: &mut AppState,
     resources: &LoadedResources,
     bin: &str,
+    expected_identity: &str,
 ) -> Result<()> {
+    let brand = ask_lark_brand(state, resources)?;
+    let product = lark_brand_product_name(&brand);
+    let method_question = format!(
+        "Puffer needs a {product} app configuration before connection can start. How should it be set up?"
+    );
+    let create_description =
+        format!("Create a new {product} app in the browser (config init --new).");
     let method = ask_choice(
         state,
         resources,
-        "Bot app",
-        "How should the bot's Lark app be set up?",
+        "App setup",
+        &method_question,
         &[
-            (
-                "Create new app",
-                "Create a new Lark app in the browser (config init --new).",
-            ),
+            ("Create new app", &create_description),
             (
                 "Use existing app",
                 "Enter an existing app id and secret (no browser).",
@@ -703,11 +782,11 @@ fn ensure_lark_cli_app_configured(
         ],
     )?;
     if method == "Create new app" {
-        lark_cli_config_init_new(state, resources, bin)?;
+        lark_cli_config_init_new(state, resources, bin, &brand)?;
     } else {
-        lark_cli_config_init_existing(state, resources, bin)?;
+        lark_cli_config_init_existing(state, resources, bin, &brand)?;
     }
-    if !lark_cli_identity_ready(bin, "bot") {
+    if expected_identity == "bot" && !lark_cli_identity_ready(bin, "bot") {
         bail!(
             "Lark app configured but `{bin} auth status` still reports no bot identity; \
              retry `/connect lark-bot`."
@@ -716,36 +795,53 @@ fn ensure_lark_cli_app_configured(
     Ok(())
 }
 
-/// Configures an existing Lark app by prompting for its id, brand, and secret;
-/// the secret is piped via stdin so it stays out of the process list.
+fn ask_lark_brand(state: &mut AppState, resources: &LoadedResources) -> Result<String> {
+    let answer = ask_choice(
+        state,
+        resources,
+        "Brand",
+        "Which product should this app use?",
+        &[("Feishu", "China."), ("Lark", "International.")],
+    )?;
+    Ok(lark_brand_cli_value(&answer))
+}
+
+fn lark_brand_cli_value(answer: &str) -> String {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "lark" => "lark".to_string(),
+        _ => "feishu".to_string(),
+    }
+}
+
+fn lark_brand_product_name(brand: &str) -> &'static str {
+    if brand == "lark" {
+        "Lark"
+    } else {
+        "Feishu"
+    }
+}
+
+/// Configures an existing Feishu/Lark app by prompting for its id, brand, and
+/// secret; the secret is piped via stdin so it stays out of the process list.
 fn lark_cli_config_init_existing(
     state: &mut AppState,
     resources: &LoadedResources,
     bin: &str,
+    brand: &str,
 ) -> Result<()> {
     let app_id = ask_input(
         state,
         resources,
         "App ID",
-        "What Lark app id (cli_...) should the bot use?",
-    )?;
-    let brand = ask_choice(
-        state,
-        resources,
-        "Brand",
-        "Which Lark brand is this app on?",
-        &[
-            ("feishu", "Feishu (China)."),
-            ("lark", "Lark (international)."),
-        ],
+        "What Feishu/Lark app id (cli_...) should Puffer use?",
     )?;
     let app_secret = ask_input(
         state,
         resources,
         "App secret",
-        "What is the Lark app secret? lark-cli stores it in your OS keychain; Puffer does not keep it.",
+        "What is the Feishu/Lark app secret? lark-cli stores it in your OS keychain; Puffer does not keep it.",
     )?;
-    let output = lark_cli_config_init(bin, app_id.trim(), &brand, app_secret.trim())?;
+    let output = lark_cli_config_init(bin, app_id.trim(), brand, app_secret.trim())?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("`{bin} config init` failed: {}", stderr.trim());
@@ -753,27 +849,41 @@ fn lark_cli_config_init_existing(
     Ok(())
 }
 
-/// Creates a new Lark app via `config init --new`, which prints a verification
-/// URL to stderr and blocks until the user finishes app creation in the browser.
-/// Opens the URL, shows it (and a QR) in the prompt, and waits for completion.
+fn lark_cli_config_init_new_args(brand: &str) -> [&str; 5] {
+    ["config", "init", "--new", "--brand", brand]
+}
+
+/// Creates a new Feishu/Lark app via `config init --new`, which prints a
+/// verification URL to stderr and blocks until the user finishes app creation in
+/// the browser. Opens the URL, shows it (and a QR) in the prompt, and waits for
+/// completion.
 fn lark_cli_config_init_new(
     state: &mut AppState,
     resources: &LoadedResources,
     bin: &str,
+    brand: &str,
 ) -> Result<()> {
     use std::io::{BufRead, BufReader};
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
 
+    let args = lark_cli_config_init_new_args(brand);
+    eprintln!(
+        "[lark-connect][config-init-new] start brand={brand} command=`{bin} {}`",
+        args.join(" ")
+    );
+    let flow_start = Instant::now();
     let mut child = std::process::Command::new(bin)
-        .args(["config", "init", "--new"])
+        .args(args)
         .stdin(std::process::Stdio::null())
         // stdout is unused (URL + QR go to stderr); null it so a chatty stdout
         // can't fill the pipe and deadlock the command while it waits.
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .with_context(|| format!("spawn `{bin} config init --new`"))?;
+        .with_context(|| format!("spawn `{bin} config init --new --brand {brand}`"))?;
+    let child_id = child.id();
+    eprintln!("[lark-connect][config-init-new] spawned pid={child_id} brand={brand}");
     // The URL (and a QR) are printed to stderr before it blocks; read stderr on a
     // thread so the pipe never fills while the command waits for the browser.
     let stderr = child
@@ -781,9 +891,13 @@ fn lark_cli_config_init_new(
         .take()
         .context("open config init --new stderr")?;
     let (tx, rx) = mpsc::channel();
+    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stderr_lines_thread = stderr_lines.clone();
     std::thread::spawn(move || {
         let mut sent = false;
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let sanitized = sanitize_lark_cli_log_line(&line);
+            push_lark_cli_log_line(&stderr_lines_thread, sanitized);
             if !sent {
                 if let Some(url) = first_http_url(&line) {
                     let _ = tx.send(url);
@@ -797,9 +911,19 @@ fn lark_cli_config_init_new(
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("`{bin} config init --new` did not print a verification URL");
+            let tail = lark_cli_log_tail(&stderr_lines);
+            eprintln!(
+                "[lark-connect][config-init-new] verification_url_timeout pid={child_id} elapsed_ms={} stderr_tail={tail}",
+                flow_start.elapsed().as_millis()
+            );
+            bail!("`{bin} config init --new` did not print a verification URL; stderr: {tail}");
         }
     };
+    eprintln!(
+        "[lark-connect][config-init-new] verification_url_detected pid={child_id} elapsed_ms={} url={}",
+        flow_start.elapsed().as_millis(),
+        safe_lark_log_url(&url)
+    );
 
     open_url_in_browser(&url);
     let qr_path = lark_cli_png_qr(bin, &url);
@@ -808,7 +932,7 @@ fn lark_cli_config_init_new(
         state,
         resources,
         "Create app",
-        "Opened the Lark app-creation page in your browser — finish creating the app there, then choose Done. (URL & QR in the preview.)",
+        "Opened the app-creation page in your browser — finish creating the app there, then choose Done. (URL & QR in the preview.)",
         &[
             (
                 "Done",
@@ -818,14 +942,22 @@ fn lark_cli_config_init_new(
             ("Cancel", "Stop creating the Lark app.", None),
         ],
     )?;
+    eprintln!(
+        "[lark-connect][config-init-new] user_choice pid={child_id} choice={choice:?} elapsed_ms={}",
+        flow_start.elapsed().as_millis()
+    );
     if choice != "Done" {
         let _ = child.kill();
         let _ = child.wait();
-        bail!("Lark app creation cancelled");
+        bail!("App creation cancelled");
     }
 
     // The command self-completes once the browser flow finishes; wait for it.
     let start = Instant::now();
+    let mut last_wait_log = Instant::now();
+    eprintln!(
+        "[lark-connect][config-init-new] waiting_for_registration pid={child_id} brand={brand}"
+    );
     let status = loop {
         if let Some(status) = child.try_wait().context("wait for config init --new")? {
             break status;
@@ -833,15 +965,36 @@ fn lark_cli_config_init_new(
         if start.elapsed() >= Duration::from_secs(180) {
             let _ = child.kill();
             let _ = child.wait();
+            let tail = lark_cli_log_tail(&stderr_lines);
+            eprintln!(
+                "[lark-connect][config-init-new] registration_timeout pid={child_id} elapsed_ms={} stderr_tail={tail}",
+                flow_start.elapsed().as_millis()
+            );
             bail!(
-                "`{bin} config init --new` did not finish; complete the browser steps, then retry `/connect lark-bot`"
+                "`{bin} config init --new` did not finish; complete the browser steps, then retry `/connect lark-bot`. stderr: {tail}"
+            );
+        }
+        if last_wait_log.elapsed() >= Duration::from_secs(15) {
+            last_wait_log = Instant::now();
+            eprintln!(
+                "[lark-connect][config-init-new] still_waiting pid={child_id} elapsed_ms={}",
+                flow_start.elapsed().as_millis()
             );
         }
         std::thread::sleep(Duration::from_millis(200));
     };
     if !status.success() {
-        bail!("`{bin} config init --new` failed; retry `/connect lark-bot`");
+        let tail = lark_cli_log_tail(&stderr_lines);
+        eprintln!(
+            "[lark-connect][config-init-new] exit_failure pid={child_id} status={status} elapsed_ms={} stderr_tail={tail}",
+            flow_start.elapsed().as_millis()
+        );
+        bail!("`{bin} config init --new` failed ({status}); stderr: {tail}");
     }
+    eprintln!(
+        "[lark-connect][config-init-new] exit_success pid={child_id} elapsed_ms={}",
+        flow_start.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -1298,6 +1451,63 @@ mod tests {
         let without_qr = build_auth_preview("https://x.test/auth", None);
         assert!(without_qr.contains("https://x.test/auth"));
         assert!(!without_qr.contains("QR image"));
+    }
+
+    #[test]
+    fn lark_cli_status_detects_missing_app_config() {
+        let missing = json!({
+            "ok": false,
+            "error": {
+                "type": "config",
+                "subtype": "not_configured",
+                "message": "not configured"
+            }
+        });
+        assert!(lark_cli_status_is_config_not_configured(&missing));
+
+        let logged_out = json!({
+            "ok": false,
+            "error": {
+                "type": "auth",
+                "subtype": "not_logged_in",
+                "message": "not logged in"
+            }
+        });
+        assert!(!lark_cli_status_is_config_not_configured(&logged_out));
+    }
+
+    #[test]
+    fn lark_cli_status_payload_reads_stderr_failures() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(3 << 8),
+            stdout: Vec::new(),
+            stderr: br#"{"ok":false,"error":{"type":"config","subtype":"not_configured"}}"#
+                .to_vec(),
+        };
+        let payload = lark_cli_status_payload(&output).expect("status payload");
+
+        assert!(lark_cli_status_is_config_not_configured(&payload));
+    }
+
+    #[test]
+    fn lark_cli_config_init_new_args_include_selected_brand() {
+        assert_eq!(
+            lark_cli_config_init_new_args("lark"),
+            ["config", "init", "--new", "--brand", "lark"]
+        );
+        assert_eq!(
+            lark_cli_config_init_new_args("feishu"),
+            ["config", "init", "--new", "--brand", "feishu"]
+        );
+    }
+
+    #[test]
+    fn lark_brand_cli_value_accepts_display_labels() {
+        assert_eq!(lark_brand_cli_value("Lark"), "lark");
+        assert_eq!(lark_brand_cli_value("Feishu"), "feishu");
+        assert_eq!(lark_brand_cli_value(" feishu "), "feishu");
     }
 
     fn temp_state() -> AppState {

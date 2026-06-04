@@ -821,7 +821,10 @@ mod tests {
         // Present: wrapped in the identity instruction with a Contents block.
         std::fs::write(tmp.path().join("soul.md"), "I am Puffer.").unwrap();
         let soul = load_soul_prompt(tmp.path()).unwrap();
-        assert!(soul.contains("your identity"), "missing identity instruction");
+        assert!(
+            soul.contains("your identity"),
+            "missing identity instruction"
+        );
         assert!(soul.contains("soul.md"));
         assert!(soul.contains("I am Puffer."));
     }

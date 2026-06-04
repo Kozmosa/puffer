@@ -21,7 +21,7 @@ pub(crate) fn handle_browser_open(state: &Arc<DaemonState>, params: &Value) -> R
     let browser_state =
         state
             .browsers
-            .open(state.event_sender(), session_id, url, width, height)?;
+            .open(state.event_sender(), session_id, url, width, height, true)?;
     Ok(state_json(&browser_state))
 }
 

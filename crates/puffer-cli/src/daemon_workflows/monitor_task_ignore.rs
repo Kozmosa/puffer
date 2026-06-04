@@ -129,7 +129,9 @@ pub(crate) fn sync_monitor_ignore_filters_from_tasks(paths: &ConfigPaths) -> Res
         if metadata_bool(metadata, "ignored") {
             continue;
         }
-        let task_filter_json = monitor_ignore_filter(metadata)
+        let task_filter_json = connector_mutes_source_on_ignore(metadata)
+            .then(|| monitor_ignore_filter(metadata))
+            .flatten()
             .map(serde_json::to_value)
             .transpose()
             .context("serialize ignore filter")?;
@@ -291,6 +293,9 @@ fn append_monitor_memory(
 }
 
 fn ensure_monitor_ignore_filter(metadata: &Map<String, Value>) -> Result<Option<Value>> {
+    if !connector_mutes_source_on_ignore(metadata) {
+        return Ok(None);
+    }
     let Some(filter) = monitor_ignore_filter(metadata) else {
         return Ok(None);
     };
@@ -603,6 +608,33 @@ fn identity_key_strength(key: &str) -> u8 {
     0
 }
 
+/// Whether ignoring one monitor task from this connector should suppress the
+/// whole `(scope, actor)` source going forward (install a binding ignore filter
+/// and sweep sibling tasks), versus just dismissing the single task.
+///
+/// Source-muting is correct for broadcast/feed connectors (newsletters, alert
+/// mailboxes, calendar feeds) where every event is another copy of the same
+/// noisy source. It is wrong for conversational connectors (Telegram/Lark user
+/// accounts and bots) where each message is a distinct human request: there,
+/// ignoring one task must not retire that contact's other pending tasks or
+/// silently drop their future messages (agentenv/monorepo#545). Source-muting
+/// is the destructive option, so it is opt-in: only the feed connectors below
+/// keep it; everything else (conversational or unknown) dismisses one task.
+fn connector_mutes_source_on_ignore(metadata: &Map<String, Value>) -> bool {
+    matches!(
+        monitor_connector(metadata).as_deref(),
+        Some("email" | "gmail-browser" | "gcal-browser")
+    )
+}
+
+fn monitor_connector(metadata: &Map<String, Value>) -> Option<String> {
+    metadata_string(
+        metadata,
+        &["monitor_connector", "monitorConnector"],
+        &["connector", "connector_slug", "connectorSlug"],
+    )
+}
+
 fn monitor_connection(metadata: &Map<String, Value>) -> Option<String> {
     metadata_string(
         metadata,
@@ -796,6 +828,61 @@ mod tests {
     }
 
     #[test]
+    fn ignore_conversational_task_dismisses_only_that_task() {
+        // Regression for agentenv/monorepo#545: ignoring one Telegram task must
+        // not sweep sibling tasks from the same chat/sender, and must not install
+        // a source-muting ignore filter (which would also drop future messages).
+        let tempdir = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        let memory_path = tempdir.path().join("telegram-user.md");
+        let task_path = monitor_tasks_path(&paths);
+        fs::create_dir_all(task_path.parent().unwrap()).unwrap();
+        let sibling = |task_id: &str, subject: &str| {
+            json!({
+                "task_id": task_id,
+                "subject": subject,
+                "description": "request from the same person",
+                "status": "pending",
+                "metadata": {
+                    "_monitor": true,
+                    "monitor_connection": "telegram-user",
+                    "monitor_connector": "telegram-login",
+                    "monitor_memory_path": memory_path.display().to_string(),
+                    "chat_id": 5229190700_i64,
+                    "sender_id": 674485095_i64
+                }
+            })
+        };
+        fs::write(
+            &task_path,
+            serde_json::to_string_pretty(&json!({
+                "tasks": [
+                    sibling("monitor-1", "book a table"),
+                    sibling("monitor-2", "a different request")
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        handle_monitor_task_ignore(
+            &paths,
+            &json!({"taskId": "monitor-1", "reason": "not actionable"}),
+        )
+        .unwrap();
+
+        let stored: Value = serde_json::from_str(&fs::read_to_string(&task_path).unwrap()).unwrap();
+        // The ignored task is marked completed.
+        assert_eq!(stored["tasks"][0]["status"], "completed");
+        assert_eq!(stored["tasks"][0]["metadata"]["ignored"], true);
+        // No source-muting filter is installed for a conversational connector.
+        assert_eq!(stored["tasks"][0]["metadata"]["ignore_filter"], Value::Null);
+        // The sibling from the same chat+sender stays pending.
+        assert_eq!(stored["tasks"][1]["status"], "pending");
+        assert_eq!(stored["tasks"][1]["metadata"]["ignored"], Value::Null);
+    }
+
+    #[test]
     fn ignore_filter_derives_scoped_actor_identity() {
         let metadata = json!({
             "room_id": "security-room",
@@ -863,6 +950,7 @@ mod tests {
                         "metadata": {
                             "_monitor": true,
                             "monitor_connection": "feed-connection",
+                            "monitor_connector": "gmail-browser",
                             "room_id": "security-room",
                             "author_handle": "alert-bot",
                             "ignored": true
@@ -876,6 +964,7 @@ mod tests {
                         "metadata": {
                             "_monitor": true,
                             "monitor_connection": "feed-connection",
+                            "monitor_connector": "gmail-browser",
                             "room_id": "security-room",
                             "author_handle": "alert-bot"
                         }
@@ -888,6 +977,7 @@ mod tests {
                         "metadata": {
                             "_monitor": true,
                             "monitor_connection": "feed-connection",
+                            "monitor_connector": "gmail-browser",
                             "room_id": "security-room",
                             "author_handle": "human-user"
                         }
@@ -929,6 +1019,7 @@ mod tests {
                         "metadata": {
                             "_monitor": true,
                             "monitor_connection": "feed-connection",
+                            "monitor_connector": "gmail-browser",
                             "room_id": "security-room",
                             "author_handle": "alert-bot",
                             "ignored": true
@@ -941,7 +1032,8 @@ mod tests {
                         "status": "pending",
                         "metadata": {
                             "_monitor": true,
-                            "monitor_connection": "feed-connection"
+                            "monitor_connection": "feed-connection",
+                            "monitor_connector": "gmail-browser"
                         }
                     }
                 ]

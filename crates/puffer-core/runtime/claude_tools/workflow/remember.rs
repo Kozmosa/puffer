@@ -39,14 +39,18 @@ pub fn execute_remember(_state: &mut AppState, _cwd: &Path, input: Value) -> Res
                 "success": true, "action": "append", "key": block.key,
                 "message": format!("Updated `{}`.", block.key),
             }),
-            Err(error) => json!({ "success": false, "action": "append", "error": error.to_string() }),
+            Err(error) => {
+                json!({ "success": false, "action": "append", "error": error.to_string() })
+            }
         },
         "forget" | "delete" => match memory.delete(&key) {
             Ok(removed) => json!({
                 "success": removed, "action": "forget", "key": normalize_key(&key),
                 "message": if removed { "Forgotten." } else { "No matching fact." },
             }),
-            Err(error) => json!({ "success": false, "action": "forget", "error": error.to_string() }),
+            Err(error) => {
+                json!({ "success": false, "action": "forget", "error": error.to_string() })
+            }
         },
         "list" => match memory.list() {
             Ok(facts) => json!({ "success": true, "action": "list", "facts": facts }),
