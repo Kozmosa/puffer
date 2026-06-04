@@ -1346,6 +1346,119 @@ test("composer autosize keeps bottom thread content anchored", async ({ page }) 
   expect(scrolledAfter.bottomGap).toBeGreaterThan(120);
 });
 
+test("chat scroll-to-bottom button appears away from bottom and scrolls to latest message", async ({
+  page
+}) => {
+  const timeline = Array.from({ length: 34 }, (_, index) => [
+    {
+      kind: "user_message",
+      id: `scroll-button-user-${index + 1}`,
+      text: `Scroll button user row ${index + 1}. `.repeat(6),
+      createdAtMs: baseTime - 140_000 + index * 2_000
+    },
+    {
+      kind: "assistant_message",
+      id: `scroll-button-assistant-${index + 1}`,
+      text: `Scroll button assistant row ${index + 1}. `.repeat(10),
+      createdAtMs: baseTime - 139_000 + index * 2_000
+    }
+  ]).flat();
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-scroll-button",
+        displayName: "Scroll button",
+        title: "Scroll button",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 140_000,
+        eventCount: timeline.length,
+        timeline
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Scroll button/);
+  const thread = page.locator(".pf-chat-thread");
+  const scrollButton = page.getByRole("button", { name: "Scroll to bottom" });
+  await expect(page.getByText("Scroll button assistant row 34.")).toBeVisible();
+
+  const overflowMetrics = await chatThreadMetrics(page);
+  expect(overflowMetrics.scrollHeight).toBeGreaterThan(overflowMetrics.clientHeight + 200);
+
+  await thread.evaluate((node) => {
+    const thread = node as HTMLDivElement;
+    thread.scrollTop = thread.scrollHeight;
+    thread.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(async () => (await chatThreadMetrics(page)).bottomGap).toBeLessThan(2);
+  await expect(scrollButton).toHaveCount(0);
+
+  await thread.evaluate((node) => {
+    const thread = node as HTMLDivElement;
+    thread.scrollTop = Math.max(0, thread.scrollTop - 360);
+    thread.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(async () => (await chatThreadMetrics(page)).bottomGap).toBeGreaterThan(250);
+  await expect(scrollButton).toBeVisible();
+
+  await scrollButton.click();
+  await expect(scrollButton).toHaveCount(0);
+  await expect.poll(async () => (await chatThreadMetrics(page)).bottomGap).toBeLessThan(100);
+});
+
+test("chat scroll-to-bottom button stays hidden without meaningful overflow", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-scroll-button-short",
+        displayName: "Short scroll button",
+        title: "Short scroll button",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 20_000,
+        eventCount: 2,
+        timeline: [
+          {
+            kind: "user_message",
+            id: "short-scroll-user",
+            text: "A short prompt.",
+            createdAtMs: baseTime - 10_000
+          },
+          {
+            kind: "assistant_message",
+            id: "short-scroll-assistant",
+            text: "A short answer.",
+            createdAtMs: baseTime - 9_000
+          }
+        ]
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Short scroll button/);
+  const thread = page.locator(".pf-chat-thread");
+  await expect(page.getByText("A short answer.")).toBeVisible();
+
+  const metrics = await chatThreadMetrics(page);
+  expect(metrics.scrollHeight - metrics.clientHeight).toBeLessThanOrEqual(100);
+
+  await thread.evaluate((node) => {
+    const thread = node as HTMLDivElement;
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
+});
+
 test("composer moves submitted prompt into the thread while turn start is pending", async ({
   page
 }) => {

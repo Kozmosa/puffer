@@ -150,6 +150,7 @@
   let composerTextareaEl: HTMLTextAreaElement | undefined;
   let attachmentMenuEl: HTMLDivElement | undefined;
   let threadEl: HTMLDivElement | undefined;
+  let showScrollToBottom = $state(false);
   let lastSessionId: string | null = null;
   let nowMs = $state(Date.now());
   let expandedActivityIds = $state<string[]>([]);
@@ -856,6 +857,28 @@
     threadEl.scrollTo({ top: threadEl.scrollHeight, behavior });
   }
 
+  function refreshThreadScrollButtonState(thread: HTMLDivElement | undefined = threadEl) {
+    if (!thread) {
+      if (showScrollToBottom) showScrollToBottom = false;
+      return;
+    }
+    const shouldShow = !isThreadNearBottom(thread);
+    if (showScrollToBottom !== shouldShow) showScrollToBottom = shouldShow;
+  }
+
+  function scheduleThreadScrollButtonStateRefresh() {
+    void tick().then(() => refreshThreadScrollButtonState());
+  }
+
+  function handleThreadScroll(event: Event) {
+    refreshThreadScrollButtonState(event.currentTarget as HTMLDivElement);
+  }
+
+  function handleScrollToBottomClick() {
+    showScrollToBottom = false;
+    scrollThreadToBottom("smooth");
+  }
+
   function resizeComposerTextarea(
     textarea: HTMLTextAreaElement | undefined = composerTextareaEl
   ): boolean {
@@ -876,6 +899,7 @@
     void tick().then(() => {
       const resized = resizeComposerTextarea();
       if (resized && shouldAnchorThread) scrollThreadToBottom();
+      refreshThreadScrollButtonState();
     });
   }
 
@@ -1009,6 +1033,7 @@
     // Keep unsent composer text isolated per session while switching threads.
     const nextSessionId = session?.id ?? null;
     if (nextSessionId !== lastSessionId) {
+      showScrollToBottom = false;
       draft = nextSessionId ? draftBySessionId[nextSessionId] ?? readDraftForSession(nextSessionId) : "";
       attachmentDrafts = nextSessionId ? attachmentDraftsBySessionId[nextSessionId] ?? [] : [];
       attachmentError = null;
@@ -1018,7 +1043,10 @@
       selectedActivityChildren = {};
       lastSessionId = nextSessionId;
       scheduleComposerResize({ anchorThread: false });
-      void tick().then(() => threadEl?.scrollTo({ top: 0, behavior: "auto" }));
+      void tick().then(() => {
+        threadEl?.scrollTo({ top: 0, behavior: "auto" });
+        refreshThreadScrollButtonState();
+      });
     }
   });
 
@@ -1359,6 +1387,16 @@
     }
     if (agentState === "awaiting") return `${engineerName} paused - waiting for your response`;
     return null;
+  });
+
+  $effect(() => {
+    void session?.id;
+    void loading;
+    void timeline;
+    void pendingPermissions;
+    void pendingQuestions;
+    void typingLabel;
+    scheduleThreadScrollButtonStateRefresh();
   });
 
   function shouldCollapseActivity(row: Extract<RowKind, { kind: "agent" }>, idx: number): boolean {
@@ -1997,271 +2035,283 @@
       </div>
     </div>
   {/if}
-  <div class="pf-chat-thread" bind:this={threadEl}>
-    <div class="pf-chat-thread-inner">
-      {#if loading && rows.length === 0}
-        <div class="state">Loading conversation…</div>
-      {:else if rows.length === 0 && !typingLabel}
-        <div class="state">No messages in this session yet. Send a prompt to get started.</div>
-      {:else}
-        {#each distributedRows as row, idx (row.key)}
-          {#if row.kind === "user"}
-            {@const visibleBody = visibleMessageBody(row.item)}
-            <div class="pf-msg" data-role="user">
-              <div class="pf-msg-avatar">{userInitial}</div>
-              <div class="pf-msg-body">
-                <div class="pf-msg-meta">
-                  <span class="name">{displayUserName}</span>
-                  <span class="you-badge">You</span>
-                  <span class="time">{formatTime((row.item as MessageTimelineItem & { createdAtMs?: number }).createdAtMs)}</span>
-                </div>
-                {#if row.item.attachments?.length}
-                  <MessageAttachmentPreviewStrip
-                    sessionId={session?.id ?? null}
-                    attachments={row.item.attachments}
-                    {onOpenChatIntent}
-                  />
-                {/if}
-                {#if visibleBody.trim()}
-                  <div class="pf-msg-text">
-                    <MessageBody body={visibleBody} {onOpenChatIntent} />
-                  </div>
-                {/if}
-              </div>
-            </div>
-          {:else if row.kind === "system"}
-            {@const isError = row.item.status === "error" || row.item.meta.includes("error")}
-            {@const recap = recapContent(row.item)}
-            <div class="pf-msg" data-role="system" data-error={isError} data-recap={Boolean(recap)}>
-              {#if !recap}
-                <div class="pf-msg-avatar">{isError ? "err" : "sys"}</div>
-              {/if}
-              <div class="pf-msg-body">
-                {#if recap}
-                  <div class="recap-card" data-expanded={recapExpanded(row.key)}>
-                    {#if recap.details.length > 0}
-                      <button
-                        type="button"
-                        class="recap-summary"
-                        onclick={() => toggleRecap(row.key)}
-                        aria-expanded={recapExpanded(row.key)}
-                        aria-label={recapExpanded(row.key) ? "Collapse recap details" : "Expand recap details"}
-                      >
-                        <span class="recap-icon" aria-hidden="true"><Icon name="sparkles" size={13} /></span>
-                        <span class="recap-sentence">{recap.summary}</span>
-                        <span class="recap-chevron" aria-hidden="true">
-                          <Icon name={recapExpanded(row.key) ? "chevD" : "chevR"} size={11} />
-                        </span>
-                      </button>
-                    {:else}
-                      <div class="recap-summary">
-                        <span class="recap-icon" aria-hidden="true"><Icon name="sparkles" size={13} /></span>
-                        <span class="recap-sentence">{recap.summary}</span>
-                      </div>
-                    {/if}
-                    {#if recap.details.length > 0 && recapExpanded(row.key)}
-                      <div class="recap-details">
-                        {#each recap.details as paragraph, paragraphIdx (`${row.key}-recap-${paragraphIdx}`)}
-                          <p>{paragraph}</p>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                {:else if isError}
+  <div class="pf-chat-thread-frame">
+    <div class="pf-chat-thread" bind:this={threadEl} onscroll={handleThreadScroll}>
+      <div class="pf-chat-thread-inner">
+        {#if loading && rows.length === 0}
+          <div class="state">Loading conversation…</div>
+        {:else if rows.length === 0 && !typingLabel}
+          <div class="state">No messages in this session yet. Send a prompt to get started.</div>
+        {:else}
+          {#each distributedRows as row, idx (row.key)}
+            {#if row.kind === "user"}
+              {@const visibleBody = visibleMessageBody(row.item)}
+              <div class="pf-msg" data-role="user">
+                <div class="pf-msg-avatar">{userInitial}</div>
+                <div class="pf-msg-body">
                   <div class="pf-msg-meta">
-                    <span class="name">{row.item.title || "Error"}</span>
+                    <span class="name">{displayUserName}</span>
+                    <span class="you-badge">You</span>
+                    <span class="time">{formatTime((row.item as MessageTimelineItem & { createdAtMs?: number }).createdAtMs)}</span>
                   </div>
-                  <div class="pf-msg-text">
-                    <MessageBody body={row.item.body} {onOpenChatIntent} />
-                  </div>
-                {:else}
-                  <div class="pf-msg-text">
-                    <MessageBody body={row.item.body} {onOpenChatIntent} />
-                  </div>
-                {/if}
+                  {#if row.item.attachments?.length}
+                    <MessageAttachmentPreviewStrip
+                      sessionId={session?.id ?? null}
+                      attachments={row.item.attachments}
+                      {onOpenChatIntent}
+                    />
+                  {/if}
+                  {#if visibleBody.trim()}
+                    <div class="pf-msg-text">
+                      <MessageBody body={visibleBody} {onOpenChatIntent} />
+                    </div>
+                  {/if}
+                </div>
               </div>
-            </div>
-          {:else}
-            <div class="pf-msg" data-role="agent">
+            {:else if row.kind === "system"}
+              {@const isError = row.item.status === "error" || row.item.meta.includes("error")}
+              {@const recap = recapContent(row.item)}
+              <div class="pf-msg" data-role="system" data-error={isError} data-recap={Boolean(recap)}>
+                {#if !recap}
+                  <div class="pf-msg-avatar">{isError ? "err" : "sys"}</div>
+                {/if}
+                <div class="pf-msg-body">
+                  {#if recap}
+                    <div class="recap-card" data-expanded={recapExpanded(row.key)}>
+                      {#if recap.details.length > 0}
+                        <button
+                          type="button"
+                          class="recap-summary"
+                          onclick={() => toggleRecap(row.key)}
+                          aria-expanded={recapExpanded(row.key)}
+                          aria-label={recapExpanded(row.key) ? "Collapse recap details" : "Expand recap details"}
+                        >
+                          <span class="recap-icon" aria-hidden="true"><Icon name="sparkles" size={13} /></span>
+                          <span class="recap-sentence">{recap.summary}</span>
+                          <span class="recap-chevron" aria-hidden="true">
+                            <Icon name={recapExpanded(row.key) ? "chevD" : "chevR"} size={11} />
+                          </span>
+                        </button>
+                      {:else}
+                        <div class="recap-summary">
+                          <span class="recap-icon" aria-hidden="true"><Icon name="sparkles" size={13} /></span>
+                          <span class="recap-sentence">{recap.summary}</span>
+                        </div>
+                      {/if}
+                      {#if recap.details.length > 0 && recapExpanded(row.key)}
+                        <div class="recap-details">
+                          {#each recap.details as paragraph, paragraphIdx (`${row.key}-recap-${paragraphIdx}`)}
+                            <p>{paragraph}</p>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+                  {:else if isError}
+                    <div class="pf-msg-meta">
+                      <span class="name">{row.item.title || "Error"}</span>
+                    </div>
+                    <div class="pf-msg-text">
+                      <MessageBody body={row.item.body} {onOpenChatIntent} />
+                    </div>
+                  {:else}
+                    <div class="pf-msg-text">
+                      <MessageBody body={row.item.body} {onOpenChatIntent} />
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+              <div class="pf-msg" data-role="agent">
+                <div class="pf-msg-avatar"><BrandLogo size={26} /></div>
+                <div class="pf-msg-body">
+                  <div class="pf-msg-meta">
+                    <span class="name">{engineerName}</span>
+                  </div>
+                  {#if row.children.length || row.approvals.length || row.questions.length}
+                    <div class="agent-tools">
+                      {#if row.children.length}
+                        {#if shouldCollapseActivity(row, idx)}
+                          {@const activityId = activityGroupId(row, idx)}
+                          {@const summary = activitySummary(row.children)}
+                          <div class="activity-group" data-expanded={activityExpanded(activityId)}>
+                            <button
+                              type="button"
+                              class="activity-head"
+                              onclick={() => toggleActivity(activityId)}
+                              aria-expanded={activityExpanded(activityId)}
+                            >
+                              <span class="activity-chevron">
+                                <Icon name={activityExpanded(activityId) ? "chevD" : "chevR"} size={11} />
+                              </span>
+                              <span class="activity-icons" aria-hidden="true">
+                                {#each summary.icons as icon, iconIdx (`${icon}-${iconIdx}`)}
+                                  <span class="activity-icon">
+                                    <Icon name={icon} size={13} />
+                                  </span>
+                                {/each}
+                              </span>
+                              <span class="activity-copy">
+                                <strong>Agent activity</strong>
+                                <em>{summary.text}</em>
+                              </span>
+                              {#if summary.failed > 0}
+                                <span class="activity-failed">{summary.failed} failed</span>
+                              {/if}
+                              <span class="activity-count">{row.children.length}</span>
+                            </button>
+                            {#if activityExpanded(activityId)}
+                              {@const selected = selectedActivityChild(row.children, activityId)}
+                              <div class="activity-details">
+                                {#each row.children as child, childIdx (child.id)}
+                                  {#if isThinkingActivity(child)}
+                                    <div
+                                      class="activity-thought"
+                                      style:order={activityActionOrder(childIdx)}
+                                    >
+                                      <span>Thought for {thoughtDurationLabel(child, row.children, childIdx, row.item)}</span>
+                                    </div>
+                                  {:else if child.kind === "assistant" || child.kind === "command"}
+                                    <div
+                                      class="activity-message pf-msg-text"
+                                      style:order={activityActionOrder(childIdx)}
+                                    >
+                                      <MessageBody body={(child as MessageTimelineItem).body} {onOpenChatIntent} />
+                                    </div>
+                                  {:else}
+                                    <button
+                                      type="button"
+                                      class="activity-action"
+                                      class:selected={activityActionSelected(activityId, child)}
+                                      style:order={activityActionOrder(childIdx)}
+                                      onclick={() => handleActivityActionClick(activityId, child)}
+                                      aria-expanded={activityChildSelected(activityId, child.id)}
+                                    >
+                                      <span class="activity-action-icon">
+                                        <Icon name={activityIcon(childActivityCategory(child))} size={13} />
+                                      </span>
+                                      <span class="activity-action-name">{activityActionName(child)}</span>
+                                      <span class="activity-action-arg" title={activityActionArg(child)}>
+                                        {activityActionArg(child)}
+                                      </span>
+                                      <span class="activity-action-status" data-state={activityStatus(child)}>
+                                        <span class="dot"></span>{activityStatus(child)}
+                                      </span>
+                                      <span class="activity-action-chevron" aria-hidden="true">
+                                        <Icon
+                                          name={activityChildSelected(activityId, child.id) ? "chevD" : "chevR"}
+                                          size={11}
+                                        />
+                                      </span>
+                                    </button>
+                                  {/if}
+                                {/each}
+                                {#if selected}
+                                  <div
+                                    class="activity-panel"
+                                    style:order={activityPanelOrder(selected.idx)}
+                                  >
+                                    {#if selected.child.kind === "tool"}
+                                      <ToolCard
+                                        item={selected.child as ToolTimelineItem}
+                                        sessionId={session?.id ?? null}
+                                        defaultCollapsed={false}
+                                        {onOpenChatIntent}
+                                      />
+                                    {:else if selected.child.kind === "diff"}
+                                      <DiffCard item={selected.child as DiffTimelineItem} defaultCollapsed={false} />
+                                    {:else if isGateActivity(selected.child)}
+                                      <div class="gate-detail-panel pf-msg-text">
+                                        {#each gateDetailRows(selected.child) as row (row.label)}
+                                          <div class="gate-detail-row">
+                                            <span class="gate-detail-label">{row.label}</span>
+                                            {#if row.code}
+                                              <code class="gate-detail-value">{row.value}</code>
+                                            {:else}
+                                              <span class="gate-detail-value">{row.value}</span>
+                                            {/if}
+                                          </div>
+                                        {/each}
+                                      </div>
+                                    {:else}
+                                      <div class="activity-message pf-msg-text">
+                                        <MessageBody body={(selected.child as MessageTimelineItem).body} {onOpenChatIntent} />
+                                      </div>
+                                    {/if}
+                                  </div>
+                                {/if}
+                              </div>
+                            {/if}
+                          </div>
+                        {:else}
+                          {#each row.children as child (child.id)}
+                            {#if child.kind === "tool"}
+                              <ToolCard
+                                item={child as ToolTimelineItem}
+                                sessionId={session?.id ?? null}
+                                {onOpenChatIntent}
+                              />
+                            {:else if child.kind === "diff"}
+                              <DiffCard item={child as DiffTimelineItem} />
+                            {:else if isGateActivity(child)}
+                              <div class="gate-detail-panel pf-msg-text">
+                                {#each gateDetailRows(child) as row (row.label)}
+                                  <div class="gate-detail-row">
+                                    <span class="gate-detail-label">{row.label}</span>
+                                    {#if row.code}
+                                      <code class="gate-detail-value">{row.value}</code>
+                                    {:else}
+                                      <span class="gate-detail-value">{row.value}</span>
+                                    {/if}
+                                  </div>
+                                {/each}
+                              </div>
+                            {:else}
+                              <div class="activity-message pf-msg-text">
+                                <MessageBody body={(child as MessageTimelineItem).body} {onOpenChatIntent} />
+                              </div>
+                            {/if}
+                          {/each}
+                        {/if}
+                      {/if}
+                      {#each row.approvals as p (p.id)}
+                        <Approval item={p} disabled={isPermissionResolving(p)} onResolve={onResolvePermission} />
+                      {/each}
+                      {#each row.questions as q (q.id)}
+                        <QuestionPrompt item={q} disabled={isQuestionResolving(q)} onResolve={onResolveUserQuestion} />
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if row.item}
+                    <div class="pf-msg-text">
+                      <MessageBody body={row.item.body} {onOpenChatIntent} />
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          {/each}
+
+          {#if typingLabel}
+            <div class="pf-msg" data-role="agent" style="opacity: 0.85;">
               <div class="pf-msg-avatar"><BrandLogo size={26} /></div>
               <div class="pf-msg-body">
-                <div class="pf-msg-meta">
-                  <span class="name">{engineerName}</span>
-                </div>
-                {#if row.children.length || row.approvals.length || row.questions.length}
-                  <div class="agent-tools">
-                    {#if row.children.length}
-                      {#if shouldCollapseActivity(row, idx)}
-                        {@const activityId = activityGroupId(row, idx)}
-                        {@const summary = activitySummary(row.children)}
-                        <div class="activity-group" data-expanded={activityExpanded(activityId)}>
-                          <button
-                            type="button"
-                            class="activity-head"
-                            onclick={() => toggleActivity(activityId)}
-                            aria-expanded={activityExpanded(activityId)}
-                          >
-                            <span class="activity-chevron">
-                              <Icon name={activityExpanded(activityId) ? "chevD" : "chevR"} size={11} />
-                            </span>
-                            <span class="activity-icons" aria-hidden="true">
-                              {#each summary.icons as icon, iconIdx (`${icon}-${iconIdx}`)}
-                                <span class="activity-icon">
-                                  <Icon name={icon} size={13} />
-                                </span>
-                              {/each}
-                            </span>
-                            <span class="activity-copy">
-                              <strong>Agent activity</strong>
-                              <em>{summary.text}</em>
-                            </span>
-                            {#if summary.failed > 0}
-                              <span class="activity-failed">{summary.failed} failed</span>
-                            {/if}
-                            <span class="activity-count">{row.children.length}</span>
-                          </button>
-                          {#if activityExpanded(activityId)}
-                            {@const selected = selectedActivityChild(row.children, activityId)}
-                            <div class="activity-details">
-                              {#each row.children as child, childIdx (child.id)}
-                                {#if isThinkingActivity(child)}
-                                  <div
-                                    class="activity-thought"
-                                    style:order={activityActionOrder(childIdx)}
-                                  >
-                                    <span>Thought for {thoughtDurationLabel(child, row.children, childIdx, row.item)}</span>
-                                  </div>
-                                {:else if child.kind === "assistant" || child.kind === "command"}
-                                  <div
-                                    class="activity-message pf-msg-text"
-                                    style:order={activityActionOrder(childIdx)}
-                                  >
-                                    <MessageBody body={(child as MessageTimelineItem).body} {onOpenChatIntent} />
-                                  </div>
-                                {:else}
-                                  <button
-                                    type="button"
-                                    class="activity-action"
-                                    class:selected={activityActionSelected(activityId, child)}
-                                    style:order={activityActionOrder(childIdx)}
-                                    onclick={() => handleActivityActionClick(activityId, child)}
-                                    aria-expanded={activityChildSelected(activityId, child.id)}
-                                  >
-                                    <span class="activity-action-icon">
-                                      <Icon name={activityIcon(childActivityCategory(child))} size={13} />
-                                    </span>
-                                    <span class="activity-action-name">{activityActionName(child)}</span>
-                                    <span class="activity-action-arg" title={activityActionArg(child)}>
-                                      {activityActionArg(child)}
-                                    </span>
-                                    <span class="activity-action-status" data-state={activityStatus(child)}>
-                                      <span class="dot"></span>{activityStatus(child)}
-                                    </span>
-                                    <span class="activity-action-chevron" aria-hidden="true">
-                                      <Icon
-                                        name={activityChildSelected(activityId, child.id) ? "chevD" : "chevR"}
-                                        size={11}
-                                      />
-                                    </span>
-                                  </button>
-                                {/if}
-                              {/each}
-                              {#if selected}
-                                <div
-                                  class="activity-panel"
-                                  style:order={activityPanelOrder(selected.idx)}
-                                >
-                                  {#if selected.child.kind === "tool"}
-                                    <ToolCard
-                                      item={selected.child as ToolTimelineItem}
-                                      sessionId={session?.id ?? null}
-                                      defaultCollapsed={false}
-                                      {onOpenChatIntent}
-                                    />
-                                  {:else if selected.child.kind === "diff"}
-                                    <DiffCard item={selected.child as DiffTimelineItem} defaultCollapsed={false} />
-                                  {:else if isGateActivity(selected.child)}
-                                    <div class="gate-detail-panel pf-msg-text">
-                                      {#each gateDetailRows(selected.child) as row (row.label)}
-                                        <div class="gate-detail-row">
-                                          <span class="gate-detail-label">{row.label}</span>
-                                          {#if row.code}
-                                            <code class="gate-detail-value">{row.value}</code>
-                                          {:else}
-                                            <span class="gate-detail-value">{row.value}</span>
-                                          {/if}
-                                        </div>
-                                      {/each}
-                                    </div>
-                                  {:else}
-                                    <div class="activity-message pf-msg-text">
-                                      <MessageBody body={(selected.child as MessageTimelineItem).body} {onOpenChatIntent} />
-                                    </div>
-                                  {/if}
-                                </div>
-                              {/if}
-                            </div>
-                          {/if}
-                        </div>
-                      {:else}
-                        {#each row.children as child (child.id)}
-                          {#if child.kind === "tool"}
-                            <ToolCard
-                              item={child as ToolTimelineItem}
-                              sessionId={session?.id ?? null}
-                              {onOpenChatIntent}
-                            />
-                          {:else if child.kind === "diff"}
-                            <DiffCard item={child as DiffTimelineItem} />
-                          {:else if isGateActivity(child)}
-                            <div class="gate-detail-panel pf-msg-text">
-                              {#each gateDetailRows(child) as row (row.label)}
-                                <div class="gate-detail-row">
-                                  <span class="gate-detail-label">{row.label}</span>
-                                  {#if row.code}
-                                    <code class="gate-detail-value">{row.value}</code>
-                                  {:else}
-                                    <span class="gate-detail-value">{row.value}</span>
-                                  {/if}
-                                </div>
-                              {/each}
-                            </div>
-                          {:else}
-                            <div class="activity-message pf-msg-text">
-                              <MessageBody body={(child as MessageTimelineItem).body} {onOpenChatIntent} />
-                            </div>
-                          {/if}
-                        {/each}
-                      {/if}
-                    {/if}
-                    {#each row.approvals as p (p.id)}
-                      <Approval item={p} disabled={isPermissionResolving(p)} onResolve={onResolvePermission} />
-                    {/each}
-                    {#each row.questions as q (q.id)}
-                      <QuestionPrompt item={q} disabled={isQuestionResolving(q)} onResolve={onResolveUserQuestion} />
-                    {/each}
-                  </div>
-                {/if}
-                {#if row.item}
-                  <div class="pf-msg-text">
-                    <MessageBody body={row.item.body} {onOpenChatIntent} />
-                  </div>
-                {/if}
+                <div class="typing">{typingLabel}</div>
               </div>
             </div>
           {/if}
-        {/each}
-
-        {#if typingLabel}
-          <div class="pf-msg" data-role="agent" style="opacity: 0.85;">
-            <div class="pf-msg-avatar"><BrandLogo size={26} /></div>
-            <div class="pf-msg-body">
-              <div class="typing">{typingLabel}</div>
-            </div>
-          </div>
         {/if}
-      {/if}
+      </div>
     </div>
+    {#if showScrollToBottom}
+      <button
+        type="button"
+        class="pf-scroll-bottom-btn"
+        aria-label="Scroll to bottom"
+        onclick={handleScrollToBottomClick}
+      >
+        <Icon name="chevD" size={18} />
+      </button>
+    {/if}
   </div>
 
   <div class="pf-composer-wrap">
@@ -2400,8 +2450,13 @@
     position: relative;
     background: var(--background);
   }
-  .pf-chat-thread {
+  .pf-chat-thread-frame {
+    position: relative;
     flex: 1;
+    min-height: 0;
+  }
+  .pf-chat-thread {
+    height: 100%;
     overflow-y: auto;
     padding: 24px 0 24px;
   }
@@ -2412,6 +2467,33 @@
     display: flex;
     flex-direction: column;
     gap: var(--puffer-row-gap, 14px);
+  }
+  .pf-scroll-bottom-btn {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 14px;
+    z-index: 5;
+    width: 34px;
+    height: 34px;
+    margin-inline: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--background) 94%, var(--muted));
+    color: var(--foreground);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+    cursor: pointer;
+  }
+  .pf-scroll-bottom-btn:hover {
+    background: color-mix(in oklab, var(--accent) 58%, var(--background));
+  }
+  .pf-scroll-bottom-btn:focus-visible {
+    outline: 2px solid var(--puffer-accent);
+    outline-offset: 2px;
   }
   .pf-composer-wrap {
     border-top: 0;
@@ -2958,6 +3040,9 @@
 
   @media (max-width: 720px) {
     .pf-chat-thread-inner { padding: 0 16px; }
+    .pf-scroll-bottom-btn {
+      bottom: 10px;
+    }
     .pf-composer-wrap {
       padding: 0;
       margin-bottom: 10px;
