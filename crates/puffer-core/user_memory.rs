@@ -61,7 +61,10 @@ pub fn parse_blocks(raw: &str) -> Vec<MemoryBlock> {
         if let Some(k) = key.take() {
             let joined = body.join("\n").trim().to_string();
             if !joined.is_empty() {
-                out.push(MemoryBlock { key: k, body: joined });
+                out.push(MemoryBlock {
+                    key: k,
+                    body: joined,
+                });
             }
             body.clear();
         }
@@ -105,7 +108,8 @@ pub struct UserMemory {
 impl UserMemory {
     /// The global store at `~/.puffer/user.md`.
     pub fn global() -> Result<Self> {
-        let path = user_memory_path().ok_or_else(|| anyhow!("no home directory for user memory"))?;
+        let path =
+            user_memory_path().ok_or_else(|| anyhow!("no home directory for user memory"))?;
         Ok(Self { path })
     }
 
@@ -132,7 +136,11 @@ impl UserMemory {
     /// The body for `key`, if present.
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         let key = normalize_key(key);
-        Ok(self.list()?.into_iter().find(|b| b.key == key).map(|b| b.body))
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|b| b.key == key)
+            .map(|b| b.body))
     }
 
     /// Upsert a block (replace body if the key exists, else create).
@@ -154,7 +162,10 @@ impl UserMemory {
                     body: body.clone(),
                 });
             }
-            Ok(MemoryBlock { key: key.clone(), body: body.clone() })
+            Ok(MemoryBlock {
+                key: key.clone(),
+                body: body.clone(),
+            })
         })
     }
 
@@ -175,9 +186,7 @@ impl UserMemory {
                 None => addition.to_string(),
             };
             if merged.chars().count() > MAX_BODY_CHARS {
-                return Err(anyhow!(
-                    "block `{key}` would exceed {MAX_BODY_CHARS} chars"
-                ));
+                return Err(anyhow!("block `{key}` would exceed {MAX_BODY_CHARS} chars"));
             }
             if let Some(existing) = blocks.iter_mut().find(|b| b.key == key) {
                 existing.body = merged.clone();
@@ -190,7 +199,10 @@ impl UserMemory {
                     body: merged.clone(),
                 });
             }
-            Ok(MemoryBlock { key: key.clone(), body: merged })
+            Ok(MemoryBlock {
+                key: key.clone(),
+                body: merged,
+            })
         })
     }
 
@@ -250,11 +262,17 @@ mod tests {
         mem.set("Home Address", "123 Main St").unwrap();
         mem.set("food-delivery", "Prefers Meituan").unwrap();
         // key normalization: "Home Address" -> "home-address"
-        assert_eq!(mem.get("home_address").unwrap().as_deref(), Some("123 Main St"));
+        assert_eq!(
+            mem.get("home_address").unwrap().as_deref(),
+            Some("123 Main St")
+        );
         assert_eq!(mem.list().unwrap().len(), 2);
         // upsert replaces, not duplicates
         mem.set("home-address", "456 Oak Ave").unwrap();
-        assert_eq!(mem.get("Home Address").unwrap().as_deref(), Some("456 Oak Ave"));
+        assert_eq!(
+            mem.get("Home Address").unwrap().as_deref(),
+            Some("456 Oak Ave")
+        );
         assert_eq!(mem.list().unwrap().len(), 2);
         assert!(mem.delete("home address").unwrap());
         assert!(!mem.delete("home address").unwrap());

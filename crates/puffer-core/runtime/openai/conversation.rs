@@ -1799,12 +1799,22 @@ mod tests {
         // breakpoint), so a mutating user.md never busts the system-prompt cache.
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("soul.md"), "SOUL_REMINDER_MARKER").unwrap();
-        std::fs::write(tmp.path().join("user.md"), "## addr\n\nUSER_REMINDER_MARKER").unwrap();
+        std::fs::write(
+            tmp.path().join("user.md"),
+            "## addr\n\nUSER_REMINDER_MARKER",
+        )
+        .unwrap();
         let mut state = crate::runtime::tests::state();
         state.cwd = tmp.path().to_path_buf();
         let reminder = build_system_reminder(&state, "");
-        assert!(reminder.contains("SOUL_REMINDER_MARKER"), "soul.md must be in the reminder");
-        assert!(reminder.contains("USER_REMINDER_MARKER"), "user.md must be in the reminder");
+        assert!(
+            reminder.contains("SOUL_REMINDER_MARKER"),
+            "soul.md must be in the reminder"
+        );
+        assert!(
+            reminder.contains("USER_REMINDER_MARKER"),
+            "user.md must be in the reminder"
+        );
     }
 
     #[test]
