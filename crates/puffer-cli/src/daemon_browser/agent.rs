@@ -352,6 +352,11 @@ fn open_agent_tab(
     reuse_existing: bool,
     resolved_tab_id: Option<String>,
 ) -> Result<BrowserTabInfo> {
+    let background = background_requested(params);
+    let activate = params
+        .get("activate")
+        .and_then(Value::as_bool)
+        .unwrap_or(!background);
     if let Some(tab_id) = resolved_tab_id.or_else(|| optional_string(params, "tabId")) {
         return state.browsers.open_tab(
             state.event_sender(),
@@ -361,10 +366,8 @@ fn open_agent_tab(
             optional_string(params, "url"),
             width,
             height,
-            params
-                .get("activate")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
+            activate,
+            background,
         );
     }
     if reuse_existing {
@@ -377,10 +380,8 @@ fn open_agent_tab(
                 optional_string(params, "url"),
                 width,
                 height,
-                params
-                    .get("activate")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
+                activate,
+                background,
             );
         }
     }
@@ -392,7 +393,8 @@ fn open_agent_tab(
         optional_string(params, "url"),
         width,
         height,
-        true,
+        activate,
+        background,
     )
 }
 
@@ -578,6 +580,7 @@ fn ensure_target_tab(
     width: u32,
     height: u32,
 ) -> Result<(String, String)> {
+    let background = background_requested(params);
     let tabs = state.browsers.list_tabs(root_session_id);
     if let Some(tab_id) = optional_string(params, "tabId").or_else(|| tab_id_from_page(params)) {
         let backend_id = backend_session_id(root_session_id, &tab_id);
@@ -595,6 +598,7 @@ fn ensure_target_tab(
             restore_url,
             width,
             height,
+            background,
         )?;
         return Ok((tab_id, backend_id));
     }
@@ -607,6 +611,7 @@ fn ensure_target_tab(
             tab.url.clone(),
             width,
             height,
+            background,
         )?;
         return Ok((tab.tab_id, tab.backend_session_id));
     }
@@ -618,7 +623,8 @@ fn ensure_target_tab(
         Some(DEFAULT_URL.to_string()),
         width,
         height,
-        true,
+        !background,
+        background,
     )?;
     publish_tabs(state, root_session_id);
     Ok((tab.tab_id, tab.backend_session_id))
@@ -649,6 +655,7 @@ fn ensure_backend_session(
     restore_url: String,
     width: u32,
     height: u32,
+    background: bool,
 ) -> Result<()> {
     if state.browsers.resize(backend_id, width, height).is_ok() {
         return Ok(());
@@ -659,6 +666,7 @@ fn ensure_backend_session(
         Some(restore_url),
         width,
         height,
+        !background,
     )?;
     state.browsers.tabs.lock().unwrap().open_tab(
         root_session_id,
@@ -695,6 +703,13 @@ fn optional_string(params: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+fn background_requested(params: &Value) -> bool {
+    params
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn navigation_timeout(params: &Value) -> Duration {

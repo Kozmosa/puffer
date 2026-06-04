@@ -411,6 +411,7 @@ fn poll_account(
             "width": BROWSER_WIDTH,
             "height": BROWSER_HEIGHT,
             "activate": false,
+            "background": true,
         }),
     )
     .context("open Google Calendar browser tab")?;
@@ -425,6 +426,7 @@ fn poll_account(
                 "tabId": safe_session_part(account),
                 "width": BROWSER_WIDTH,
                 "height": BROWSER_HEIGHT,
+                "background": true,
                 "script": GCAL_EVENTS_SCRIPT,
             }),
         )

@@ -532,6 +532,7 @@ fn poll_account_at_url(
             "width": BROWSER_WIDTH,
             "height": BROWSER_HEIGHT,
             "activate": false,
+            "background": true,
         }),
     )
     .context("open Gmail browser tab")?;
@@ -546,6 +547,7 @@ fn poll_account_at_url(
                 "tabId": safe_session_part(account),
                 "width": BROWSER_WIDTH,
                 "height": BROWSER_HEIGHT,
+                "background": true,
                 "script": GMAIL_INBOX_SCRIPT,
             }),
         )
