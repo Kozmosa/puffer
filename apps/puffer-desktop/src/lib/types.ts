@@ -32,6 +32,17 @@ export type MessageActor = {
   parentSessionId?: string | null;
 };
 
+export type AgentTurnAttachmentKind = "image" | "file";
+
+export type AgentTurnAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  extension: string;
+  kind: AgentTurnAttachmentKind;
+};
+
 export type FolderGroup = {
   id: string;
   label: string;

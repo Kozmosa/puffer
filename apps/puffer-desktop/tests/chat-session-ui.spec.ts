@@ -16,6 +16,86 @@ async function reconnectBackend(page: Page, daemon: FakeDaemon): Promise<void> {
   await expect(page.locator(".connection-banner")).toHaveCount(0);
 }
 
+test("composer add content menu attaches image and file drafts", async ({ page }) => {
+  const imageBuffer = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==",
+    "base64"
+  );
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-attachments",
+        displayName: "Attachment composer",
+        title: "Attachment composer",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "attachment-seed",
+            text: "Attach files here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Attachment composer/);
+  await expect(page.getByText("Attach files here.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await expect(page.getByRole("menuitem", { name: "Add images and files" })).toBeVisible();
+
+  await page.locator('[data-testid="composer-file-input"]').setInputFiles([
+    {
+      name: "sample.png",
+      mimeType: "image/png",
+      buffer: imageBuffer
+    },
+    {
+      name: "notes.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# Notes\n\nReview this.", "utf8")
+    }
+  ]);
+
+  await expect(page.locator('[data-testid="composer-attachment-preview-strip"]')).toBeVisible();
+  await expect(page.getByAltText("sample.png")).toBeVisible();
+  await expect(page.getByText("notes.md")).toBeVisible();
+
+  await page.getByRole("button", { name: "Remove attachment notes.md" }).click();
+  await expect(page.getByText("notes.md")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Send" }).click();
+  const request = await daemon.waitForRequest(
+    "run_agent_turn",
+    (candidate) =>
+      candidate.params.sessionId === "session-attachments" &&
+      candidate.params.message === "[Image: sample.png]" &&
+      Array.isArray(candidate.params.attachments) &&
+      candidate.params.attachments.length === 1
+  );
+  expect(request.params.attachments).toEqual([
+    expect.objectContaining({
+      name: "sample.png",
+      mimeType: "image/png",
+      kind: "image",
+      extension: "PNG",
+      size: imageBuffer.length
+    })
+  ]);
+  await expect(page.getByText("[Image: sample.png]")).toBeVisible();
+  await expect(page.locator('[data-testid="composer-attachment-preview-strip"]')).toHaveCount(0);
+});
+
 test("turn completion reload does not leak live chat into a newly selected session", async ({
   page
 }) => {

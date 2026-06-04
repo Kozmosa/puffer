@@ -19,7 +19,7 @@ mod websocket;
 use backend::BackendState;
 use daemon_launcher::DaemonLauncher;
 use events::EventEmitter;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +27,26 @@ use tauri::{AppHandle, Builder, State};
 
 type SharedBackend = Arc<BackendState>;
 type SharedDaemonLauncher = Arc<DaemonLauncher>;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+enum ChatAttachmentKind {
+    Image,
+    File,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ChatAttachmentInput {
+    id: String,
+    name: String,
+    mime_type: String,
+    size: u64,
+    extension: String,
+    kind: ChatAttachmentKind,
+}
 
 #[cfg(test)]
 const REGISTERED_TAURI_COMMANDS: &[&str] = &[
@@ -345,21 +365,21 @@ fn run_agent_turn(
     fast_mode: Option<bool>,
     permission_mode: Option<String>,
     mode: Option<String>,
+    attachments: Option<Vec<ChatAttachmentInput>>,
 ) -> Result<String, String> {
-    let value = backend_call(
-        app,
-        state,
-        "run_agent_turn",
-        json!({
-            "sessionId": session_id,
-            "message": message,
-            "providerId": provider_id,
-            "modelId": model_id,
-            "fastMode": fast_mode.unwrap_or(false),
-            "permissionMode": permission_mode,
-            "mode": mode,
-        }),
-    )?;
+    let mut payload = json!({
+        "sessionId": session_id,
+        "message": message,
+        "providerId": provider_id,
+        "modelId": model_id,
+        "fastMode": fast_mode.unwrap_or(false),
+        "permissionMode": permission_mode,
+        "mode": mode,
+    });
+    if let Some(attachments) = attachments {
+        payload["attachments"] = json!(attachments);
+    }
+    let value = backend_call(app, state, "run_agent_turn", payload)?;
     Ok(value
         .get("turnId")
         .and_then(Value::as_str)

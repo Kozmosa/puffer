@@ -10,6 +10,16 @@
   import Approval from "./Approval.svelte";
   import QuestionPrompt from "./QuestionPrompt.svelte";
   import ModelPicker from "./ModelPicker.svelte";
+  import {
+    FILE_INPUT_ACCEPT,
+    addAttachmentFiles,
+    attachmentPayloadFromDraft,
+    dataTransferHasFiles,
+    filesFromDataTransfer,
+    revokeAttachmentPreview,
+    revokeAttachmentPreviews,
+    type ComposerAttachmentDraft
+  } from "./attachments";
   import type {
     PermissionTimelineItem,
     SessionListItem,
@@ -122,6 +132,14 @@
 
   let draft = $state("");
   let draftBySessionId = $state<Record<string, string>>({});
+  let attachmentDrafts = $state<ComposerAttachmentDraft[]>([]);
+  let attachmentDraftsBySessionId = $state<Record<string, ComposerAttachmentDraft[]>>({});
+  let attachmentError = $state<string | null>(null);
+  let attachmentMenuOpen = $state(false);
+  let attachmentDropActive = $state(false);
+  let attachmentIdSequence = 0;
+  let fileInputEl: HTMLInputElement | undefined;
+  let attachmentMenuEl: HTMLDivElement | undefined;
   let threadEl: HTMLDivElement | undefined;
   let lastSessionId: string | null = null;
   let nowMs = $state(Date.now());
@@ -235,12 +253,14 @@
   let composerDisabled = $derived(
     !session ||
       !backendConnected ||
+      submitInFlight ||
       agentBusy ||
       (!selectedProviderAuthenticated && !providerSwitchCanRecover)
   );
   let modelPickerDisabled = $derived(
     turnRunning || (!selectedProviderAuthenticated && !providerSwitchCanRecover)
   );
+  let hasComposerPayload = $derived(Boolean(draft.trim() || attachmentDrafts.length > 0));
   let composerBlockedReason = $derived(
     agentBusy
       ? agentState === "awaiting"
@@ -258,7 +278,7 @@
   );
   let canSubmitPrompt = $derived(
     Boolean(
-      draft.trim() &&
+      hasComposerPayload &&
         session &&
         backendConnected &&
         !turnRunning &&
@@ -818,11 +838,111 @@
     setDraftForSession(session?.id, value);
   }
 
+  function nextAttachmentId(): string {
+    attachmentIdSequence += 1;
+    return `attachment-${Date.now().toString(36)}-${attachmentIdSequence.toString(36)}`;
+  }
+
+  function rememberAttachmentDrafts(
+    sessionId: string | null | undefined,
+    attachments: ComposerAttachmentDraft[]
+  ) {
+    if (!sessionId) return;
+    if (attachments.length > 0) {
+      attachmentDraftsBySessionId = { ...attachmentDraftsBySessionId, [sessionId]: attachments };
+      return;
+    }
+    const { [sessionId]: _removed, ...rest } = attachmentDraftsBySessionId;
+    attachmentDraftsBySessionId = rest;
+  }
+
+  function setAttachmentDrafts(
+    attachments: ComposerAttachmentDraft[],
+    error: string | null = attachmentError
+  ) {
+    attachmentDrafts = attachments;
+    attachmentError = error;
+    rememberAttachmentDrafts(session?.id, attachments);
+  }
+
+  function addFilesToComposer(files: FileList | File[] | null) {
+    if (composerDisabled) return;
+    attachmentMenuOpen = false;
+    const result = addAttachmentFiles({
+      current: attachmentDrafts,
+      files,
+      nextId: nextAttachmentId
+    });
+    setAttachmentDrafts(result.attachments, result.error);
+    if (fileInputEl) fileInputEl.value = "";
+  }
+
+  function removeAttachment(id: string) {
+    const attachment = attachmentDrafts.find((item) => item.id === id);
+    if (attachment) revokeAttachmentPreview(attachment);
+    setAttachmentDrafts(
+      attachmentDrafts.filter((item) => item.id !== id),
+      null
+    );
+  }
+
+  function clearCurrentAttachments() {
+    setAttachmentDrafts([], null);
+    if (fileInputEl) fileInputEl.value = "";
+  }
+
+  function clearAllAttachmentDrafts() {
+    revokeAttachmentPreviews(attachmentDrafts);
+    for (const attachments of Object.values(attachmentDraftsBySessionId)) {
+      if (attachments !== attachmentDrafts) revokeAttachmentPreviews(attachments);
+    }
+    attachmentDrafts = [];
+    attachmentDraftsBySessionId = {};
+    attachmentError = null;
+  }
+
+  function openAttachmentPicker() {
+    if (composerDisabled) return;
+    attachmentMenuOpen = false;
+    fileInputEl?.click();
+  }
+
+  function toggleAttachmentMenu(event: MouseEvent) {
+    event.stopPropagation();
+    if (composerDisabled) return;
+    attachmentMenuOpen = !attachmentMenuOpen;
+  }
+
+  function handleAttachmentDragOver(event: DragEvent) {
+    if (composerDisabled || !dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer!.dropEffect = "copy";
+    attachmentDropActive = true;
+  }
+
+  function handleAttachmentDragLeave(event: DragEvent) {
+    const current = event.currentTarget;
+    const next = event.relatedTarget;
+    if (current instanceof HTMLElement && next instanceof Node && current.contains(next)) return;
+    attachmentDropActive = false;
+  }
+
+  function handleAttachmentDrop(event: DragEvent) {
+    if (composerDisabled || !dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    attachmentDropActive = false;
+    addFilesToComposer(filesFromDataTransfer(event.dataTransfer));
+  }
+
   $effect(() => {
     // Keep unsent composer text isolated per session while switching threads.
     const nextSessionId = session?.id ?? null;
     if (nextSessionId !== lastSessionId) {
       draft = nextSessionId ? draftBySessionId[nextSessionId] ?? readDraftForSession(nextSessionId) : "";
+      attachmentDrafts = nextSessionId ? attachmentDraftsBySessionId[nextSessionId] ?? [] : [];
+      attachmentError = null;
+      attachmentMenuOpen = false;
+      attachmentDropActive = false;
       expandedActivityIds = [];
       selectedActivityChildren = {};
       lastSessionId = nextSessionId;
@@ -831,10 +951,28 @@
   });
 
   $effect(() => {
-    onDraftChange?.(draft.trim().length > 0);
+    onDraftChange?.(hasComposerPayload);
+  });
+
+  $effect(() => {
+    if (!composerDisabled) return;
+    attachmentMenuOpen = false;
+    attachmentDropActive = false;
+  });
+
+  $effect(() => {
+    if (!attachmentMenuOpen || typeof window === "undefined") return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && attachmentMenuEl?.contains(target)) return;
+      attachmentMenuOpen = false;
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
   });
 
   onDestroy(() => {
+    clearAllAttachmentDrafts();
     onDraftChange?.(false);
   });
 
@@ -1014,21 +1152,34 @@
 
   async function submit() {
     const v = draft.trim();
-    if (!v || !canSubmitPrompt) return;
+    if (!canSubmitPrompt) return;
     const targetSessionId = session?.id;
     if (!targetSessionId) return;
     if (submitInFlightGuards.has(targetSessionId)) return;
     const previousDraft = draft;
+    const previousAttachments = attachmentDrafts;
+    const submittedAttachments = previousAttachments.map(attachmentPayloadFromDraft);
     setSubmitInFlight(targetSessionId, true);
     draft = "";
     setDraftForSession(targetSessionId, "");
+    clearCurrentAttachments();
     try {
-      const accepted = await onSubmitMessage(v, composerOptions());
+      const options = {
+        ...composerOptions(),
+        ...(submittedAttachments.length > 0 ? { attachments: submittedAttachments } : {})
+      };
+      const accepted = await onSubmitMessage(v, options);
       if (accepted === false) {
         setDraftForSession(targetSessionId, previousDraft);
         if ((session?.id ?? null) === targetSessionId && !draft.trim()) draft = previousDraft;
+        rememberAttachmentDrafts(targetSessionId, previousAttachments);
+        if ((session?.id ?? null) === targetSessionId) {
+          attachmentDrafts = previousAttachments;
+          attachmentError = null;
+        }
         return;
       }
+      revokeAttachmentPreviews(previousAttachments);
       await tick();
       if ((session?.id ?? null) === targetSessionId) {
         threadEl?.scrollTo({ top: threadEl.scrollHeight, behavior: "smooth" });
@@ -1036,6 +1187,11 @@
     } catch {
       setDraftForSession(targetSessionId, previousDraft);
       if ((session?.id ?? null) === targetSessionId && !draft.trim()) draft = previousDraft;
+      rememberAttachmentDrafts(targetSessionId, previousAttachments);
+      if ((session?.id ?? null) === targetSessionId) {
+        attachmentDrafts = previousAttachments;
+        attachmentError = null;
+      }
     } finally {
       setSubmitInFlight(targetSessionId, false);
     }
@@ -2008,7 +2164,62 @@
   </div>
 
   <div class="pf-composer-wrap">
-    <div class="pf-composer">
+    <div
+      class={`pf-composer${attachmentDropActive ? " drop-active" : ""}`}
+      role="group"
+      aria-label="Message composer"
+      ondragover={handleAttachmentDragOver}
+      ondragleave={handleAttachmentDragLeave}
+      ondrop={handleAttachmentDrop}
+    >
+      <input
+        bind:this={fileInputEl}
+        class="pf-attachment-input"
+        type="file"
+        multiple
+        accept={FILE_INPUT_ACCEPT}
+        tabindex="-1"
+        data-testid="composer-file-input"
+        onchange={(event) => addFilesToComposer(event.currentTarget.files)}
+      />
+      {#if attachmentDropActive}
+        <div class="pf-attachment-drop-overlay">Drop files to attach</div>
+      {/if}
+      {#if attachmentDrafts.length > 0}
+        <div class="pf-attachment-preview-strip" data-testid="composer-attachment-preview-strip">
+          {#each attachmentDrafts as attachment (attachment.id)}
+            <div class="pf-attachment-preview">
+              {#if attachment.previewUrl}
+                <div class="pf-attachment-thumb">
+                  <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
+                </div>
+              {:else}
+                <div class="pf-attachment-file-card">
+                  <span class="pf-attachment-file-icon">
+                    <Icon name="file" size={18} />
+                  </span>
+                  <span class="pf-attachment-file-copy">
+                    <span class="pf-attachment-file-name">{attachment.name}</span>
+                    <span class="pf-attachment-file-ext">{attachment.extension}</span>
+                  </span>
+                </div>
+              {/if}
+              <button
+                type="button"
+                class="pf-attachment-remove"
+                aria-label={`Remove attachment ${attachment.name}`}
+                title="Remove attachment"
+                onclick={() => removeAttachment(attachment.id)}
+              >
+                <Icon name="x" size={13} />
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      {#if attachmentError}
+        <p class="pf-attachment-error" role="alert">{attachmentError}</p>
+      {/if}
       <textarea
         value={draft}
         placeholder={session ? `Reply to ${engineerName}…` : "Select a session to continue"}
@@ -2017,6 +2228,33 @@
         disabled={composerDisabled}
       ></textarea>
       <div class="pf-composer-foot">
+        <div class="pf-attachment-menu" bind:this={attachmentMenuEl}>
+          <button
+            type="button"
+            class="pf-add-content-btn"
+            disabled={composerDisabled}
+            aria-label="Add content"
+            aria-haspopup="menu"
+            aria-expanded={attachmentMenuOpen}
+            title="Add content"
+            onclick={toggleAttachmentMenu}
+          >
+            <Icon name="plus" size={15} />
+          </button>
+          {#if attachmentMenuOpen}
+            <div class="pf-attachment-dropdown" role="menu" aria-label="Add content">
+              <button
+                type="button"
+                class="pf-attachment-dropdown-item"
+                role="menuitem"
+                onclick={openAttachmentPicker}
+              >
+                <Icon name="paperclip" size={15} />
+                <span>Add images and files</span>
+              </button>
+            </div>
+          {/if}
+        </div>
         <ModelPicker
           snapshot={settingsSnapshot}
           currentProvider={selectedProviderId}
@@ -2112,6 +2350,128 @@
   .pf-composer {
     max-width: 820px;
     margin: 0 auto;
+    position: relative;
+  }
+  .pf-composer.drop-active {
+    border-color: var(--puffer-accent);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--puffer-accent) 18%, transparent);
+  }
+  .pf-attachment-input {
+    display: none;
+  }
+  .pf-attachment-drop-overlay {
+    position: absolute;
+    inset: 8px;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed color-mix(in oklab, var(--puffer-accent) 62%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in oklab, var(--background) 84%, var(--puffer-accent));
+    color: var(--foreground);
+    font-size: 13px;
+    font-weight: 650;
+    pointer-events: none;
+  }
+  .pf-attachment-preview-strip {
+    display: flex;
+    gap: 8px;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 2px 24px 8px 2px;
+  }
+  .pf-attachment-preview {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .pf-attachment-thumb {
+    width: 64px;
+    height: 64px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--muted);
+  }
+  .pf-attachment-thumb img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+  }
+  .pf-attachment-file-card {
+    width: 224px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--muted) 34%, var(--background));
+    color: var(--foreground);
+  }
+  .pf-attachment-file-icon {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: var(--background);
+    color: var(--muted-foreground);
+    border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  }
+  .pf-attachment-file-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .pf-attachment-file-name,
+  .pf-attachment-file-ext {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pf-attachment-file-name {
+    font-size: 12.5px;
+    line-height: 16px;
+    font-weight: 650;
+  }
+  .pf-attachment-file-ext {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 600;
+  }
+  .pf-attachment-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--background);
+    color: var(--muted-foreground);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+  }
+  .pf-attachment-remove:hover {
+    color: var(--foreground);
+    background: var(--accent);
+  }
+  .pf-attachment-error {
+    margin: -2px 4px 4px;
+    color: var(--destructive);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 600;
   }
   .pf-composer-foot :global(.picker) {
     min-width: 0;
@@ -2122,6 +2482,7 @@
     background: var(--background);
   }
   .pf-toggle-chip,
+  .pf-add-content-btn,
   .pf-select-chip {
     height: 28px;
     display: inline-flex;
@@ -2135,6 +2496,60 @@
     font-size: 11.5px;
     line-height: 1;
     white-space: nowrap;
+  }
+  .pf-attachment-menu {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .pf-add-content-btn {
+    width: 28px;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+  }
+  .pf-add-content-btn:hover {
+    color: var(--foreground);
+    background: var(--accent);
+  }
+  .pf-add-content-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  .pf-attachment-dropdown {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    z-index: 20;
+    min-width: 220px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--background);
+    box-shadow: var(--shadow-lg);
+  }
+  .pf-attachment-dropdown-item {
+    width: 100%;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--foreground);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pf-attachment-dropdown-item:hover {
+    background: var(--accent);
+  }
+  .pf-attachment-dropdown-item :global(svg) {
+    flex: 0 0 auto;
+    color: var(--muted-foreground);
   }
   .pf-toggle-chip {
     cursor: pointer;

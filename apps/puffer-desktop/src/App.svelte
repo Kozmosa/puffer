@@ -67,6 +67,10 @@
     type ConnectionState
   } from "./lib/api/daemonClient";
   import { sessionDisplayName, sessionDisplayTitle } from "./lib/sessionDisplay";
+  import {
+    formatAgentTurnMessage,
+    summarizeAgentTurnAttachments
+  } from "./lib/agentTurnAttachments";
   import { providerIdCanRunAgent, providerIdInSet, providerIsAvailableForAgent } from "./lib/providerIds";
   import { providerCatalogForSetup } from "./lib/providerFallbacks";
   import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -2881,14 +2885,20 @@
         .map((item) => item.id)
         .filter((id) => id.length > 0)
     };
+    const attachments = options.attachments ?? [];
+    const turnMessage = formatAgentTurnMessage(message, attachments);
+    const attachmentMeta =
+      attachments.length > 0
+        ? [`${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`]
+        : [];
     const submittedMessage: TimelineItem = {
       id: localUserId,
       kind: "user",
       createdAtMs: now,
       title: "User",
-      summary: message,
-      body: message,
-      meta: []
+      summary: message || summarizeAgentTurnAttachments(attachments),
+      body: turnMessage,
+      meta: attachmentMeta
     };
     submittedMessages = [...submittedMessages, submittedMessage];
     persistPendingSubmittedMessage(submitSessionId, submittedMessage);
@@ -2897,7 +2907,7 @@
     turnStatusHint = "Thinking";
     setLiveSidebarAgentState(submitSessionId, "thinking", null, sessionAtSubmit);
     try {
-      const turnId = await runAgentTurn(submitSessionId, message, options);
+      const turnId = await runAgentTurn(submitSessionId, turnMessage, options);
       const settledBeforeRpcReturned = isTurnSettled(submitSessionId, turnId);
       if (!settledBeforeRpcReturned) {
         setLiveSidebarAgentState(submitSessionId, "thinking", turnId, sessionAtSubmit);

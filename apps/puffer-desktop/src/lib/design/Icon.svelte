@@ -8,6 +8,7 @@
     | "play"
     | "pause"
     | "pause2"
+    | "paperclip"
     | "plus"
     | "sparkles"
     | "arrow"
@@ -94,6 +95,7 @@
   import MoreHorizontalIcon from "lucide-svelte/icons/more-horizontal";
   import PanelLeftCloseIcon from "lucide-svelte/icons/panel-left-close";
   import PanelLeftOpenIcon from "lucide-svelte/icons/panel-left-open";
+  import PaperclipIcon from "lucide-svelte/icons/paperclip";
   import PauseIcon from "lucide-svelte/icons/pause";
   import PencilIcon from "lucide-svelte/icons/pencil";
   import PinIcon from "lucide-svelte/icons/pin";
@@ -131,6 +133,7 @@
     play: PlayIcon,
     pause: PauseIcon,
     pause2: SquarePauseIcon,
+    paperclip: PaperclipIcon,
     plus: PlusIcon,
     sparkles: SparklesIcon,
     arrow: ArrowRightIcon,

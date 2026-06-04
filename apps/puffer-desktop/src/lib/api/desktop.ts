@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentActivityStatus,
+  AgentTurnAttachment,
   AuthProviderStatus,
   AskUserQuestionItem,
   BrowserRenderer,
@@ -1385,6 +1386,7 @@ export type AgentTurnOptions = {
   fastMode?: boolean;
   permissionMode?: AgentPermissionMode;
   mode?: AgentTurnMode;
+  attachments?: AgentTurnAttachment[];
 };
 export type StaleTurnRecoveryResult =
   | { recovery: "retry_started"; turnId: string }
