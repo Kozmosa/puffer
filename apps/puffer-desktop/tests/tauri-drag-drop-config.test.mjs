@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import path from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const configPath = path.resolve("src-tauri/tauri.conf.json");
+const testDir = dirname(fileURLToPath(import.meta.url));
+const configPath = resolve(testDir, "../src-tauri/tauri.conf.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const windows = config?.app?.windows;
 
