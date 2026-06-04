@@ -10,6 +10,7 @@ use super::screenshot::{
     BrowserScreenshotFormat,
 };
 use super::selection::parse_copy_selection_response;
+use super::session::BrowserCommand;
 use super::upload::parse_upload_handle_response;
 use super::*;
 use crate::daemon_browser::tabs::BrowserCurrentTabStatus;
@@ -70,6 +71,67 @@ fn navigate_updates_cached_state_before_worker_ack() {
     let state = session.state();
     assert_eq!(state.url, "file:///Users/shou/puffer/hello-world.html");
     assert!(state.loading);
+}
+
+#[test]
+fn open_tab_skips_navigation_when_live_tab_already_has_requested_url() {
+    let (_events, _) = tokio::sync::broadcast::channel(8);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tempdir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(std::sync::Mutex::new(BrowserState {
+        url: "https://mail.google.com/mail/u/0/#inbox".to_string(),
+        title: "Gmail".to_string(),
+        loading: false,
+        width: 960,
+        height: 720,
+    }));
+    let registry = BrowserRegistry::new(
+        tempdir.path().to_path_buf(),
+        true,
+        BrowserLaunchSettings::default(),
+    );
+    let session = BrowserSession::new_for_test(
+        tx,
+        std::sync::Arc::clone(&state),
+        std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+    );
+    let backend_id = backend_session_id("monitor-gmail-browser", "main");
+    registry
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(backend_id.clone(), session);
+    registry.tabs.lock().unwrap().open_tab(
+        "monitor-gmail-browser",
+        Some("main".to_string()),
+        Some("Gmail monitor".to_string()),
+        backend_id,
+        state.lock().unwrap().clone(),
+        false,
+    );
+
+    let tab = registry
+        .open_tab(
+            _events,
+            "monitor-gmail-browser".to_string(),
+            Some("main".to_string()),
+            Some("Gmail monitor".to_string()),
+            Some("https://mail.google.com/mail/u/0/#inbox".to_string()),
+            960,
+            720,
+            false,
+            true,
+        )
+        .unwrap();
+
+    assert_eq!(tab.url, "https://mail.google.com/mail/u/0/#inbox");
+    let commands: Vec<_> = rx.try_iter().collect();
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, BrowserCommand::Navigate(_))),
+        "same-url live open should not refresh the browser page"
+    );
 }
 
 #[test]

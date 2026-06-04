@@ -259,6 +259,7 @@ impl BrowserSession {
         root: BrowserRootSession,
         width: u32,
         height: u32,
+        foreground: bool,
     ) -> Result<Self> {
         let target = root.allocate_target()?;
         let (tx, rx) = mpsc::channel();
@@ -287,6 +288,7 @@ impl BrowserSession {
                 worker_alive,
                 width,
                 height,
+                foreground,
             );
         });
         Ok(Self {
@@ -536,6 +538,7 @@ fn run_cdp_worker(
     alive: Arc<AtomicBool>,
     width: u32,
     height: u32,
+    foreground: bool,
 ) {
     let channel_frame = format!("browser:{session_id}:frame");
     let channel_state = format!("browser:{session_id}:state");
@@ -559,7 +562,9 @@ fn run_cdp_worker(
     let _ = send_cdp(&mut socket, &mut next_id, "DOM.enable", json!({}));
     let _ = send_cdp(&mut socket, &mut next_id, "Log.enable", json!({}));
     let _ = send_cdp(&mut socket, &mut next_id, "Network.enable", json!({}));
-    let _ = send_cdp(&mut socket, &mut next_id, "Page.bringToFront", json!({}));
+    if foreground {
+        let _ = send_cdp(&mut socket, &mut next_id, "Page.bringToFront", json!({}));
+    }
     let _ = apply_viewport(&mut socket, &mut next_id, width, height);
     let _ = start_screencast(&mut socket, &mut next_id, width, height);
     let id = send_state_eval(&mut socket, &mut next_id);
@@ -586,6 +591,7 @@ fn run_cdp_worker(
                     &state,
                     &channel_state,
                     &events,
+                    foreground,
                 ),
                 Err(TryRecvError::Empty) => break,
             }
@@ -639,6 +645,7 @@ fn handle_command(
     state: &Arc<Mutex<BrowserState>>,
     channel_state: &str,
     events: &broadcast::Sender<ServerEnvelope>,
+    foreground: bool,
 ) {
     match command {
         BrowserCommand::Navigate(url) => {
@@ -648,7 +655,9 @@ fn handle_command(
                 state.loading = true;
                 emit_state(events, channel_state, &state);
             }
-            let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
+            if foreground {
+                let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
+            }
             let _ = send_cdp(socket, next_id, "Page.navigate", json!({ "url": url }));
         }
         BrowserCommand::Reload => {
@@ -678,7 +687,9 @@ fn handle_command(
                 state.height = height;
                 emit_state(events, channel_state, &state);
             }
-            let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
+            if foreground {
+                let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
+            }
             let _ = apply_viewport(socket, next_id, width, height);
             let _ = send_cdp(socket, next_id, "Page.stopScreencast", json!({}));
             let _ = start_screencast(socket, next_id, width, height);
@@ -743,7 +754,9 @@ fn handle_command(
             files,
             reply,
         } => {
-            let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
+            if foreground {
+                let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
+            }
             let id = send_cdp(
                 socket,
                 next_id,

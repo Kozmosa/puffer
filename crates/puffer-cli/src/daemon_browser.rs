@@ -144,6 +144,7 @@ impl BrowserRegistry {
         url: Option<String>,
         width: u32,
         height: u32,
+        foreground: bool,
     ) -> Result<BrowserState> {
         if !self.enabled {
             bail!("Puffer browser is disabled for this runtime");
@@ -169,6 +170,7 @@ impl BrowserRegistry {
             root,
             width,
             height,
+            foreground,
         )?;
         if let Some(url) = normalized_url.as_deref().filter(|url| *url != DEFAULT_URL) {
             session.navigate(url.to_string())?;
@@ -290,6 +292,7 @@ impl BrowserRegistry {
         width: u32,
         height: u32,
         activate: bool,
+        background: bool,
     ) -> Result<BrowserTabInfo> {
         let tab_id =
             tab_id.unwrap_or_else(|| self.tabs.lock().unwrap().next_tab_id(&root_session_id));
@@ -302,12 +305,21 @@ impl BrowserRegistry {
                 .tab(&root_session_id, &tab_id)
                 .map(|tab| tab.url)
         });
-        let mut browser_state =
-            self.open(events, backend_id.clone(), recovery_url, width, height)?;
+        let normalized_requested_url = url.as_deref().map(normalize_url).transpose()?;
+        let mut browser_state = self.open(
+            events,
+            backend_id.clone(),
+            recovery_url,
+            width,
+            height,
+            !background,
+        )?;
         if reused_live {
-            if let Some(url) = url {
-                self.navigate(&backend_id, url)?;
-                browser_state = self.get(&backend_id)?.state();
+            if let Some(url) = normalized_requested_url.as_deref() {
+                if browser_state.url != url {
+                    self.navigate(&backend_id, url.to_string())?;
+                    browser_state = self.get(&backend_id)?.state();
+                }
             }
         }
         let tab = self.tabs.lock().unwrap().open_tab(
