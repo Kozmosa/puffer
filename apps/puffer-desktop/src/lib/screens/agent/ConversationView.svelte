@@ -11,6 +11,7 @@
   import QuestionPrompt from "./QuestionPrompt.svelte";
   import ModelPicker from "./ModelPicker.svelte";
   import AttachmentPreviewStrip from "./AttachmentPreviewStrip.svelte";
+  import MessageAttachmentPreviewStrip from "./MessageAttachmentPreviewStrip.svelte";
   import {
     FILE_INPUT_ACCEPT,
     addAttachmentFiles,
@@ -2015,9 +2016,9 @@
                   <span class="time">{formatTime((row.item as MessageTimelineItem & { createdAtMs?: number }).createdAtMs)}</span>
                 </div>
                 {#if row.item.attachments?.length}
-                  <AttachmentPreviewStrip
+                  <MessageAttachmentPreviewStrip
+                    sessionId={session?.id ?? null}
                     attachments={row.item.attachments}
-                    variant="message"
                     {onOpenChatIntent}
                   />
                 {/if}

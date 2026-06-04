@@ -241,10 +241,12 @@ test("composer add content menu attaches image and file drafts", async ({ page }
   });
   await page.reload();
   await openSession(page, /Attachment composer/);
-  await expect(page.getByRole("button", { name: "Open image attachment sample.png" })).toBeVisible();
+  const persistedImageButton = page.getByRole("button", { name: "Open image attachment sample.png" });
+  await expect(persistedImageButton).toBeVisible();
+  await expect(persistedImageButton.getByAltText("sample.png")).toBeVisible();
   await expect(page.getByText("report.pdf")).toBeVisible();
   await expect(page.getByText("[Image: sample.png]")).toHaveCount(0);
-  await page.getByRole("button", { name: "Open image attachment sample.png" }).click();
+  await persistedImageButton.click();
   const refreshedPreview = page.getByRole("dialog", { name: "sample.png" });
   await expect(refreshedPreview).toBeVisible();
   await expect(refreshedPreview.getByAltText("sample.png")).toBeVisible();
