@@ -43,6 +43,24 @@ async function dispatchFileDrag(
   }
 }
 
+async function composerTextareaMetrics(page: Page): Promise<{
+  height: number;
+  scrollHeight: number;
+  clientHeight: number;
+  overflowY: string;
+}> {
+  return page.locator(".pf-composer textarea").evaluate((node) => {
+    const textarea = node as HTMLTextAreaElement;
+    const rect = textarea.getBoundingClientRect();
+    return {
+      height: rect.height,
+      scrollHeight: textarea.scrollHeight,
+      clientHeight: textarea.clientHeight,
+      overflowY: getComputedStyle(textarea).overflowY
+    };
+  });
+}
+
 test("composer add content menu attaches image and file drafts", async ({ page }) => {
   const imageBuffer = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==",
@@ -852,6 +870,112 @@ test("composer enter does not submit while IME composition is active", async ({ 
   await page.waitForTimeout(50);
   await expect(composer).toHaveValue("zhong");
   expect(daemon.requests.filter((request) => request.method === "run_agent_turn")).toHaveLength(0);
+});
+
+test("composer textarea autosizes long drafts and resets after send", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-autosize-alpha",
+        displayName: "Autosize alpha",
+        title: "Autosize alpha",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "autosize-alpha-seed",
+            text: "Use the composer for a long prompt.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      },
+      {
+        sessionId: "session-autosize-beta",
+        displayName: "Autosize beta",
+        title: "Autosize beta",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime - 1_000,
+        createdAtMs: baseTime - 55_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "autosize-beta-seed",
+            text: "Second session for draft restoration.",
+            createdAtMs: baseTime - 25_000
+          }
+        ]
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Autosize alpha/);
+  const composer = page.locator(".pf-composer textarea");
+  await expect(composer).toBeEnabled();
+
+  const initialMetrics = await composerTextareaMetrics(page);
+  const multilinePrompt = [
+    "Audit the current chat composer.",
+    "Keep the implementation local.",
+    "Preserve Enter and Shift+Enter behavior.",
+    "Avoid shared abstractions.",
+    "Add a focused regression test.",
+    "Report any risks."
+  ].join("\n");
+
+  await composer.fill(multilinePrompt);
+  await expect(composer).toHaveValue(multilinePrompt);
+  await expect
+    .poll(async () => (await composerTextareaMetrics(page)).height)
+    .toBeGreaterThan(initialMetrics.height + 24);
+
+  const grownMetrics = await composerTextareaMetrics(page);
+
+  await openSession(page, /Autosize beta/);
+  await expect(composer).toHaveValue("");
+
+  await openSession(page, /Autosize alpha/);
+  await expect(composer).toHaveValue(multilinePrompt);
+  await expect
+    .poll(async () => (await composerTextareaMetrics(page)).height)
+    .toBeGreaterThanOrEqual(grownMetrics.height - 1);
+
+  const longPrompt = Array.from(
+    { length: 40 },
+    (_, index) => `long composer line ${index + 1}`
+  ).join("\n");
+
+  await composer.fill(longPrompt);
+  await expect(composer).toHaveValue(longPrompt);
+  await expect
+    .poll(async () => (await composerTextareaMetrics(page)).overflowY)
+    .toBe("auto");
+
+  const cappedMetrics = await composerTextareaMetrics(page);
+  expect(cappedMetrics.height).toBeGreaterThan(160);
+  expect(cappedMetrics.height).toBeLessThanOrEqual(205);
+  expect(cappedMetrics.scrollHeight).toBeGreaterThan(cappedMetrics.clientHeight);
+  expect(cappedMetrics.overflowY).toBe("auto");
+
+  await page.getByRole("button", { name: "Send" }).click();
+  await daemon.waitForRequest(
+    "run_agent_turn",
+    (request) =>
+      request.params.sessionId === "session-autosize-alpha" &&
+      request.params.message === longPrompt
+  );
+  await expect(composer).toHaveValue("");
+  await expect
+    .poll(async () => (await composerTextareaMetrics(page)).height)
+    .toBeLessThanOrEqual(initialMetrics.height + 4);
 });
 
 test("composer moves submitted prompt into the thread while turn start is pending", async ({

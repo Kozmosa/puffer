@@ -51,6 +51,7 @@
 
   const ENGINEER_NAME = "Engineer";
   const RECAP_DISPLAY_PREFIX = "\u203B recap: ";
+  const COMPOSER_MAX_HEIGHT_PX = 200;
   type SubmitMessageResult = boolean | void | Promise<boolean | void>;
   type ComposerRoutingPreference = {
     providerId: string | null;
@@ -144,6 +145,7 @@
   let attachmentDragDepth = 0;
   let attachmentIdSequence = 0;
   let fileInputEl: HTMLInputElement | undefined;
+  let composerTextareaEl: HTMLTextAreaElement | undefined;
   let attachmentMenuEl: HTMLDivElement | undefined;
   let threadEl: HTMLDivElement | undefined;
   let lastSessionId: string | null = null;
@@ -839,9 +841,25 @@
     }
   }
 
+  function resizeComposerTextarea(
+    textarea: HTMLTextAreaElement | undefined = composerTextareaEl
+  ) {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const scrollHeight = textarea.scrollHeight;
+    const nextHeight = Math.min(scrollHeight, COMPOSER_MAX_HEIGHT_PX);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = scrollHeight > COMPOSER_MAX_HEIGHT_PX ? "auto" : "hidden";
+  }
+
+  function scheduleComposerResize() {
+    void tick().then(() => resizeComposerTextarea());
+  }
+
   function updateDraft(value: string) {
     draft = value;
     setDraftForSession(session?.id, value);
+    scheduleComposerResize();
   }
 
   function nextAttachmentId(): string {
@@ -976,6 +994,7 @@
       expandedActivityIds = [];
       selectedActivityChildren = {};
       lastSessionId = nextSessionId;
+      scheduleComposerResize();
       void tick().then(() => threadEl?.scrollTo({ top: 0, behavior: "auto" }));
     }
   });
@@ -1194,6 +1213,7 @@
     draft = "";
     setDraftForSession(targetSessionId, "");
     clearCurrentAttachments();
+    scheduleComposerResize();
     try {
       const options = {
         ...composerOptions(),
@@ -1210,6 +1230,7 @@
           attachmentDrafts = previousAttachments;
           attachmentError = null;
         }
+        scheduleComposerResize();
         return;
       }
       await tick();
@@ -1224,6 +1245,7 @@
         attachmentDrafts = previousAttachments;
         attachmentError = null;
       }
+      scheduleComposerResize();
     } finally {
       setSubmitInFlight(targetSessionId, false);
     }
@@ -2246,6 +2268,7 @@
         <p class="pf-attachment-error" role="alert">{attachmentError}</p>
       {/if}
       <textarea
+        bind:this={composerTextareaEl}
         value={draft}
         placeholder={session ? `Reply to ${engineerName}…` : "Select a session to continue"}
         oninput={(event) => updateDraft(event.currentTarget.value)}
@@ -2381,6 +2404,9 @@
   .pf-chat.drop-active .pf-composer {
     border-color: var(--puffer-accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--puffer-accent) 18%, transparent);
+  }
+  .pf-chat .pf-composer textarea {
+    overflow-y: hidden;
   }
   .pf-attachment-input {
     display: none;
