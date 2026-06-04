@@ -57,6 +57,7 @@ before the max-height scroll behavior is reached.
 - Preserve existing draft persistence, per-session draft isolation, attachment
   handling, model controls, permission controls, and submit payloads.
 - Keep the change local and minimal.
+- Add the required puffer-desktop component update spec for this change.
 
 ## Non-Goals
 
@@ -66,13 +67,17 @@ before the max-height scroll behavior is reached.
   textareas, file editor textareas, or workflow textareas.
 - Do not use contenteditable.
 - Do not depend on browser-native `field-sizing` support.
+- Do not add a new package dependency for textarea autosizing.
 
 ## Design
 
-Add local constants in `ConversationView.svelte`:
+Add one local constant in `ConversationView.svelte`:
 
-- `COMPOSER_MIN_HEIGHT_PX`
 - `COMPOSER_MAX_HEIGHT_PX`
+
+Set `COMPOSER_MAX_HEIGHT_PX` to `200`, matching the current CSS max-height.
+Do not introduce a separate minimum-height constant; the existing CSS
+`min-height: 26px` remains the compact lower bound.
 
 Add a local textarea ref:
 
@@ -84,25 +89,35 @@ Add two local functions:
 - `scheduleComposerResize()`
 
 `resizeComposerTextarea` sets the textarea height to `auto`, reads
-`scrollHeight`, clamps the value between the min and max constants, and writes
-the final pixel height back to the element. It also sets the element's vertical
-overflow so text scrolls only once content exceeds the cap.
+`scrollHeight`, clamps the value to `COMPOSER_MAX_HEIGHT_PX`, and writes the
+final pixel height back to the element. It also sets the element's vertical
+overflow to `hidden` below the cap and `auto` at the cap.
 
 `scheduleComposerResize` waits until the current Svelte DOM update has landed
-before measuring. It can use `tick()` and should avoid redundant work when the
-textarea is unavailable.
+before measuring. Use `tick()`; do not add `requestAnimationFrame`,
+`ResizeObserver`, debounce timers, or hidden mirror elements.
 
 Wire the behavior into the existing textarea:
 
 - bind the textarea with `bind:this={composerTextareaEl}`
-- on input, update the draft and resize the event target
-- when `draft` changes programmatically, schedule a resize
+- on input, call the existing `updateDraft` path and let that path schedule one
+  resize
 - when switching sessions, schedule a resize after the restored draft is applied
 - when submit clears the draft, schedule a resize
 - when a failed submit restores the previous draft, schedule a resize after
   restoration
 
+Do not add a broad `$effect` that reacts to every `draft` change. Autosize
+should be called from the few existing code paths that already mutate the
+composer draft. This avoids duplicate measurements on normal typing and keeps
+the behavior easy to audit.
+
 The submit request shape and message formatting remain unchanged.
+
+Add one concise component update spec at `specs/puffer-desktop/663.md`. It
+should document the autosize behavior, the local-only scope, unchanged submit
+contracts, and the testing coverage. This is required by repository policy for
+desktop component changes.
 
 ## CSS Contract
 
@@ -113,24 +128,25 @@ visual styling. It should keep:
 - transparent background
 - no border
 - current font and padding
+- current `min-height: 26px`
+- current `max-height: 200px`
 
-The CSS max-height should either match `COMPOSER_MAX_HEIGHT_PX` or be removed if
-the runtime clamp becomes the sole height cap. The runtime and CSS caps must not
-disagree.
+Add or preserve `overflow-y: hidden` as the base state. Runtime code switches the
+textarea to `overflow-y: auto` only when content reaches the max height.
 
 ## Performance
 
-The design performs one synchronous `scrollHeight` read per input event and for
-rare programmatic draft changes. This is acceptable because it touches one
-textarea only, not the transcript. No ResizeObserver, MutationObserver, hidden
-mirror element, or debounce is needed.
+The design performs one `scrollHeight` read per input event and for rare
+programmatic draft changes. This is acceptable because it touches one textarea
+only, not the transcript. No ResizeObserver, MutationObserver, hidden mirror
+element, debounce, or shared action is needed.
 
 The implementation should avoid measuring in loops and should not introduce a
 global layout observer.
 
 ## Edge Cases
 
-- Empty draft: height returns to the minimum.
+- Empty draft: height returns to the existing CSS minimum.
 - Short single-line draft: height remains compact.
 - Multi-line draft: height grows up to the cap.
 - Very long draft: height stays capped and the textarea scrolls internally.
@@ -157,9 +173,20 @@ The test should:
 7. Submit or clear the draft.
 8. Assert the textarea height returns near the initial height.
 
-If implementation touches session restoration directly, add a small assertion
-that switching away and back to a session restores both the draft value and a
-matching grown height.
+Add a small assertion that switching away and back to a session restores both
+the draft value and a matching grown height, because session restoration is one
+of the explicit resize call sites.
 
 Existing IME, draft recovery, attachment, and submit tests should continue to
 pass without semantic updates.
+
+## Audit Notes
+
+The rechecked design intentionally removes or rejects these over-designed paths:
+
+- no shared Svelte action until another composer needs the same behavior
+- no extracted component for a single textarea
+- no hidden mirror element
+- no observer-based resizing
+- no CSS `field-sizing` dependency
+- no agent-sdk feature migration beyond the native textarea measurement pattern
