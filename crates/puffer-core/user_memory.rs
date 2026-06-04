@@ -119,6 +119,7 @@ impl UserMemory {
         Self { path }
     }
 
+    /// Returns the path backing this user memory store.
     pub fn path(&self) -> &Path {
         &self.path
     }
