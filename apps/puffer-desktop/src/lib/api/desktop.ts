@@ -26,6 +26,9 @@ import type {
   SessionGroupsPage,
   SessionListItem,
   SettingsSnapshot,
+  MediaSettings,
+  MediaCapabilityInfo,
+  MediaKind,
   MessageActor,
   MessageAttachment,
   OpenAIRealtimeClientSecret,
@@ -2415,7 +2418,43 @@ export type ConfigPatch = {
   defaultModel?: string | null;
   theme?: string;
   openaiBaseUrl?: string | null;
+  media?: MediaSettings;
 };
+
+type MediaCapabilitiesResponse = {
+  capabilities: MediaCapabilityInfo[];
+};
+
+export type GenerateMediaInput = {
+  sessionId?: string;
+  kind: MediaKind;
+  prompt: string;
+};
+
+export type GenerateMediaResult = {
+  jobId: string;
+  artifactId: string | null;
+  kind: MediaKind;
+  providerId: string;
+  modelId: string;
+  status: string;
+  prompt: string;
+  path: string | null;
+};
+
+export async function listMediaCapabilities(kind?: MediaKind): Promise<MediaCapabilityInfo[]> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<MediaCapabilitiesResponse>(
+    "list_media_capabilities",
+    kind ? { kind } : {}
+  );
+  return result.capabilities;
+}
+
+export async function generateMedia(input: GenerateMediaInput): Promise<GenerateMediaResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<GenerateMediaResult>("generate_media", input);
+}
 
 export async function localModelStatus(modelId = "minicpm5"): Promise<LocalModelStatus> {
   const client = await ensureLocalDaemonClient();

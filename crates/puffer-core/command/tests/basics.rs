@@ -523,6 +523,7 @@ fn app_state_defaults_expose_command_state() {
             recap: puffer_config::RecapConfig::default(),
             browser: puffer_config::BrowserConfig::default(),
             network: puffer_config::NetworkConfig::default(),
+            media: puffer_config::MediaConfig::default(),
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),

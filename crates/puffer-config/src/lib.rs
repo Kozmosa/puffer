@@ -61,6 +61,8 @@ pub struct PufferConfig {
     pub browser: BrowserConfig,
     #[serde(default)]
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub media: MediaConfig,
     pub mascot: MascotConfig,
     pub ui: UiConfig,
     /// When set, the runtime constructs a remote `RemoteToolRunner` against
@@ -132,6 +134,75 @@ pub struct StatusLineConfig {
     pub command: String,
     #[serde(default)]
     pub padding: u16,
+}
+
+/// Configures media generation defaults shared by UI and runtime tools.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaConfig {
+    #[serde(default)]
+    pub image: ImageMediaConfig,
+    #[serde(default)]
+    pub video: VideoMediaConfig,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            image: ImageMediaConfig::default(),
+            video: VideoMediaConfig::default(),
+        }
+    }
+}
+
+/// Configures default provider, model, and output options for image generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageMediaConfig {
+    #[serde(default, alias = "providerId")]
+    pub provider_id: Option<String>,
+    #[serde(default, alias = "modelId")]
+    pub model_id: Option<String>,
+    #[serde(default = "default_image_size")]
+    pub size: String,
+    #[serde(default = "default_image_quality")]
+    pub quality: String,
+    #[serde(default = "default_image_output_format", alias = "outputFormat")]
+    pub output_format: String,
+}
+
+impl Default for ImageMediaConfig {
+    fn default() -> Self {
+        Self {
+            provider_id: None,
+            model_id: None,
+            size: default_image_size(),
+            quality: default_image_quality(),
+            output_format: default_image_output_format(),
+        }
+    }
+}
+
+/// Configures default provider, model, and output options for video generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VideoMediaConfig {
+    #[serde(default, alias = "providerId")]
+    pub provider_id: Option<String>,
+    #[serde(default, alias = "modelId")]
+    pub model_id: Option<String>,
+    #[serde(default = "default_video_aspect_ratio", alias = "aspectRatio")]
+    pub aspect_ratio: String,
+    #[serde(default = "default_video_duration_seconds", alias = "durationSeconds")]
+    pub duration_seconds: u32,
+}
+
+impl Default for VideoMediaConfig {
+    fn default() -> Self {
+        Self {
+            provider_id: None,
+            model_id: None,
+            aspect_ratio: default_video_aspect_ratio(),
+            duration_seconds: default_video_duration_seconds(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,6 +306,7 @@ impl Default for PufferConfig {
             recap: RecapConfig::default(),
             browser: BrowserConfig::default(),
             network: NetworkConfig::default(),
+            media: MediaConfig::default(),
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),
@@ -256,6 +328,26 @@ fn default_editor_mode() -> String {
 
 fn default_remote_runner_wait_for_ready() -> bool {
     true
+}
+
+fn default_image_size() -> String {
+    "1024x1024".to_string()
+}
+
+fn default_image_quality() -> String {
+    "auto".to_string()
+}
+
+fn default_image_output_format() -> String {
+    "png".to_string()
+}
+
+fn default_video_aspect_ratio() -> String {
+    "16:9".to_string()
+}
+
+fn default_video_duration_seconds() -> u32 {
+    8
 }
 
 fn default_memory_enabled() -> bool {

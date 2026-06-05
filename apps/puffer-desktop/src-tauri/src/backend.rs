@@ -2,11 +2,13 @@ use crate::codex_app_server::{self, CapturedTurnEvent, CodexTurnOptions, CodexTu
 use crate::dtos::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
     BrowserCaptchaSettingsDto, BrowserCaptchaSolverDto, BrowserSettingsDto, DiffSummaryDto,
-    DivergenceReportDto, ExternalCredentialDto, FolderGroupDto, ProviderSummaryDto,
-    ResourceCountsDto, SecretSummaryDto, SecretsSettingsDto, SessionDetailDto, SessionListItemDto,
-    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
+    DivergenceReportDto, ExternalCredentialDto, FolderGroupDto, ImageMediaSettingsDto,
+    MediaCapabilityInfoDto, MediaSettingsDto, ProviderSummaryDto, ResourceCountsDto,
+    SecretSummaryDto, SecretsSettingsDto, SessionDetailDto, SessionListItemDto, SettingsConfigDto,
+    SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto, VideoMediaSettingsDto,
 };
 use crate::events::EventEmitter;
+use crate::media_capabilities::MediaCapabilityCache;
 use crate::repo_actions;
 use crate::{browser, files, fs_watch, local_model, lsp, pty};
 use anyhow::{anyhow, bail, Context, Result};
@@ -57,11 +59,32 @@ struct DeleteSecretParams {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateMediaParams {
+    kind: String,
+    prompt: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateMediaResult {
+    job_id: String,
+    artifact_id: Option<String>,
+    kind: String,
+    provider_id: String,
+    model_id: String,
+    status: String,
+    prompt: String,
+    path: Option<String>,
+}
+
 pub(crate) struct BackendState {
     ptys: Arc<pty::PtyRegistry>,
     fs_watches: Arc<fs_watch::FsWatchRegistry>,
     browsers: browser::BrowserRegistry,
     local_models: local_model::LocalModelInstaller,
+    media_capabilities: MediaCapabilityCache,
     turns: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
@@ -78,6 +101,7 @@ impl BackendState {
             fs_watches: Arc::new(fs_watch::FsWatchRegistry::new()),
             browsers: browser::BrowserRegistry::new(browser_profile_root),
             local_models: local_model::LocalModelInstaller::new(),
+            media_capabilities: MediaCapabilityCache::new(),
             turns: Mutex::new(HashMap::new()),
         }
     }
@@ -241,6 +265,10 @@ impl BackendState {
                     "models": self.provider_models(&provider_id),
                 }))
             }
+            "list_media_capabilities" => serde_value(json!({
+                "capabilities": self.list_media_capabilities(params)?,
+            })),
+            "generate_media" => serde_value(self.generate_media(params)?),
             "list_permissions" => serde_value(json!({
                 "path": permissions_file()?.display().to_string(),
                 "tools": self.load_permissions()?,
@@ -541,6 +569,7 @@ impl BackendState {
                 default_model,
                 openai_base_url: config.openai_base_url.clone(),
                 theme: config.theme.clone().unwrap_or_else(|| "system".to_string()),
+                media: media_settings_dto(&config.media),
                 mascot_id: "corbina".to_string(),
                 mascot_display_name: "Corbina".to_string(),
                 mascot_enabled: true,
@@ -609,6 +638,120 @@ impl BackendState {
 
     fn provider_models(&self, provider_id: &str) -> Vec<Value> {
         provider_models(provider_id)
+    }
+
+    fn list_media_capabilities(&self, params: Value) -> Result<Vec<MediaCapabilityInfoDto>> {
+        let kind = optional_trimmed_string_param(&params, &["kind"]);
+        Ok(self
+            .media_capabilities
+            .list(self.openai_media_connected()?, kind.as_deref()))
+    }
+
+    fn generate_media(&self, params: Value) -> Result<GenerateMediaResult> {
+        let input: GenerateMediaParams =
+            serde_json::from_value(params).context("invalid media generation params")?;
+        let kind = input.kind.trim().to_lowercase();
+        if kind != "image" && kind != "video" {
+            bail!("unsupported media kind `{kind}`");
+        }
+        let prompt = input.prompt.trim().to_string();
+        if prompt.is_empty() {
+            bail!("/{kind} requires a prompt");
+        }
+        match kind.as_str() {
+            "image" => self.generate_image_media_job(prompt),
+            "video" => self.generate_video_media_job(prompt),
+            _ => unreachable!("media kind was validated"),
+        }
+    }
+
+    fn generate_image_media_job(&self, prompt: String) -> Result<GenerateMediaResult> {
+        let config = self.load_config()?;
+        let provider_id = config
+            .media
+            .image
+            .provider_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let model_id = config
+            .media
+            .image
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let (provider_id, model_id) = match (provider_id, model_id) {
+            (Some(provider_id), Some(model_id)) => (provider_id.to_string(), model_id.to_string()),
+            _ => bail!("image media provider/model is not configured"),
+        };
+        let capabilities = self.list_media_capabilities(json!({"kind": "image"}))?;
+        let available = capabilities.iter().any(|capability| {
+            capability.kind == "image"
+                && capability.provider_id == provider_id
+                && capability.model_id == model_id
+                && capability.status == "available"
+        });
+        if !available {
+            bail!("image media capability unavailable for {provider_id}/{model_id}");
+        }
+        Ok(GenerateMediaResult {
+            job_id: format!("media-job-{}", Uuid::new_v4()),
+            artifact_id: None,
+            kind: "image".to_string(),
+            provider_id,
+            model_id,
+            status: "queued".to_string(),
+            prompt,
+            path: None,
+        })
+    }
+
+    fn generate_video_media_job(&self, _prompt: String) -> Result<GenerateMediaResult> {
+        let capabilities = self.list_media_capabilities(json!({"kind": "video"}))?;
+        let available = capabilities
+            .iter()
+            .any(|capability| capability.kind == "video" && capability.status == "available");
+        if !available {
+            bail!("No video capabilities available");
+        }
+        let config = self.load_config()?;
+        let provider_id = config
+            .media
+            .video
+            .provider_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let model_id = config
+            .media
+            .video
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let (provider_id, model_id) = match (provider_id, model_id) {
+            (Some(provider_id), Some(model_id)) => (provider_id.to_string(), model_id.to_string()),
+            _ => bail!("video media provider/model is not configured"),
+        };
+        let selected_available = capabilities.iter().any(|capability| {
+            capability.kind == "video"
+                && capability.provider_id == provider_id
+                && capability.model_id == model_id
+                && capability.status == "available"
+        });
+        if !selected_available {
+            bail!("video media capability unavailable for {provider_id}/{model_id}");
+        }
+        bail!("Video generation is not supported yet")
+    }
+
+    fn openai_media_connected(&self) -> Result<bool> {
+        let credentials = self.load_credentials()?;
+        Ok(credentials.api_keys.contains_key("codex")
+            || credentials.api_keys.contains_key("openai")
+            || env::var("OPENAI_API_KEY").is_ok()
+            || home_dir().join(".codex/auth.json").exists())
     }
 
     fn provider_auth_statuses(&self) -> Result<Vec<AuthProviderStatusDto>> {
@@ -1081,6 +1224,13 @@ impl BackendState {
         }
         if params.get("openaiBaseUrl").is_some_and(Value::is_null) {
             config.openai_base_url = None;
+        }
+        if let Some(media) = params.get("media") {
+            config.media = if media.is_null() {
+                StoredMediaConfig::default()
+            } else {
+                serde_json::from_value(media.clone()).context("invalid media config patch")?
+            };
         }
         self.save_config(&config)
     }
@@ -1970,6 +2120,49 @@ fn untracked_diff(root: &Path, files: &str) -> (String, String) {
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use std::ffi::OsString;
+
+    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        corbina_home: Option<OsString>,
+        home: Option<OsString>,
+        openai_api_key: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_home(path: &Path) -> Self {
+            let guard = Self {
+                corbina_home: env::var_os("CORBINA_HOME"),
+                home: env::var_os("HOME"),
+                openai_api_key: env::var_os("OPENAI_API_KEY"),
+            };
+            env::set_var("CORBINA_HOME", path);
+            env::set_var("HOME", path);
+            env::remove_var("OPENAI_API_KEY");
+            guard
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.corbina_home {
+                env::set_var("CORBINA_HOME", value);
+            } else {
+                env::remove_var("CORBINA_HOME");
+            }
+            if let Some(value) = &self.home {
+                env::set_var("HOME", value);
+            } else {
+                env::remove_var("HOME");
+            }
+            if let Some(value) = &self.openai_api_key {
+                env::set_var("OPENAI_API_KEY", value);
+            } else {
+                env::remove_var("OPENAI_API_KEY");
+            }
+        }
+    }
 
     fn test_session_record(
         provider: &str,
@@ -2081,6 +2274,226 @@ mod tests {
             default_model_for("puffer"),
             Some(DEFAULT_PUFFER_MODEL.to_string())
         );
+    }
+
+    #[test]
+    fn update_config_saves_media_without_mutating_chat_defaults() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+        let initial = StoredConfig {
+            default_provider: Some("codex".to_string()),
+            default_model: Some("gpt-5.4".to_string()),
+            ..StoredConfig::default()
+        };
+        backend.save_config(&initial).unwrap();
+
+        backend
+            .update_config(json!({
+                "media": {
+                    "image": {
+                        "providerId": "openai",
+                        "modelId": "gpt-image-1",
+                        "size": "1024x1024",
+                        "quality": "high",
+                        "outputFormat": "png"
+                    },
+                    "video": {
+                        "providerId": null,
+                        "modelId": null,
+                        "aspectRatio": "16:9",
+                        "durationSeconds": 8
+                    }
+                }
+            }))
+            .unwrap();
+
+        let saved = backend.load_config().unwrap();
+        assert_eq!(saved.default_provider.as_deref(), Some("codex"));
+        assert_eq!(saved.default_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            serde_json::to_value(saved.media).unwrap(),
+            json!({
+                "image": {
+                    "providerId": "openai",
+                    "modelId": "gpt-image-1",
+                    "size": "1024x1024",
+                    "quality": "high",
+                    "outputFormat": "png"
+                },
+                "video": {
+                    "providerId": null,
+                    "modelId": null,
+                    "aspectRatio": "16:9",
+                    "durationSeconds": 8
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn media_capabilities_include_openai_image_when_connected() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+        backend
+            .save_credentials(&StoredCredentials {
+                api_keys: HashMap::from([("codex".to_string(), "sk-test".to_string())]),
+            })
+            .unwrap();
+
+        let response = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "list_media_capabilities",
+                json!({"kind": "image"}),
+            )
+            .unwrap();
+        let capabilities = response
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .unwrap();
+
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities[0]["providerId"], "openai");
+        assert_eq!(capabilities[0]["modelId"], "gpt-image-1");
+        assert_eq!(capabilities[0]["kind"], "image");
+        assert_eq!(capabilities[0]["status"], "available");
+    }
+
+    #[test]
+    fn media_capabilities_return_empty_for_video_without_adapter() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+        backend
+            .save_credentials(&StoredCredentials {
+                api_keys: HashMap::from([("codex".to_string(), "sk-test".to_string())]),
+            })
+            .unwrap();
+
+        let response = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "list_media_capabilities",
+                json!({"kind": "video"}),
+            )
+            .unwrap();
+        assert_eq!(response["capabilities"], json!([]));
+    }
+
+    #[test]
+    fn media_capabilities_return_empty_when_openai_is_disconnected() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+
+        let response = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "list_media_capabilities",
+                json!({"kind": "image"}),
+            )
+            .unwrap();
+        assert_eq!(response["capabilities"], json!([]));
+    }
+
+    #[test]
+    fn generate_media_requires_image_provider_and_model_settings() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+        backend
+            .save_credentials(&StoredCredentials {
+                api_keys: HashMap::from([("codex".to_string(), "sk-test".to_string())]),
+            })
+            .unwrap();
+        backend
+            .save_config(&StoredConfig {
+                media: StoredMediaConfig {
+                    image: StoredImageMediaConfig {
+                        provider_id: Some("openai".to_string()),
+                        model_id: None,
+                        ..StoredImageMediaConfig::default()
+                    },
+                    video: StoredVideoMediaConfig::default(),
+                },
+                ..StoredConfig::default()
+            })
+            .unwrap();
+
+        let error = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "generate_media",
+                json!({"kind": "image", "prompt": "draw a ship"}),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("image media provider/model is not configured"));
+    }
+
+    #[test]
+    fn generate_media_rejects_unavailable_image_capability() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+        backend
+            .save_credentials(&StoredCredentials {
+                api_keys: HashMap::from([("codex".to_string(), "sk-test".to_string())]),
+            })
+            .unwrap();
+        backend
+            .save_config(&StoredConfig {
+                media: StoredMediaConfig {
+                    image: StoredImageMediaConfig {
+                        provider_id: Some("openai".to_string()),
+                        model_id: Some("missing-image-model".to_string()),
+                        ..StoredImageMediaConfig::default()
+                    },
+                    video: StoredVideoMediaConfig::default(),
+                },
+                ..StoredConfig::default()
+            })
+            .unwrap();
+
+        let error = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "generate_media",
+                json!({"kind": "image", "prompt": "draw a ship"}),
+            )
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("image media capability unavailable"));
+    }
+
+    #[test]
+    fn generate_media_returns_clear_video_no_capability_error() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let backend = BackendState::new();
+
+        let error = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "generate_media",
+                json!({"kind": "video", "prompt": "animate a logo"}),
+            )
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("No video capabilities available"));
     }
 
     #[test]
@@ -2908,6 +3321,24 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn media_settings_dto(config: &StoredMediaConfig) -> MediaSettingsDto {
+    MediaSettingsDto {
+        image: ImageMediaSettingsDto {
+            provider_id: config.image.provider_id.clone(),
+            model_id: config.image.model_id.clone(),
+            size: config.image.size.clone(),
+            quality: config.image.quality.clone(),
+            output_format: config.image.output_format.clone(),
+        },
+        video: VideoMediaSettingsDto {
+            provider_id: config.video.provider_id.clone(),
+            model_id: config.video.model_id.clone(),
+            aspect_ratio: config.video.aspect_ratio.clone(),
+            duration_seconds: config.video.duration_seconds,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredConfig {
@@ -2915,6 +3346,8 @@ struct StoredConfig {
     default_model: Option<String>,
     openai_base_url: Option<String>,
     theme: Option<String>,
+    #[serde(default)]
+    media: StoredMediaConfig,
 }
 
 impl Default for StoredConfig {
@@ -2924,6 +3357,67 @@ impl Default for StoredConfig {
             default_model: None,
             openai_base_url: None,
             theme: Some("system".to_string()),
+            media: StoredMediaConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredMediaConfig {
+    #[serde(default)]
+    image: StoredImageMediaConfig,
+    #[serde(default)]
+    video: StoredVideoMediaConfig,
+}
+
+impl Default for StoredMediaConfig {
+    fn default() -> Self {
+        Self {
+            image: StoredImageMediaConfig::default(),
+            video: StoredVideoMediaConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredImageMediaConfig {
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    size: String,
+    quality: String,
+    output_format: String,
+}
+
+impl Default for StoredImageMediaConfig {
+    fn default() -> Self {
+        Self {
+            provider_id: None,
+            model_id: None,
+            size: "1024x1024".to_string(),
+            quality: "auto".to_string(),
+            output_format: "png".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredVideoMediaConfig {
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    aspect_ratio: String,
+    duration_seconds: u32,
+}
+
+impl Default for StoredVideoMediaConfig {
+    fn default() -> Self {
+        Self {
+            provider_id: None,
+            model_id: None,
+            aspect_ratio: "16:9".to_string(),
+            duration_seconds: 8,
         }
     }
 }

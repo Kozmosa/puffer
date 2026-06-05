@@ -361,11 +361,58 @@ pub(crate) struct SettingsConfigDto {
     pub default_model: Option<String>,
     pub openai_base_url: Option<String>,
     pub theme: String,
+    pub media: MediaSettingsDto,
     pub mascot_id: String,
     pub mascot_display_name: String,
     pub mascot_enabled: bool,
     pub ui_no_alt_screen: bool,
     pub ui_tmux_golden_mode: bool,
+}
+
+/// Describes persisted image and video generation defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaSettingsDto {
+    pub image: ImageMediaSettingsDto,
+    pub video: VideoMediaSettingsDto,
+}
+
+/// Describes persisted image generation defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImageMediaSettingsDto {
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub size: String,
+    pub quality: String,
+    pub output_format: String,
+}
+
+/// Describes persisted video generation defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VideoMediaSettingsDto {
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub aspect_ratio: String,
+    pub duration_seconds: u32,
+}
+
+/// Describes one verified media generation capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaCapabilityInfoDto {
+    pub provider_id: String,
+    pub model_id: String,
+    pub kind: String,
+    pub operations: Vec<String>,
+    pub supports_async: bool,
+    pub supports_streaming: bool,
+    pub parameter_values: Value,
+    pub status: String,
+    pub source: String,
+    pub reason: Option<String>,
+    pub checked_at_ms: u64,
 }
 
 /// Describes aggregate loaded resource counts.

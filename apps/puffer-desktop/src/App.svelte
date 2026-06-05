@@ -46,6 +46,7 @@
     recoverStaleAgentTurn,
     runRemoteBash,
     writeRemoteFile,
+    generateMedia,
     runAgentTurn,
     stageChatAttachment,
     resolvePermission as resolveTurnPermission,
@@ -2867,6 +2868,10 @@
       statusMessage = "Wait for the current turn to finish before sending another message.";
       return false;
     }
+    const mediaSlash = parseMediaSlash(message);
+    if (mediaSlash) {
+      return submitMediaSlash(submitSessionId, mediaSlash, options);
+    }
     const requestedProviderId =
       options.providerId ?? sessionAtSubmit.providerId ?? settingsSnapshot?.config.defaultProvider;
     if (
@@ -3000,6 +3005,56 @@
       return false;
     } finally {
       setSubmitMessageInFlight(submitSessionId, false);
+    }
+  }
+
+  type MediaSlashRequest = {
+    kind: "image" | "video";
+    prompt: string;
+  };
+
+  function parseMediaSlash(message: string): MediaSlashRequest | null {
+    const match = message.trim().match(/^\/(image|video)(?:\s+(.+))?$/is);
+    if (!match) return null;
+    return {
+      kind: match[1].toLowerCase() as "image" | "video",
+      prompt: (match[2] ?? "").trim()
+    };
+  }
+
+  async function submitMediaSlash(
+    sessionId: string,
+    request: MediaSlashRequest,
+    options: AgentTurnSubmitOptions
+  ): Promise<boolean> {
+    if (!request.prompt) {
+      const detail = `/${request.kind} requires a prompt.`;
+      statusMessage = detail;
+      appendAgentError("Media generation failed", detail, "media-generation-empty");
+      return false;
+    }
+    if ((options.displayAttachments?.length ?? 0) > 0) {
+      const detail = "Media generation does not accept chat attachments.";
+      statusMessage = detail;
+      appendAgentError("Media generation failed", detail, "media-generation-attachments");
+      return false;
+    }
+    setSubmitMessageInFlight(sessionId, true);
+    try {
+      const result = await generateMedia({
+        sessionId,
+        kind: request.kind,
+        prompt: request.prompt
+      });
+      statusMessage = `${request.kind === "image" ? "Image" : "Video"} media job ${result.jobId.slice(0, 8)} ${result.status}.`;
+      return true;
+    } catch (error) {
+      const detail = errorText(error);
+      statusMessage = `Media generation failed: ${detail}`;
+      appendAgentError("Media generation failed", detail, "media-generation-error");
+      return false;
+    } finally {
+      setSubmitMessageInFlight(sessionId, false);
     }
   }
 

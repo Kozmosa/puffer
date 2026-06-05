@@ -84,6 +84,42 @@ type SessionDetailOverrides = {
   divergence: JsonRecord;
 };
 
+type FakeMediaSettings = {
+  image: {
+    providerId: string | null;
+    modelId: string | null;
+    size: string;
+    quality: string;
+    outputFormat: string;
+  };
+  video: {
+    providerId: string | null;
+    modelId: string | null;
+    aspectRatio: string;
+    durationSeconds: number;
+  };
+};
+
+type FakeSettingsConfig = {
+  defaultProvider: string | null;
+  defaultModel: string | null;
+  media: FakeMediaSettings;
+};
+
+export type FakeMediaCapability = {
+  providerId: string;
+  modelId: string;
+  kind: "image" | "video";
+  operations: string[];
+  supportsAsync: boolean;
+  supportsStreaming: boolean;
+  parameterValues: JsonRecord;
+  status: string;
+  source: string;
+  reason: string | null;
+  checkedAtMs: number;
+};
+
 export type FakeDaemonSessionInput = {
   sessionId: string;
   displayName?: string | null;
@@ -113,6 +149,89 @@ const ONE_PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==";
 
 const now = Date.now();
+
+function defaultMediaSettings(): FakeMediaSettings {
+  return {
+    image: {
+      providerId: null,
+      modelId: null,
+      size: "1024x1024",
+      quality: "auto",
+      outputFormat: "png"
+    },
+    video: {
+      providerId: null,
+      modelId: null,
+      aspectRatio: "16:9",
+      durationSeconds: 8
+    }
+  };
+}
+
+function cloneMediaSettings(media: FakeMediaSettings): FakeMediaSettings {
+  return {
+    image: { ...media.image },
+    video: { ...media.video }
+  };
+}
+
+function normalizeMediaSettings(value: unknown): FakeMediaSettings {
+  const defaults = defaultMediaSettings();
+  if (!value || typeof value !== "object") return defaults;
+  const record = value as JsonRecord;
+  const image = record.image && typeof record.image === "object" ? (record.image as JsonRecord) : {};
+  const video = record.video && typeof record.video === "object" ? (record.video as JsonRecord) : {};
+  return {
+    image: {
+      providerId: typeof image.providerId === "string" ? image.providerId : null,
+      modelId: typeof image.modelId === "string" ? image.modelId : null,
+      size: typeof image.size === "string" ? image.size : defaults.image.size,
+      quality: typeof image.quality === "string" ? image.quality : defaults.image.quality,
+      outputFormat:
+        typeof image.outputFormat === "string" ? image.outputFormat : defaults.image.outputFormat
+    },
+    video: {
+      providerId: typeof video.providerId === "string" ? video.providerId : null,
+      modelId: typeof video.modelId === "string" ? video.modelId : null,
+      aspectRatio:
+        typeof video.aspectRatio === "string" ? video.aspectRatio : defaults.video.aspectRatio,
+      durationSeconds:
+        typeof video.durationSeconds === "number"
+          ? video.durationSeconds
+          : defaults.video.durationSeconds
+    }
+  };
+}
+
+function defaultMediaCapabilities(): FakeMediaCapability[] {
+  return [
+    {
+      providerId: "openai",
+      modelId: "gpt-image-1",
+      kind: "image",
+      operations: ["generate"],
+      supportsAsync: false,
+      supportsStreaming: false,
+      parameterValues: {
+        size: ["1024x1024", "1024x1536", "1536x1024"],
+        quality: ["auto", "low", "medium", "high"],
+        outputFormat: ["png", "jpeg", "webp"]
+      },
+      status: "available",
+      source: "fake-daemon",
+      reason: null,
+      checkedAtMs: now
+    }
+  ];
+}
+
+function cloneMediaCapability(capability: FakeMediaCapability): FakeMediaCapability {
+  return {
+    ...capability,
+    operations: [...capability.operations],
+    parameterValues: { ...capability.parameterValues }
+  };
+}
 
 const session = {
   sessionId: "session-browser",
@@ -289,14 +408,16 @@ export class FakeDaemon {
   private readonly lspLocations = new Map<string, string>();
   private readonly providerModels: Record<string, JsonRecord[]>;
   private readonly providerSummaries: JsonRecord[] | null;
+  private mediaCapabilities: FakeMediaCapability[];
   private readonly emitBrowserOpenFrame: boolean;
   private readonly emitBrowserResizeFrame: boolean;
   private workspaceRoot = "/tmp/puffer";
   private authStatuses: JsonRecord[];
   private externalCredentials: JsonRecord[];
-  private settingsConfig: { defaultProvider: string | null; defaultModel: string | null } = {
+  private settingsConfig: FakeSettingsConfig = {
     defaultProvider: "codex",
-    defaultModel: "test-model"
+    defaultModel: "test-model",
+    media: defaultMediaSettings()
   };
   private secrets: JsonRecord[] = [];
   private permissions: JsonRecord = {
@@ -678,6 +799,7 @@ export class FakeDaemon {
     sessions?: FakeDaemonSessionInput[];
     providerModels?: Record<string, JsonRecord[]>;
     providers?: JsonRecord[];
+    mediaCapabilities?: FakeMediaCapability[];
     mcpServers?: JsonRecord[];
     protocol?: "legacy" | "real";
     workspaceRoot?: string;
@@ -712,6 +834,9 @@ export class FakeDaemon {
     }
     this.providerModels = options.providerModels ?? {};
     this.providerSummaries = options.providers ?? null;
+    this.mediaCapabilities = (options.mediaCapabilities ?? defaultMediaCapabilities()).map(
+      cloneMediaCapability
+    );
     this.mcpServers = options.mcpServers ?? this.mcpServers;
     this.emitBrowserOpenFrame = options.emitBrowserOpenFrame ?? true;
     this.emitBrowserResizeFrame = options.emitBrowserResizeFrame ?? false;
@@ -725,15 +850,20 @@ export class FakeDaemon {
     };
   }
 
-  setSettingsConfig(config: Partial<{ defaultProvider: string | null; defaultModel: string | null }>): void {
+  setSettingsConfig(config: Partial<FakeSettingsConfig>): void {
     this.settingsConfig = {
       ...this.settingsConfig,
-      ...config
+      ...config,
+      media: config.media ? cloneMediaSettings(config.media) : this.settingsConfig.media
     };
   }
 
   setProviderModels(providerId: string, models: JsonRecord[]): void {
     this.providerModels[providerId] = models;
+  }
+
+  setMediaCapabilities(capabilities: FakeMediaCapability[]): void {
+    this.mediaCapabilities = capabilities.map(cloneMediaCapability);
   }
 
   setNetworkProxy(networkProxy: JsonRecord): void {
@@ -1152,6 +1282,10 @@ export class FakeDaemon {
           providerId: String(request.params.providerId ?? "codex"),
           models: this.modelsForProvider(String(request.params.providerId ?? "codex"))
         };
+      case "list_media_capabilities":
+        return this.listMediaCapabilities(request.params);
+      case "generate_media":
+        return this.generateMedia(request.params);
       case "update_config":
         return this.updateConfig(request.params);
       case "local_model_status":
@@ -1703,7 +1837,55 @@ export class FakeDaemon {
       this.settingsConfig.defaultModel =
         typeof params.defaultModel === "string" ? params.defaultModel : null;
     }
+    if ("media" in params) {
+      this.settingsConfig.media = normalizeMediaSettings(params.media);
+    }
     return this.settingsSnapshot();
+  }
+
+  private listMediaCapabilities(params: JsonRecord): JsonRecord {
+    const kind = typeof params.kind === "string" ? params.kind : null;
+    return {
+      capabilities: this.mediaCapabilities
+        .filter((capability) => !kind || capability.kind === kind)
+        .map(cloneMediaCapability)
+    };
+  }
+
+  private generateMedia(params: JsonRecord): JsonRecord {
+    const kind = params.kind === "video" ? "video" : "image";
+    const prompt = typeof params.prompt === "string" ? params.prompt.trim() : "";
+    if (!prompt) throw new Error(`/${kind} requires a prompt.`);
+    const capabilities = this.mediaCapabilities.filter(
+      (capability) => capability.kind === kind && capability.status === "available"
+    );
+    if (capabilities.length === 0) {
+      throw new Error(`No ${kind} capabilities available.`);
+    }
+    const settings = this.settingsConfig.media[kind];
+    if (!settings.providerId || !settings.modelId) {
+      throw new Error(`${kind} media provider/model is not configured.`);
+    }
+    const capability = capabilities.find(
+      (item) => item.providerId === settings.providerId && item.modelId === settings.modelId
+    );
+    if (!capability) {
+      throw new Error(`${kind} media capability unavailable for ${settings.providerId}/${settings.modelId}.`);
+    }
+    if (kind === "video") {
+      throw new Error("Video generation is not supported yet.");
+    }
+    const jobId = `media-job-${Date.now().toString(36)}`;
+    return {
+      jobId,
+      artifactId: null,
+      kind,
+      providerId: settings.providerId,
+      modelId: settings.modelId,
+      status: "queued",
+      prompt,
+      path: null
+    };
   }
 
   private testProxy(params: JsonRecord): JsonRecord {
@@ -1911,6 +2093,7 @@ export class FakeDaemon {
         defaultModel: this.settingsConfig.defaultModel,
         openaiBaseUrl: null,
         theme: "system",
+        media: cloneMediaSettings(this.settingsConfig.media),
         mascotId: "puffer",
         mascotDisplayName: "Puffer",
         mascotEnabled: true,

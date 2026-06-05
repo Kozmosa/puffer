@@ -36,6 +36,7 @@ pub(crate) mod lambda_skill_activation;
 pub(crate) mod lambda_tool;
 mod local_tools;
 pub mod mcp_discovery;
+pub(crate) mod media;
 mod microcompact;
 mod openai;
 mod openai_sse;

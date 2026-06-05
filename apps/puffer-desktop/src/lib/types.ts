@@ -305,11 +305,48 @@ export type SettingsConfig = {
   defaultModel: string | null;
   openaiBaseUrl: string | null;
   theme: string;
+  media: MediaSettings;
   mascotId: string;
   mascotDisplayName: string;
   mascotEnabled: boolean;
   uiNoAltScreen: boolean;
   uiTmuxGoldenMode: boolean;
+};
+
+export type MediaSettings = {
+  image: ImageMediaSettings;
+  video: VideoMediaSettings;
+};
+
+export type ImageMediaSettings = {
+  providerId: string | null;
+  modelId: string | null;
+  size: string;
+  quality: string;
+  outputFormat: string;
+};
+
+export type VideoMediaSettings = {
+  providerId: string | null;
+  modelId: string | null;
+  aspectRatio: string;
+  durationSeconds: number;
+};
+
+export type MediaKind = "image" | "video";
+
+export type MediaCapabilityInfo = {
+  providerId: string;
+  modelId: string;
+  kind: MediaKind;
+  operations: string[];
+  supportsAsync: boolean;
+  supportsStreaming: boolean;
+  parameterValues: Record<string, string[]>;
+  status: "available" | "unavailable" | "unknown" | string;
+  source: string;
+  reason: string | null;
+  checkedAtMs: number;
 };
 
 export type ResourceCounts = {

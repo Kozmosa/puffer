@@ -10,6 +10,7 @@ mod files;
 mod fs_watch;
 mod local_model;
 mod lsp;
+mod media_capabilities;
 mod mini_window;
 mod minicpm5;
 mod pty;

@@ -10,6 +10,7 @@
   import Approval from "./Approval.svelte";
   import QuestionPrompt from "./QuestionPrompt.svelte";
   import ModelPicker from "./ModelPicker.svelte";
+  import MediaSettingsModal from "./MediaSettingsModal.svelte";
   import AttachmentPreviewStrip from "./AttachmentPreviewStrip.svelte";
   import MessageAttachmentPreviewStrip from "./MessageAttachmentPreviewStrip.svelte";
   import {
@@ -32,6 +33,7 @@
     ToolTimelineItem,
     DiffTimelineItem,
     MessageTimelineItem,
+    MediaKind,
     UserQuestionTimelineItem
   } from "../../types";
   import type { AgentState } from "../../shell/tweaks";
@@ -143,6 +145,7 @@
   let attachmentDraftsBySessionId = $state<Record<string, ComposerAttachmentDraft[]>>({});
   let attachmentError = $state<string | null>(null);
   let attachmentMenuOpen = $state(false);
+  let mediaSettingsKind = $state<MediaKind | null>(null);
   let attachmentDropActive = $state(false);
   let attachmentDragDepth = 0;
   let attachmentIdSequence = 0;
@@ -981,6 +984,16 @@
     if (composerDisabled) return;
     attachmentMenuOpen = false;
     fileInputEl?.click();
+  }
+
+  function openMediaSettings(kind: MediaKind) {
+    if (composerDisabled) return;
+    attachmentMenuOpen = false;
+    mediaSettingsKind = kind;
+  }
+
+  function closeMediaSettings() {
+    mediaSettingsKind = null;
   }
 
   function toggleAttachmentMenu(event: MouseEvent) {
@@ -2374,6 +2387,24 @@
                 <Icon name="paperclip" size={15} />
                 <span>Add images and files</span>
               </button>
+              <button
+                type="button"
+                class="pf-attachment-dropdown-item"
+                role="menuitem"
+                onclick={() => openMediaSettings("image")}
+              >
+                <Icon name="sparkles" size={15} />
+                <span>Image settings</span>
+              </button>
+              <button
+                type="button"
+                class="pf-attachment-dropdown-item"
+                role="menuitem"
+                onclick={() => openMediaSettings("video")}
+              >
+                <Icon name="settings" size={15} />
+                <span>Video settings</span>
+              </button>
             </div>
           {/if}
         </div>
@@ -2439,6 +2470,14 @@
       </div>
     </div>
   </div>
+
+  {#if mediaSettingsKind && settingsSnapshot}
+    <MediaSettingsModal
+      kind={mediaSettingsKind}
+      settings={settingsSnapshot.config.media}
+      onClose={closeMediaSettings}
+    />
+  {/if}
 </div>
 
 <style>

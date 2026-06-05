@@ -252,6 +252,311 @@ test("composer add content menu attaches image and file drafts", async ({ page }
   await expect(refreshedPreview.getByAltText("sample.png")).toBeVisible();
 });
 
+test("composer image settings modal saves media config from daemon capabilities", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-settings",
+        displayName: "Image settings session",
+        title: "Image settings session",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "image-settings-seed",
+            text: "Tune image defaults here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({
+    media: {
+      image: {
+        providerId: null,
+        modelId: null,
+        size: "1024x1024",
+        quality: "auto",
+        outputFormat: "png"
+      },
+      video: {
+        providerId: null,
+        modelId: null,
+        aspectRatio: "16:9",
+        durationSeconds: 8
+      }
+    }
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Image settings session/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await expect(page.getByRole("menuitem", { name: "Add images and files" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Image settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Image settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest("list_media_capabilities", (request) => request.params.kind === "image");
+  await expect(dialog.getByLabel("Provider")).toHaveValue("openai");
+  await expect(dialog.getByLabel("Model")).toHaveValue("gpt-image-1");
+
+  await dialog.getByLabel("Size").selectOption("1536x1024");
+  await dialog.getByLabel("Quality").selectOption("high");
+  await dialog.getByLabel("Output format").selectOption("webp");
+  await dialog.getByRole("button", { name: "Save image settings" }).click();
+
+  const update = await daemon.waitForRequest("update_config", (request) => "media" in request.params);
+  expect(update.params).toEqual({
+    media: {
+      image: {
+        providerId: "openai",
+        modelId: "gpt-image-1",
+        size: "1536x1024",
+        quality: "high",
+        outputFormat: "webp"
+      },
+      video: {
+        providerId: null,
+        modelId: null,
+        aspectRatio: "16:9",
+        durationSeconds: 8
+      }
+    }
+  });
+});
+
+test("composer video settings modal remains reachable without capabilities", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [],
+    sessions: [
+      {
+        sessionId: "session-video-settings",
+        displayName: "Video settings session",
+        title: "Video settings session",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-seed",
+            text: "Tune video defaults here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Video settings session/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await expect(page.getByRole("menuitem", { name: "Video settings" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Video settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest("list_media_capabilities", (request) => request.params.kind === "video");
+  await expect(dialog.getByText("No video capabilities available.")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Save video settings" })).toBeDisabled();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
+test("composer media settings marks stale saved image model invalid", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-stale-media-settings",
+        displayName: "Stale media settings",
+        title: "Stale media settings",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "stale-media-settings-seed",
+            text: "Check stale media defaults here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({
+    media: {
+      image: {
+        providerId: "openai",
+        modelId: "old-image-model",
+        size: "1024x1024",
+        quality: "auto",
+        outputFormat: "png"
+      },
+      video: {
+        providerId: null,
+        modelId: null,
+        aspectRatio: "16:9",
+        durationSeconds: 8
+      }
+    }
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Stale media settings/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Image settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Image settings" });
+  await expect(dialog.getByText("Saved model is no longer available.")).toBeVisible();
+  await expect(dialog.getByLabel("Model")).toHaveValue("old-image-model");
+  await expect(dialog.getByRole("button", { name: "Save image settings" })).toBeDisabled();
+});
+
+test("explicit image slash trigger routes to media generation", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-trigger",
+        displayName: "Image trigger session",
+        title: "Image trigger session",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "image-trigger-seed",
+            text: "Send image slash triggers here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({
+    media: {
+      image: {
+        providerId: "openai",
+        modelId: "gpt-image-1",
+        size: "1024x1024",
+        quality: "auto",
+        outputFormat: "png"
+      },
+      video: {
+        providerId: null,
+        modelId: null,
+        aspectRatio: "16:9",
+        durationSeconds: 8
+      }
+    }
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Image trigger session/);
+
+  await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const request = await daemon.waitForRequest("generate_media");
+  expect(request.params).toMatchObject({
+    sessionId: "session-image-trigger",
+    kind: "image",
+    prompt: "draw a compact icon"
+  });
+  expect(daemon.requests.filter((candidate) => candidate.method === "run_agent_turn")).toHaveLength(0);
+});
+
+test("normal image text still routes to chat", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-normal-image-text",
+        displayName: "Normal image text",
+        title: "Normal image text",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "normal-image-text-seed",
+            text: "Send normal chat here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Normal image text/);
+
+  await page.locator(".pf-composer textarea").fill("please make an image of the plan");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const request = await daemon.waitForRequest("run_agent_turn");
+  expect(request.params.message).toBe("please make an image of the plan");
+  expect(daemon.requests.filter((candidate) => candidate.method === "generate_media")).toHaveLength(0);
+});
+
+test("explicit video slash trigger fails clearly without capability", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [],
+    sessions: [
+      {
+        sessionId: "session-video-trigger",
+        displayName: "Video trigger session",
+        title: "Video trigger session",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-trigger-seed",
+            text: "Send video slash triggers here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Video trigger session/);
+
+  await page.locator(".pf-composer textarea").fill("/video animate this logo");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const request = await daemon.waitForRequest("generate_media");
+  expect(request.params).toMatchObject({
+    sessionId: "session-video-trigger",
+    kind: "video",
+    prompt: "animate this logo"
+  });
+  await expect(page.getByText("No video capabilities available.")).toBeVisible();
+});
+
 test("message attachments open image preview and file details", async ({ page }) => {
   const imageBuffer = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==",
