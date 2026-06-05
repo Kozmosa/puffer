@@ -20,6 +20,35 @@ function expectBefore(order: string[], before: string[], after: string[]): void 
   expect(beforeIndex).toBeLessThan(afterIndex);
 }
 
+async function mockTauriEnsureLocalDaemon(
+  page: Page,
+  handshakes: Array<{ url: string; workspaceRoot: string }>
+): Promise<void> {
+  await page.addInitScript((input) => {
+    const win = window as unknown as {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: {
+        invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+    };
+    let index = 0;
+    win.__TAURI__ = {};
+    win.__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string) => {
+        if (cmd !== "ensure_local_daemon") throw new Error(`unexpected invoke: ${cmd}`);
+        const handshake = input[Math.min(index, input.length - 1)];
+        index += 1;
+        return {
+          url: handshake.url,
+          token: "test",
+          protocolVersion: "2025-01-01",
+          workspaceRoot: handshake.workspaceRoot
+        };
+      }
+    };
+  }, handshakes);
+}
+
 test("desktop client speaks the real daemon WebSocket protocol", async ({ page }) => {
   const daemon = new FakeDaemon({ protocol: "real" });
   await daemon.install(page);
@@ -247,5 +276,66 @@ test("backend reconnect button reports failed retries", async ({ page }) => {
   await banner.getByRole("button", { name: "Reconnect backend" }).click();
 
   await expect.poll(() => daemon.socketUrls.length).toBeGreaterThan(1);
+  await expect(page.locator(".connection-banner")).toHaveCount(0);
+});
+
+test("changed daemon port reconnect reacquires the native local daemon", async ({ page }) => {
+  const oldDaemon = new FakeDaemon({
+    protocol: "real",
+    url: "ws://127.0.0.1:17777/ws",
+    workspaceRoot: "/tmp/puffer-old-port"
+  });
+  const newDaemon = new FakeDaemon({
+    protocol: "real",
+    url: "ws://127.0.0.1:17778/ws",
+    workspaceRoot: "/tmp/puffer-new-port"
+  });
+  await mockTauriEnsureLocalDaemon(page, [
+    { url: oldDaemon.url, workspaceRoot: "/tmp/puffer-old-port" },
+    { url: newDaemon.url, workspaceRoot: "/tmp/puffer-new-port" }
+  ]);
+  await oldDaemon.install(page);
+  await newDaemon.install(page);
+
+  await page.goto("/?skipOnboarding=1");
+  await expect.poll(() => oldDaemon.socketUrls.length).toBeGreaterThan(0);
+
+  await oldDaemon.dropConnections();
+  const banner = page.locator(".connection-banner");
+  await expect(banner).toContainText("Puffer backend disconnected.");
+
+  await banner.getByRole("button", { name: "Reconnect backend" }).click();
+
+  await expect.poll(() => newDaemon.socketUrls.length).toBeGreaterThan(0);
+  await expect(page.locator(".connection-banner")).toHaveCount(0);
+});
+
+test("native daemon acquisition ignores stale browser-configured local backend", async ({
+  page
+}) => {
+  const staleDaemon = new FakeDaemon({
+    protocol: "real",
+    url: "ws://127.0.0.1:17779/ws",
+    workspaceRoot: "/tmp/puffer-stale-browser"
+  });
+  const nativeDaemon = new FakeDaemon({
+    protocol: "real",
+    url: "ws://127.0.0.1:17780/ws",
+    workspaceRoot: "/tmp/puffer-native"
+  });
+  await page.addInitScript((staleUrl) => {
+    window.localStorage.setItem("puffer.backendUrl", staleUrl);
+    window.localStorage.setItem("puffer.backendToken", "test");
+  }, staleDaemon.url);
+  await mockTauriEnsureLocalDaemon(page, [
+    { url: nativeDaemon.url, workspaceRoot: "/tmp/puffer-native" }
+  ]);
+  await staleDaemon.install(page);
+  await nativeDaemon.install(page);
+
+  await page.goto("/?skipOnboarding=1");
+
+  await expect.poll(() => nativeDaemon.socketUrls.length).toBeGreaterThan(0);
+  expect(staleDaemon.socketUrls).toHaveLength(0);
   await expect(page.locator(".connection-banner")).toHaveCount(0);
 });

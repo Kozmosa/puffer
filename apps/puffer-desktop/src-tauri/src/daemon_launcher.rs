@@ -49,9 +49,11 @@ impl DaemonChild {
         }
     }
 
-    fn is_alive(&self) -> bool {
-        match &self.child {
-            Some(child) => matches!(child.try_wait_unchecked(), Ok(None)),
+    fn is_alive(&mut self) -> bool {
+        match &mut self.child {
+            Some(child) => {
+                matches!(child.try_wait(), Ok(None)) && daemon_handshake_reachable(&self.handshake)
+            }
             None => daemon_handshake_reachable(&self.handshake),
         }
     }
@@ -110,7 +112,7 @@ impl DaemonLauncher {
     #[allow(dead_code)]
     pub(crate) fn ensure_started(&self) -> Result<DaemonHandshake> {
         let mut guard = self.child.lock().unwrap();
-        if let Some(existing) = guard.as_ref() {
+        if let Some(existing) = guard.as_mut() {
             if existing.is_alive() {
                 return Ok(existing.handshake.clone());
             }
@@ -236,22 +238,6 @@ check that sshd allows TCP forwarding and that the remote daemon really bound"
         });
 
         Ok(local_handshake)
-    }
-}
-
-// try_wait returns Result<Option<ExitStatus>> — a thin wrapper that ignores
-// ECHILD on platforms where the subprocess has already been reaped.
-#[allow(dead_code)]
-trait ChildExt {
-    fn try_wait_unchecked(&self) -> Result<Option<std::process::ExitStatus>>;
-}
-impl ChildExt for Child {
-    fn try_wait_unchecked(&self) -> Result<Option<std::process::ExitStatus>> {
-        // SAFETY: Child::try_wait needs &mut. We hand-roll a const-ish probe
-        // by polling /proc when available; elsewhere we just assume alive.
-        // This is a best-effort liveness hint — callers should be fine if
-        // they occasionally restart a daemon whose process actually died.
-        Ok(None)
     }
 }
 
@@ -695,6 +681,39 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
+    fn long_running_child() -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("daemon_launcher::tests::long_running_child_fixture")
+            .arg("--ignored")
+            .env("PUFFER_DAEMON_LAUNCHER_CHILD_FIXTURE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn exited_child() -> Child {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        child
+    }
+
+    #[test]
+    #[ignore]
+    fn long_running_child_fixture() {
+        if std::env::var_os("PUFFER_DAEMON_LAUNCHER_CHILD_FIXTURE").is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
     #[test]
     fn daemon_handshake_failure_includes_stderr() {
         let message = daemon_handshake_failure_message(
@@ -763,5 +782,31 @@ mod tests {
         let found = read_existing_daemon_handshake(&[path], &workspace).unwrap();
 
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn spawned_daemon_child_with_unreachable_handshake_is_not_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut daemon =
+            DaemonChild::spawned(long_running_child(), local_handshake(&workspace, port));
+
+        assert!(!daemon.is_alive());
+    }
+
+    #[test]
+    fn exited_spawned_daemon_child_is_not_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut daemon = DaemonChild::spawned(exited_child(), local_handshake(&workspace, port));
+
+        assert!(!daemon.is_alive());
     }
 }

@@ -16,14 +16,19 @@ async function expectTabFocusTrapped(page: Page, dialog: Locator, count: number)
   }
 }
 
+async function openWorkspacePicker(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "Switch workspace" }).click();
+  const dialog = page.getByRole("dialog", { name: "Switch workspace" });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 test("workspace picker modal receives and traps keyboard focus", async ({ page }) => {
   const daemon = new FakeDaemon();
   await daemon.install(page);
   await daemon.open(page);
 
-  await page.getByTitle("Switch workspace").click();
-  const dialog = page.getByRole("dialog", { name: "Switch workspace" });
-  await expect(dialog).toBeVisible();
+  const dialog = await openWorkspacePicker(page);
 
   await expectFocusInside(dialog);
   await expectTabFocusTrapped(page, dialog, 12);
@@ -48,6 +53,14 @@ test("workspace picker ignores duplicate local switch submits while restart is i
     win.__TAURI_INTERNALS__ = {
       invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
         win.__workspacePickerInvokeCalls?.push({ cmd, args });
+        if (cmd === "ensure_local_daemon") {
+          return {
+            url: daemonUrl,
+            token: "test",
+            protocolVersion: "2025-01-01",
+            workspaceRoot: "/tmp/puffer"
+          };
+        }
         if (cmd !== "restart_local_daemon") throw new Error(`unexpected invoke: ${cmd}`);
         await new Promise((resolve) => setTimeout(resolve, 500));
         return {
@@ -63,8 +76,7 @@ test("workspace picker ignores duplicate local switch submits while restart is i
   await daemon.install(page);
   await daemon.open(page);
 
-  await page.getByTitle("Switch workspace").click();
-  const dialog = page.getByRole("dialog", { name: "Switch workspace" });
+  const dialog = await openWorkspacePicker(page);
   await dialog.getByRole("tab", { name: /Local/ }).click();
   await dialog.getByLabel("Workspace directory").fill("/tmp/puffer-next");
   await dialog.getByRole("button", { name: "Switch local workspace" }).evaluate((button) => {
@@ -113,6 +125,14 @@ test("workspace switch clears live agents from the previous daemon", async ({ pa
     win.__TAURI__ = {};
     win.__TAURI_INTERNALS__ = {
       invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+        if (cmd === "ensure_local_daemon") {
+          return {
+            url: daemonUrl,
+            token: "test",
+            protocolVersion: "2025-01-01",
+            workspaceRoot: "/tmp/puffer-old"
+          };
+        }
         if (cmd !== "restart_local_daemon") throw new Error(`unexpected invoke: ${cmd}`);
         await new Promise((resolve) => setTimeout(resolve, 400));
         return {
@@ -146,8 +166,7 @@ test("workspace switch clears live agents from the previous daemon", async ({ pa
   ).toContainText("thinking");
 
   await page.getByRole("button", { name: "Back" }).click();
-  await page.getByTitle("Switch workspace").click();
-  const dialog = page.getByRole("dialog", { name: "Switch workspace" });
+  const dialog = await openWorkspacePicker(page);
   await dialog.getByRole("tab", { name: /Local/ }).click();
   await dialog.getByLabel("Workspace directory").fill("/tmp/puffer-next");
   await dialog.getByRole("button", { name: "Switch local workspace" }).click();
@@ -160,12 +179,12 @@ test("workspace switch clears live agents from the previous daemon", async ({ pa
   await expect(
     page.locator(".pf-sidebar-agent-row").filter({ hasText: "Old workspace live agent" })
   ).toHaveCount(0);
-  await expect(page.locator(".pf-sidebar-empty")).toContainText("No agents match");
+  await expect(page.locator(".pf-sidebar-empty")).toContainText("No projects");
 });
 
 test("workspace picker clears local errors when switching modes", async ({ page }) => {
   const daemon = new FakeDaemon();
-  await page.addInitScript(() => {
+  await page.addInitScript((daemonUrl) => {
     const win = window as unknown as {
       __TAURI__?: unknown;
       __TAURI_INTERNALS__?: {
@@ -175,17 +194,24 @@ test("workspace picker clears local errors when switching modes", async ({ page 
     win.__TAURI__ = {};
     win.__TAURI_INTERNALS__ = {
       invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+        if (cmd === "ensure_local_daemon") {
+          return {
+            url: daemonUrl,
+            token: "test",
+            protocolVersion: "2025-01-01",
+            workspaceRoot: "/tmp/puffer"
+          };
+        }
         if (cmd !== "restart_local_daemon") throw new Error(`unexpected invoke: ${cmd}`);
         throw new Error(`cannot start ${String(args.cwd ?? "")}`);
       }
     };
-  });
+  }, daemon.url);
 
   await daemon.install(page);
   await daemon.open(page);
 
-  await page.getByTitle("Switch workspace").click();
-  const dialog = page.getByRole("dialog", { name: "Switch workspace" });
+  const dialog = await openWorkspacePicker(page);
   await dialog.getByRole("tab", { name: /Local/ }).click();
   await dialog.getByLabel("Workspace directory").fill("/tmp/broken-workspace");
   await dialog.getByRole("button", { name: "Switch local workspace" }).click();
@@ -210,18 +236,14 @@ test("failed browser remote workspace switch restores the previous daemon", asyn
   await daemon.install(page);
   await daemon.open(page);
 
-  await page.getByTitle("Switch workspace").click();
-  const dialog = page.getByRole("dialog", { name: "Switch workspace" });
+  const dialog = await openWorkspacePicker(page);
   await dialog.getByRole("tab", { name: /Remote/ }).click();
   await dialog.getByLabel("SSH target").fill("tester@example.invalid");
   await dialog.getByRole("button", { name: "Connect remote" }).click();
 
   await expect(dialog.locator(".pf-modal-status", { hasText: "Unable to connect" })).toBeVisible();
   await dialog.getByLabel("Close").click();
-  await page
-    .getByRole("region", { name: "Session history" })
-    .getByRole("button", { name: /Browser regression/ })
-    .click();
+  await page.getByRole("button", { name: /^Open session Browser regression/ }).click();
 
   await expect(page.locator(".pf-agent-detail .primary-title")).toContainText("Browser regression");
   await page.locator(".pf-agent-tabs").getByRole("button", { name: "Browser", exact: true }).click();
@@ -818,8 +840,7 @@ test("closed remembered session stays closed after backend reconnect", async ({ 
   });
   await daemon.open(page);
 
-  const history = page.getByRole("region", { name: "Session history" });
-  await history.getByRole("button", { name: /Reconnect closed session/ }).click();
+  await page.getByRole("button", { name: /^Open session Reconnect closed session/ }).click();
   await expect(page.locator(".pf-agent-detail .primary-title")).toContainText(
     "Reconnect closed session"
   );
@@ -859,7 +880,9 @@ test("closed remembered session stays closed after backend reconnect", async ({ 
   await expect(
     page.evaluate(() => window.localStorage.getItem("puffer-desktop:remembered-session"))
   ).resolves.toBeNull();
-  await expect(history).toContainText("Reconnect closed session");
+  await expect(
+    page.getByRole("button", { name: /^Open session Reconnect closed session/ })
+  ).toBeVisible();
 });
 
 test("narrow workspace reconnect clears banner and preserves session navigation", async ({

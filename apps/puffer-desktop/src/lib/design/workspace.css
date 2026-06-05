@@ -21,6 +21,26 @@
 .pf-pw-top-left { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; }
 .pf-pw-top-left h1 { font-size: 14px; font-weight: 700; letter-spacing: 0; margin: 0; white-space: nowrap; }
 .pf-pw-top-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.pf-pw-workspace-switch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: #f6f6f6;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pf-pw-workspace-switch:hover,
+.pf-pw-workspace-switch:focus-visible {
+  color: var(--foreground);
+  background: var(--background);
+  border-color: var(--border);
+}
 .pf-pw-search {
   display: flex; align-items: center; gap: 6px;
   height: 30px;

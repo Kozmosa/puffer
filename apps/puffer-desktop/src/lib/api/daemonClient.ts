@@ -403,18 +403,37 @@ export function canReachDaemon(): boolean {
 
 export async function ensureLocalDaemonClient(): Promise<DaemonClient> {
   if (sharedClient) return sharedClient;
-  const handshake = configuredBrowserDaemonHandshake();
-  if (handshake) {
-    sharedClient = new DaemonClient(handshake);
-    await sharedClient.connect();
-    return sharedClient;
-  }
-  if (!canInvokeTauri()) {
-    throw new Error("Puffer's Rust daemon is only available through a configured WebSocket or inside the Tauri desktop app.");
-  }
-  sharedClient = new DaemonClient(await invoke<DaemonHandshake>("ensure_local_daemon"));
-  await sharedClient.connect();
+  sharedClient = await connectLocalDaemonCandidate(await acquireLocalDaemonHandshake());
   return sharedClient;
+}
+
+export async function reacquireLocalDaemonClient(): Promise<DaemonClient> {
+  const candidate = await connectLocalDaemonCandidate(await acquireLocalDaemonHandshake());
+  return publishConnectedDaemonClient(candidate);
+}
+
+async function acquireLocalDaemonHandshake(): Promise<DaemonHandshake> {
+  if (canInvokeTauri()) {
+    return invoke<DaemonHandshake>("ensure_local_daemon");
+  }
+  const handshake = configuredBrowserDaemonHandshake();
+  if (handshake) return handshake;
+  throw new Error(
+    "Puffer's Rust daemon is only available through a configured WebSocket or inside the Tauri desktop app."
+  );
+}
+
+async function connectLocalDaemonCandidate(handshake: DaemonHandshake): Promise<DaemonClient> {
+  const candidate = new DaemonClient(handshake);
+  await candidate.connect();
+  return candidate;
+}
+
+function publishConnectedDaemonClient(candidate: DaemonClient): DaemonClient {
+  const previous = sharedClient;
+  sharedClient = candidate;
+  if (previous && previous !== candidate) previous.close();
+  return candidate;
 }
 
 function responseErrorMessage(error: string | { message?: string; code?: string }): string {
@@ -440,10 +459,8 @@ export async function ensureRemoteDaemonClient(
 }
 
 export async function switchDaemonClient(handshake: DaemonHandshake): Promise<DaemonClient> {
-  sharedClient?.close();
-  sharedClient = new DaemonClient(handshake);
-  await sharedClient.connect();
-  return sharedClient;
+  const candidate = await connectLocalDaemonCandidate(handshake);
+  return publishConnectedDaemonClient(candidate);
 }
 
 export function currentDaemonClient(): DaemonClient | null {

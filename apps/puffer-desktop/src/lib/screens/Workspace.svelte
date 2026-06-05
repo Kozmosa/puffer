@@ -57,6 +57,7 @@
     onOpenBoard,
     onNewAgent,
     onSessionReady,
+    onOpenWorkspacePicker,
     onLoadMoreSessions,
     pinnedWorkspacePaths = [],
     pinningWorkspacePaths = [],
@@ -222,6 +223,17 @@
   <div class="pf-pw-top">
     <div class="pf-pw-top-left">
       <h1>Projects</h1>
+      {#if onOpenWorkspacePicker}
+        <button
+          type="button"
+          class="pf-pw-workspace-switch"
+          title="Switch workspace"
+          aria-label="Switch workspace"
+          onclick={onOpenWorkspacePicker}
+        >
+          <Icon name="folderOpen" size={13} />
+        </button>
+      {/if}
     </div>
     <div class="pf-pw-top-right">
       <div class="pf-pw-search">

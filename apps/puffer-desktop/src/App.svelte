@@ -65,6 +65,7 @@
   import {
     currentDaemonClient,
     ensureLocalDaemonClient,
+    reacquireLocalDaemonClient,
     type DaemonClient,
     type ConnectionState
   } from "./lib/api/daemonClient";
@@ -1096,9 +1097,9 @@
     reconnectBusy = true;
     reconnectError = null;
     try {
-      const client = await ensureLocalDaemonClient();
+      clearDaemonClientListeners();
+      const client = await reacquireLocalDaemonClient();
       attachDaemonClient(client);
-      await client.connect();
     } catch (error) {
       reconnectError = `Reconnect failed: ${reconnectFailureMessage(error)}`;
       connectionState = "closed";
