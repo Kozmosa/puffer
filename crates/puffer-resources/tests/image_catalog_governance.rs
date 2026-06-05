@@ -1,4 +1,6 @@
-use puffer_provider_registry::{MediaExecutionKind, MediaOperation, ProviderDescriptor};
+use puffer_provider_registry::{
+    MediaExecutionKind, MediaModelDescriptor, MediaOperation, ProviderDescriptor,
+};
 use puffer_resources::ProviderPack;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,6 +41,33 @@ fn provider_descriptor(provider_id: &str, yaml: &str) -> ProviderDescriptor {
         .unwrap_or_else(|err| panic!("{provider_id}.yaml should parse: {err}"));
     assert_eq!(pack.id, provider_id);
     pack.into_descriptor()
+}
+
+fn assert_select_parameter(
+    model: &MediaModelDescriptor,
+    name: &str,
+    label: &str,
+    values: &[&str],
+    default: &str,
+    request_field: &str,
+) {
+    let parameter = model
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name == name)
+        .unwrap_or_else(|| panic!("{} should declare {name}", model.id));
+
+    assert_eq!(parameter.label, label);
+    assert_eq!(
+        parameter
+            .values
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        values
+    );
+    assert_eq!(parameter.default, default);
+    assert_eq!(parameter.request_field.as_deref(), Some(request_field));
 }
 
 #[test]
@@ -187,8 +216,17 @@ fn byteplus_catalog_declares_only_current_native_seedream_models() {
         .iter()
         .map(|model| (model.id.as_str(), model))
         .collect::<BTreeMap<_, _>>();
+    let expected_model_ids = expected.keys().copied().collect::<BTreeSet<_>>();
+    let actual_model_ids = models_by_id.keys().copied().collect::<BTreeSet<_>>();
 
-    for (model_id, display_name) in expected {
+    assert_eq!(
+        actual_model_ids, expected_model_ids,
+        "BytePlus image catalog should exactly match the current native Seedream allowlist"
+    );
+
+    for (model_id, display_name) in &expected {
+        let model_id = *model_id;
+        let display_name = *display_name;
         let model = models_by_id
             .get(model_id)
             .unwrap_or_else(|| panic!("BytePlus should include {model_id}"));
@@ -202,24 +240,19 @@ fn byteplus_catalog_declares_only_current_native_seedream_models() {
             .iter()
             .map(|parameter| parameter.name.as_str())
             .collect::<BTreeSet<_>>();
-        assert!(
-            parameter_names.is_subset(&BTreeSet::from(["size", "output_format"])),
-            "{model_id} should only declare adapter-supported BytePlus parameters"
+        assert_eq!(
+            parameter_names,
+            BTreeSet::from(["size", "output_format"]),
+            "{model_id} should declare exactly the adapter-supported BytePlus parameters"
         );
-    }
-
-    for forbidden in [
-        "seedream-5-0-lite-260128",
-        "dola-seedream-5-0-lite-260128",
-        "seedream-4-0-250828",
-        "seedream-3-0-t2i-250415",
-        "bytedance/seedream-4.0",
-        "bytedance/seedream-4.5",
-        "bytedance/seedream-5.0-lite",
-    ] {
-        assert!(
-            !models_by_id.contains_key(forbidden),
-            "BytePlus should not include {forbidden}"
+        assert_select_parameter(model, "size", "Size", &["2K"], "2K", "size");
+        assert_select_parameter(
+            model,
+            "output_format",
+            "Output format",
+            &["png", "jpeg"],
+            "png",
+            "output_format",
         );
     }
 }
