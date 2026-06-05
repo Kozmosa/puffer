@@ -295,7 +295,11 @@
         <div class="pf-media-form-grid">
           <label class="pf-media-field">
             <span class="pf-field-label">Provider</span>
-            <select value={providerId} onchange={(event) => handleProviderChange(event.currentTarget.value)}>
+            <select
+              class="sc-input"
+              value={providerId}
+              onchange={(event) => handleProviderChange(event.currentTarget.value)}
+            >
               {#if providerId && !providerOptions.includes(providerId)}
                 <option value={providerId} disabled>{providerId} unavailable</option>
               {/if}
@@ -307,7 +311,7 @@
 
           <label class="pf-media-field">
             <span class="pf-field-label">Model</span>
-            <select value={modelId} onchange={(event) => (modelId = event.currentTarget.value)}>
+            <select class="sc-input" value={modelId} onchange={(event) => (modelId = event.currentTarget.value)}>
               {#if modelId && !modelOptions.some((capability) => capability.modelId === modelId)}
                 <option value={modelId} disabled>{modelId} unavailable</option>
               {/if}
@@ -320,7 +324,7 @@
           {#if kind === "image"}
             <label class="pf-media-field">
               <span class="pf-field-label">Size</span>
-              <select value={size} onchange={(event) => (size = event.currentTarget.value)}>
+              <select class="sc-input" value={size} onchange={(event) => (size = event.currentTarget.value)}>
                 {#each sizeOptions as option}
                   <option value={option}>{option}</option>
                 {/each}
@@ -328,7 +332,7 @@
             </label>
             <label class="pf-media-field">
               <span class="pf-field-label">Quality</span>
-              <select value={quality} onchange={(event) => (quality = event.currentTarget.value)}>
+              <select class="sc-input" value={quality} onchange={(event) => (quality = event.currentTarget.value)}>
                 {#each qualityOptions as option}
                   <option value={option}>{option}</option>
                 {/each}
@@ -336,7 +340,7 @@
             </label>
             <label class="pf-media-field">
               <span class="pf-field-label">Output format</span>
-              <select value={outputFormat} onchange={(event) => (outputFormat = event.currentTarget.value)}>
+              <select class="sc-input" value={outputFormat} onchange={(event) => (outputFormat = event.currentTarget.value)}>
                 {#each outputFormatOptions as option}
                   <option value={option}>{option}</option>
                 {/each}
@@ -345,7 +349,7 @@
           {:else}
             <label class="pf-media-field">
               <span class="pf-field-label">Aspect ratio</span>
-              <select value={aspectRatio} onchange={(event) => (aspectRatio = event.currentTarget.value)}>
+              <select class="sc-input" value={aspectRatio} onchange={(event) => (aspectRatio = event.currentTarget.value)}>
                 {#each aspectRatioOptions as option}
                   <option value={option}>{option}</option>
                 {/each}
@@ -353,7 +357,11 @@
             </label>
             <label class="pf-media-field">
               <span class="pf-field-label">Duration</span>
-              <select value={String(durationSeconds)} onchange={(event) => (durationSeconds = Number(event.currentTarget.value))}>
+              <select
+                class="sc-input"
+                value={String(durationSeconds)}
+                onchange={(event) => (durationSeconds = Number(event.currentTarget.value))}
+              >
                 {#each durationOptions as option}
                   <option value={String(option)}>{option}s</option>
                 {/each}
@@ -506,20 +514,6 @@
   .pf-media-field select {
     width: 100%;
     min-width: 0;
-    min-height: 32px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--background);
-    color: var(--foreground);
-    font: inherit;
-    font-size: 12.5px;
-    transition: border-color 120ms, box-shadow 120ms;
-  }
-
-  .pf-media-field select:focus {
-    border-color: var(--puffer-accent);
-    box-shadow: 0 0 0 3px color-mix(in oklch, var(--puffer-accent) 15%, transparent);
   }
 
   .pf-media-state {
