@@ -3,6 +3,7 @@ use puffer_session_store::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Describes one session row rendered in the desktop sidebar.
@@ -383,9 +384,8 @@ pub(crate) struct MediaSettingsDto {
 pub(crate) struct ImageMediaSettingsDto {
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
-    pub size: String,
-    pub quality: String,
-    pub output_format: String,
+    pub adapter: Option<String>,
+    pub parameters: BTreeMap<String, String>,
 }
 
 /// Describes persisted video generation defaults.
@@ -403,16 +403,29 @@ pub(crate) struct VideoMediaSettingsDto {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaCapabilityInfoDto {
     pub provider_id: String,
+    pub provider_display_name: String,
     pub model_id: String,
+    pub model_display_name: String,
     pub kind: String,
-    pub operations: Vec<String>,
-    pub supports_async: bool,
-    pub supports_streaming: bool,
-    pub parameter_values: Value,
+    pub operation: String,
+    pub adapter: String,
+    pub parameters: Vec<MediaCapabilityParameterDto>,
+    pub defaults: BTreeMap<String, String>,
     pub status: String,
     pub source: String,
     pub reason: Option<String>,
     pub checked_at_ms: u64,
+}
+
+/// Describes one selectable media parameter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaCapabilityParameterDto {
+    pub name: String,
+    pub label: String,
+    pub values: Vec<String>,
+    pub default: String,
+    pub request_field: Option<String>,
 }
 
 /// Describes aggregate loaded resource counts.

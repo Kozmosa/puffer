@@ -1,4 +1,8 @@
 use super::artifacts::MediaArtifact;
+use super::http_support::{
+    bearer_token, download_image_url, provider_error_secrets, provider_execution_url,
+    redact_secrets, CredentialAliasMode,
+};
 use super::jobs::{MediaJob, MediaJobStatus};
 use super::resolver::{
     resolve_image_execution_descriptor, validate_image_generate_selection,
@@ -9,8 +13,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use puffer_provider_registry::{
-    canonical_provider_id, AuthStore, MediaExecutionDescriptor, ProviderDescriptor,
-    ProviderRegistry, StoredCredential,
+    AuthStore, MediaExecutionDescriptor, ProviderDescriptor, ProviderRegistry,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -190,14 +193,17 @@ impl ImagesJsonAdapter {
         parameters: BTreeMap<String, String>,
         execution: &MediaExecutionDescriptor,
     ) -> Result<ImageOutput> {
-        let url = provider_execution_url(provider, execution)?;
-        let secrets = provider_error_secrets(provider, auth_store);
+        let url = provider_execution_url(provider, execution, "image generation")?;
+        let secrets =
+            provider_error_secrets(provider, auth_store, CredentialAliasMode::OpenAiCodexAlias);
         let body = ImagesJsonRequest::new(&request.model_id, &request.prompt, parameters).to_body();
         let mut http = self.client.post(url).json(&body);
         for (name, value) in &provider.headers {
             http = http.header(name.as_str(), value.as_str());
         }
-        if let Some(token) = bearer_token(provider, auth_store)? {
+        if let Some(token) =
+            bearer_token(provider, auth_store, CredentialAliasMode::OpenAiCodexAlias)?
+        {
             http = http.bearer_auth(token);
         }
         let response = http
@@ -275,7 +281,7 @@ fn image_output_from_response(client: &Client, value: &Value) -> Result<ImageOut
         });
     }
     if let Some(url) = first.get("url").and_then(Value::as_str) {
-        let bytes = download_image_url(client, url)?;
+        let bytes = download_image_url(client, url, "image response")?;
         return Ok(ImageOutput {
             bytes,
             revised_prompt,
@@ -283,109 +289,6 @@ fn image_output_from_response(client: &Client, value: &Value) -> Result<ImageOut
         });
     }
     bail!("image generation response did not contain an image")
-}
-
-fn download_image_url(client: &Client, url: &str) -> Result<Vec<u8>> {
-    let parsed = reqwest::Url::parse(url).context("image response URL must be absolute")?;
-    match parsed.scheme() {
-        "https" => {}
-        "http" if url_host_is_loopback(&parsed) => {}
-        other => bail!("unsupported image response URL scheme `{other}`"),
-    }
-    let response = client
-        .get(parsed)
-        .send()
-        .context("download generated image")?;
-    let status = response.status();
-    if !status.is_success() {
-        bail!(
-            "download generated image failed with status {}",
-            status.as_u16()
-        );
-    }
-    Ok(response
-        .bytes()
-        .context("read generated image bytes")?
-        .to_vec())
-}
-
-fn url_host_is_loopback(url: &reqwest::Url) -> bool {
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
-}
-
-fn provider_execution_url(
-    provider: &ProviderDescriptor,
-    execution: &MediaExecutionDescriptor,
-) -> Result<reqwest::Url> {
-    let base_url = execution.base_url.as_deref().unwrap_or(&provider.base_url);
-    let base = format!("{}/", base_url.trim_end_matches('/'));
-    let path = execution.path.trim_start_matches('/');
-    let mut url = reqwest::Url::parse(&base)
-        .and_then(|base| base.join(path))
-        .with_context(|| {
-            format!(
-                "build image generation URL from {} and {}",
-                base_url, execution.path
-            )
-        })?;
-    if !provider.query_params.is_empty() {
-        let mut query = url.query_pairs_mut();
-        for (key, value) in &provider.query_params {
-            query.append_pair(key, value);
-        }
-    }
-    Ok(url)
-}
-
-fn bearer_token(provider: &ProviderDescriptor, auth_store: &AuthStore) -> Result<Option<String>> {
-    if provider.auth_modes.is_empty() {
-        return Ok(None);
-    }
-    let Some(credential) = provider_credential(provider, auth_store) else {
-        bail!(
-            "missing credentials configured for provider {}",
-            provider.id
-        );
-    };
-    match credential {
-        StoredCredential::ApiKey { key } => non_empty_token(key, &provider.id).map(Some),
-        StoredCredential::OAuth(credential) => {
-            non_empty_token(&credential.access_token, &provider.id).map(Some)
-        }
-    }
-}
-
-fn provider_credential<'a>(
-    provider: &ProviderDescriptor,
-    auth_store: &'a AuthStore,
-) -> Option<&'a StoredCredential> {
-    let canonical = canonical_provider_id(&provider.id);
-    auth_store
-        .get(&provider.id)
-        .or_else(|| {
-            (canonical != provider.id.as_str())
-                .then(|| auth_store.get(&canonical))
-                .flatten()
-        })
-        .or_else(|| {
-            (canonical == "openai")
-                .then(|| auth_store.get("codex"))
-                .flatten()
-        })
-}
-
-fn non_empty_token(value: &str, provider_id: &str) -> Result<String> {
-    let token = value.trim();
-    if token.is_empty() {
-        bail!("empty credentials configured for provider {provider_id}");
-    }
-    Ok(token.to_string())
 }
 
 fn artifact_metadata(
@@ -418,35 +321,8 @@ fn artifact_metadata(
 fn output_format_for_parameters(parameters: &BTreeMap<String, String>) -> String {
     parameters
         .get("output_format")
-        .or_else(|| parameters.get("outputFormat"))
         .cloned()
         .unwrap_or_else(|| "png".to_string())
-}
-
-fn provider_error_secrets(provider: &ProviderDescriptor, auth_store: &AuthStore) -> Vec<String> {
-    let mut secrets = Vec::new();
-    if let Some(credential) = provider_credential(provider, auth_store) {
-        match credential {
-            StoredCredential::ApiKey { key } => secrets.push(key.clone()),
-            StoredCredential::OAuth(credential) => {
-                secrets.push(credential.access_token.clone());
-                secrets.push(credential.refresh_token.clone());
-            }
-        }
-    }
-    secrets.extend(provider.headers.values().cloned());
-    secrets.extend(provider.query_params.values().cloned());
-    secrets
-        .into_iter()
-        .map(|secret| secret.trim().to_string())
-        .filter(|secret| !secret.is_empty())
-        .collect()
-}
-
-fn redact_secrets(text: &str, secrets: &[String]) -> String {
-    secrets.iter().fold(text.to_string(), |redacted, secret| {
-        redacted.replace(secret, "[redacted]")
-    })
 }
 
 fn mime_type_for_output_format(format: &str) -> &'static str {

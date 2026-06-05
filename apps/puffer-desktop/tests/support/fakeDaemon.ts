@@ -88,9 +88,8 @@ type FakeMediaSettings = {
   image: {
     providerId: string | null;
     modelId: string | null;
-    size: string;
-    quality: string;
-    outputFormat: string;
+    adapter: string | null;
+    parameters: Record<string, string>;
   };
   video: {
     providerId: string | null;
@@ -108,12 +107,20 @@ type FakeSettingsConfig = {
 
 export type FakeMediaCapability = {
   providerId: string;
+  providerDisplayName: string;
   modelId: string;
+  modelDisplayName: string;
   kind: "image" | "video";
-  operations: string[];
-  supportsAsync: boolean;
-  supportsStreaming: boolean;
-  parameterValues: JsonRecord;
+  operation: string;
+  adapter: string;
+  parameters: Array<{
+    name: string;
+    label: string;
+    values: string[];
+    default: string;
+    requestField: string | null;
+  }>;
+  defaults: Record<string, string>;
   status: string;
   source: string;
   reason: string | null;
@@ -155,9 +162,8 @@ function defaultMediaSettings(): FakeMediaSettings {
     image: {
       providerId: null,
       modelId: null,
-      size: "1024x1024",
-      quality: "auto",
-      outputFormat: "png"
+      adapter: null,
+      parameters: {}
     },
     video: {
       providerId: null,
@@ -170,7 +176,7 @@ function defaultMediaSettings(): FakeMediaSettings {
 
 function cloneMediaSettings(media: FakeMediaSettings): FakeMediaSettings {
   return {
-    image: { ...media.image },
+    image: { ...media.image, parameters: { ...media.image.parameters } },
     video: { ...media.video }
   };
 }
@@ -185,10 +191,15 @@ function normalizeMediaSettings(value: unknown): FakeMediaSettings {
     image: {
       providerId: typeof image.providerId === "string" ? image.providerId : null,
       modelId: typeof image.modelId === "string" ? image.modelId : null,
-      size: typeof image.size === "string" ? image.size : defaults.image.size,
-      quality: typeof image.quality === "string" ? image.quality : defaults.image.quality,
-      outputFormat:
-        typeof image.outputFormat === "string" ? image.outputFormat : defaults.image.outputFormat
+      adapter: typeof image.adapter === "string" ? image.adapter : null,
+      parameters:
+        image.parameters && typeof image.parameters === "object"
+          ? Object.fromEntries(
+              Object.entries(image.parameters as JsonRecord)
+                .filter(([, value]) => typeof value === "string")
+                .map(([key, value]) => [key, value as string])
+            )
+          : { ...defaults.image.parameters }
     },
     video: {
       providerId: typeof video.providerId === "string" ? video.providerId : null,
@@ -207,15 +218,39 @@ function defaultMediaCapabilities(): FakeMediaCapability[] {
   return [
     {
       providerId: "openai",
+      providerDisplayName: "OpenAI",
       modelId: "gpt-image-1",
+      modelDisplayName: "GPT Image 1",
       kind: "image",
-      operations: ["generate"],
-      supportsAsync: false,
-      supportsStreaming: false,
-      parameterValues: {
-        size: ["1024x1024", "1024x1536", "1536x1024"],
-        quality: ["auto", "low", "medium", "high"],
-        outputFormat: ["png", "jpeg", "webp"]
+      operation: "generate",
+      adapter: "images_json",
+      parameters: [
+        {
+          name: "size",
+          label: "Size",
+          values: ["1024x1024", "1024x1536", "1536x1024"],
+          default: "1024x1024",
+          requestField: "size"
+        },
+        {
+          name: "quality",
+          label: "Quality",
+          values: ["auto", "low", "medium", "high"],
+          default: "auto",
+          requestField: "quality"
+        },
+        {
+          name: "output_format",
+          label: "Output format",
+          values: ["png", "jpeg", "webp"],
+          default: "png",
+          requestField: "output_format"
+        }
+      ],
+      defaults: {
+        size: "1024x1024",
+        quality: "auto",
+        output_format: "png"
       },
       status: "available",
       source: "fake-daemon",
@@ -228,8 +263,11 @@ function defaultMediaCapabilities(): FakeMediaCapability[] {
 function cloneMediaCapability(capability: FakeMediaCapability): FakeMediaCapability {
   return {
     ...capability,
-    operations: [...capability.operations],
-    parameterValues: { ...capability.parameterValues }
+    parameters: capability.parameters.map((parameter) => ({
+      ...parameter,
+      values: [...parameter.values]
+    })),
+    defaults: { ...capability.defaults }
   };
 }
 
@@ -1866,8 +1904,15 @@ export class FakeDaemon {
     if (!settings.providerId || !settings.modelId) {
       throw new Error(`${kind} media provider/model is not configured.`);
     }
+    const imageAdapter = kind === "image" ? this.settingsConfig.media.image.adapter : null;
+    if (kind === "image" && !imageAdapter) {
+      throw new Error("image media provider/model/adapter is not configured.");
+    }
     const capability = capabilities.find(
-      (item) => item.providerId === settings.providerId && item.modelId === settings.modelId
+      (item) =>
+        item.providerId === settings.providerId &&
+        item.modelId === settings.modelId &&
+        (kind !== "image" || item.adapter === imageAdapter)
     );
     if (!capability) {
       throw new Error(`${kind} media capability unavailable for ${settings.providerId}/${settings.modelId}.`);

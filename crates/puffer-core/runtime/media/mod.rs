@@ -2,6 +2,7 @@ pub(crate) mod artifacts;
 pub(crate) mod capabilities;
 pub(crate) mod chat_image_output;
 pub(crate) mod discovery;
+pub(crate) mod http_support;
 pub(crate) mod images_json;
 pub(crate) mod jobs;
 pub(crate) mod minimax_image;

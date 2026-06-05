@@ -117,21 +117,10 @@ fn build_image_request(
     let prompt = prompt_text(cwd, &input.prompt, input.prompt_reference.as_deref())?;
     let (provider, model, adapter) = required_provider_model_adapter(settings)?;
     let mut parameters = settings.parameters.clone();
-    if input
-        .aspect
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-    {
-        parameters.insert(
-            "size".to_string(),
-            image_size(input.aspect.as_deref())?.to_string(),
-        );
-    }
+    apply_aspect_parameter(&mut parameters, input.aspect.as_deref())?;
     let output_format = normalized_output_format(
         parameters
             .get("output_format")
-            .or_else(|| parameters.get("outputFormat"))
             .map(String::as_str)
             .unwrap_or("png"),
     )?;
@@ -183,12 +172,12 @@ fn non_empty_media_value(value: &str, field: &str) -> Result<String> {
 }
 
 fn normalized_output_format(value: &str) -> Result<String> {
-    let format = non_empty_media_value(value, "outputFormat")?;
+    let format = non_empty_media_value(value, "output_format")?;
     match format.to_ascii_lowercase().as_str() {
         "png" => Ok("png".to_string()),
         "jpg" | "jpeg" => Ok("jpeg".to_string()),
         "webp" => Ok("webp".to_string()),
-        other => bail!("unsupported ImageGeneration media image outputFormat `{other}`"),
+        other => bail!("unsupported ImageGeneration media image output_format `{other}`"),
     }
 }
 
@@ -252,6 +241,42 @@ fn image_size(aspect: Option<&str>) -> Result<&'static str> {
         "auto" => Ok("auto"),
         other => bail!("unsupported ImageGeneration aspect `{other}`"),
     }
+}
+
+fn image_aspect_ratio(aspect: &str) -> Result<&'static str> {
+    match aspect.trim().to_ascii_lowercase().as_str() {
+        "square" | "1:1" | "1024x1024" => Ok("1:1"),
+        "landscape" | "wide" | "horizontal" | "16:9" | "1536x1024" => Ok("16:9"),
+        "portrait" | "vertical" | "9:16" | "1024x1536" => Ok("9:16"),
+        "3:2" => Ok("3:2"),
+        "2:3" => Ok("2:3"),
+        "4:3" => Ok("4:3"),
+        "3:4" => Ok("3:4"),
+        "21:9" => Ok("21:9"),
+        "auto" => Ok("auto"),
+        other => bail!("unsupported ImageGeneration aspect `{other}`"),
+    }
+}
+
+fn apply_aspect_parameter(
+    parameters: &mut BTreeMap<String, String>,
+    aspect: Option<&str>,
+) -> Result<()> {
+    let Some(aspect) = aspect.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if parameters.contains_key("aspect_ratio") {
+        parameters.insert(
+            "aspect_ratio".to_string(),
+            image_aspect_ratio(aspect)?.to_string(),
+        );
+        return Ok(());
+    }
+    if parameters.contains_key("size") {
+        parameters.insert("size".to_string(), image_size(Some(aspect))?.to_string());
+        return Ok(());
+    }
+    bail!("selected image model does not support ImageGeneration aspect")
 }
 
 fn resolve_output_path(cwd: &Path, value: Option<&str>, output_format: &str) -> Result<PathBuf> {
@@ -652,6 +677,67 @@ mod tests {
         assert_eq!(request.prompt, "make a visual summary");
         assert_eq!(request.parameters["size"], "1024x1024");
         assert_eq!(request.output_path, dir.path().join("out/image.png"));
+    }
+
+    #[test]
+    fn builds_request_maps_aspect_to_aspect_ratio_parameter() {
+        let dir = tempdir().unwrap();
+        let settings = puffer_config::ImageMediaConfig {
+            provider_id: Some("minimax".to_string()),
+            model_id: Some("image-01".to_string()),
+            adapter: Some("minimax_image".to_string()),
+            parameters: BTreeMap::from([
+                ("aspect_ratio".to_string(), "1:1".to_string()),
+                ("response_format".to_string(), "base64".to_string()),
+            ]),
+        };
+
+        let request = build_image_request(
+            dir.path(),
+            ImageGenerationInput {
+                prompt: "make a visual summary".to_string(),
+                prompt_reference: None,
+                aspect: Some("landscape".to_string()),
+                output_path: None,
+                purpose: None,
+                retry_from_error: None,
+            },
+            &settings,
+        )
+        .unwrap();
+
+        assert_eq!(request.parameters["aspect_ratio"], "16:9");
+        assert!(!request.parameters.contains_key("size"));
+    }
+
+    #[test]
+    fn builds_request_rejects_aspect_when_selected_model_has_no_aspect_parameter() {
+        let dir = tempdir().unwrap();
+        let settings = puffer_config::ImageMediaConfig {
+            provider_id: Some("openrouter".to_string()),
+            model_id: Some("image-chat".to_string()),
+            adapter: Some("chat_image_output".to_string()),
+            parameters: BTreeMap::new(),
+        };
+
+        let error = build_image_request(
+            dir.path(),
+            ImageGenerationInput {
+                prompt: "make a visual summary".to_string(),
+                prompt_reference: None,
+                aspect: Some("square".to_string()),
+                output_path: None,
+                purpose: None,
+                retry_from_error: None,
+            },
+            &settings,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "selected image model does not support ImageGeneration aspect"
+        );
     }
 
     #[test]

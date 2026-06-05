@@ -13,7 +13,10 @@ use crate::{browser, files, fs_watch, local_model, lsp, media_capabilities, pty}
 use anyhow::{anyhow, bail, Context, Result};
 use base64::prelude::*;
 use puffer_config::{builtin_captcha_solvers, ConfigPaths};
-use puffer_core::{generate_exact_image, ExactImageGenerationRequest};
+use puffer_core::{
+    discover_exact_media_capabilities, generate_exact_image_with_cache,
+    ExactImageGenerationRequest, ExactMediaDiscoveryCache,
+};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::load_resources;
 use puffer_secrets::{SecretSummary, SecretUpsert, SecretVault};
@@ -87,6 +90,7 @@ pub(crate) struct BackendState {
     browsers: browser::BrowserRegistry,
     local_models: local_model::LocalModelInstaller,
     turns: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    exact_media_discovery_cache: Mutex<Option<ExactMediaDiscoveryCache>>,
 }
 
 impl BackendState {
@@ -103,6 +107,7 @@ impl BackendState {
             browsers: browser::BrowserRegistry::new(browser_profile_root),
             local_models: local_model::LocalModelInstaller::new(),
             turns: Mutex::new(HashMap::new()),
+            exact_media_discovery_cache: Mutex::new(None),
         }
     }
 
@@ -643,10 +648,12 @@ impl BackendState {
     fn list_media_capabilities(&self, params: Value) -> Result<Vec<MediaCapabilityInfoDto>> {
         let kind = optional_trimmed_string_param(&params, &["kind"]);
         let (providers, auth_store) = self.media_runtime_inputs()?;
+        let discovery_cache = self.exact_media_discovery_cache(&providers, &auth_store);
         Ok(media_capabilities::list(
             &providers,
             &auth_store,
             kind.as_deref(),
+            &discovery_cache,
         ))
     }
 
@@ -684,24 +691,36 @@ impl BackendState {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let (provider_id, model_id) = match (provider_id, model_id) {
-            (Some(provider_id), Some(model_id)) => (provider_id.to_string(), model_id.to_string()),
-            _ => bail!("image media provider/model is not configured"),
+        let adapter = config
+            .media
+            .image
+            .adapter
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let (provider_id, model_id, adapter) = match (provider_id, model_id, adapter) {
+            (Some(provider_id), Some(model_id), Some(adapter)) => (
+                provider_id.to_string(),
+                model_id.to_string(),
+                adapter.to_string(),
+            ),
+            _ => bail!("image media provider/model/adapter is not configured"),
         };
         let image_config = config.media.image;
         let (providers, auth_store) = self.media_runtime_inputs()?;
-        let generation = generate_exact_image(
+        let discovery_cache = self.exact_media_discovery_cache(&providers, &auth_store);
+        let generation = generate_exact_image_with_cache(
             &providers,
             &auth_store,
             &self.default_workspace()?,
             ExactImageGenerationRequest {
                 provider_id,
                 model_id,
+                adapter,
                 prompt: prompt.clone(),
-                size: image_config.size,
-                quality: image_config.quality,
-                output_format: image_config.output_format,
+                parameters: image_config.parameters,
             },
+            &discovery_cache,
         )?;
         Ok(GenerateMediaResult {
             job_id: generation.job_id,
@@ -773,6 +792,23 @@ impl BackendState {
             auth_store.set_api_key(&provider_id, key);
         }
         Ok((providers, auth_store))
+    }
+
+    fn exact_media_discovery_cache(
+        &self,
+        providers: &ProviderRegistry,
+        auth_store: &AuthStore,
+    ) -> ExactMediaDiscoveryCache {
+        let now = now_ms();
+        let mut cache = self.exact_media_discovery_cache.lock().unwrap();
+        if let Some(existing) = cache.as_ref() {
+            if existing.is_fresh_at(now) {
+                return existing.clone();
+            }
+        }
+        let refreshed = discover_exact_media_capabilities(providers, auth_store);
+        *cache = Some(refreshed.clone());
+        refreshed
     }
 
     fn provider_auth_statuses(&self) -> Result<Vec<AuthProviderStatusDto>> {
@@ -2328,9 +2364,12 @@ mod tests {
                     "image": {
                         "providerId": "openai",
                         "modelId": "gpt-image-1",
-                        "size": "1024x1024",
-                        "quality": "high",
-                        "outputFormat": "png"
+                        "adapter": "images_json",
+                        "parameters": {
+                            "size": "1024x1024",
+                            "quality": "high",
+                            "output_format": "png"
+                        }
                     },
                     "video": {
                         "providerId": null,
@@ -2351,9 +2390,12 @@ mod tests {
                 "image": {
                     "providerId": "openai",
                     "modelId": "gpt-image-1",
-                    "size": "1024x1024",
-                    "quality": "high",
-                    "outputFormat": "png"
+                    "adapter": "images_json",
+                    "parameters": {
+                        "size": "1024x1024",
+                        "quality": "high",
+                        "output_format": "png"
+                    }
                 },
                 "video": {
                     "providerId": null,
@@ -2499,7 +2541,9 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("image media provider/model is not configured"));
+        assert!(error
+            .to_string()
+            .contains("image media provider/model/adapter is not configured"));
     }
 
     #[test]
@@ -2519,6 +2563,7 @@ mod tests {
                     image: StoredImageMediaConfig {
                         provider_id: Some("openai".to_string()),
                         model_id: Some("missing-image-model".to_string()),
+                        adapter: Some("images_json".to_string()),
                         ..StoredImageMediaConfig::default()
                     },
                     video: StoredVideoMediaConfig::default(),
@@ -2537,7 +2582,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "selected image model unavailable: openai/missing-image-model"
+            "selected image model unavailable: openai/missing-image-model via images_json"
         );
     }
 
@@ -3391,9 +3436,8 @@ fn media_settings_dto(config: &StoredMediaConfig) -> MediaSettingsDto {
         image: ImageMediaSettingsDto {
             provider_id: config.image.provider_id.clone(),
             model_id: config.image.model_id.clone(),
-            size: config.image.size.clone(),
-            quality: config.image.quality.clone(),
-            output_format: config.image.output_format.clone(),
+            adapter: config.image.adapter.clone(),
+            parameters: config.image.parameters.clone(),
         },
         video: VideoMediaSettingsDto {
             provider_id: config.video.provider_id.clone(),
@@ -3450,9 +3494,8 @@ impl Default for StoredMediaConfig {
 struct StoredImageMediaConfig {
     provider_id: Option<String>,
     model_id: Option<String>,
-    size: String,
-    quality: String,
-    output_format: String,
+    adapter: Option<String>,
+    parameters: BTreeMap<String, String>,
 }
 
 impl Default for StoredImageMediaConfig {
@@ -3460,9 +3503,8 @@ impl Default for StoredImageMediaConfig {
         Self {
             provider_id: None,
             model_id: None,
-            size: "1024x1024".to_string(),
-            quality: "auto".to_string(),
-            output_format: "png".to_string(),
+            adapter: None,
+            parameters: BTreeMap::new(),
         }
     }
 }

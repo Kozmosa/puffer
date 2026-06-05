@@ -106,20 +106,6 @@ impl ExactMediaDiscoveryCache {
     }
 }
 
-/// Lists exact media capabilities from provider media descriptors.
-pub fn list_exact_media_capabilities(
-    registry: &ProviderRegistry,
-    auth_store: &AuthStore,
-    kind_filter: Option<&str>,
-) -> Vec<MediaCapabilityView> {
-    list_exact_media_capabilities_with_cache(
-        registry,
-        auth_store,
-        kind_filter,
-        &ExactMediaDiscoveryCache::empty(),
-    )
-}
-
 /// Lists exact media capabilities using static descriptors and trusted discovery cache entries.
 pub fn list_exact_media_capabilities_with_cache(
     registry: &ProviderRegistry,
@@ -165,22 +151,6 @@ pub fn discover_exact_media_capabilities(
         inner,
         cached_at_ms: now_ms(),
     }
-}
-
-/// Generates one exact image and persists its media job and artifact sidecars.
-pub fn generate_exact_image(
-    registry: &ProviderRegistry,
-    auth_store: &AuthStore,
-    workspace_root: &Path,
-    request: ExactImageGenerationRequest,
-) -> Result<ExactImageGenerationResult> {
-    generate_exact_image_with_cache(
-        registry,
-        auth_store,
-        workspace_root,
-        request,
-        &ExactMediaDiscoveryCache::empty(),
-    )
 }
 
 /// Generates one exact image using static descriptors plus trusted discovery cache entries.
@@ -475,7 +445,7 @@ mod tests {
         let registry = minimax_registry(format!("http://{address}"));
         let workspace = tempdir().expect("tempdir");
 
-        let result = generate_exact_image(
+        let result = generate_exact_image_with_cache(
             &registry,
             &auth_store(),
             workspace.path(),
@@ -489,6 +459,7 @@ mod tests {
                     ("response_format".to_string(), "base64".to_string()),
                 ]),
             },
+            &ExactMediaDiscoveryCache::empty(),
         )
         .expect("generation succeeds");
 

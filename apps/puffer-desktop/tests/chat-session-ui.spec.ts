@@ -280,9 +280,8 @@ test("composer image generation settings modal saves media config from daemon ca
       image: {
         providerId: null,
         modelId: null,
-        size: "1024x1024",
-        quality: "auto",
-        outputFormat: "png"
+        adapter: null,
+        parameters: {}
       },
       video: {
         providerId: null,
@@ -321,9 +320,12 @@ test("composer image generation settings modal saves media config from daemon ca
       image: {
         providerId: "openai",
         modelId: "gpt-image-1",
-        size: "1536x1024",
-        quality: "high",
-        outputFormat: "webp"
+        adapter: "images_json",
+        parameters: {
+          size: "1536x1024",
+          quality: "high",
+          output_format: "webp"
+        }
       },
       video: {
         providerId: null,
@@ -363,9 +365,12 @@ test("composer image generation settings clamps unsupported saved parameters", a
       image: {
         providerId: null,
         modelId: null,
-        size: "2048x2048",
-        quality: "ultra",
-        outputFormat: "gif"
+        adapter: null,
+        parameters: {
+          size: "2048x2048",
+          quality: "ultra",
+          output_format: "gif"
+        }
       },
       video: {
         providerId: null,
@@ -399,9 +404,12 @@ test("composer image generation settings clamps unsupported saved parameters", a
       image: {
         providerId: "openai",
         modelId: "gpt-image-1",
-        size: "1024x1024",
-        quality: "auto",
-        outputFormat: "png"
+        adapter: "images_json",
+        parameters: {
+          size: "1024x1024",
+          quality: "auto",
+          output_format: "png"
+        }
       }
     }
   });
@@ -477,9 +485,12 @@ test("composer media generation settings marks stale saved image model invalid",
       image: {
         providerId: "openai",
         modelId: "old-image-model",
-        size: "1024x1024",
-        quality: "auto",
-        outputFormat: "png"
+        adapter: "images_json",
+        parameters: {
+          size: "1024x1024",
+          quality: "auto",
+          output_format: "png"
+        }
       },
       video: {
         providerId: null,
@@ -530,9 +541,12 @@ test("explicit image slash trigger routes to media generation", async ({ page })
       image: {
         providerId: "openai",
         modelId: "gpt-image-1",
-        size: "1024x1024",
-        quality: "auto",
-        outputFormat: "png"
+        adapter: "images_json",
+        parameters: {
+          size: "1024x1024",
+          quality: "auto",
+          output_format: "png"
+        }
       },
       video: {
         providerId: null,
