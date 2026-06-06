@@ -309,7 +309,9 @@ test("composer image generation settings modal saves media config from daemon ca
   const imageFolder = dialog.getByLabel("Image folder");
   await expect(imageFolder).toHaveValue("/tmp/puffer/.puffer/workflows/images");
   await expect(imageFolder).toHaveJSProperty("readOnly", true);
-  await expect(dialog.getByRole("button", { name: "Open folder" })).toBeVisible();
+  const openFolderButton = dialog.getByRole("button", { name: "Open folder" });
+  await expect(openFolderButton).toBeVisible();
+  await expect(openFolderButton).toHaveAttribute("data-variant", "outline");
   const sizeOptions = await dialog.getByLabel("Size").locator("option").evaluateAll((options) =>
     options.map((option) => (option as HTMLOptionElement).value)
   );
