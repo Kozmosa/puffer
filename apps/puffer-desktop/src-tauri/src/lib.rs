@@ -56,6 +56,7 @@ const REGISTERED_TAURI_COMMANDS: &[&str] = &[
     "resolve_permission",
     "resolve_user_question",
     "cancel_turn",
+    "open_image_dir",
     "summon_mini_window",
     "minicpm5_recommend",
     "minicpm5_install",
@@ -422,6 +423,21 @@ fn cancel_turn(
     backend_call(app, state, "cancel_turn", json!({ "turnId": turn_id })).map(|_| ())
 }
 
+#[tauri::command]
+fn open_image_dir(app: AppHandle, cwd: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let base = std::path::Path::new(&cwd);
+    if !base.is_absolute() {
+        return Err("cwd must be absolute".to_string());
+    }
+    let dir = base.join(".puffer/workflows/images");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 pub fn run() {
     let backend = Arc::new(BackendState::new());
     let launcher = Arc::new(DaemonLauncher::new());
@@ -438,6 +454,7 @@ pub fn run() {
 
     Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(
             // Register the shortcut in setup() (below) instead of here so an OS
             // registration failure (e.g. another app owns the chord) doesn't
@@ -484,6 +501,7 @@ pub fn run() {
             resolve_permission,
             resolve_user_question,
             cancel_turn,
+            open_image_dir,
             mini_window::summon_mini_window,
             minicpm5::minicpm5_recommend,
             minicpm5::minicpm5_install,
@@ -506,6 +524,7 @@ mod tests {
     use super::REGISTERED_TAURI_COMMANDS;
     use serde_json::json;
     use std::collections::BTreeSet;
+    use tauri::AppHandle;
 
     fn direct_invoke_commands(source: &str) -> BTreeSet<String> {
         let mut commands = BTreeSet::new();
@@ -569,6 +588,17 @@ mod tests {
 
         assert!(registered.contains("stage_chat_attachment"));
         assert!(registered.contains("read_chat_attachment_preview"));
+    }
+
+    #[test]
+    fn registered_tauri_commands_include_open_image_dir() {
+        let registered = REGISTERED_TAURI_COMMANDS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        assert!(registered.contains("open_image_dir"));
+        let _command: fn(AppHandle, String) -> Result<(), String> = super::open_image_dir;
     }
 
     #[test]
