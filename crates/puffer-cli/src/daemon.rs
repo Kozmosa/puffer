@@ -39,7 +39,7 @@ use puffer_core::{
     command_surface, default_effort_level, discover_exact_media_capabilities, dispatch_command,
     enter_plan_mode, execute_connect_flow, execute_user_turn_streaming_with_permissions_and_cancel,
     generate_exact_image_with_cache, list_exact_media_capabilities_with_cache,
-    provider_preference_family, read_generated_media_preview, supported_effort_levels,
+    provider_preference_family, read_generated_media_preview_by_artifact, supported_effort_levels,
     with_user_question_prompt_handler, AppState, BrowserPermissionPromptActionSet,
     BrowserPermissionPromptSource, BrowserPermissionPromptTargetClass, CancelToken,
     ExactImageGenerationRequest, ExactMediaDiscoveryCache, MediaCapabilityView, MessageRole,
@@ -145,7 +145,8 @@ struct GenerateMediaResult {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeneratedMediaPreviewParams {
-    path: String,
+    session_id: String,
+    artifact_id: String,
 }
 
 pub(crate) struct DaemonOptions {
@@ -2306,7 +2307,9 @@ fn generate_video_media_job(state: &DaemonState, _prompt: String) -> Result<Valu
 fn handle_read_generated_media_preview(state: &DaemonState, params: &Value) -> Result<Value> {
     let input: GeneratedMediaPreviewParams =
         serde_json::from_value(params.clone()).context("invalid generated media preview params")?;
-    let result = read_generated_media_preview(&state.paths.workspace_root, Path::new(&input.path));
+    let session_store = SessionStore::from_paths(&state.paths)?;
+    let cwd = desktop_api::load_session_cwd(&session_store, &input.session_id)?;
+    let result = read_generated_media_preview_by_artifact(&cwd, &input.artifact_id);
     Ok(serde_json::to_value(result)?)
 }
 
@@ -5961,7 +5964,74 @@ models:
             .is_dir());
     }
 
-    fn preview_test_state(temp: &tempfile::TempDir) -> (std::path::PathBuf, DaemonState) {
+    fn test_state_with_paths(paths: ConfigPaths) -> DaemonState {
+        DaemonState::load(
+            paths.workspace_root.clone(),
+            paths,
+            "token".into(),
+            true,
+            false,
+            false,
+        )
+        .expect("daemon state")
+    }
+
+    fn write_generated_image_artifact(
+        workspace: &std::path::Path,
+        artifact_id: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) {
+        let image_dir = workspace.join(".puffer/media/images").join(artifact_id);
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let image_path = image_dir.join(filename);
+        std::fs::write(&image_path, bytes).unwrap();
+        let sidecar_dir = workspace.join(".puffer/media/artifact-sidecars");
+        std::fs::create_dir_all(&sidecar_dir).unwrap();
+        std::fs::write(
+            sidecar_dir.join(format!("{artifact_id}.json")),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": artifact_id,
+                "jobId": "job-1",
+                "kind": "image",
+                "path": image_path,
+                "mimeType": "image/jpeg",
+                "byteCount": bytes.len(),
+                "metadata": {},
+                "createdAtMs": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn read_generated_media_preview_resolves_session_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::discover(temp.path());
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let workspace = temp.path().join("other-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = session_store.create_session(workspace.clone()).unwrap();
+        write_generated_image_artifact(&workspace, "artifact-1", "image.jpeg", b"\xff\xd8\xff\xd9");
+        let state = test_state_with_paths(paths);
+
+        let response = handle_read_generated_media_preview(
+            &state,
+            &serde_json::json!({
+                "sessionId": session.id.to_string(),
+                "artifactId": "artifact-1"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(response["state"], "available");
+        assert_eq!(response["mimeType"], "image/jpeg");
+    }
+
+    #[test]
+    fn read_generated_media_preview_returns_png_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
         let paths = ConfigPaths {
             workspace_root: workspace_root.clone(),
@@ -5970,36 +6040,23 @@ models:
             builtin_resources_dir: workspace_root.join("resources"),
         };
         ensure_workspace_dirs(&paths).expect("workspace dirs");
-        let state = DaemonState::load(
-            workspace_root.clone(),
-            paths,
-            "token".into(),
-            true,
-            false,
-            false,
-        )
-        .expect("daemon state");
-        (workspace_root, state)
-    }
-
-    fn generated_media_images_dir(workspace_root: &std::path::Path) -> std::path::PathBuf {
-        workspace_root.join(".puffer").join("media").join("images")
-    }
-
-    #[test]
-    fn read_generated_media_preview_returns_png_bytes() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let (workspace_root, state) = preview_test_state(&temp);
-        let path = generated_media_images_dir(&workspace_root)
-            .join("artifact-1")
-            .join("generated.png");
-        std::fs::create_dir_all(path.parent().expect("artifact dir")).expect("artifact dir");
-        std::fs::write(&path, b"image-bytes").expect("write image");
+        let session_store = SessionStore::from_paths(&paths).expect("session store");
+        let session = session_store
+            .create_session(workspace_root.clone())
+            .expect("create session");
+        write_generated_image_artifact(
+            &workspace_root,
+            "artifact-1",
+            "generated.png",
+            b"\x89PNG\r\n\x1a\nimage-bytes",
+        );
+        let state = test_state_with_paths(paths);
 
         let response = handle_read_generated_media_preview(
             &state,
             &json!({
-                "path": path.display().to_string()
+                "sessionId": session.id.to_string(),
+                "artifactId": "artifact-1"
             }),
         )
         .expect("preview response");
@@ -6007,7 +6064,7 @@ models:
 
         assert_eq!(response["state"], "available");
         assert_eq!(response["mimeType"], "image/png");
-        assert_eq!(bytes, b"image-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nimage-bytes");
         assert!(response.get("path").is_none());
     }
 
