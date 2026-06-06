@@ -10,6 +10,7 @@
     MediaCapabilityParameterInfo,
     MediaKind,
     MediaSettings,
+    SettingsSnapshot,
     VideoMediaSettings
   } from "../../types";
 
@@ -18,10 +19,11 @@
     sessionCwd: string;
     settings: MediaSettings;
     settingsReady?: boolean;
+    onSaved: (snapshot: SettingsSnapshot) => void;
     onClose: () => void;
   };
 
-  let { kind, sessionCwd, settings, settingsReady = true, onClose }: Props = $props();
+  let { kind, sessionCwd, settings, settingsReady = true, onSaved, onClose }: Props = $props();
   const IMAGE_OUTPUT_DIR_RELATIVE = ".puffer/media/images";
   const initialSaved = untrack(() => mediaSettingsForKind(kind, settings));
   const initialImage = untrack(() => settings.image);
@@ -159,6 +161,10 @@
     return [capability.providerId, capability.modelId, capability.adapter].join("\u0000");
   }
 
+  function currentCapabilityKey(): string {
+    return modelId ? [providerId, modelId, adapter].join("\u0000") : "";
+  }
+
   function modelLabel(capability: MediaCapabilityInfo): string {
     const label = capability.modelDisplayName || capability.modelId;
     return modelOptions.filter((candidate) => candidate.modelId === capability.modelId).length > 1
@@ -261,7 +267,8 @@
         kind === "image"
           ? { image: withCurrentImage(), video: { ...settings.video } }
           : { image: { ...settings.image }, video: withCurrentVideo() };
-      await updateConfig({ media });
+      const snapshot = await updateConfig({ media });
+      onSaved(snapshot);
       close();
     } catch (saveError) {
       error = (saveError as Error).message ?? String(saveError);
@@ -394,11 +401,15 @@
             <span class="pf-field-label">Model</span>
             <select
               class="sc-input"
-              value={selectedCapability ? capabilityKey(selectedCapability) : ""}
+              value={selectedCapability
+                ? capabilityKey(selectedCapability)
+                : currentCapabilityKey()}
               onchange={(event) => handleCapabilityChange(event.currentTarget.value)}
             >
-              {#if modelId && !modelOptions.some((capability) => capability.modelId === modelId && capability.adapter === adapter)}
-                <option value={modelId} disabled>{modelId} unavailable</option>
+              {#if modelId && !modelOptions.some(
+                  (capability) => capability.modelId === modelId && capability.adapter === adapter
+                )}
+                <option value={currentCapabilityKey()} disabled>{modelId} unavailable</option>
               {/if}
               {#each modelOptions as capability}
                 <option value={capabilityKey(capability)}>{modelLabel(capability)}</option>

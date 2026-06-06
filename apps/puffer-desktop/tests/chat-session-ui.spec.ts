@@ -1,5 +1,9 @@
 import { expect, type Page, test } from "@playwright/test";
-import { FakeDaemon } from "./support/fakeDaemon";
+import {
+  defaultFakeMediaCapabilities,
+  FakeDaemon,
+  type FakeMediaCapability
+} from "./support/fakeDaemon";
 
 const baseTime = Date.now();
 const onePixelPngBytes = Array.from(
@@ -227,7 +231,8 @@ test("composer add content menu attaches image and file drafts", async ({ page }
           kind: "image",
           extension: "PNG",
           size: imageBuffer.length,
-          state: "available"
+          state: "available",
+          source: { kind: "user_upload" }
         },
         {
           id: attachmentIds[1],
@@ -236,7 +241,8 @@ test("composer add content menu attaches image and file drafts", async ({ page }
           kind: "file",
           extension: "PDF",
           size: pdfBuffer.length,
-          state: "available"
+          state: "available",
+          source: { kind: "user_upload" }
         }
       ]
     },
@@ -278,7 +284,52 @@ test("composer add content menu attaches image and file drafts", async ({ page }
 });
 
 test("composer image generation settings modal saves media config from daemon capabilities", async ({ page }) => {
+  const imageCapabilities: FakeMediaCapability[] = [
+    ...defaultFakeMediaCapabilities(),
+    {
+      providerId: "byteplus",
+      providerDisplayName: "BytePlus",
+      modelId: "seedream-3",
+      modelDisplayName: "Seedream 3",
+      kind: "image",
+      operation: "generate",
+      adapter: "images_json",
+      parameters: [
+        {
+          name: "size",
+          label: "Size",
+          values: ["1024x1024", "1280x720", "720x1280"],
+          default: "1024x1024",
+          requestField: "size"
+        },
+        {
+          name: "quality",
+          label: "Quality",
+          values: ["standard", "high"],
+          default: "standard",
+          requestField: "quality"
+        },
+        {
+          name: "output_format",
+          label: "Output format",
+          values: ["png", "webp"],
+          default: "png",
+          requestField: "output_format"
+        }
+      ],
+      defaults: {
+        size: "1024x1024",
+        quality: "standard",
+        output_format: "png"
+      },
+      status: "available",
+      source: "fake-daemon",
+      reason: null,
+      checkedAtMs: baseTime
+    }
+  ];
   const daemon = new FakeDaemon({
+    mediaCapabilities: imageCapabilities,
     sessions: [
       {
         sessionId: "session-image-settings",
@@ -347,22 +398,24 @@ test("composer image generation settings modal saves media config from daemon ca
   );
   expect(sizeOptions).toEqual(["1024x1024", "1024x1536", "1536x1024"]);
 
-  await dialog.getByLabel("Size").selectOption("1536x1024");
-  await dialog.getByLabel("Quality").selectOption("high");
-  await dialog.getByLabel("Output format").selectOption("webp");
+  await dialog.getByLabel("Provider").selectOption("byteplus");
+  await dialog
+    .getByLabel("Model")
+    .selectOption(["byteplus", "seedream-3", "images_json"].join("\u0000"));
+  await dialog.getByLabel("Size").selectOption("1280x720");
   await dialog.getByRole("button", { name: "Save" }).click();
 
   const update = await daemon.waitForRequest("update_config", (request) => "media" in request.params);
   expect(update.params).toEqual({
     media: {
       image: {
-        providerId: "openai",
-        modelId: "gpt-image-1",
+        providerId: "byteplus",
+        modelId: "seedream-3",
         adapter: "images_json",
         parameters: {
-          size: "1536x1024",
-          quality: "high",
-          output_format: "webp"
+          size: "1280x720",
+          quality: "standard",
+          output_format: "png"
         }
       },
       video: {
@@ -373,6 +426,22 @@ test("composer image generation settings modal saves media config from daemon ca
       }
     }
   });
+  await expect(dialog).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Image generation settings" }).click();
+
+  const reopenedDialog = page.getByRole("dialog", { name: "Image generation settings" });
+  await expect(reopenedDialog).toBeVisible();
+  await daemon.waitForRequest("list_media_capabilities", (request) => request.params.kind === "image");
+  await expect(reopenedDialog.getByLabel("Provider")).toHaveValue("byteplus");
+  await expect(reopenedDialog.getByLabel("Model")).toHaveValue(
+    ["byteplus", "seedream-3", "images_json"].join("\u0000")
+  );
+  await expect(reopenedDialog.getByLabel("Size")).toHaveValue("1280x720");
+  await expect(reopenedDialog.getByLabel("Quality")).toHaveValue("standard");
+  await expect(reopenedDialog.getByLabel("Output format")).toHaveValue("png");
+  expect(daemon.requests.filter((request) => request.method === "update_config")).toHaveLength(1);
 });
 
 test("composer image generation settings clamps unsupported saved parameters", async ({ page }) => {
@@ -547,7 +616,9 @@ test("composer media generation settings marks stale saved image model invalid",
 
   const dialog = page.getByRole("dialog", { name: "Image generation settings" });
   await expect(dialog.getByText("Saved model is no longer available.")).toBeVisible();
-  await expect(dialog.getByLabel("Model")).toHaveValue("old-image-model");
+  await expect(dialog.getByLabel("Model")).toHaveValue(
+    ["openai", "old-image-model", "images_json"].join("\u0000")
+  );
   await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
 });
 
@@ -591,6 +662,71 @@ test("explicit image slash trigger routes to media generation", async ({ page })
   expect(daemon.requests.filter((candidate) => candidate.method === "run_agent_turn")).toHaveLength(0);
 });
 
+test("persisted ImageGeneration results render as assistant image attachments", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-generated-media",
+        displayName: "Generated media",
+        title: "Generated media",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 2,
+        timeline: [
+          {
+            kind: "tool_call",
+            id: "tool-image",
+            toolId: "ImageGeneration",
+            status: "ok",
+            inputText: JSON.stringify({ prompt: "draw an icon" }),
+            outputText: JSON.stringify({
+              artifactId: "artifact-generated-1",
+              status: "succeeded"
+            }),
+            createdAtMs: baseTime - 20_000
+          },
+          {
+            kind: "assistant_message",
+            id: "assistant-image",
+            text: "Done",
+            createdAtMs: baseTime - 10_000,
+            attachments: [
+              {
+                id: "generated-image:artifact-generated-1",
+                name: "Generated image",
+                mimeType: "image/png",
+                size: onePixelPngBytes.length,
+                extension: "PNG",
+                kind: "image",
+                state: "available",
+                source: { kind: "generated_media", artifactId: "artifact-generated-1" }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  daemon.seedGeneratedMediaPreview("session-generated-media", "artifact-generated-1", {
+    state: "available",
+    mimeType: "image/png",
+    bytes: onePixelPngBytes
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Generated media/);
+
+  const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
+  await expect(thumbnail).toBeVisible();
+  await expect(thumbnail.getByAltText("Generated image")).toBeVisible();
+  await expect(page.getByText("/tmp/puffer/.puffer/media/images")).toHaveCount(0);
+  await thumbnail.click();
+  await expect(page.getByTestId("attachment-overlay")).toBeVisible();
+});
+
 test("image slash success renders generated thumbnail without media metadata", async ({ page }) => {
   const generatedPath = "/tmp/puffer/.puffer/media/images/generated-icon.png";
   const daemon = new FakeDaemon({
@@ -622,7 +758,7 @@ test("image slash success renders generated thumbnail without media metadata", a
     status: "succeeded",
     path: generatedPath
   });
-  daemon.seedGeneratedMediaPreview(generatedPath, {
+  daemon.seedGeneratedMediaPreview("session-image-preview", "artifact-preview-success", {
     state: "available",
     mimeType: "image/png",
     bytes: onePixelPngBytes
@@ -634,7 +770,12 @@ test("image slash success renders generated thumbnail without media metadata", a
   await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await daemon.waitForRequest("read_generated_media_preview", (request) => request.params.path === generatedPath);
+  await daemon.waitForRequest(
+    "read_generated_media_preview",
+    (request) =>
+      request.params.sessionId === "session-image-preview" &&
+      request.params.artifactId === "artifact-preview-success"
+  );
   const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
   await expect(thumbnail).toBeVisible();
   await expect(thumbnail.getByAltText("Generated image")).toBeVisible();
@@ -685,7 +826,9 @@ test("missing generated image preview shows unavailable thumbnail without path f
     status: "succeeded",
     path: generatedPath
   });
-  daemon.seedGeneratedMediaPreview(generatedPath, { state: "missing" });
+  daemon.seedGeneratedMediaPreview("session-image-preview-missing", "artifact-preview-missing", {
+    state: "missing"
+  });
   await daemon.install(page);
   await daemon.open(page);
   await openSession(page, /Missing image preview/);
@@ -693,7 +836,12 @@ test("missing generated image preview shows unavailable thumbnail without path f
   await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await daemon.waitForRequest("read_generated_media_preview", (request) => request.params.path === generatedPath);
+  await daemon.waitForRequest(
+    "read_generated_media_preview",
+    (request) =>
+      request.params.sessionId === "session-image-preview-missing" &&
+      request.params.artifactId === "artifact-preview-missing"
+  );
   const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
   await expect(thumbnail).toBeVisible();
   const generatedRow = page.locator(".pf-msg").filter({ has: thumbnail });
@@ -704,7 +852,7 @@ test("missing generated image preview shows unavailable thumbnail without path f
   await expect(generatedRow).not.toContainText("media-job-preview-missing");
 });
 
-test("image slash success without output path shows unavailable thumbnail", async ({ page }) => {
+test("image slash success without persisted path shows unavailable thumbnail", async ({ page }) => {
   const daemon = new FakeDaemon({
     sessions: [
       {
@@ -741,13 +889,25 @@ test("image slash success without output path shows unavailable thumbnail", asyn
   await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
   await page.getByRole("button", { name: "Send" }).click();
 
+  await daemon.waitForRequest(
+    "read_generated_media_preview",
+    (request) =>
+      request.params.sessionId === "session-image-preview-no-path" &&
+      request.params.artifactId === "artifact-preview-no-path"
+  );
   const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
   await expect(thumbnail).toBeVisible();
   const generatedRow = page.locator(".pf-msg").filter({ has: thumbnail });
   await expect(generatedRow.locator('.pf-attachment-thumb[data-state="missing"]')).toBeVisible();
   await expect(generatedRow.locator(".pf-attachment-file-card")).toHaveCount(0);
   await expect(generatedRow).not.toContainText("media-job-preview-no-path");
-  expect(daemon.requests.filter((request) => request.method === "read_generated_media_preview")).toHaveLength(0);
+  expect(
+    daemon.requests.filter(
+      (request) =>
+        request.method === "read_generated_media_preview" &&
+        request.params.path !== undefined
+    )
+  ).toHaveLength(0);
 });
 
 test("generated image preview is not restored after session switch", async ({ page }) => {
@@ -799,7 +959,7 @@ test("generated image preview is not restored after session switch", async ({ pa
     status: "succeeded",
     path: generatedPath
   });
-  daemon.seedGeneratedMediaPreview(generatedPath, {
+  daemon.seedGeneratedMediaPreview("session-image-preview-transient", "artifact-preview-transient", {
     state: "available",
     mimeType: "image/png",
     bytes: onePixelPngBytes
@@ -811,7 +971,12 @@ test("generated image preview is not restored after session switch", async ({ pa
   await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await daemon.waitForRequest("read_generated_media_preview", (request) => request.params.path === generatedPath);
+  await daemon.waitForRequest(
+    "read_generated_media_preview",
+    (request) =>
+      request.params.sessionId === "session-image-preview-transient" &&
+      request.params.artifactId === "artifact-preview-transient"
+  );
   const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
   await expect(thumbnail).toBeVisible();
 
@@ -994,7 +1159,8 @@ test("restored pending attachment without preview opens unavailable detail", asy
                 mimeType: "image/png",
                 size: 68,
                 extension: "PNG",
-                kind: "image"
+                kind: "image",
+                source: { kind: "user_upload" }
               }
             ]
           }
@@ -1062,7 +1228,8 @@ test("missing persisted image attachment opens unavailable detail", async ({ pag
                 size: 68,
                 extension: "PNG",
                 kind: "image",
-                state: "missing"
+                state: "missing",
+                source: { kind: "user_upload" }
               }
             ]
           }

@@ -1251,6 +1251,10 @@
     }
   }
 
+  function handleMediaSettingsSaved(snapshot: SettingsSnapshot) {
+    settingsSnapshot = snapshot;
+  }
+
   async function handleImportExternal(providerId: string, source: "claude" | "codex") {
     if (importBusyKey || authBusyProviderId) return;
     importBusyKey = `${providerId}::${source}`;
@@ -3081,45 +3085,43 @@
     }
   }
 
-  function generatedImageAttachmentId(result: GenerateMediaResult): string {
-    return `generated-image:${result.artifactId ?? result.jobId}`;
+  function generatedImageAttachmentId(artifactId: string): string {
+    return `generated-image:${artifactId}`;
   }
 
-  function missingGeneratedImageAttachment(result: GenerateMediaResult): MessageAttachment {
+  function missingGeneratedImageAttachment(artifactId: string): MessageAttachment {
     return {
-      id: generatedImageAttachmentId(result),
+      id: generatedImageAttachmentId(artifactId),
       name: "Generated image",
       mimeType: "image/*",
       size: 0,
       extension: "IMAGE",
       kind: "image",
       state: "missing",
-      source: { kind: "generated_media", artifactId: result.artifactId ?? result.jobId },
+      source: { kind: "generated_media", artifactId },
       previewUrl: null
     };
   }
 
   async function generatedImageAttachment(
     sessionId: string,
-    result: GenerateMediaResult
+    artifactId: string
   ): Promise<MessageAttachment> {
-    if (!result.artifactId) return missingGeneratedImageAttachment(result);
-
-    const preview = await readGeneratedMediaPreview(sessionId, result.artifactId).catch(() => ({
+    const preview = await readGeneratedMediaPreview(sessionId, artifactId).catch(() => ({
       state: "missing" as const
     }));
-    if (preview.state !== "available") return missingGeneratedImageAttachment(result);
+    if (preview.state !== "available") return missingGeneratedImageAttachment(artifactId);
 
     const bytes = new Uint8Array(preview.bytes);
     return {
-      id: generatedImageAttachmentId(result),
+      id: generatedImageAttachmentId(artifactId),
       name: "Generated image",
       mimeType: preview.mimeType,
       size: bytes.byteLength,
       extension: generatedImageExtension(preview.mimeType),
       kind: "image",
       state: "available",
-      source: { kind: "generated_media", artifactId: result.artifactId },
+      source: { kind: "generated_media", artifactId },
       previewUrl: URL.createObjectURL(new Blob([bytes], { type: preview.mimeType }))
     };
   }
@@ -3128,13 +3130,15 @@
     sessionId: string,
     result: GenerateMediaResult
   ): Promise<void> {
-    const attachment = await generatedImageAttachment(sessionId, result);
+    const artifactId = result.artifactId;
+    if (!artifactId) return;
+    const attachment = await generatedImageAttachment(sessionId, artifactId);
     if (selectedSession?.id !== sessionId) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
       return;
     }
     appendLive({
-      id: `${GENERATED_IMAGE_PREVIEW_ID_PREFIX}${result.artifactId ?? result.jobId}`,
+      id: `${GENERATED_IMAGE_PREVIEW_ID_PREFIX}${artifactId}`,
       kind: "assistant",
       title: "Assistant",
       summary: "Generated image",
@@ -4395,6 +4399,7 @@
                 onResolvePermission={resolvePermission}
                 onResolveUserQuestion={resolveUserQuestion}
                 onCancelTurn={() => void cancelCurrentTurn()}
+                onMediaSettingsSaved={handleMediaSettingsSaved}
                 onDraftChange={(hasDraft) => (composerHasDraft = hasDraft)}
                 onRenameTitle={renameSelectedSession}
               />

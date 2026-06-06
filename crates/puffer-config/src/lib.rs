@@ -463,48 +463,62 @@ impl ConfigPaths {
 /// Loads layered Puffer configuration from the user and workspace config files.
 pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
     let mut config = PufferConfig::default();
-    let mut user_selection = None;
+    let mut user_preferences = None;
     if paths.user_config_file().exists() {
         merge_config_file(&mut config, &paths.user_config_file())?;
-        user_selection = Some((
-            config.default_provider.clone(),
-            config.default_model.clone(),
-            config.theme.clone(),
-            config.editor_mode.clone(),
-            config.fast_mode,
-            config.effort_level.clone(),
-            config.copy_full_response,
-            config.browser.clone(),
-            config.network.clone(),
-        ));
+        user_preferences = Some(UserPreferenceSnapshot::capture(&config));
     }
     if paths.workspace_config_file().exists() {
         merge_config_file(&mut config, &paths.workspace_config_file())?;
     }
     apply_claude_status_line_fallback(&mut config, paths);
-    if let Some((
-        provider,
-        model,
-        theme,
-        editor_mode,
-        fast_mode,
-        effort_level,
-        copy_full_response,
-        browser,
-        network,
-    )) = user_selection
-    {
-        config.default_provider = provider;
-        config.default_model = model;
-        config.theme = theme;
-        config.editor_mode = editor_mode;
-        config.fast_mode = fast_mode;
-        config.effort_level = effort_level;
-        config.copy_full_response = copy_full_response;
-        config.browser = browser;
-        config.network = network;
+    if let Some(snapshot) = user_preferences {
+        snapshot.restore(&mut config);
     }
     Ok(config)
+}
+
+struct UserPreferenceSnapshot {
+    default_provider: Option<String>,
+    default_model: Option<String>,
+    theme: String,
+    editor_mode: String,
+    fast_mode: bool,
+    effort_level: Option<String>,
+    copy_full_response: bool,
+    browser: BrowserConfig,
+    network: NetworkConfig,
+    media: MediaConfig,
+}
+
+impl UserPreferenceSnapshot {
+    fn capture(config: &PufferConfig) -> Self {
+        Self {
+            default_provider: config.default_provider.clone(),
+            default_model: config.default_model.clone(),
+            theme: config.theme.clone(),
+            editor_mode: config.editor_mode.clone(),
+            fast_mode: config.fast_mode,
+            effort_level: config.effort_level.clone(),
+            copy_full_response: config.copy_full_response,
+            browser: config.browser.clone(),
+            network: config.network.clone(),
+            media: config.media.clone(),
+        }
+    }
+
+    fn restore(self, config: &mut PufferConfig) {
+        config.default_provider = self.default_provider;
+        config.default_model = self.default_model;
+        config.theme = self.theme;
+        config.editor_mode = self.editor_mode;
+        config.fast_mode = self.fast_mode;
+        config.effort_level = self.effort_level;
+        config.copy_full_response = self.copy_full_response;
+        config.browser = self.browser;
+        config.network = self.network;
+        config.media = self.media;
+    }
 }
 
 /// Saves the user-level Puffer configuration file.
@@ -680,6 +694,11 @@ mod tests {
         user.editor_mode = "vim".to_string();
         user.fast_mode = true;
         user.effort_level = Some("high".to_string());
+        user.media.image.provider_id = Some("user-image-provider".to_string());
+        user.media.image.model_id = Some("user-image-model".to_string());
+        user.media.image.adapter = Some("user-adapter".to_string());
+        user.media.image.parameters =
+            BTreeMap::from([("size".to_string(), "1024x1024".to_string())]);
         save_user_config(&paths, &user).expect("user config");
 
         let mut workspace = PufferConfig::default();
@@ -690,6 +709,9 @@ mod tests {
         workspace.openai_query_params =
             BTreeMap::from([("workspace_param".to_string(), "2".to_string())]);
         workspace.theme = "harbor".to_string();
+        workspace.media.image.provider_id = Some("workspace-image-provider".to_string());
+        workspace.media.image.model_id = Some("workspace-image-model".to_string());
+        workspace.media.image.adapter = Some("workspace-adapter".to_string());
         save_workspace_config(&paths, &workspace).expect("workspace config");
 
         let loaded = load_config(&paths).expect("load");
@@ -714,6 +736,7 @@ mod tests {
         assert_eq!(loaded.editor_mode, "vim");
         assert!(loaded.fast_mode);
         assert_eq!(loaded.effort_level.as_deref(), Some("high"));
+        assert_eq!(loaded.media, user.media);
     }
 
     #[test]
@@ -879,6 +902,8 @@ tmux_golden_mode = false
             command: "printf puffer-status".to_string(),
             padding: 2,
         });
+        workspace_config.media.image.provider_id = Some("workspace-image-provider".to_string());
+        workspace_config.media.image.model_id = Some("workspace-image-model".to_string());
         save_workspace_config(&paths, &workspace_config).expect("workspace config");
 
         let loaded = load_config(&paths).expect("load");
@@ -898,6 +923,7 @@ tmux_golden_mode = false
                 .map(|status_line| status_line.padding),
             Some(2)
         );
+        assert_eq!(loaded.media, workspace_config.media);
     }
 
     #[test]

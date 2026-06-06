@@ -52,6 +52,7 @@
       annotations?: Record<string, Record<string, string>>
     ) => void;
     onCancelTurn?: () => void;
+    onMediaSettingsSaved: (snapshot: SettingsSnapshot) => void;
     onDraftChange?: (hasDraft: boolean) => void;
     onRenameTitle?: (title: string) => void | Promise<void>;
   };
@@ -79,6 +80,7 @@
     onResolvePermission,
     onResolveUserQuestion,
     onCancelTurn,
+    onMediaSettingsSaved,
     onDraftChange,
     onRenameTitle
   }: Props = $props();
@@ -663,6 +665,7 @@
         {onResolvePermission}
         {onResolveUserQuestion}
         {onCancelTurn}
+        {onMediaSettingsSaved}
         {onDraftChange}
         onOpenChatIntent={openChatIntent}
         {fileToOpen}
@@ -716,6 +719,7 @@
           {onResolvePermission}
           {onResolveUserQuestion}
           {onCancelTurn}
+          {onMediaSettingsSaved}
           {onDraftChange}
           onOpenChatIntent={openChatIntent}
           {fileToOpen}

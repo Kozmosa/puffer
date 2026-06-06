@@ -224,7 +224,7 @@ function normalizeMediaSettings(value: unknown): FakeMediaSettings {
   };
 }
 
-function defaultMediaCapabilities(): FakeMediaCapability[] {
+export function defaultFakeMediaCapabilities(): FakeMediaCapability[] {
   return [
     {
       providerId: "openai",
@@ -884,7 +884,7 @@ export class FakeDaemon {
     }
     this.providerModels = options.providerModels ?? {};
     this.providerSummaries = options.providers ?? null;
-    this.mediaCapabilities = (options.mediaCapabilities ?? defaultMediaCapabilities()).map(
+    this.mediaCapabilities = (options.mediaCapabilities ?? defaultFakeMediaCapabilities()).map(
       cloneMediaCapability
     );
     this.mcpServers = options.mcpServers ?? this.mcpServers;
@@ -1177,8 +1177,12 @@ export class FakeDaemon {
     this.attachmentPreviews.set(this.attachmentPreviewKey(sessionId, attachmentId), preview);
   }
 
-  seedGeneratedMediaPreview(path: string, preview: AttachmentPreviewFixture): void {
-    this.generatedMediaPreviews.set(path, preview);
+  seedGeneratedMediaPreview(
+    sessionId: string,
+    artifactId: string,
+    preview: AttachmentPreviewFixture
+  ): void {
+    this.generatedMediaPreviews.set(this.generatedMediaPreviewKey(sessionId, artifactId), preview);
   }
 
   setGeneratedMediaResult(result: GeneratedMediaResultFixture | null): void {
@@ -1753,12 +1757,19 @@ export class FakeDaemon {
   }
 
   private readGeneratedMediaPreview(params: JsonRecord): AttachmentPreviewFixture {
-    const path = String(params.path ?? "");
-    return this.generatedMediaPreviews.get(path) ?? { state: "missing" };
+    const sessionId = String(params.sessionId ?? "");
+    const artifactId = String(params.artifactId ?? "");
+    return this.generatedMediaPreviews.get(this.generatedMediaPreviewKey(sessionId, artifactId)) ?? {
+      state: "missing"
+    };
   }
 
   private attachmentPreviewKey(sessionId: string, attachmentId: string): string {
     return `${sessionId}:${attachmentId}`;
+  }
+
+  private generatedMediaPreviewKey(sessionId: string, artifactId: string): string {
+    return `${sessionId}\u0000${artifactId}`;
   }
 
   private startConnectorSetup(params: JsonRecord): JsonRecord {

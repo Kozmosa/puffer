@@ -115,6 +115,7 @@
     ) => void;
     onCancelTurn?: () => void;
     onOpenChatIntent?: (intent: ChatOpenIntent) => void;
+    onMediaSettingsSaved: (snapshot: SettingsSnapshot) => void;
     onDraftChange?: (hasDraft: boolean) => void;
   };
 
@@ -140,6 +141,7 @@
     onResolveUserQuestion,
     onCancelTurn,
     onOpenChatIntent,
+    onMediaSettingsSaved,
     onDraftChange
   }: Props = $props();
 
@@ -2506,6 +2508,7 @@
       sessionCwd={session?.cwd ?? ""}
       settings={settingsSnapshot?.config.media ?? DEFAULT_MEDIA_SETTINGS}
       settingsReady={settingsSnapshot !== null}
+      onSaved={onMediaSettingsSaved}
       onClose={closeMediaSettings}
     />
   {/if}

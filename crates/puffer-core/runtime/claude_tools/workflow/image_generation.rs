@@ -11,10 +11,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PROMPT_CHARS: usize = 20_000;
-const IMAGE_OUTPUT_DIR_RELATIVE: &str = ".puffer/media/images";
 
 /// Carries exact media runtime context into the ImageGeneration workflow tool.
 #[derive(Debug, Clone, Copy)]
@@ -25,15 +23,13 @@ pub(crate) struct ImageGenerationMediaContext<'a> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ImageGenerationInput {
     prompt: String,
     #[serde(default)]
     prompt_reference: Option<String>,
     #[serde(default)]
     aspect: Option<String>,
-    #[serde(default)]
-    output_path: Option<String>,
     #[serde(default)]
     purpose: Option<String>,
     #[serde(default)]
@@ -47,8 +43,6 @@ struct ImageRequest {
     adapter: String,
     prompt: String,
     parameters: BTreeMap<String, String>,
-    output_format: String,
-    output_path: PathBuf,
     purpose: Option<String>,
     retry_from_error: Option<Value>,
 }
@@ -66,7 +60,7 @@ struct ImageGenerationResult {
     retry_from_error: bool,
 }
 
-/// Generates an image through the exact media runtime and writes it into the workspace.
+/// Generates an image through the exact media runtime and returns artifact metadata.
 pub fn execute_image_generation(
     state: &mut AppState,
     cwd: &Path,
@@ -103,17 +97,10 @@ pub fn execute_image_generation(
         media_context.discovery_cache,
     )?;
 
-    if let Some(parent) = request.output_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create image output directory {}", parent.display()))?;
-    }
-    fs::copy(&generated.path, &request.output_path)
-        .with_context(|| format!("write image output {}", request.output_path.display()))?;
-
     image_generation_output(&ImageGenerationResult {
         job_id: generated.job_id,
         artifact_id: generated.artifact_id,
-        path: request.output_path,
+        path: generated.path,
         provider: generated.provider_id,
         model: generated.model_id,
         status: generated.status,
@@ -132,20 +119,12 @@ fn build_image_request(
     let (provider, model, adapter) = required_provider_model_adapter(settings)?;
     let mut parameters = settings.parameters.clone();
     apply_aspect_parameter(&mut parameters, input.aspect.as_deref())?;
-    let output_format = normalized_output_format(
-        parameters
-            .get("output_format")
-            .map(String::as_str)
-            .unwrap_or("png"),
-    )?;
     Ok(ImageRequest {
         provider,
         model,
         adapter,
         prompt,
         parameters,
-        output_path: resolve_output_path(cwd, input.output_path.as_deref(), &output_format)?,
-        output_format,
         purpose: input.purpose,
         retry_from_error: input.retry_from_error,
     })
@@ -174,24 +153,6 @@ fn required_provider_model_adapter(
             Ok((provider.to_string(), model.to_string(), adapter.to_string()))
         }
         _ => bail!("image media provider/model/adapter is not configured"),
-    }
-}
-
-fn non_empty_media_value(value: &str, field: &str) -> Result<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        bail!("ImageGeneration media image {field} is not configured");
-    }
-    Ok(trimmed.to_string())
-}
-
-fn normalized_output_format(value: &str) -> Result<String> {
-    let format = non_empty_media_value(value, "output_format")?;
-    match format.to_ascii_lowercase().as_str() {
-        "png" => Ok("png".to_string()),
-        "jpg" | "jpeg" => Ok("jpeg".to_string()),
-        "webp" => Ok("webp".to_string()),
-        other => bail!("unsupported ImageGeneration media image output_format `{other}`"),
     }
 }
 
@@ -300,41 +261,6 @@ fn apply_aspect_parameter(
         return Ok(());
     }
     bail!("selected image model does not support ImageGeneration aspect")
-}
-
-fn image_output_root(cwd: &Path) -> PathBuf {
-    cwd.join(IMAGE_OUTPUT_DIR_RELATIVE)
-}
-
-fn resolve_output_path(cwd: &Path, value: Option<&str>, output_format: &str) -> Result<PathBuf> {
-    let relative = value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| default_output_filename(output_format));
-    if !safe_relative_path(&relative) {
-        bail!("ImageGeneration outputPath must be a safe relative path");
-    }
-    Ok(image_output_root(cwd).join(relative))
-}
-
-fn default_output_filename(output_format: &str) -> String {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    format!(
-        "generated-{stamp}.{}",
-        extension_for_output_format(output_format)
-    )
-}
-
-fn extension_for_output_format(format: &str) -> &'static str {
-    match format.trim().to_ascii_lowercase().as_str() {
-        "jpeg" | "jpg" => "jpeg",
-        "webp" => "webp",
-        _ => "png",
-    }
 }
 
 fn safe_relative_path(value: &str) -> bool {
@@ -546,10 +472,6 @@ mod tests {
         }
     }
 
-    fn image_output_path(cwd: &Path, relative: &str) -> PathBuf {
-        image_output_root(cwd).join(relative)
-    }
-
     fn read_http_request(stream: &mut std::net::TcpStream) -> String {
         let mut buffer = [0_u8; 8192];
         let size = stream.read(&mut buffer).expect("read request");
@@ -648,81 +570,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_output_paths() {
-        let dir = tempdir().unwrap();
+    fn rejects_unknown_image_generation_fields() {
+        let error = serde_json::from_value::<ImageGenerationInput>(json!({
+            "prompt": "draw a ship",
+            "outputPath": "requested/ship.png"
+        }))
+        .unwrap_err();
 
-        assert!(resolve_output_path(dir.path(), Some("../out.png"), "png").is_err());
-        assert!(resolve_output_path(dir.path(), Some("/tmp/out.png"), "png").is_err());
-        assert!(resolve_output_path(dir.path(), Some("images/out.png"), "png").is_ok());
+        assert!(error.to_string().contains("outputPath"));
     }
 
     #[test]
-    fn resolve_output_path_roots_outputs_in_image_folder() {
-        let dir = tempdir().unwrap();
-        let image_root = image_output_root(dir.path());
-        assert_eq!(image_root, dir.path().join(".puffer/media/images"));
-
-        let default_path = resolve_output_path(dir.path(), None, "webp").unwrap();
-        assert_eq!(default_path.parent(), Some(image_root.as_path()));
-        let default_name = default_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap();
-        assert!(default_name.starts_with("generated-"));
-        assert_eq!(
-            default_path.extension().and_then(|value| value.to_str()),
-            Some("webp")
-        );
-
-        assert_eq!(
-            resolve_output_path(dir.path(), Some("cup.png"), "png").unwrap(),
-            image_output_path(dir.path(), "cup.png")
-        );
-        assert_eq!(
-            resolve_output_path(dir.path(), Some("drafts/cup.png"), "png").unwrap(),
-            image_output_path(dir.path(), "drafts/cup.png")
-        );
-        assert_eq!(
-            resolve_output_path(dir.path(), Some(".puffer/media/images/cup.png"), "png").unwrap(),
-            image_output_path(dir.path(), ".puffer/media/images/cup.png")
-        );
-    }
-
-    #[test]
-    fn default_output_path_uses_media_output_format_extension() {
-        let dir = tempdir().unwrap();
-        let settings = puffer_config::ImageMediaConfig {
-            provider_id: Some("openai".to_string()),
-            model_id: Some("gpt-image-1".to_string()),
-            adapter: Some("images_json".to_string()),
-            parameters: BTreeMap::from([("output_format".to_string(), "webp".to_string())]),
-        };
-
-        let request = build_image_request(
-            dir.path(),
-            ImageGenerationInput {
-                prompt: "make a visual summary".to_string(),
-                prompt_reference: None,
-                aspect: None,
-                output_path: None,
-                purpose: None,
-                retry_from_error: None,
-            },
-            &settings,
-        )
-        .unwrap();
-
-        assert_eq!(
-            request
-                .output_path
-                .extension()
-                .and_then(|value| value.to_str()),
-            Some("webp")
-        );
-    }
-
-    #[test]
-    fn builds_request_with_prompt_file_and_output() {
+    fn builds_request_with_prompt_file() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("prompt.md"), "make a visual summary").unwrap();
 
@@ -732,7 +591,6 @@ mod tests {
                 prompt: "prompt.md".to_string(),
                 prompt_reference: None,
                 aspect: Some("square".to_string()),
-                output_path: Some("out/image.png".to_string()),
                 purpose: Some("test".to_string()),
                 retry_from_error: None,
             },
@@ -742,10 +600,6 @@ mod tests {
 
         assert_eq!(request.prompt, "make a visual summary");
         assert_eq!(request.parameters["size"], "1024x1024");
-        assert_eq!(
-            request.output_path,
-            image_output_path(dir.path(), "out/image.png")
-        );
     }
 
     #[test]
@@ -767,7 +621,6 @@ mod tests {
                 prompt: "make a visual summary".to_string(),
                 prompt_reference: None,
                 aspect: Some("landscape".to_string()),
-                output_path: None,
                 purpose: None,
                 retry_from_error: None,
             },
@@ -798,7 +651,6 @@ mod tests {
                 prompt: "make a visual summary".to_string(),
                 prompt_reference: None,
                 aspect: Some("portrait".to_string()),
-                output_path: None,
                 purpose: None,
                 retry_from_error: None,
             },
@@ -825,7 +677,6 @@ mod tests {
                 prompt: "make a visual summary".to_string(),
                 prompt_reference: None,
                 aspect: Some("square".to_string()),
-                output_path: None,
                 purpose: None,
                 retry_from_error: None,
             },
@@ -860,7 +711,6 @@ mod tests {
                 prompt: "make a visual summary".to_string(),
                 prompt_reference: None,
                 aspect: None,
-                output_path: Some("out/image.webp".to_string()),
                 purpose: None,
                 retry_from_error: None,
             },
@@ -871,7 +721,6 @@ mod tests {
         assert_eq!(request.provider, "openai");
         assert_eq!(request.model, "configured-image-model");
         assert_eq!(request.parameters["quality"], "high");
-        assert_eq!(request.output_format, "webp");
         std::env::remove_var("PUFFER_IMAGE_MODEL");
     }
 
@@ -895,7 +744,6 @@ mod tests {
                 prompt: "make a visual summary".to_string(),
                 prompt_reference: None,
                 aspect: None,
-                output_path: Some("out/image.png".to_string()),
                 purpose: None,
                 retry_from_error: None,
             },
@@ -972,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_uses_descriptor_adapter_and_writes_requested_output_path() {
+    fn execute_uses_descriptor_adapter_and_returns_single_artifact_path() {
         let (base_url, server) = spawn_image_generation_server();
         let dir = tempdir().unwrap();
         let registry = registry_with_provider(base_url);
@@ -997,7 +845,6 @@ mod tests {
             dir.path(),
             json!({
                 "prompt": "draw a ship",
-                "outputPath": "requested/ship.png",
                 "purpose": "test"
             }),
             Some(ImageGenerationMediaContext {
@@ -1011,18 +858,17 @@ mod tests {
         let request_text = server.join().expect("server");
         assert!(request_text.starts_with("POST /custom/images HTTP/1.1"));
         assert!(request_text.contains("\"model\":\"exact-image-model\""));
-        assert_eq!(
-            fs::read(image_output_path(dir.path(), "requested/ship.png")).unwrap(),
-            b"image-bytes"
-        );
         assert!(dir.path().join(".puffer/media/jobs").is_dir());
         assert!(dir.path().join(".puffer/media/artifact-sidecars").is_dir());
 
         let parsed: Value = serde_json::from_str(&output).unwrap();
-        let expected_path = image_output_path(dir.path(), "requested/ship.png");
+        let artifact_id = parsed["artifactId"].as_str().unwrap();
+        let artifact_path = PathBuf::from(parsed["path"].as_str().unwrap());
+        assert_eq!(fs::read(&artifact_path).unwrap(), b"image-bytes");
+        assert!(artifact_path.starts_with(dir.path().join(".puffer/media/images")));
         assert_eq!(
-            parsed["path"].as_str(),
-            Some(expected_path.to_str().unwrap())
+            artifact_path.parent().and_then(|path| path.file_name()),
+            Some(std::ffi::OsStr::new(artifact_id))
         );
         assert_eq!(parsed["provider"], "exact-provider");
         assert_eq!(parsed["model"], "exact-image-model");

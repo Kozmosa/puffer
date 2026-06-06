@@ -55,6 +55,7 @@
     ) => void;
     onCancelTurn?: () => void;
     onOpenChatIntent?: (intent: ChatOpenIntent) => void;
+    onMediaSettingsSaved: (snapshot: SettingsSnapshot) => void;
     onDraftChange?: (hasDraft: boolean) => void;
     fileToOpen?: FileOpenTarget | null;
   };
@@ -86,6 +87,7 @@
     onResolveUserQuestion,
     onCancelTurn,
     onOpenChatIntent,
+    onMediaSettingsSaved,
     onDraftChange,
     fileToOpen = null
   }: Props = $props();
@@ -172,6 +174,7 @@
       onResolveUserQuestion={onResolveUserQuestion}
       onCancelTurn={onCancelTurn}
       {onOpenChatIntent}
+      {onMediaSettingsSaved}
       onDraftChange={onDraftChange}
     />
   {:else if tab === "diff"}

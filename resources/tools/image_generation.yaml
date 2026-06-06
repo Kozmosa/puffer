@@ -7,8 +7,8 @@ description: |-
   Use this for verified Lambda Skill contracts that have a concrete image
   prompt and optional aspect ratio. The tool reads a workspace-relative prompt
   file when the prompt value names one; otherwise it treats prompt as literal
-  text. Output paths are image-folder-relative when provided. The result
-  includes media job and artifact metadata.
+  text. The result includes media job and artifact metadata for the persisted
+  image artifact.
 handler: runtime:workflow:image_generation
 approval_policy: ask
 sandbox_policy: network
@@ -24,9 +24,6 @@ input_schema:
     aspect:
       type: string
       description: Aspect ratio such as square, landscape, portrait, 1:1, 16:9, 9:16, or auto.
-    outputPath:
-      type: string
-      description: Optional image-folder-relative output filename or subpath. Relative to .puffer/media/images; omit to use generated-<timestamp>.<ext>. Do not pass absolute paths or workspace-root paths.
     purpose:
       type: string
       description: Optional caller purpose preserved in the result metadata.

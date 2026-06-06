@@ -20,10 +20,7 @@ fn execute_uses_discovery_cache_for_chat_image_output_model() {
     let output = execute_image_generation(
         &mut state,
         dir.path(),
-        json!({
-            "prompt": "draw a ship",
-            "outputPath": "requested/ship.png"
-        }),
+        json!({"prompt": "draw a ship"}),
         Some(ImageGenerationMediaContext {
             providers: &registry,
             auth_store: &auth_store,
@@ -35,11 +32,9 @@ fn execute_uses_discovery_cache_for_chat_image_output_model() {
     let request_text = server.join().expect("server");
     assert!(request_text.starts_with("POST /chat/completions HTTP/1.1"));
     assert!(request_text.contains("\"model\":\"openrouter/image-chat\""));
-    assert_eq!(
-        fs::read(image_output_path(dir.path(), "requested/ship.png")).unwrap(),
-        b"image-bytes"
-    );
     let parsed: Value = serde_json::from_str(&output).unwrap();
+    let artifact_path = PathBuf::from(parsed["path"].as_str().unwrap());
+    assert_eq!(fs::read(&artifact_path).unwrap(), b"image-bytes");
     assert_eq!(parsed["provider"], "openrouter");
     assert_eq!(parsed["model"], "openrouter/image-chat");
     assert_eq!(parsed["status"], "succeeded");
@@ -75,10 +70,7 @@ fn dispatcher_passes_media_context_to_image_generation_tool() {
         &definition,
         dir.path(),
         &allow_all_filesystem_policy(dir.path()),
-        json!({
-            "prompt": "draw a routed ship",
-            "outputPath": "requested/routed.png"
-        }),
+        json!({"prompt": "draw a routed ship"}),
         ProviderToolContext::None,
     )
     .unwrap();
@@ -87,10 +79,9 @@ fn dispatcher_passes_media_context_to_image_generation_tool() {
     assert!(result.success);
     assert!(request_text.starts_with("POST /custom/images HTTP/1.1"));
     assert!(request_text.contains("\"model\":\"exact-image-model\""));
-    assert_eq!(
-        fs::read(image_output_path(dir.path(), "requested/routed.png")).unwrap(),
-        b"image-bytes"
-    );
+    let parsed: Value = serde_json::from_str(&result.output.stdout).unwrap();
+    let artifact_path = PathBuf::from(parsed["path"].as_str().unwrap());
+    assert_eq!(fs::read(&artifact_path).unwrap(), b"image-bytes");
 }
 
 #[test]
