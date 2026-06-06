@@ -26,7 +26,6 @@ const DEFAULT_IMAGE_REQUEST_TIMEOUT_MS: u64 = 300_000;
 const IMAGES_JSON_ALLOWED_REQUEST_FIELDS: &[&str] = &[
     "model",
     "prompt",
-    "n",
     "size",
     "quality",
     "output_format",
@@ -42,6 +41,7 @@ struct ImagesJsonRequest {
     model: String,
     prompt: String,
     parameters: BTreeMap<String, String>,
+    count: u8,
 }
 
 impl ImagesJsonRequest {
@@ -49,11 +49,13 @@ impl ImagesJsonRequest {
         model: impl Into<String>,
         prompt: impl Into<String>,
         parameters: BTreeMap<String, String>,
+        count: u8,
     ) -> Self {
         Self {
             model: model.into(),
             prompt: prompt.into(),
             parameters,
+            count,
         }
     }
 
@@ -62,7 +64,13 @@ impl ImagesJsonRequest {
         body.insert("model".to_string(), json!(self.model));
         body.insert("prompt".to_string(), json!(self.prompt));
         for (name, value) in &self.parameters {
+            if name == "n" {
+                continue;
+            }
             body.insert(name.clone(), json!(value));
+        }
+        if self.count > 1 {
+            body.insert("n".to_string(), json!(self.count));
         }
         Value::Object(body)
     }
@@ -135,7 +143,6 @@ impl ImagesJsonAdapter {
         )?;
 
         let job_id = Uuid::new_v4().to_string();
-        let artifact_id = Uuid::new_v4().to_string();
         let created_at_ms = now_ms();
         let mut job = MediaJob::new(
             job_id.clone(),
@@ -143,14 +150,14 @@ impl ImagesJsonAdapter {
             request.provider_id.clone(),
             request.model_id.clone(),
             request.prompt.clone(),
-            1,
+            request.count,
             created_at_ms,
         );
         service.save_job(&job)?;
         job.transition(MediaJobStatus::Running, now_ms())?;
         service.save_job(&job)?;
 
-        let output = match self.request_image(
+        let outputs = match self.request_images(
             provider,
             auth_store,
             &request,
@@ -166,49 +173,64 @@ impl ImagesJsonAdapter {
             }
         };
 
-        let output_format = resolved_output_format(&request_parameters, &output.bytes);
-        let filename = format!("image.{}", extension_for_output_format(&output_format));
-        let artifact_path =
-            service.write_image_artifact_bytes(&artifact_id, &filename, &output.bytes)?;
-        let artifact = MediaArtifact {
-            id: artifact_id.clone(),
-            job_id: job_id.clone(),
-            kind: MediaKind::Image,
-            path: artifact_path.clone(),
-            mime_type: mime_type_for_output_format(&output_format).to_string(),
-            byte_count: output.bytes.len() as u64,
-            metadata: artifact_metadata(
-                &request,
-                &request_parameters,
-                &artifact_path,
-                &output,
+        let mut artifacts = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let artifact_id = Uuid::new_v4().to_string();
+            let output_format = resolved_output_format(&request_parameters, &output.bytes);
+            let filename = format!("image.{}", extension_for_output_format(&output_format));
+            let artifact_path =
+                service.write_image_artifact_bytes(&artifact_id, &filename, &output.bytes)?;
+            let artifact = MediaArtifact {
+                id: artifact_id.clone(),
+                job_id: job_id.clone(),
+                kind: MediaKind::Image,
+                path: artifact_path.clone(),
+                mime_type: mime_type_for_output_format(&output_format).to_string(),
+                byte_count: output.bytes.len() as u64,
+                metadata: artifact_metadata(
+                    &request,
+                    &request_parameters,
+                    &artifact_path,
+                    &output,
+                    index,
+                    created_at_ms,
+                ),
                 created_at_ms,
-            ),
-            created_at_ms,
-        };
-        service.save_artifact(&artifact)?;
-        job.attach_artifact(artifact_id, now_ms());
+            };
+            service.save_artifact(&artifact)?;
+            job.attach_artifact(artifact_id, now_ms());
+            artifacts.push(artifact);
+        }
+        if artifacts.is_empty() {
+            job.error = Some("image generation produced no images".to_string());
+            job.transition(MediaJobStatus::Failed, now_ms())?;
+            service.save_job(&job)?;
+            bail!("image generation produced no images");
+        }
         job.transition(MediaJobStatus::Succeeded, now_ms())?;
         service.save_job(&job)?;
 
-        Ok(ImagesJsonGenerationResult {
-            job,
-            artifacts: vec![artifact],
-        })
+        Ok(ImagesJsonGenerationResult { job, artifacts })
     }
 
-    fn request_image(
+    fn request_images(
         &self,
         provider: &ProviderDescriptor,
         auth_store: &AuthStore,
         request: &ImagesJsonGenerationRequest,
         parameters: BTreeMap<String, String>,
         execution: &MediaExecutionDescriptor,
-    ) -> Result<ImageOutput> {
+    ) -> Result<Vec<ImageOutput>> {
         let url = provider_execution_url(provider, execution, "image generation")?;
         let secrets =
             provider_error_secrets(provider, auth_store, CredentialAliasMode::OpenAiCodexAlias);
-        let body = ImagesJsonRequest::new(&request.model_id, &request.prompt, parameters).to_body();
+        let body = ImagesJsonRequest::new(
+            &request.model_id,
+            &request.prompt,
+            parameters,
+            request.count,
+        )
+        .to_body();
         let mut http = self.client.post(url).json(&body);
         for (name, value) in &provider.headers {
             http = http.header(name.as_str(), value.as_str());
@@ -236,7 +258,7 @@ impl ImagesJsonAdapter {
         }
         let value: Value =
             serde_json::from_str(&body).context("parse image generation response")?;
-        image_output_from_response(&self.client, &value)
+        image_outputs_from_response(&self.client, &value, request.count)
     }
 }
 
@@ -269,20 +291,31 @@ fn selected_parameters_with_defaults(
     Ok(request_parameters)
 }
 
-fn image_output_from_response(client: &Client, value: &Value) -> Result<ImageOutput> {
-    let Some(first) = value
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-    else {
+fn image_outputs_from_response(
+    client: &Client,
+    value: &Value,
+    count: u8,
+) -> Result<Vec<ImageOutput>> {
+    let Some(items) = value.get("data").and_then(Value::as_array) else {
         bail!("image generation response did not contain an image");
     };
-    let revised_prompt = first
+    let mut outputs = Vec::new();
+    for item in items.iter().take(count as usize) {
+        outputs.push(image_output_from_item(client, item)?);
+    }
+    if outputs.is_empty() {
+        bail!("image generation response did not contain an image");
+    }
+    Ok(outputs)
+}
+
+fn image_output_from_item(client: &Client, item: &Value) -> Result<ImageOutput> {
+    let revised_prompt = item
         .get("revised_prompt")
-        .or_else(|| first.get("revisedPrompt"))
+        .or_else(|| item.get("revisedPrompt"))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    if let Some(encoded) = first.get("b64_json").and_then(Value::as_str) {
+    if let Some(encoded) = item.get("b64_json").and_then(Value::as_str) {
         let bytes = BASE64_STANDARD
             .decode(encoded.trim())
             .context("decode image b64_json")?;
@@ -292,7 +325,7 @@ fn image_output_from_response(client: &Client, value: &Value) -> Result<ImageOut
             remote_source_url: None,
         });
     }
-    if let Some(url) = first.get("url").and_then(Value::as_str) {
+    if let Some(url) = item.get("url").and_then(Value::as_str) {
         let bytes = download_image_url(client, url, "image response")?;
         return Ok(ImageOutput {
             bytes,
@@ -308,6 +341,7 @@ fn artifact_metadata(
     parameters: &BTreeMap<String, String>,
     path: &std::path::Path,
     output: &ImageOutput,
+    index: usize,
     created_at_ms: u64,
 ) -> Value {
     let output_format = resolved_output_format(parameters, &output.bytes);
@@ -317,6 +351,7 @@ fn artifact_metadata(
         "adapter": request.adapter,
         "prompt": request.prompt,
         "parameters": parameters,
+        "index": index,
         "mimeType": mime_type_for_output_format(&output_format),
         "localPath": path,
         "byteCount": output.bytes.len() as u64,
@@ -504,6 +539,73 @@ mod tests {
         let mut buffer = [0_u8; 8192];
         let size = stream.read(&mut buffer).expect("read request");
         String::from_utf8_lossy(&buffer[..size]).to_string()
+    }
+
+    fn spawn_image_server_with_body(
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 4096];
+            let n = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[test]
+    fn images_json_persists_multiple_response_images_under_one_job() {
+        let (base_url, server) = spawn_image_server_with_body(
+            r#"{"data":[{"b64_json":"aW1hZ2UtMQ=="},{"b64_json":"aW1hZ2UtMg=="}]}"#,
+        );
+        let registry = registry_with_provider(base_url);
+        let mut auth_store = AuthStore::default();
+        auth_store.set_api_key("exact-provider", "sk-test");
+        let service_dir = tempfile::tempdir().unwrap();
+        let service = MediaGenerationService::new(service_dir.path());
+        let request = ImagesJsonGenerationRequest {
+            provider_id: "exact-provider".to_string(),
+            model_id: "exact-image-model".to_string(),
+            adapter: "images_json".to_string(),
+            prompt: "draw two images".to_string(),
+            parameters: BTreeMap::from([
+                ("size".to_string(), "1024x1024".to_string()),
+                ("quality".to_string(), "auto".to_string()),
+                ("output_format".to_string(), "png".to_string()),
+            ]),
+            count: 2,
+        };
+
+        let result = ImagesJsonAdapter::new()
+            .unwrap()
+            .execute(&registry, &auth_store, &service, request)
+            .unwrap();
+
+        let request_text = server.join().unwrap();
+        assert!(request_text.contains("\"n\":2"));
+        assert_eq!(result.job.requested_count, 2);
+        assert_eq!(result.job.artifact_ids.len(), 2);
+        assert_eq!(result.artifacts.len(), 2);
+        assert_ne!(result.artifacts[0].id, result.artifacts[1].id);
+        assert_eq!(
+            std::fs::read(&result.artifacts[0].path).unwrap(),
+            b"image-1"
+        );
+        assert_eq!(
+            std::fs::read(&result.artifacts[1].path).unwrap(),
+            b"image-2"
+        );
+        assert_eq!(result.artifacts[0].metadata["index"], 0);
+        assert_eq!(result.artifacts[1].metadata["index"], 1);
     }
 
     #[test]
@@ -826,7 +928,7 @@ mod tests {
             "data": [{"url": "http://example.com/generated.png"}]
         });
 
-        let error = image_output_from_response(&Client::new(), &value)
+        let error = image_outputs_from_response(&Client::new(), &value, 1)
             .expect_err("external http URL should fail before download");
 
         assert_eq!(
