@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PROMPT_CHARS: usize = 20_000;
+const IMAGE_OUTPUT_DIR_RELATIVE: &str = ".puffer/workflows/images";
 
 /// Carries exact media runtime context into the ImageGeneration workflow tool.
 #[derive(Debug, Clone, Copy)]
@@ -306,22 +307,20 @@ fn resolve_output_path(cwd: &Path, value: Option<&str>, output_format: &str) -> 
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| default_output_name(output_format));
+        .unwrap_or_else(|| default_output_filename(output_format));
     if !safe_relative_path(&relative) {
         bail!("ImageGeneration outputPath must be a safe relative path");
     }
-    Ok(cwd.join(relative))
+    let image_root = cwd.join(IMAGE_OUTPUT_DIR_RELATIVE);
+    Ok(image_root.join(relative))
 }
 
-fn default_output_name(output_format: &str) -> String {
+fn default_output_filename(output_format: &str) -> String {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    format!(
-        ".puffer/workflows/images/generated-{stamp}.{}",
-        extension_for_output_format(output_format)
-    )
+    format!("generated-{stamp}.{}", extension_for_output_format(output_format))
 }
 
 fn extension_for_output_format(format: &str) -> &'static str {
@@ -648,6 +647,43 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_path_roots_outputs_in_image_folder() {
+        let dir = tempdir().unwrap();
+        let image_root = dir.path().join(".puffer/workflows/images");
+
+        let default_path = resolve_output_path(dir.path(), None, "webp").unwrap();
+        assert_eq!(default_path.parent(), Some(image_root.as_path()));
+        assert!(
+            default_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.starts_with("generated-"))
+        );
+        assert_eq!(
+            default_path.extension().and_then(|value| value.to_str()),
+            Some("webp")
+        );
+
+        assert_eq!(
+            resolve_output_path(dir.path(), Some("cup.png"), "png").unwrap(),
+            image_root.join("cup.png")
+        );
+        assert_eq!(
+            resolve_output_path(dir.path(), Some("drafts/cup.png"), "png").unwrap(),
+            image_root.join("drafts/cup.png")
+        );
+        assert_eq!(
+            resolve_output_path(
+                dir.path(),
+                Some(".puffer/workflows/images/cup.png"),
+                "png"
+            )
+            .unwrap(),
+            image_root.join(".puffer/workflows/images/cup.png")
+        );
+    }
+
+    #[test]
     fn default_output_path_uses_media_output_format_extension() {
         let dir = tempdir().unwrap();
         let settings = puffer_config::ImageMediaConfig {
@@ -701,7 +737,10 @@ mod tests {
 
         assert_eq!(request.prompt, "make a visual summary");
         assert_eq!(request.parameters["size"], "1024x1024");
-        assert_eq!(request.output_path, dir.path().join("out/image.png"));
+        assert_eq!(
+            request.output_path,
+            dir.path().join(".puffer/workflows/images/out/image.png")
+        );
     }
 
     #[test]
@@ -968,14 +1007,20 @@ mod tests {
         assert!(request_text.starts_with("POST /custom/images HTTP/1.1"));
         assert!(request_text.contains("\"model\":\"exact-image-model\""));
         assert_eq!(
-            fs::read(dir.path().join("requested/ship.png")).unwrap(),
+            fs::read(
+                dir.path()
+                    .join(".puffer/workflows/images/requested/ship.png")
+            )
+            .unwrap(),
             b"image-bytes"
         );
         assert!(dir.path().join(".puffer/media/jobs").is_dir());
         assert!(dir.path().join(".puffer/media/artifact-sidecars").is_dir());
 
         let parsed: Value = serde_json::from_str(&output).unwrap();
-        let expected_path = dir.path().join("requested/ship.png");
+        let expected_path = dir
+            .path()
+            .join(".puffer/workflows/images/requested/ship.png");
         assert_eq!(
             parsed["path"].as_str(),
             Some(expected_path.to_str().unwrap())

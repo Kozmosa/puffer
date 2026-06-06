@@ -26,7 +26,7 @@ input_schema:
       description: Aspect ratio such as square, landscape, portrait, 1:1, 16:9, 9:16, or auto.
     outputPath:
       type: string
-      description: Workspace-relative image output path. Defaults to .puffer/workflows/images/.
+      description: Optional image-folder-relative output filename or subpath. Relative to .puffer/workflows/images; omit to use generated-<timestamp>.<ext>. Do not pass absolute paths or workspace-root paths.
     purpose:
       type: string
       description: Optional caller purpose preserved in the result metadata.
