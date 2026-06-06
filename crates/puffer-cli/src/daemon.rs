@@ -523,26 +523,28 @@ impl DaemonState {
                     .collect::<IndexMap<_, _>>(),
             );
         }
-        if discover_all {
+        let stale_discovery_provider_ids = if discover_all {
             if let Ok(client) = proxy_discovery_client(&config) {
                 let _ =
                     providers.discover_and_merge_all_with_discovery_client(&auth_store, &client);
             } else {
                 let _ = providers.discover_and_merge_all(&auth_store);
             }
+            Vec::new()
         } else {
             // Even on the fast path we apply the on-disk discovery cache
             // — that's a synchronous file read, no network — so callers
             // like `create_session` can resolve previously-discovered
             // model names without paying for a fresh network round-trip.
-            let _stale = providers.apply_discovery_cache();
-        }
+            providers.apply_discovery_cache()
+        };
         let session_store = SessionStore::from_paths(&self.paths)?;
         Ok(RuntimeInputs {
             resources,
             providers,
             auth_store,
             session_store,
+            stale_discovery_provider_ids,
         })
     }
 
@@ -569,6 +571,7 @@ struct RuntimeInputs {
     providers: ProviderRegistry,
     auth_store: AuthStore,
     session_store: SessionStore,
+    stale_discovery_provider_ids: Vec<String>,
 }
 
 fn proxy_discovery_client(
@@ -2108,18 +2111,33 @@ fn handle_list_provider_models(state: &DaemonState, params: &Value) -> Result<Va
     let provider_id = canonical_desktop_provider_id(requested_provider_id);
     let mut inputs = state.build_runtime_inputs_without_discovery()?;
     let config = state.config.lock().unwrap().clone();
-    if let Ok(client) = proxy_discovery_client(&config) {
-        inputs
-            .providers
-            .discover_and_merge_provider_with_discovery_client(
-                &provider_id,
-                &inputs.auth_store,
-                &client,
-            )?;
-    } else {
-        inputs
-            .providers
-            .discover_and_merge_provider(&provider_id, &inputs.auth_store)?;
+    let needs_fresh_discovery = inputs
+        .stale_discovery_provider_ids
+        .iter()
+        .any(|id| id == &provider_id);
+    if needs_fresh_discovery {
+        let discovery_result = if let Ok(client) = proxy_discovery_client(&config) {
+            inputs
+                .providers
+                .discover_and_merge_provider_with_discovery_client(
+                    &provider_id,
+                    &inputs.auth_store,
+                    &client,
+                )
+        } else {
+            inputs
+                .providers
+                .discover_and_merge_provider(&provider_id, &inputs.auth_store)
+        };
+        match discovery_result {
+            Ok(()) => {}
+            Err(_error) => {
+                // The model picker must stay usable while a provider's live
+                // discovery endpoint is slow or unavailable. Cached/static
+                // models were already applied by
+                // `build_runtime_inputs_without_discovery`.
+            }
+        }
     }
     let entry = inputs
         .providers
@@ -6261,6 +6279,42 @@ models:
         (format!("http://{address}"), handle)
     }
 
+    fn spawn_failing_discovery_server() -> (String, std::thread::JoinHandle<()>) {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind failing discovery server");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking failing discovery server");
+        let address = listener
+            .local_addr()
+            .expect("failing discovery server address");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..100 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        read_discovery_http_request(&mut stream)
+                            .expect("read failing discovery request");
+                        let body = r#"{"error":"temporarily unavailable"}"#;
+                        let response = format!(
+                            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write failing discovery response");
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept failing discovery request: {error}"),
+                }
+            }
+            panic!("failing discovery server was not contacted");
+        });
+        (format!("http://{address}"), handle)
+    }
+
     fn spawn_realtime_client_secret_server(
         captured: Arc<Mutex<String>>,
     ) -> (String, std::thread::JoinHandle<()>) {
@@ -6836,6 +6890,7 @@ models:
 
     #[test]
     fn list_provider_models_uses_fresh_discovery_over_static_models() {
+        let _cache_guard = DiscoveryCacheEnvGuard::set();
         let (openai_base_url, server) = spawn_openai_discovery_server();
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
@@ -6865,6 +6920,81 @@ models:
         assert!(
             !model_ids.contains(&"gpt-5"),
             "fresh discovery should remove stale static models: {response}"
+        );
+    }
+
+    #[test]
+    fn list_provider_models_keeps_static_models_when_fresh_discovery_fails() {
+        let _cache_guard = DiscoveryCacheEnvGuard::set();
+        let (openai_base_url, server) = spawn_failing_discovery_server();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+        state.config.lock().unwrap().openai_base_url = Some(openai_base_url);
+
+        let response = handle_list_provider_models(&state, &json!({ "providerId": "codex" }))
+            .expect("list provider models");
+
+        server.join().expect("failing discovery server");
+        let model_ids = response["models"]
+            .as_array()
+            .expect("models array")
+            .iter()
+            .filter_map(|model| model.get("id").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(response["providerId"], "openai");
+        assert!(
+            model_ids.contains(&"gpt-5"),
+            "static models should remain available after fresh discovery failure: {response}"
+        );
+    }
+
+    #[test]
+    fn list_provider_models_does_not_fire_network_discovery_when_cache_is_fresh() {
+        let _cache_guard = DiscoveryCacheEnvGuard::set();
+        prewarm_discovery_cache("openai", "gpt-cached-discovered");
+        let (openai_base_url, server) = spawn_unexpected_discovery_server();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+        state.config.lock().unwrap().openai_base_url = Some(openai_base_url);
+
+        let start = std::time::Instant::now();
+        let response = handle_list_provider_models(&state, &json!({ "providerId": "codex" }))
+            .expect("list provider models");
+        let elapsed = start.elapsed();
+
+        server.join().expect("unexpected discovery server panicked");
+        let model_ids = response["models"]
+            .as_array()
+            .expect("models array")
+            .iter()
+            .filter_map(|model| model.get("id").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "list_provider_models took {elapsed:?} despite a fresh discovery cache"
+        );
+        assert_eq!(response["providerId"], "openai");
+        assert!(
+            model_ids.contains(&"gpt-cached-discovered"),
+            "cached discovery should be returned synchronously: {response}"
         );
     }
 
