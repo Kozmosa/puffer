@@ -65,13 +65,14 @@ pub(crate) struct MinimaxImageGenerationRequest {
     pub(crate) adapter: String,
     pub(crate) prompt: String,
     pub(crate) parameters: BTreeMap<String, String>,
+    pub(crate) count: u8,
 }
 
 /// Carries persisted media records created by the MiniMax image adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MinimaxImageGenerationResult {
     pub(crate) job: MediaJob,
-    pub(crate) artifact: MediaArtifact,
+    pub(crate) artifacts: Vec<MediaArtifact>,
 }
 
 /// Executes descriptor-driven MiniMax image generation.
@@ -172,7 +173,10 @@ impl MinimaxImageAdapter {
         job.transition(MediaJobStatus::Succeeded, now_ms())?;
         service.save_job(&job)?;
 
-        Ok(MinimaxImageGenerationResult { job, artifact })
+        Ok(MinimaxImageGenerationResult {
+            job,
+            artifacts: vec![artifact],
+        })
     }
 
     fn request_image(
@@ -400,6 +404,7 @@ mod tests {
                 ("aspect_ratio".to_string(), "16:9".to_string()),
                 ("response_format".to_string(), "base64".to_string()),
             ]),
+            count: 1,
         }
     }
 
@@ -449,9 +454,9 @@ mod tests {
         assert!(request_text.contains("\"aspect_ratio\":\"16:9\""));
         assert!(request_text.contains("\"response_format\":\"base64\""));
         assert_eq!(
-            std::fs::read(&result.artifact.path).unwrap(),
+            std::fs::read(&result.artifacts[0].path).unwrap(),
             b"image-bytes"
         );
-        assert_eq!(result.artifact.metadata["adapter"], "minimax_image");
+        assert_eq!(result.artifacts[0].metadata["adapter"], "minimax_image");
     }
 }

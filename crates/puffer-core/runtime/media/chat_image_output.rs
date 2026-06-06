@@ -59,13 +59,14 @@ pub(crate) struct ChatImageOutputGenerationRequest {
     pub(crate) adapter: String,
     pub(crate) prompt: String,
     pub(crate) parameters: BTreeMap<String, String>,
+    pub(crate) count: u8,
 }
 
 /// Carries persisted media records created by the chat image-output adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChatImageOutputGenerationResult {
     pub(crate) job: MediaJob,
-    pub(crate) artifact: MediaArtifact,
+    pub(crate) artifacts: Vec<MediaArtifact>,
 }
 
 /// Executes descriptor-driven chat image-output generation.
@@ -158,7 +159,10 @@ impl ChatImageOutputAdapter {
         job.transition(MediaJobStatus::Succeeded, now_ms())?;
         service.save_job(&job)?;
 
-        Ok(ChatImageOutputGenerationResult { job, artifact })
+        Ok(ChatImageOutputGenerationResult {
+            job,
+            artifacts: vec![artifact],
+        })
     }
 
     fn request_image(
@@ -409,6 +413,7 @@ mod tests {
             adapter: "chat_image_output".to_string(),
             prompt: "draw a precise icon".to_string(),
             parameters: BTreeMap::new(),
+            count: 1,
         }
     }
 
@@ -479,9 +484,9 @@ mod tests {
         assert!(request_text.contains("\"modalities\":[\"image\",\"text\"]"));
         assert!(request_text.contains("\"content\":\"draw a precise icon\""));
         assert_eq!(
-            std::fs::read(&result.artifact.path).unwrap(),
+            std::fs::read(&result.artifacts[0].path).unwrap(),
             b"image-bytes"
         );
-        assert_eq!(result.artifact.metadata["adapter"], "chat_image_output");
+        assert_eq!(result.artifacts[0].metadata["adapter"], "chat_image_output");
     }
 }

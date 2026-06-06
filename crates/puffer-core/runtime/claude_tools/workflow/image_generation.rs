@@ -80,6 +80,7 @@ pub fn execute_image_generation(
             adapter: request.adapter.clone(),
             prompt: request.prompt.clone(),
             parameters: request.parameters.clone(),
+            count: 1,
         },
         media_context.discovery_cache,
     )?;
@@ -93,14 +94,20 @@ pub fn execute_image_generation(
             adapter: request.adapter.clone(),
             prompt: request.prompt.clone(),
             parameters: request.parameters.clone(),
+            count: 1,
         },
         media_context.discovery_cache,
     )?;
+    let artifact = generated
+        .artifacts
+        .into_iter()
+        .next()
+        .context("image generation produced no artifacts")?;
 
     image_generation_output(&ImageGenerationResult {
         job_id: generated.job_id,
-        artifact_id: generated.artifact_id,
-        path: generated.path,
+        artifact_id: artifact.artifact_id,
+        path: artifact.path,
         provider: generated.provider_id,
         model: generated.model_id,
         status: generated.status,

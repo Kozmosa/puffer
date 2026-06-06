@@ -58,18 +58,30 @@ pub struct ExactImageGenerationRequest {
     pub adapter: String,
     pub prompt: String,
     pub parameters: BTreeMap<String, String>,
+    pub count: u8,
 }
 
-/// Carries the persisted job and artifact produced by exact image generation.
+/// Carries one persisted generated image artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactGeneratedArtifact {
+    pub artifact_id: String,
+    pub index: usize,
+    pub path: PathBuf,
+    pub mime_type: String,
+    pub byte_count: u64,
+}
+
+/// Carries the persisted job and artifacts produced by exact image generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExactImageGenerationResult {
     pub job_id: String,
-    pub artifact_id: String,
+    pub requested_count: u8,
+    pub artifacts: Vec<ExactGeneratedArtifact>,
     pub provider_id: String,
     pub model_id: String,
     pub status: String,
-    pub path: PathBuf,
 }
 
 /// Describes the preview-read result for a generated media artifact.
@@ -394,6 +406,8 @@ pub fn generate_exact_image_with_cache(
     mut request: ExactImageGenerationRequest,
     discovery_cache: &ExactMediaDiscoveryCache,
 ) -> Result<ExactImageGenerationResult> {
+    let count = validate_image_count(request.count)?;
+    request.count = count;
     request.parameters = resolved_exact_image_parameters_with_cache(
         registry,
         auth_store,
@@ -413,9 +427,10 @@ pub fn generate_exact_image_with_cache(
                     adapter: request.adapter,
                     prompt: request.prompt,
                     parameters: request.parameters,
+                    count: request.count,
                 },
             )?;
-            Ok(exact_generation_result(result.job, result.artifact))
+            Ok(exact_generation_result(result.job, result.artifacts))
         }
         "minimax_image" => {
             let result = MinimaxImageAdapter::new()?.execute(
@@ -428,9 +443,10 @@ pub fn generate_exact_image_with_cache(
                     adapter: request.adapter,
                     prompt: request.prompt,
                     parameters: request.parameters,
+                    count: request.count,
                 },
             )?;
-            Ok(exact_generation_result(result.job, result.artifact))
+            Ok(exact_generation_result(result.job, result.artifacts))
         }
         "chat_image_output" => {
             let result = ChatImageOutputAdapter::new()?.execute_with_discovery_cache(
@@ -443,12 +459,21 @@ pub fn generate_exact_image_with_cache(
                     adapter: request.adapter,
                     prompt: request.prompt,
                     parameters: request.parameters,
+                    count: request.count,
                 },
                 &discovery_cache.inner,
             )?;
-            Ok(exact_generation_result(result.job, result.artifact))
+            Ok(exact_generation_result(result.job, result.artifacts))
         }
         adapter => bail!("image media adapter unavailable for {adapter}"),
+    }
+}
+
+fn validate_image_count(count: u8) -> Result<u8> {
+    if (1..=4).contains(&count) {
+        Ok(count)
+    } else {
+        bail!("image generation count must be between 1 and 4")
     }
 }
 
@@ -504,14 +529,28 @@ fn exact_image_capability(
     })
 }
 
-fn exact_generation_result(job: MediaJob, artifact: MediaArtifact) -> ExactImageGenerationResult {
+fn exact_generation_result(
+    job: MediaJob,
+    artifacts: Vec<MediaArtifact>,
+) -> ExactImageGenerationResult {
+    let artifacts = artifacts
+        .into_iter()
+        .enumerate()
+        .map(|(index, artifact)| ExactGeneratedArtifact {
+            artifact_id: artifact.id,
+            index,
+            path: artifact.path,
+            mime_type: artifact.mime_type,
+            byte_count: artifact.byte_count,
+        })
+        .collect();
     ExactImageGenerationResult {
         job_id: job.id,
-        artifact_id: artifact.id,
+        requested_count: job.requested_count,
+        artifacts,
         provider_id: job.provider_id,
         model_id: job.model_id,
         status: media_job_status_name(job.status).to_string(),
-        path: artifact.path,
     }
 }
 
@@ -767,6 +806,73 @@ mod tests {
     }
 
     #[test]
+    fn exact_image_generation_rejects_invalid_count() {
+        assert!(validate_image_count(1).is_ok());
+        assert!(validate_image_count(4).is_ok());
+        assert_eq!(
+            validate_image_count(0).unwrap_err().to_string(),
+            "image generation count must be between 1 and 4"
+        );
+        assert_eq!(
+            validate_image_count(5).unwrap_err().to_string(),
+            "image generation count must be between 1 and 4"
+        );
+    }
+
+    #[test]
+    fn exact_generation_result_returns_artifacts_in_order() {
+        let job = MediaJob {
+            id: "job-1".to_string(),
+            kind: MediaKind::Image,
+            provider_id: "openai".to_string(),
+            model_id: "gpt-image-1".to_string(),
+            prompt: "draw".to_string(),
+            status: MediaJobStatus::Succeeded,
+            provider_job_id: None,
+            remote_status: None,
+            remote_get_url: None,
+            remote_cancel_url: None,
+            artifact_ids: vec!["artifact-1".to_string(), "artifact-2".to_string()],
+            requested_count: 2,
+            error: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        let artifacts = vec![
+            MediaArtifact {
+                id: "artifact-1".to_string(),
+                job_id: "job-1".to_string(),
+                kind: MediaKind::Image,
+                path: PathBuf::from("/tmp/image-1.png"),
+                mime_type: "image/png".to_string(),
+                byte_count: 10,
+                metadata: serde_json::json!({"index": 0}),
+                created_at_ms: 1,
+            },
+            MediaArtifact {
+                id: "artifact-2".to_string(),
+                job_id: "job-1".to_string(),
+                kind: MediaKind::Image,
+                path: PathBuf::from("/tmp/image-2.png"),
+                mime_type: "image/png".to_string(),
+                byte_count: 11,
+                metadata: serde_json::json!({"index": 1}),
+                created_at_ms: 1,
+            },
+        ];
+
+        let result = exact_generation_result(job, artifacts);
+
+        assert_eq!(result.job_id, "job-1");
+        assert_eq!(result.requested_count, 2);
+        assert_eq!(result.artifacts.len(), 2);
+        assert_eq!(result.artifacts[0].artifact_id, "artifact-1");
+        assert_eq!(result.artifacts[0].index, 0);
+        assert_eq!(result.artifacts[1].artifact_id, "artifact-2");
+        assert_eq!(result.artifacts[1].index, 1);
+    }
+
+    #[test]
     fn generate_exact_image_dispatches_to_minimax_adapter() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
@@ -802,6 +908,7 @@ mod tests {
                     ("aspect_ratio".to_string(), "16:9".to_string()),
                     ("response_format".to_string(), "base64".to_string()),
                 ]),
+                count: 1,
             },
             &ExactMediaDiscoveryCache::empty(),
         )
@@ -812,7 +919,10 @@ mod tests {
         assert!(request_text.contains("\"aspect_ratio\":\"16:9\""));
         assert_eq!(result.provider_id, "minimax");
         assert_eq!(result.model_id, "image-01");
-        assert_eq!(std::fs::read(result.path).unwrap(), b"image-bytes");
+        assert_eq!(
+            std::fs::read(&result.artifacts[0].path).unwrap(),
+            b"image-bytes"
+        );
     }
 
     #[test]
@@ -852,6 +962,7 @@ mod tests {
                 adapter: "chat_image_output".to_string(),
                 prompt: "draw a precise icon".to_string(),
                 parameters: BTreeMap::new(),
+                count: 1,
             },
             &cache,
         )
@@ -862,7 +973,10 @@ mod tests {
         assert!(request_text.contains("\"model\":\"openrouter/image-chat\""));
         assert_eq!(result.provider_id, "openrouter");
         assert_eq!(result.model_id, "openrouter/image-chat");
-        assert_eq!(std::fs::read(result.path).unwrap(), b"image-bytes");
+        assert_eq!(
+            std::fs::read(&result.artifacts[0].path).unwrap(),
+            b"image-bytes"
+        );
     }
 
     #[test]
@@ -900,6 +1014,7 @@ mod tests {
                     ("size".to_string(), "2K".to_string()),
                     ("output_format".to_string(), "png".to_string()),
                 ]),
+                count: 1,
             },
             &ExactMediaDiscoveryCache::empty(),
         )
@@ -926,6 +1041,7 @@ mod tests {
                 adapter: "chat_image_output".to_string(),
                 prompt: "draw a precise icon".to_string(),
                 parameters: BTreeMap::new(),
+                count: 1,
             },
             &ExactMediaDiscoveryCache::empty(),
         )

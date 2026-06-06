@@ -76,13 +76,14 @@ pub(crate) struct ImagesJsonGenerationRequest {
     pub(crate) adapter: String,
     pub(crate) prompt: String,
     pub(crate) parameters: BTreeMap<String, String>,
+    pub(crate) count: u8,
 }
 
 /// Carries persisted media records created by the OpenAI Images adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImagesJsonGenerationResult {
     pub(crate) job: MediaJob,
-    pub(crate) artifact: MediaArtifact,
+    pub(crate) artifacts: Vec<MediaArtifact>,
 }
 
 /// Executes descriptor-driven OpenAI Images-compatible generation.
@@ -190,7 +191,10 @@ impl ImagesJsonAdapter {
         job.transition(MediaJobStatus::Succeeded, now_ms())?;
         service.save_job(&job)?;
 
-        Ok(ImagesJsonGenerationResult { job, artifact })
+        Ok(ImagesJsonGenerationResult {
+            job,
+            artifacts: vec![artifact],
+        })
     }
 
     fn request_image(
@@ -492,6 +496,7 @@ mod tests {
                 ("quality".to_string(), "auto".to_string()),
                 ("output_format".to_string(), "png".to_string()),
             ]),
+            count: 1,
         }
     }
 
@@ -540,10 +545,10 @@ mod tests {
         assert!(request_text.contains("\"model\":\"exact-image-model\""));
         assert!(request_text.contains("\"size\":\"1024x1024\""));
         assert_eq!(
-            std::fs::read(&result.artifact.path).unwrap(),
+            std::fs::read(&result.artifacts[0].path).unwrap(),
             b"image-bytes"
         );
-        assert_eq!(result.artifact.metadata["adapter"], "images_json");
+        assert_eq!(result.artifacts[0].metadata["adapter"], "images_json");
     }
 
     #[test]
@@ -640,20 +645,19 @@ mod tests {
 
         let request_text = server.join().expect("server");
         assert!(request_text.contains("\"output_format\":\"jpeg\""));
-        assert_eq!(result.artifact.mime_type, "image/jpeg");
+        assert_eq!(result.artifacts[0].mime_type, "image/jpeg");
         assert_eq!(
-            result
-                .artifact
+            result.artifacts[0]
                 .path
                 .extension()
                 .and_then(|value| value.to_str()),
             Some("jpeg")
         );
         assert_eq!(
-            result.artifact.metadata["parameters"]["output_format"],
+            result.artifacts[0].metadata["parameters"]["output_format"],
             "jpeg"
         );
-        assert_eq!(result.artifact.metadata["mimeType"], "image/jpeg");
+        assert_eq!(result.artifacts[0].metadata["mimeType"], "image/jpeg");
     }
 
     #[test]
@@ -693,6 +697,7 @@ mod tests {
             adapter: "images_json".to_string(),
             prompt: "draw a precise icon".to_string(),
             parameters: BTreeMap::from([("size".to_string(), "2K".to_string())]),
+            count: 1,
         };
 
         let result = ImagesJsonAdapter::new()
@@ -706,16 +711,15 @@ mod tests {
             .expect("generation succeeds");
 
         server.join().expect("server");
-        assert_eq!(result.artifact.mime_type, "image/jpeg");
+        assert_eq!(result.artifacts[0].mime_type, "image/jpeg");
         assert_eq!(
-            result
-                .artifact
+            result.artifacts[0]
                 .path
                 .extension()
                 .and_then(|value| value.to_str()),
             Some("jpeg")
         );
-        assert_eq!(result.artifact.metadata["mimeType"], "image/jpeg");
+        assert_eq!(result.artifacts[0].metadata["mimeType"], "image/jpeg");
     }
 
     #[test]
@@ -765,7 +769,7 @@ mod tests {
         let (_, download_request) = server.join().expect("server");
         assert!(download_request.starts_with("GET /generated.png HTTP/1.1"));
         assert_eq!(
-            std::fs::read(&result.artifact.path).unwrap(),
+            std::fs::read(&result.artifacts[0].path).unwrap(),
             b"downloaded!!"
         );
         assert_eq!(
@@ -773,11 +777,11 @@ mod tests {
             crate::runtime::media::MediaJobStatus::Succeeded
         );
         assert_eq!(
-            result.artifact.metadata["revisedPrompt"],
+            result.artifacts[0].metadata["revisedPrompt"],
             "draw a more precise icon"
         );
         assert_eq!(
-            result.artifact.metadata["remoteSourceUrl"],
+            result.artifacts[0].metadata["remoteSourceUrl"],
             format!("http://{address}/generated.png")
         );
     }
