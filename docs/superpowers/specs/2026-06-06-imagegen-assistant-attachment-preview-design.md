@@ -1,166 +1,139 @@
-# Image Generation Assistant Attachment Preview Design
+# Image Generation Thumbnail Preview Design
 
 ## Summary
 
-Generated images should appear in chat exactly like image attachments: a
-thumbnail in the assistant message that opens the existing attachment preview
-overlay. The UI must not render the generated image's absolute file path,
-filename, provider, job id, or a separate generated-artifact card.
+Generated `/image` results should render as the same compact image thumbnail UI
+used by chat image attachments. The chat surface must not show the generated
+file's absolute path, filename, provider, job id, or a generated-artifact card.
 
-This is a long-term contract change. Backward compatibility with the current
-path-as-text behavior is not required.
+This is a narrow UI behavior change. It does not introduce durable assistant
+attachments or a generated-media artifact system.
+
+## User Requirement
+
+After image generation succeeds:
+
+- show one image thumbnail in the conversation;
+- use the existing attachment image thumbnail and overlay UX;
+- show no other generated-image information in the message;
+- if the image cannot be read, show an unavailable thumbnail treatment instead
+  of a local path.
 
 ## Goals
 
-- Reuse the existing attachment thumbnail and overlay UX for generated images.
-- Persist generated image previews across refreshes, session switches, and
-  daemon restarts.
-- Keep the visible chat surface minimal: thumbnail only.
-- Require a concrete `sessionId` for image generation requests that should
-  appear in chat.
-- Avoid a generated-media-specific frontend component unless the shared
-  attachment component cannot support the behavior.
-- Preserve graceful missing-file handling without exposing local paths.
+- Reuse the existing attachment preview strip styling and interaction.
+- Keep `generate_media` response shape stable, including the existing `path`.
+- Convert a successful generated image path into a transient UI preview item.
+- Avoid rendering absolute local paths in visible chat content.
+- Keep missing-file handling graceful and visually consistent with attachments.
 
 ## Non-Goals
 
-- Do not add artifact cards.
-- Do not add visible Open, Reveal, Retry, provider, model, job, filename, or
-  path metadata to the chat message.
-- Do not redesign media settings.
-- Do not add video preview support in this change.
-- Do not keep the current absolute-path text fallback.
-- Do not add a thumbnail cache or image resizing pipeline in this change.
+- Do not change transcript event schema.
+- Do not add `AssistantMessage.attachments`.
+- Do not add session-store attachment staging from generated files.
+- Do not require `GenerateMediaInput.sessionId` as a new backend contract.
+- Do not copy generated files into chat attachment storage.
+- Do not persist generated preview thumbnails across refreshes, session switches,
+  or daemon restarts in this change.
+- Do not add artifact cards, media galleries, file reveal actions, retry actions,
+  provider/model/job metadata, or visible filenames.
+- Do not add video preview support.
+- Do not add thumbnail caching, image resizing, or generated-artifact indexing.
 
 ## Architecture
 
-Use one durable message-attachment pipeline for uploaded images and generated
-images.
+Keep media generation and chat attachments as separate storage concerns.
 
-`TranscriptEvent::AssistantMessage` becomes attachment-capable, matching the
-existing `UserMessage` attachment behavior. A generated image result is stored
-as a `StoredAttachment` under the session attachment store and referenced by an
-assistant transcript event whose text is empty.
+`generate_media` continues to return the generated output `path`. The frontend
+uses that path only as an internal pointer for immediate preview creation. The
+path is never rendered as message text.
 
-The desktop and daemon timeline DTOs expose assistant attachments using the
-same `ChatAttachmentDto` shape already used for user attachments. The frontend
-renders attachments on both user and assistant messages with
-`MessageAttachmentPreviewStrip`.
+On successful `/image`, the desktop UI appends a transient assistant timeline
+item with empty body text and one image-like attachment preview. That transient
+item is for the current in-memory conversation view only. It is not written to
+the transcript and does not alter provider conversation replay.
 
-The generated output path remains internal to media generation and artifact
-storage. It is not included in visible message text.
+The preview should reuse existing attachment UI components where possible:
 
-Both daemon surfaces that implement `generate_media` must follow the same
-contract: the CLI daemon path in `crates/puffer-cli/src/daemon.rs` and the
-Tauri preview backend path in `apps/puffer-desktop/src-tauri/src/backend.rs`.
-The desktop frontend should not depend on which backend served the request.
+- `MessageAttachmentPreviewStrip` if it can accept a direct `previewUrl` without
+  requiring persisted chat attachment IDs;
+- otherwise `AttachmentPreviewStrip` with a small adapter shape that matches the
+  existing `MessageAttachment` display contract.
 
-The session store should expose a small helper for staging an attachment from
-an existing file path. This avoids reading generated image bytes into frontend
-memory or duplicating staging logic in each backend. The helper copies the file
-into the session attachment directory and records metadata, using the same
-20 MiB attachment cap used by chat attachments to protect preview performance.
+If the frontend cannot safely read local image bytes from the returned path with
+existing APIs, add one small backend read endpoint dedicated to generated media
+previews. That endpoint should:
+
+- accept a local path returned by `generate_media`;
+- validate that the path is a file and an image;
+- return preview bytes and MIME type;
+- return an unavailable state when the file is missing or unreadable;
+- avoid exposing file contents for non-image paths.
+
+Prefer the smallest endpoint that enables the UI preview. Do not build a
+general artifact registry or durable attachment API for this requirement.
 
 ## Data Flow
 
 1. The user submits `/image <prompt>`.
-2. Desktop calls `generate_media` with required `sessionId`, `kind=image`, and
-   `prompt`.
-3. The backend runs the existing exact media runtime.
-4. On success, the backend stores the generated image bytes as a session
-   attachment with kind `image`.
-5. The backend appends an assistant transcript event with empty text and the
-   stored image attachment.
-6. The backend publishes the same session-changed notification used for other
-   transcript updates.
-7. The frontend refreshes the selected session without showing a full loading
-   reset and renders only the thumbnail.
+2. Desktop calls existing `generateMedia({ sessionId, kind: "image", prompt })`.
+3. On success, if `result.path` is present, the frontend loads a preview from
+   that path.
+4. The frontend appends a transient assistant row with one thumbnail and no body
+   text.
+5. The row renders through the same image attachment thumbnail UI and opens the
+   same attachment overlay.
 
-The frontend does not read absolute paths directly. Preview bytes come through
-the existing `read_chat_attachment_preview` path.
-
-## Error Handling
-
-Generation errors remain `generate_media` errors and do not create transcript
-items.
-
-If `sessionId` is missing, invalid, or unknown, `generate_media` returns an
-error before provider execution. This avoids producing an image that cannot be
-attached to a chat session.
-
-If generation succeeds but attachment storage fails, `generate_media` returns an
-error and no partial assistant message is appended.
-
-If the generated image exceeds the attachment byte limit, `generate_media`
-returns an error and does not append a partial assistant message.
-
-If attachment metadata exists but the backing file is later missing, the UI
-uses an unavailable image-thumbnail treatment:
-
-- the message still reserves the same compact thumbnail area;
-- the message does not fall back to a file card or visible filename;
-- no absolute path is shown;
-- clicking opens the existing attachment overlay in preview-unavailable state.
+If `result.path` is null or the file is unavailable, append the same transient
+row with an unavailable image thumbnail state. Do not show a path fallback.
 
 ## Frontend Behavior
 
-Assistant message rendering supports attachments the same way user message
-rendering does.
+Generated image rows:
 
-For generated image messages:
-
-- render the image thumbnail only;
+- render only the thumbnail;
 - suppress empty message text;
-- do not render filename or metadata next to the thumbnail;
-- for missing images, render a same-size unavailable thumbnail placeholder;
-- keep click behavior identical to uploaded image attachments.
+- do not show filename, path, job id, provider, model, or status text;
+- use the existing attachment click-to-preview interaction;
+- reserve the same visual footprint as attachment image thumbnails;
+- show the existing unavailable-image treatment when the preview cannot load.
 
-This keeps generated-image UX visually indistinguishable from attachment image
-UX, which is the desired behavior.
+Status messages may still communicate that generation succeeded or failed, but
+they must not replace the thumbnail in the conversation and must not expose the
+local file path.
 
-## Contract Changes
+## Contract Boundaries
 
-`GenerateMediaInput.sessionId` becomes required for desktop image generation.
-The result no longer needs to expose `path` to the frontend. Job and artifact
-metadata may remain in the response for status/debugging, but visible chat
-rendering must come from the persisted assistant attachment.
+The frontend may keep using `GenerateMediaResult.path` as an internal preview
+source. It must not treat `path` as display content.
 
-`AssistantMessage` gains an `attachments` field. New transcript events should
-write it explicitly. Serde defaults may still be used to keep test fixtures and
-existing transcript reads simple, but compatibility fallback is not the user
-visible contract.
+The transient generated preview is a UI artifact. It is not part of transcript
+history, model context reconstruction, session attachment storage, or future
+conversation replay.
 
-Timeline normalization must treat user and assistant attachments uniformly. If a
-message has no visible text but has attachments, the message still renders as a
-valid chat row.
-
-Any code that reconstructs model conversation state from transcripts should
-ignore assistant attachments unless a provider-specific future feature requires
-image outputs to be replayed into model context. The generated image is a UI
-artifact, not a new user prompt.
+If later requirements ask for generated previews to survive reloads or appear in
+exported transcripts, that should be handled as a separate durable attachment
+feature with its own spec.
 
 ## Testing
 
 Coverage should verify:
 
-- `generate_media` rejects missing or unknown `sessionId` before provider
-  execution;
-- assistant transcript events can serialize and deserialize attachments;
-- desktop and CLI daemon timeline DTOs expose assistant attachments;
-- both CLI daemon and Tauri preview backend `generate_media` paths append an
-  assistant message with one image attachment and no path text;
-- assistant image attachments render with `MessageAttachmentPreviewStrip`;
-- missing backing files render the unavailable preview state without showing
-  absolute paths;
-- oversized generated images fail without appending a partial chat item;
-- `/image ...` still calls `generate_media` and does not call
-  `run_agent_turn`.
+- `/image` success with a readable image path shows one thumbnail in chat;
+- the generated image path is not visible in the message body;
+- no filename, provider, model, job id, or artifact metadata appears in the
+  generated image row;
+- clicking the thumbnail opens the same preview overlay used for attachments;
+- missing or unreadable generated files show an unavailable thumbnail and no
+  path fallback;
+- `/video` behavior is unchanged unless video preview is explicitly requested;
+- normal uploaded image attachments still render as before.
 
-## Implementation Boundaries
+## Scope Guard
 
-Keep the implementation scoped to transcript attachment support, media result
-storage, and shared message rendering.
-
-Do not introduce a new artifact registry or frontend media gallery as part of
-this change. If future media features need richer artifact management, they can
-build on the same durable attachment metadata rather than replacing this path.
+This change should fit in the desktop `/image` success path, preview loading,
+and existing attachment preview rendering. If implementation starts requiring
+transcript schema edits, session-store attachment migration, daemon event
+publishing, or an artifact registry, stop and re-evaluate because that exceeds
+the current requirement.

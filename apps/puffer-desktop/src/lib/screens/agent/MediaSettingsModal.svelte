@@ -22,7 +22,7 @@
   };
 
   let { kind, sessionCwd, settings, settingsReady = true, onClose }: Props = $props();
-  const IMAGE_OUTPUT_DIR_RELATIVE = ".puffer/workflows/images";
+  const IMAGE_OUTPUT_DIR_RELATIVE = ".puffer/media/images";
   const initialSaved = untrack(() => mediaSettingsForKind(kind, settings));
   const initialImage = untrack(() => settings.image);
   const initialVideo = untrack(() => settings.video);

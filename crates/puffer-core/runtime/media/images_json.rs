@@ -166,7 +166,8 @@ impl ImagesJsonAdapter {
 
         let output_format = resolved_output_format(&request_parameters, &output.bytes);
         let filename = format!("image.{}", extension_for_output_format(&output_format));
-        let artifact_path = service.write_artifact_bytes(&artifact_id, &filename, &output.bytes)?;
+        let artifact_path =
+            service.write_image_artifact_bytes(&artifact_id, &filename, &output.bytes)?;
         let artifact = MediaArtifact {
             id: artifact_id.clone(),
             job_id: job_id.clone(),

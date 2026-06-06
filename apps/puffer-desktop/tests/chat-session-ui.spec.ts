@@ -2,6 +2,31 @@ import { expect, type Page, test } from "@playwright/test";
 import { FakeDaemon } from "./support/fakeDaemon";
 
 const baseTime = Date.now();
+const onePixelPngBytes = Array.from(
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==",
+    "base64"
+  )
+);
+
+const configuredImageMedia = {
+  image: {
+    providerId: "openai",
+    modelId: "gpt-image-1",
+    adapter: "images_json",
+    parameters: {
+      size: "1024x1024",
+      quality: "auto",
+      output_format: "png"
+    }
+  },
+  video: {
+    providerId: null,
+    modelId: null,
+    aspectRatio: "16:9",
+    durationSeconds: 8
+  }
+};
 
 async function openSession(page: Page, name: RegExp): Promise<void> {
   await page.getByRole("button", { name }).first().click();
@@ -307,7 +332,7 @@ test("composer image generation settings modal saves media config from daemon ca
     ["openai", "gpt-image-1", "images_json"].join("\u0000")
   );
   const imageFolder = dialog.getByLabel("Image folder");
-  await expect(imageFolder).toHaveValue("/tmp/puffer/.puffer/workflows/images");
+  await expect(imageFolder).toHaveValue("/tmp/puffer/.puffer/media/images");
   await expect(imageFolder).toHaveJSProperty("readOnly", true);
   const openFolderButton = dialog.getByRole("button", { name: "Open folder" });
   await expect(openFolderButton).toBeVisible();
@@ -549,26 +574,7 @@ test("explicit image slash trigger routes to media generation", async ({ page })
       }
     ]
   });
-  daemon.setSettingsConfig({
-    media: {
-      image: {
-        providerId: "openai",
-        modelId: "gpt-image-1",
-        adapter: "images_json",
-        parameters: {
-          size: "1024x1024",
-          quality: "auto",
-          output_format: "png"
-        }
-      },
-      video: {
-        providerId: null,
-        modelId: null,
-        aspectRatio: "16:9",
-        durationSeconds: 8
-      }
-    }
-  });
+  daemon.setSettingsConfig({ media: configuredImageMedia });
   await daemon.install(page);
   await daemon.open(page);
   await openSession(page, /Image trigger session/);
@@ -583,6 +589,239 @@ test("explicit image slash trigger routes to media generation", async ({ page })
     prompt: "draw a compact icon"
   });
   expect(daemon.requests.filter((candidate) => candidate.method === "run_agent_turn")).toHaveLength(0);
+});
+
+test("image slash success renders generated thumbnail without media metadata", async ({ page }) => {
+  const generatedPath = "/tmp/puffer/.puffer/media/images/generated-icon.png";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-preview",
+        displayName: "Image preview session",
+        title: "Image preview session",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "image-preview-seed",
+            text: "Generate image previews here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({ media: configuredImageMedia });
+  daemon.setGeneratedMediaResult({
+    jobId: "media-job-preview-success",
+    artifactId: "artifact-preview-success",
+    status: "succeeded",
+    path: generatedPath
+  });
+  daemon.seedGeneratedMediaPreview(generatedPath, {
+    state: "available",
+    mimeType: "image/png",
+    bytes: onePixelPngBytes
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Image preview session/);
+
+  await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await daemon.waitForRequest("read_generated_media_preview", (request) => request.params.path === generatedPath);
+  const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
+  await expect(thumbnail).toBeVisible();
+  await expect(thumbnail.getByAltText("Generated image")).toBeVisible();
+
+  const generatedRow = page.locator(".pf-msg").filter({ has: thumbnail });
+  await expect(generatedRow).not.toContainText(generatedPath);
+  await expect(generatedRow).not.toContainText("generated-icon.png");
+  await expect(generatedRow).not.toContainText("media-job-preview-success");
+  await expect(generatedRow).not.toContainText("artifact-preview-success");
+  await expect(generatedRow).not.toContainText("openai");
+  await expect(generatedRow).not.toContainText("gpt-image-1");
+
+  await thumbnail.click();
+  const previewDialog = page.getByRole("dialog", { name: "Generated image" });
+  await expect(previewDialog).toBeVisible();
+  await expect(previewDialog.getByAltText("Generated image")).toBeVisible();
+  await expect(previewDialog).toContainText("PNG");
+});
+
+test("missing generated image preview shows unavailable thumbnail without path fallback", async ({ page }) => {
+  const generatedPath = "/tmp/puffer/.puffer/media/images/missing-generated.png";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-preview-missing",
+        displayName: "Missing image preview",
+        title: "Missing image preview",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "missing-image-preview-seed",
+            text: "Generate missing previews here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({ media: configuredImageMedia });
+  daemon.setGeneratedMediaResult({
+    jobId: "media-job-preview-missing",
+    artifactId: "artifact-preview-missing",
+    status: "succeeded",
+    path: generatedPath
+  });
+  daemon.seedGeneratedMediaPreview(generatedPath, { state: "missing" });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Missing image preview/);
+
+  await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await daemon.waitForRequest("read_generated_media_preview", (request) => request.params.path === generatedPath);
+  const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
+  await expect(thumbnail).toBeVisible();
+  const generatedRow = page.locator(".pf-msg").filter({ has: thumbnail });
+  await expect(generatedRow.locator('.pf-attachment-thumb[data-state="missing"]')).toBeVisible();
+  await expect(generatedRow.locator(".pf-attachment-file-card")).toHaveCount(0);
+  await expect(generatedRow).not.toContainText(generatedPath);
+  await expect(generatedRow).not.toContainText("missing-generated.png");
+  await expect(generatedRow).not.toContainText("media-job-preview-missing");
+});
+
+test("image slash success without output path shows unavailable thumbnail", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-preview-no-path",
+        displayName: "No path image preview",
+        title: "No path image preview",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "no-path-image-preview-seed",
+            text: "Generate no-path previews here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({ media: configuredImageMedia });
+  daemon.setGeneratedMediaResult({
+    jobId: "media-job-preview-no-path",
+    artifactId: "artifact-preview-no-path",
+    status: "succeeded",
+    path: null
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /No path image preview/);
+
+  await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
+  await expect(thumbnail).toBeVisible();
+  const generatedRow = page.locator(".pf-msg").filter({ has: thumbnail });
+  await expect(generatedRow.locator('.pf-attachment-thumb[data-state="missing"]')).toBeVisible();
+  await expect(generatedRow.locator(".pf-attachment-file-card")).toHaveCount(0);
+  await expect(generatedRow).not.toContainText("media-job-preview-no-path");
+  expect(daemon.requests.filter((request) => request.method === "read_generated_media_preview")).toHaveLength(0);
+});
+
+test("generated image preview is not restored after session switch", async ({ page }) => {
+  const generatedPath = "/tmp/puffer/.puffer/media/images/transient-generated.png";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-preview-transient",
+        displayName: "Transient image preview",
+        title: "Transient image preview",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "transient-image-preview-seed",
+            text: "Generate transient previews here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      },
+      {
+        sessionId: "session-image-preview-other",
+        displayName: "Other image preview session",
+        title: "Other image preview session",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime - 1_000,
+        createdAtMs: baseTime - 70_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "other-image-preview-seed",
+            text: "Another session.",
+            createdAtMs: baseTime - 40_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({ media: configuredImageMedia });
+  daemon.setGeneratedMediaResult({
+    jobId: "media-job-preview-transient",
+    artifactId: "artifact-preview-transient",
+    status: "succeeded",
+    path: generatedPath
+  });
+  daemon.seedGeneratedMediaPreview(generatedPath, {
+    state: "available",
+    mimeType: "image/png",
+    bytes: onePixelPngBytes
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Transient image preview/);
+
+  await page.locator(".pf-composer textarea").fill("/image draw a compact icon");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await daemon.waitForRequest("read_generated_media_preview", (request) => request.params.path === generatedPath);
+  const thumbnail = page.getByRole("button", { name: "Open image attachment Generated image" });
+  await expect(thumbnail).toBeVisible();
+
+  await openSession(page, /Other image preview session/);
+  await expect(page.getByText("Another session.")).toBeVisible();
+  await expect(thumbnail).toHaveCount(0);
+
+  await openSession(page, /Transient image preview/);
+  await expect(page.getByText("Generate transient previews here.")).toBeVisible();
+  await expect(thumbnail).toHaveCount(0);
 });
 
 test("normal image text still routes to chat", async ({ page }) => {
@@ -661,10 +900,7 @@ test("explicit video slash trigger fails clearly without capability", async ({ p
 });
 
 test("message attachments open image preview and file details", async ({ page }) => {
-  const imageBuffer = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==",
-    "base64"
-  );
+  const imageBuffer = Buffer.from(onePixelPngBytes);
   const daemon = new FakeDaemon({
     sessions: [
       {
@@ -2512,6 +2748,70 @@ test("transcript reload replaces pending live tool card when invocation event is
 
   await expect(page.locator(".pf-tool").filter({ hasText: "Read" })).toHaveCount(1);
   await expect(page.locator(".pf-tool").filter({ hasText: "running" })).toHaveCount(0);
+});
+
+test("pending image generation activity uses the standard tool surface", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-pending-image-activity",
+        displayName: "Pending image activity",
+        title: "Pending image activity",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 3,
+        providerId: "codex",
+        modelId: "test-model",
+        timeline: [
+          {
+            kind: "user_message",
+            id: "pending-image-user",
+            text: "Generate a small catalog image.",
+            createdAtMs: baseTime - 30_000
+          },
+          {
+            kind: "tool_call",
+            id: "pending-image-tool",
+            toolId: "ImageGeneration",
+            status: "running",
+            inputText: JSON.stringify({ prompt: "A compact UI catalog card" }),
+            inputJson: { prompt: "A compact UI catalog card" },
+            outputText: "",
+            createdAtMs: baseTime - 20_000
+          },
+          {
+            kind: "assistant_message",
+            id: "pending-image-assistant",
+            text: "I am generating the image.",
+            createdAtMs: baseTime - 10_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Pending image activity/);
+  const activityGroup = page.locator(".activity-group").filter({ hasText: "Used 1 tool" });
+  await expect(activityGroup).toBeVisible();
+  await activityGroup.getByRole("button", { name: /Agent activity/ }).click();
+  await activityGroup.getByRole("button", { name: /ImageGeneration/ }).click();
+
+  const pendingBody = activityGroup.locator(".activity-panel .pf-tool-pending-body");
+  await expect(pendingBody).toBeVisible();
+  await expect(pendingBody.getByText("awaiting result")).toBeVisible();
+  const colors = await pendingBody.evaluate((node) => {
+    const pending = node as HTMLElement;
+    const activity = pending.closest(".activity-group") as HTMLElement;
+    return {
+      pending: getComputedStyle(pending).backgroundColor,
+      activity: getComputedStyle(activity).backgroundColor
+    };
+  });
+  expect(colors.pending).toBe(colors.activity);
 });
 
 test("transcript reload dedupes completed live tools by stable input signature", async ({

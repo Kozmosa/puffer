@@ -39,6 +39,17 @@ impl MediaGenerationService {
         Ok(self.artifacts_dir().join(artifact_id).join(filename))
     }
 
+    /// Resolves a safe generated-image file path below the service image directory.
+    pub(crate) fn image_artifact_file_path(
+        &self,
+        artifact_id: &str,
+        filename: &str,
+    ) -> Result<PathBuf> {
+        validate_simple_id(artifact_id, "artifact id")?;
+        validate_artifact_filename(filename)?;
+        Ok(self.images_dir().join(artifact_id).join(filename))
+    }
+
     /// Writes generated artifact bytes to a safe artifact path.
     pub(crate) fn write_artifact_bytes(
         &self,
@@ -47,12 +58,19 @@ impl MediaGenerationService {
         bytes: &[u8],
     ) -> Result<PathBuf> {
         let path = self.artifact_file_path(artifact_id, filename)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create media artifact directory {}", parent.display()))?;
-        }
-        fs::write(&path, bytes)
-            .with_context(|| format!("write media artifact bytes {}", path.display()))?;
+        write_media_bytes(&path, bytes)?;
+        Ok(path)
+    }
+
+    /// Writes generated image bytes to a safe image artifact path.
+    pub(crate) fn write_image_artifact_bytes(
+        &self,
+        artifact_id: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf> {
+        let path = self.image_artifact_file_path(artifact_id, filename)?;
+        write_media_bytes(&path, bytes)?;
         Ok(path)
     }
 
@@ -90,6 +108,10 @@ impl MediaGenerationService {
         self.media_dir().join("artifacts")
     }
 
+    fn images_dir(&self) -> PathBuf {
+        self.media_dir().join("images")
+    }
+
     fn artifact_sidecars_dir(&self) -> PathBuf {
         self.media_dir().join("artifact-sidecars")
     }
@@ -105,6 +127,15 @@ impl MediaGenerationService {
             .artifact_sidecars_dir()
             .join(format!("{artifact_id}.json")))
     }
+}
+
+fn write_media_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create media output directory {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write media bytes {}", path.display()))?;
+    Ok(())
 }
 
 fn write_json_sidecar<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -196,6 +227,22 @@ mod tests {
 
         let error = service
             .artifact_file_path("artifact-1", "../escape.png")
+            .unwrap_err();
+        assert!(error.to_string().contains("artifact filename"));
+    }
+
+    #[test]
+    fn media_image_paths_must_stay_under_image_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = MediaGenerationService::new(temp.path());
+
+        let path = service
+            .image_artifact_file_path("artifact-1", "image.png")
+            .unwrap();
+        assert!(path.starts_with(temp.path().join(".puffer/media/images")));
+
+        let error = service
+            .image_artifact_file_path("artifact-1", "../escape.png")
             .unwrap_err();
         assert!(error.to_string().contains("artifact filename"));
     }

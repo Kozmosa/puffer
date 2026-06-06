@@ -23,7 +23,7 @@ use daemon_launcher::DaemonLauncher;
 use events::EventEmitter;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Builder, State};
 
@@ -427,15 +427,18 @@ fn cancel_turn(
 fn open_image_dir(app: AppHandle, cwd: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
 
-    let base = std::path::Path::new(&cwd);
-    if !base.is_absolute() {
-        return Err("cwd must be absolute".to_string());
-    }
-    let dir = base.join(".puffer/workflows/images");
+    let dir = image_dir_for_cwd(Path::new(&cwd))?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     app.opener()
         .open_path(dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|error| error.to_string())
+}
+
+fn image_dir_for_cwd(cwd: &Path) -> Result<PathBuf, String> {
+    if !cwd.is_absolute() {
+        return Err("cwd must be absolute".to_string());
+    }
+    Ok(cwd.join(".puffer").join("media").join("images"))
 }
 
 pub fn run() {
@@ -590,6 +593,16 @@ mod tests {
 
         assert!(registered.contains("stage_chat_attachment"));
         assert!(registered.contains("read_chat_attachment_preview"));
+    }
+
+    #[test]
+    fn image_dir_for_cwd_uses_media_images_directory() {
+        let dir = super::image_dir_for_cwd(std::path::Path::new("/tmp/puffer")).unwrap();
+
+        assert_eq!(
+            dir,
+            std::path::PathBuf::from("/tmp/puffer/.puffer/media/images")
+        );
     }
 
     #[test]

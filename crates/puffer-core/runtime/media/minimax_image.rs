@@ -154,7 +154,8 @@ impl MinimaxImageAdapter {
         };
 
         let filename = "image.png";
-        let artifact_path = service.write_artifact_bytes(&artifact_id, filename, &output.bytes)?;
+        let artifact_path =
+            service.write_image_artifact_bytes(&artifact_id, filename, &output.bytes)?;
         let artifact = MediaArtifact {
             id: artifact_id.clone(),
             job_id: job_id.clone(),

@@ -39,6 +39,10 @@
     <div class="pf-attachment-thumb">
       <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
     </div>
+  {:else if attachment.kind === "image" && attachment.state === "missing" && attachment.previewUrl === null}
+    <div class="pf-attachment-thumb" data-state="missing" aria-hidden="true">
+      <Icon name="image" size={20} />
+    </div>
   {:else}
     <div class="pf-attachment-file-card" data-kind={attachment.kind}>
       <span class="pf-attachment-file-icon">
@@ -128,6 +132,14 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--muted);
+  }
+  .pf-attachment-thumb[data-state="missing"] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-style: dashed;
+    color: var(--muted-foreground);
+    background: color-mix(in oklab, var(--muted) 42%, var(--background));
   }
   .pf-attachment-thumb img {
     width: 100%;

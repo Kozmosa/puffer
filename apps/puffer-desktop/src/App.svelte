@@ -47,6 +47,7 @@
     runRemoteBash,
     writeRemoteFile,
     generateMedia,
+    readGeneratedMediaPreview,
     runAgentTurn,
     stageChatAttachment,
     resolvePermission as resolveTurnPermission,
@@ -56,7 +57,8 @@
     loadDefaultWorkspace,
     loadDesktopPins,
     setDesktopPin,
-    type AgentTurnSubmitOptions
+    type AgentTurnSubmitOptions,
+    type GenerateMediaResult
   } from "./lib/api/desktop";
   import {
     subscribeSessionEvents,
@@ -110,6 +112,7 @@
   type CreatedSessionResult = Awaited<ReturnType<typeof createSession>>;
 
   const STALE_TURN_RETRY_AFTER_MS = 120_000;
+  const GENERATED_IMAGE_PREVIEW_ID_PREFIX = "live-generated-image-";
 
   type StreamAttemptSnapshot = {
     liveStreamItems: TimelineItem[];
@@ -949,7 +952,7 @@
       rememberFallbackSession(detail.session);
       sessionDetail = detail;
       rememberSession(detail.session.id);
-      resetLiveTurnState();
+      resetLiveTurnState({ revokePreviews: false });
       statusMessage = `Loaded ${detail.timeline.length} conversation items.`;
       openAgentSessionId = detail.session.id;
     } catch {
@@ -1578,7 +1581,23 @@
     setStreamAttemptSnapshot(currentLiveStreamSnapshot());
   }
 
-  function resetLiveTurnState() {
+  function isGeneratedImagePreviewItem(item: TimelineItem): boolean {
+    return item.id.startsWith(GENERATED_IMAGE_PREVIEW_ID_PREFIX);
+  }
+
+  function discardGeneratedImagePreviewItems(items: TimelineItem[]): TimelineItem[] {
+    const kept = items.filter((item) => !isGeneratedImagePreviewItem(item));
+    if (kept.length === items.length) return items;
+    revokeTimelineAttachmentPreviews(items.filter(isGeneratedImagePreviewItem));
+    return kept;
+  }
+
+  function resetLiveTurnState(options: { revokePreviews?: boolean } = {}) {
+    if (options.revokePreviews ?? true) {
+      revokeTimelineAttachmentPreviews(submittedMessages);
+      revokeTimelineAttachmentPreviews(liveStreamItems);
+      revokeTimelineAttachmentPreviews(streamAttemptLiveItems);
+    }
     submittedMessages = [];
     submittedMessageBaselineIds = {};
     liveStreamItems = [];
@@ -1596,11 +1615,16 @@
   }
 
   function captureTransientConversationState(): TransientConversationState {
+    const cachedLiveStreamItems = discardGeneratedImagePreviewItems(liveStreamItems);
+    const cachedStreamAttempt = {
+      ...captureStreamAttemptSnapshot(),
+      liveStreamItems: discardGeneratedImagePreviewItems(streamAttemptLiveItems)
+    };
     return {
       submittedMessages,
       submittedMessageBaselineIds: { ...submittedMessageBaselineIds },
-      liveStreamItems,
-      streamAttempt: captureStreamAttemptSnapshot(),
+      liveStreamItems: cachedLiveStreamItems,
+      streamAttempt: cachedStreamAttempt,
       replayTextByTurn: { ...replayTextByTurn },
       turnPermissionLookup: { ...turnPermissionLookup },
       turnQuestionLookup: { ...turnQuestionLookup },
@@ -1646,6 +1670,12 @@
     );
   }
 
+  function revokeTransientConversationStatePreviews(state: TransientConversationState): void {
+    revokeTimelineAttachmentPreviews(state.submittedMessages);
+    revokeTimelineAttachmentPreviews(state.liveStreamItems);
+    revokeTimelineAttachmentPreviews(state.streamAttempt.liveStreamItems);
+  }
+
   function setTransientConversationState(
     sessionId: string,
     state: TransientConversationState | null
@@ -1655,6 +1685,7 @@
       return;
     }
     if (transientConversationStates[sessionId]) {
+      revokeTransientConversationStatePreviews(transientConversationStates[sessionId]);
       const { [sessionId]: _drop, ...rest } = transientConversationStates;
       transientConversationStates = rest;
     }
@@ -1662,7 +1693,10 @@
 
   function saveCurrentTransientConversationState(sessionId: string | null | undefined) {
     if (!sessionId) return;
-    setTransientConversationState(sessionId, captureTransientConversationState());
+    const state = captureTransientConversationState();
+    liveStreamItems = state.liveStreamItems;
+    setStreamAttemptSnapshot(state.streamAttempt);
+    setTransientConversationState(sessionId, state);
   }
 
   function pendingSubmittedMessageKey(sessionId: string): string {
@@ -2204,7 +2238,7 @@
   function restoreTransientConversationState(sessionId: string) {
     const cached = transientConversationStates[sessionId];
     if (!cached) {
-      resetLiveTurnState();
+      resetLiveTurnState({ revokePreviews: false });
       return;
     }
     submittedMessages = cached.submittedMessages;
@@ -2583,6 +2617,12 @@
 
   function resetDaemonScopedSessionState() {
     cancelRecapBlurTimer();
+    revokeTimelineAttachmentPreviews(submittedMessages);
+    revokeTimelineAttachmentPreviews(liveStreamItems);
+    revokeTimelineAttachmentPreviews(streamAttemptLiveItems);
+    for (const state of Object.values(transientConversationStates)) {
+      revokeTransientConversationStatePreviews(state);
+    }
     selectedSession = null;
     groups = [];
     groupsLoading = false;
@@ -3023,6 +3063,81 @@
     };
   }
 
+  function generatedImageStatusMessage(status: string): string {
+    const normalized = status.trim();
+    return normalized ? `Image generation ${normalized}.` : "Image generation finished.";
+  }
+
+  function generatedImageExtension(mimeType: string): string {
+    switch (mimeType.toLowerCase()) {
+      case "image/png":
+        return "PNG";
+      case "image/jpeg":
+        return "JPEG";
+      case "image/webp":
+        return "WEBP";
+      default:
+        return "IMAGE";
+    }
+  }
+
+  function generatedImageAttachmentId(result: GenerateMediaResult): string {
+    return `generated-image-${result.artifactId ?? result.jobId}`;
+  }
+
+  function missingGeneratedImageAttachment(result: GenerateMediaResult): MessageAttachment {
+    return {
+      id: generatedImageAttachmentId(result),
+      name: "Generated image",
+      mimeType: "image/*",
+      size: 0,
+      extension: "IMAGE",
+      kind: "image",
+      state: "missing",
+      previewUrl: null
+    };
+  }
+
+  async function generatedImageAttachment(result: GenerateMediaResult): Promise<MessageAttachment> {
+    if (!result.path) return missingGeneratedImageAttachment(result);
+
+    const preview = await readGeneratedMediaPreview(result.path).catch(() => ({ state: "missing" as const }));
+    if (preview.state !== "available") return missingGeneratedImageAttachment(result);
+
+    const bytes = new Uint8Array(preview.bytes);
+    return {
+      id: generatedImageAttachmentId(result),
+      name: "Generated image",
+      mimeType: preview.mimeType,
+      size: bytes.byteLength,
+      extension: generatedImageExtension(preview.mimeType),
+      kind: "image",
+      state: "available",
+      previewUrl: URL.createObjectURL(new Blob([bytes], { type: preview.mimeType }))
+    };
+  }
+
+  async function appendGeneratedImagePreview(
+    sessionId: string,
+    result: GenerateMediaResult
+  ): Promise<void> {
+    const attachment = await generatedImageAttachment(result);
+    if (selectedSession?.id !== sessionId) {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      return;
+    }
+    appendLive({
+      id: `${GENERATED_IMAGE_PREVIEW_ID_PREFIX}${result.artifactId ?? result.jobId}`,
+      kind: "assistant",
+      title: "Assistant",
+      summary: "Generated image",
+      body: "",
+      meta: [],
+      status: result.status,
+      attachments: [attachment]
+    });
+  }
+
   async function submitMediaSlash(
     sessionId: string,
     request: MediaSlashRequest,
@@ -3047,7 +3162,12 @@
         kind: request.kind,
         prompt: request.prompt
       });
-      statusMessage = `${request.kind === "image" ? "Image" : "Video"} media job ${result.jobId.slice(0, 8)} ${result.status}.`;
+      if (request.kind === "image") {
+        await appendGeneratedImagePreview(sessionId, result);
+        statusMessage = generatedImageStatusMessage(result.status);
+      } else {
+        statusMessage = `Video media job ${result.jobId.slice(0, 8)} ${result.status}.`;
+      }
       return true;
     } catch (error) {
       const detail = errorText(error);
@@ -3196,6 +3316,7 @@
   function appendLive(item: TimelineItem) {
     const existingIdx = liveStreamItems.findIndex((existing) => existing.id === item.id);
     if (existingIdx >= 0) {
+      revokeTimelineAttachmentPreviews([liveStreamItems[existingIdx]]);
       liveStreamItems = [
         ...liveStreamItems.slice(0, existingIdx),
         item,
@@ -3436,7 +3557,8 @@
   }
 
   function stillMissingFromPersisted(items: TimelineItem[], pending: TimelineItem[]): TimelineItem[] {
-    return pending.filter((item) => !timelineHasTransientMatch(items, item));
+    return discardGeneratedImagePreviewItems(pending)
+      .filter((item) => !timelineHasTransientMatch(items, item));
   }
 
   function isTransientOrderingAnchor(item: TimelineItem): boolean {
@@ -3499,6 +3621,7 @@
     persisted: TimelineItem[],
     pending: TimelineItem[]
   ): TimelineItem[] {
+    pending = discardGeneratedImagePreviewItems(pending);
     let searchStart = 0;
     let pendingUnmatched: TimelineItem[] = [];
     let anchored: TimelineItem[] = [];

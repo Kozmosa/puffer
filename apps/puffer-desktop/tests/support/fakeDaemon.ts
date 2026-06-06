@@ -31,6 +31,16 @@ export type AttachmentPreviewFixture =
   | { state: "missing" }
   | { state: "unsupported" };
 
+type GeneratedMediaResultFixture = Partial<{
+  jobId: string;
+  artifactId: string | null;
+  providerId: string;
+  modelId: string;
+  status: string;
+  prompt: string;
+  path: string | null;
+}>;
+
 type FakeFileValue =
   | string
   | {
@@ -437,6 +447,8 @@ export class FakeDaemon {
   private readonly projectTags = new Map<string, string[]>();
   private readonly timelines = new Map<string, JsonRecord[]>();
   private readonly attachmentPreviews = new Map<string, AttachmentPreviewFixture>();
+  private readonly generatedMediaPreviews = new Map<string, AttachmentPreviewFixture>();
+  private generatedMediaResult: GeneratedMediaResultFixture | null = null;
   private readonly details = new Map<string, SessionDetailOverrides>();
   private groupedSessionFilter: ((metadata: JsonRecord) => boolean) | null = null;
   private readonly files = new Map<string, FakeFileValue>();
@@ -1165,6 +1177,14 @@ export class FakeDaemon {
     this.attachmentPreviews.set(this.attachmentPreviewKey(sessionId, attachmentId), preview);
   }
 
+  seedGeneratedMediaPreview(path: string, preview: AttachmentPreviewFixture): void {
+    this.generatedMediaPreviews.set(path, preview);
+  }
+
+  setGeneratedMediaResult(result: GeneratedMediaResultFixture | null): void {
+    this.generatedMediaResult = result ? { ...result } : null;
+  }
+
   updateSessionMetadata(sessionId: string, updates: JsonRecord): void {
     const metadata = this.sessions.get(sessionId);
     if (!metadata) return;
@@ -1302,6 +1322,8 @@ export class FakeDaemon {
         return this.runAgentTurn(request.params);
       case "read_chat_attachment_preview":
         return this.readChatAttachmentPreview(request.params);
+      case "read_generated_media_preview":
+        return this.readGeneratedMediaPreview(request.params);
       case "start_connector_setup":
         return this.startConnectorSetup(request.params);
       case "cancel_turn": {
@@ -1730,6 +1752,11 @@ export class FakeDaemon {
     };
   }
 
+  private readGeneratedMediaPreview(params: JsonRecord): AttachmentPreviewFixture {
+    const path = String(params.path ?? "");
+    return this.generatedMediaPreviews.get(path) ?? { state: "missing" };
+  }
+
   private attachmentPreviewKey(sessionId: string, attachmentId: string): string {
     return `${sessionId}:${attachmentId}`;
   }
@@ -1921,15 +1948,16 @@ export class FakeDaemon {
       throw new Error("Video generation is not supported yet.");
     }
     const jobId = `media-job-${Date.now().toString(36)}`;
+    const fixture = this.generatedMediaResult;
     return {
-      jobId,
-      artifactId: null,
+      jobId: fixture?.jobId ?? jobId,
+      artifactId: fixture?.artifactId ?? null,
       kind,
-      providerId: settings.providerId,
-      modelId: settings.modelId,
-      status: "queued",
-      prompt,
-      path: null
+      providerId: fixture?.providerId ?? settings.providerId,
+      modelId: fixture?.modelId ?? settings.modelId,
+      status: fixture?.status ?? "queued",
+      prompt: fixture?.prompt ?? prompt,
+      path: fixture?.path ?? null
     };
   }
 

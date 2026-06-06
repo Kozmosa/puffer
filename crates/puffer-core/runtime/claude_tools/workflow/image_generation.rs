@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PROMPT_CHARS: usize = 20_000;
-const IMAGE_OUTPUT_DIR_RELATIVE: &str = ".puffer/workflows/images";
+const IMAGE_OUTPUT_DIR_RELATIVE: &str = ".puffer/media/images";
 
 /// Carries exact media runtime context into the ImageGeneration workflow tool.
 #[derive(Debug, Clone, Copy)]
@@ -660,6 +660,7 @@ mod tests {
     fn resolve_output_path_roots_outputs_in_image_folder() {
         let dir = tempdir().unwrap();
         let image_root = image_output_root(dir.path());
+        assert_eq!(image_root, dir.path().join(".puffer/media/images"));
 
         let default_path = resolve_output_path(dir.path(), None, "webp").unwrap();
         assert_eq!(default_path.parent(), Some(image_root.as_path()));
@@ -682,9 +683,8 @@ mod tests {
             image_output_path(dir.path(), "drafts/cup.png")
         );
         assert_eq!(
-            resolve_output_path(dir.path(), Some(".puffer/workflows/images/cup.png"), "png")
-                .unwrap(),
-            image_output_path(dir.path(), ".puffer/workflows/images/cup.png")
+            resolve_output_path(dir.path(), Some(".puffer/media/images/cup.png"), "png").unwrap(),
+            image_output_path(dir.path(), ".puffer/media/images/cup.png")
         );
     }
 

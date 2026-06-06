@@ -39,12 +39,12 @@ use puffer_core::{
     command_surface, default_effort_level, discover_exact_media_capabilities, dispatch_command,
     enter_plan_mode, execute_connect_flow, execute_user_turn_streaming_with_permissions_and_cancel,
     generate_exact_image_with_cache, list_exact_media_capabilities_with_cache,
-    provider_preference_family, supported_effort_levels, with_user_question_prompt_handler,
-    AppState, BrowserPermissionPromptActionSet, BrowserPermissionPromptSource,
-    BrowserPermissionPromptTargetClass, CancelToken, ExactImageGenerationRequest,
-    ExactMediaDiscoveryCache, MediaCapabilityView, MessageRole, ModelPreferenceFamily,
-    PermissionPromptAction, PermissionPromptRequest, ToolCallRequest, ToolInvocation,
-    TurnStreamEvent, UserQuestionPromptRequest, UserQuestionPromptResponse,
+    provider_preference_family, read_generated_media_preview, supported_effort_levels,
+    with_user_question_prompt_handler, AppState, BrowserPermissionPromptActionSet,
+    BrowserPermissionPromptSource, BrowserPermissionPromptTargetClass, CancelToken,
+    ExactImageGenerationRequest, ExactMediaDiscoveryCache, MediaCapabilityView, MessageRole,
+    ModelPreferenceFamily, PermissionPromptAction, PermissionPromptRequest, ToolCallRequest,
+    ToolInvocation, TurnStreamEvent, UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
 use puffer_provider_openai::{
     build_realtime_client_secret_request,
@@ -140,6 +140,12 @@ struct GenerateMediaResult {
     status: String,
     prompt: String,
     path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedMediaPreviewParams {
+    path: String,
 }
 
 pub(crate) struct DaemonOptions {
@@ -1057,6 +1063,11 @@ async fn dispatch_request(
             respond!(detached!(|s, p| handle_list_media_capabilities(&s, &p)))
         }
         "generate_media" => respond!(detached!(|s, p| handle_generate_media(&s, &p))),
+        "read_generated_media_preview" => {
+            respond!(detached!(|s, p| handle_read_generated_media_preview(
+                &s, &p
+            )))
+        }
         "save_proxy_settings" => respond!(detached!(|s, p| handle_save_proxy_settings(&s, &p))),
         "save_secret" => respond!(detached!(|s, p| handle_save_secret(&s, &p))),
         "delete_secret" => respond!(detached!(|s, p| handle_delete_secret(&s, &p))),
@@ -2272,6 +2283,13 @@ fn generate_video_media_job(state: &DaemonState, _prompt: String) -> Result<Valu
         anyhow::bail!("No video capabilities available");
     }
     anyhow::bail!("Video generation is not supported yet")
+}
+
+fn handle_read_generated_media_preview(state: &DaemonState, params: &Value) -> Result<Value> {
+    let input: GeneratedMediaPreviewParams =
+        serde_json::from_value(params.clone()).context("invalid generated media preview params")?;
+    let result = read_generated_media_preview(&state.paths.workspace_root, Path::new(&input.path));
+    Ok(serde_json::to_value(result)?)
 }
 
 const DEFAULT_REALTIME_MODEL: &str = "gpt-realtime-2";
@@ -5262,13 +5280,13 @@ mod tests {
         handle_generate_media, handle_import_external_credential,
         handle_list_lambda_skill_libraries, handle_list_media_capabilities,
         handle_list_permissions, handle_list_provider_models, handle_local_model_status,
-        handle_login_with_api_key, handle_logout_provider, handle_remove_lambda_skill_library,
-        handle_save_lambda_skill_library, handle_save_permissions, handle_save_proxy_settings,
-        handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled, handle_update_config,
-        model_descriptor_dto, permission_review_payload_json, realtime_session_config_from_params,
-        report_cancelled_turn, requires_explicit_subscription, resolve_create_session_model_id,
-        run_off_runtime, start_connector_setup_turn, DaemonState, ServerEnvelope, TurnProgress,
-        TurnRequestOptions,
+        handle_login_with_api_key, handle_logout_provider, handle_read_generated_media_preview,
+        handle_remove_lambda_skill_library, handle_save_lambda_skill_library,
+        handle_save_permissions, handle_save_proxy_settings, handle_set_lambda_skill_approval,
+        handle_set_lambda_skill_enabled, handle_update_config, model_descriptor_dto,
+        permission_review_payload_json, realtime_session_config_from_params, report_cancelled_turn,
+        requires_explicit_subscription, resolve_create_session_model_id, run_off_runtime,
+        start_connector_setup_turn, DaemonState, ServerEnvelope, TurnProgress, TurnRequestOptions,
     };
     use indexmap::IndexMap;
     use puffer_config::{
@@ -5917,12 +5935,62 @@ models:
         assert_eq!(response["modelId"], "gpt-image-1");
         assert!(response["artifactId"].as_str().is_some());
         let path = response["path"].as_str().expect("artifact path");
-        assert!(path.contains(".puffer/media/artifacts"));
+        assert!(path.contains(".puffer/media/images"));
         assert_eq!(std::fs::read(path).expect("artifact bytes"), b"image-bytes");
         assert!(workspace_root.join(".puffer/media/jobs").is_dir());
         assert!(workspace_root
             .join(".puffer/media/artifact-sidecars")
             .is_dir());
+    }
+
+    fn preview_test_state(temp: &tempfile::TempDir) -> (std::path::PathBuf, DaemonState) {
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        let state = DaemonState::load(
+            workspace_root.clone(),
+            paths,
+            "token".into(),
+            true,
+            false,
+            false,
+        )
+        .expect("daemon state");
+        (workspace_root, state)
+    }
+
+    fn generated_media_images_dir(workspace_root: &std::path::Path) -> std::path::PathBuf {
+        workspace_root.join(".puffer").join("media").join("images")
+    }
+
+    #[test]
+    fn read_generated_media_preview_returns_png_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (workspace_root, state) = preview_test_state(&temp);
+        let path = generated_media_images_dir(&workspace_root)
+            .join("artifact-1")
+            .join("generated.png");
+        std::fs::create_dir_all(path.parent().expect("artifact dir")).expect("artifact dir");
+        std::fs::write(&path, b"image-bytes").expect("write image");
+
+        let response = handle_read_generated_media_preview(
+            &state,
+            &json!({
+                "path": path.display().to_string()
+            }),
+        )
+        .expect("preview response");
+        let bytes: Vec<u8> = serde_json::from_value(response["bytes"].clone()).expect("bytes");
+
+        assert_eq!(response["state"], "available");
+        assert_eq!(response["mimeType"], "image/png");
+        assert_eq!(bytes, b"image-bytes");
+        assert!(response.get("path").is_none());
     }
 
     #[test]
@@ -5986,6 +6054,7 @@ models:
         assert_eq!(response["providerId"], "openrouter");
         assert_eq!(response["modelId"], "openrouter/image-chat");
         let path = response["path"].as_str().expect("artifact path");
+        assert!(path.contains(".puffer/media/images"));
         assert_eq!(std::fs::read(path).expect("artifact bytes"), b"image-bytes");
     }
 

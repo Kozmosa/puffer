@@ -1641,34 +1641,35 @@
     text-align: center;
   }
   .pf-tool-pending-body {
-    background: oklch(0.16 0 0);
+    background: var(--background);
     padding: 0;
   }
   .pf-tool-pending {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 10px 14px;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 12px;
     font-family: var(--font-sans);
   }
   .pf-tool-pending-bar {
-    height: 10px;
-    border-radius: 3px;
+    width: 68px;
+    height: 6px;
+    border-radius: 999px;
+    flex-shrink: 0;
     background: linear-gradient(
       90deg,
-      oklch(0.3 0 0) 0%,
-      oklch(0.45 0 0) 50%,
-      oklch(0.3 0 0) 100%
+      color-mix(in oklab, var(--muted-foreground) 12%, var(--muted)) 0%,
+      color-mix(in oklab, var(--puffer-accent) 28%, var(--muted)) 50%,
+      color-mix(in oklab, var(--muted-foreground) 12%, var(--muted)) 100%
     );
     background-size: 200% 100%;
     animation: pf-shimmer 1.4s linear infinite;
-    width: 62%;
   }
   .pf-tool-pending-text {
-    color: oklch(0.7 0 0);
+    color: var(--muted-foreground);
     font-size: var(--pf-chat-meta-size);
-    font-style: italic;
-    opacity: 0.85;
+    font-style: normal;
+    opacity: 1;
   }
   @keyframes pf-shimmer {
     0% { background-position: 200% 0; }

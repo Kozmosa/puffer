@@ -15,7 +15,8 @@ use base64::prelude::*;
 use puffer_config::{builtin_captcha_solvers, ConfigPaths};
 use puffer_core::{
     discover_exact_media_capabilities, generate_exact_image_with_cache,
-    ExactImageGenerationRequest, ExactMediaDiscoveryCache,
+    read_generated_media_preview, ExactImageGenerationRequest, ExactMediaDiscoveryCache,
+    GeneratedMediaPreviewResult,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::load_resources;
@@ -82,6 +83,12 @@ struct GenerateMediaResult {
     status: String,
     prompt: String,
     path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedMediaPreviewParams {
+    path: String,
 }
 
 pub(crate) struct BackendState {
@@ -274,6 +281,9 @@ impl BackendState {
                 "capabilities": self.list_media_capabilities(params)?,
             })),
             "generate_media" => serde_value(self.generate_media(params)?),
+            "read_generated_media_preview" => {
+                serde_value(self.read_generated_media_preview(params)?)
+            }
             "list_permissions" => serde_value(json!({
                 "path": permissions_file()?.display().to_string(),
                 "tools": self.load_permissions()?,
@@ -771,6 +781,15 @@ impl BackendState {
             bail!("video media capability unavailable for {provider_id}/{model_id}");
         }
         bail!("Video generation is not supported yet")
+    }
+
+    fn read_generated_media_preview(&self, params: Value) -> Result<GeneratedMediaPreviewResult> {
+        let input: GeneratedMediaPreviewParams =
+            serde_json::from_value(params).context("invalid generated media preview params")?;
+        Ok(read_generated_media_preview(
+            self.default_workspace()?,
+            Path::new(&input.path),
+        ))
     }
 
     fn media_runtime_inputs(&self) -> Result<(ProviderRegistry, AuthStore)> {
@@ -2233,6 +2252,28 @@ mod tests {
         }
     }
 
+    struct CurrentDirGuard {
+        previous: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn set(path: &Path) -> Self {
+            let previous = env::current_dir().unwrap();
+            env::set_current_dir(path).unwrap();
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            env::set_current_dir(&self.previous).unwrap();
+        }
+    }
+
+    fn generated_media_images_dir(workspace_root: &Path) -> PathBuf {
+        workspace_root.join(".puffer").join("media").join("images")
+    }
+
     fn test_session_record(
         provider: &str,
         model: Option<&str>,
@@ -2604,6 +2645,36 @@ mod tests {
         assert!(error
             .to_string()
             .contains("No video capabilities available"));
+    }
+
+    #[test]
+    fn read_generated_media_preview_returns_png_bytes() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_home(dir.path());
+        let workspace_root = dir.path().join("workspace");
+        fs::create_dir_all(&workspace_root).unwrap();
+        let _cwd = CurrentDirGuard::set(&workspace_root);
+        let path = generated_media_images_dir(&workspace_root)
+            .join("artifact-1")
+            .join("generated.png");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"image-bytes").unwrap();
+        let backend = BackendState::new();
+
+        let response = backend
+            .handle(
+                EventEmitter::websocket_only(),
+                "read_generated_media_preview",
+                json!({"path": path.display().to_string()}),
+            )
+            .unwrap();
+        let bytes: Vec<u8> = serde_json::from_value(response["bytes"].clone()).unwrap();
+
+        assert_eq!(response["state"], "available");
+        assert_eq!(response["mimeType"], "image/png");
+        assert_eq!(bytes, b"image-bytes");
+        assert!(response.get("path").is_none());
     }
 
     #[test]

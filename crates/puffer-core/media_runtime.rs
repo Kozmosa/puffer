@@ -12,7 +12,8 @@ use anyhow::{bail, Result};
 use puffer_provider_registry::{AuthStore, MediaOperation, ProviderRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default TTL for trusted media discovery results.
@@ -71,11 +72,122 @@ pub struct ExactImageGenerationResult {
     pub path: PathBuf,
 }
 
+/// Describes the preview-read result for a generated media artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum GeneratedMediaPreviewResult {
+    Available {
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+        bytes: Vec<u8>,
+    },
+    Missing,
+    Unsupported,
+}
+
 /// Carries trusted media discovery results used by capability resolution.
 #[derive(Debug, Clone)]
 pub struct ExactMediaDiscoveryCache {
     inner: MediaDiscoveryCache,
     cached_at_ms: u64,
+}
+
+/// Reads preview bytes for a generated image below the workspace image directory.
+pub fn read_generated_media_preview(
+    workspace_root: impl AsRef<Path>,
+    path: impl AsRef<Path>,
+) -> GeneratedMediaPreviewResult {
+    let image_root = generated_media_image_root(workspace_root.as_ref());
+    read_generated_media_preview_from_root(&image_root, path.as_ref())
+}
+
+fn read_generated_media_preview_from_root(
+    image_root: &Path,
+    path: &Path,
+) -> GeneratedMediaPreviewResult {
+    let canonical_path = match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return if missing_generated_media_path_is_under_root(image_root, path) {
+                GeneratedMediaPreviewResult::Missing
+            } else {
+                GeneratedMediaPreviewResult::Unsupported
+            };
+        }
+        Err(_) => return GeneratedMediaPreviewResult::Missing,
+    };
+    let canonical_root = match std::fs::canonicalize(image_root) {
+        Ok(path) => path,
+        Err(_) => return GeneratedMediaPreviewResult::Unsupported,
+    };
+    if !canonical_path.starts_with(canonical_root) {
+        return GeneratedMediaPreviewResult::Unsupported;
+    }
+    let metadata = match std::fs::metadata(&canonical_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return GeneratedMediaPreviewResult::Missing;
+        }
+        Err(_) => return GeneratedMediaPreviewResult::Missing,
+    };
+    if !metadata.is_file() {
+        return GeneratedMediaPreviewResult::Unsupported;
+    }
+    let Some(mime_type) = generated_image_mime_type(&canonical_path) else {
+        return GeneratedMediaPreviewResult::Unsupported;
+    };
+    let bytes = match std::fs::read(canonical_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return GeneratedMediaPreviewResult::Missing;
+        }
+        Err(_) => return GeneratedMediaPreviewResult::Missing,
+    };
+    GeneratedMediaPreviewResult::Available {
+        mime_type: mime_type.to_string(),
+        bytes,
+    }
+}
+
+fn generated_media_image_root(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".puffer").join("media").join("images")
+}
+
+fn missing_generated_media_path_is_under_root(image_root: &Path, path: &Path) -> bool {
+    if let (Ok(canonical_root), Some(parent)) = (std::fs::canonicalize(image_root), path.parent()) {
+        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+            return canonical_parent.starts_with(canonical_root);
+        }
+    }
+    lexical_path_starts_with(path, image_root)
+}
+
+fn lexical_path_starts_with(path: &Path, root: &Path) -> bool {
+    lexical_normalize_path(path).starts_with(lexical_normalize_path(root))
+}
+
+fn lexical_normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn generated_image_mime_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
 }
 
 impl ExactMediaDiscoveryCache {
@@ -527,6 +639,82 @@ mod tests {
         let mut buffer = [0_u8; 8192];
         let size = stream.read(&mut buffer).expect("read request");
         String::from_utf8_lossy(&buffer[..size]).to_string()
+    }
+
+    fn generated_media_images_dir(workspace_root: &std::path::Path) -> std::path::PathBuf {
+        workspace_root.join(".puffer").join("media").join("images")
+    }
+
+    #[test]
+    fn read_generated_media_preview_returns_png_bytes() {
+        let workspace = tempdir().expect("tempdir");
+        let path = generated_media_images_dir(workspace.path())
+            .join("artifact-1")
+            .join("generated.png");
+        std::fs::create_dir_all(path.parent().expect("artifact dir")).expect("artifact dir");
+        std::fs::write(&path, b"image-bytes").expect("write image");
+
+        let result = read_generated_media_preview(workspace.path(), &path);
+
+        assert_eq!(
+            result,
+            GeneratedMediaPreviewResult::Available {
+                mime_type: "image/png".to_string(),
+                bytes: b"image-bytes".to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn read_generated_media_preview_returns_missing_for_missing_artifact_file() {
+        let workspace = tempdir().expect("tempdir");
+        let artifact_dir = generated_media_images_dir(workspace.path());
+        std::fs::create_dir_all(&artifact_dir).expect("artifact dir");
+
+        let result =
+            read_generated_media_preview(workspace.path(), artifact_dir.join("missing.png"));
+
+        assert_eq!(result, GeneratedMediaPreviewResult::Missing);
+    }
+
+    #[test]
+    fn read_generated_media_preview_rejects_non_image_artifact_file() {
+        let workspace = tempdir().expect("tempdir");
+        let path = generated_media_images_dir(workspace.path())
+            .join("artifact-1")
+            .join("notes.txt");
+        std::fs::create_dir_all(path.parent().expect("artifact dir")).expect("artifact dir");
+        std::fs::write(&path, b"not an image").expect("write file");
+
+        let result = read_generated_media_preview(workspace.path(), &path);
+
+        assert_eq!(result, GeneratedMediaPreviewResult::Unsupported);
+    }
+
+    #[test]
+    fn read_generated_media_preview_rejects_paths_outside_images() {
+        let workspace = tempdir().expect("tempdir");
+        let path = workspace.path().join("outside.png");
+        std::fs::write(&path, b"image-bytes").expect("write outside image");
+
+        let result = read_generated_media_preview(workspace.path(), &path);
+
+        assert_eq!(result, GeneratedMediaPreviewResult::Unsupported);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_generated_media_preview_rejects_image_symlink_escape() {
+        let workspace = tempdir().expect("tempdir");
+        let outside = workspace.path().join("outside.png");
+        std::fs::write(&outside, b"image-bytes").expect("write outside image");
+        let link = generated_media_images_dir(workspace.path()).join("link.png");
+        std::fs::create_dir_all(link.parent().expect("artifact dir")).expect("artifact dir");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+
+        let result = read_generated_media_preview(workspace.path(), &link);
+
+        assert_eq!(result, GeneratedMediaPreviewResult::Unsupported);
     }
 
     #[test]

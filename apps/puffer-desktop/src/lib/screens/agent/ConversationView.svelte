@@ -2314,9 +2314,19 @@
                     </div>
                   {/if}
                   {#if row.item}
-                    <div class="pf-msg-text">
-                      <MessageBody body={row.item.body} {onOpenChatIntent} />
-                    </div>
+                    {@const visibleBody = visibleMessageBody(row.item as MessageTimelineItem)}
+                    {#if row.item.attachments?.length}
+                      <MessageAttachmentPreviewStrip
+                        sessionId={session?.id ?? null}
+                        attachments={row.item.attachments}
+                        {onOpenChatIntent}
+                      />
+                    {/if}
+                    {#if visibleBody.trim()}
+                      <div class="pf-msg-text">
+                        <MessageBody body={visibleBody} {onOpenChatIntent} />
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               </div>

@@ -2456,6 +2456,11 @@ export async function generateMedia(input: GenerateMediaInput): Promise<Generate
   return client.request<GenerateMediaResult>("generate_media", input);
 }
 
+export async function readGeneratedMediaPreview(path: string): Promise<AttachmentPreviewResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<AttachmentPreviewResult>("read_generated_media_preview", { path });
+}
+
 export async function localModelStatus(modelId = "minicpm5"): Promise<LocalModelStatus> {
   const client = await ensureLocalDaemonClient();
   return client.request<LocalModelStatus>("local_model_status", { modelId });
