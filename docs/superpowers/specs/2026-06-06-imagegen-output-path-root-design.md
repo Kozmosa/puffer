@@ -48,6 +48,7 @@ outputPath: "drafts/cup.png"
 - 不改设置结构、设置保存 RPC、桌面端 open folder 命令或 opener 插件接线。
 - 不保持旧的 workspace-relative `outputPath` 行为。
 - 不为图片输出引入新的跨模块路径服务或资源发现 API。
+- 不做显式 `outputPath` 的扩展名推断、扩展名纠正或唯一文件名版本化。
 
 ## 设计
 
@@ -69,6 +70,24 @@ outputPath: "drafts/cup.png"
 
 默认文件名应只包含文件名,不要再包含 `.puffer/workflows/images/` 前缀,避免根目录重复拼接。
 
+实现应保持局部、可读:
+
+- 使用一个本文件内常量表示 `.puffer/workflows/images`。
+- 可以把默认函数从 `default_output_name` 改成只返回文件名的
+  `default_output_filename`。
+- 不新增跨 crate helper,不新增配置查询,不让桌面端 UI 通过 RPC 读取这个路径。
+
+### 显式 outputPath 语义
+
+显式 `outputPath` 只决定 Image folder 内部的目标路径,不改变输出根目录。
+
+- `cup.png` 写到 Image folder 根下。
+- `drafts/cup.png` 写到 Image folder 子目录下。
+- `.puffer/workflows/images/cup.png` 不做特殊剥离;它会被视为 Image folder 内部的普通子路径,
+  即 `<cwd>/.puffer/workflows/images/.puffer/workflows/images/cup.png`。
+- 如果文件名扩展名和实际图片编码不一致,本次不修正。当前工具只负责路径归属,不负责命名策略。
+- 如果显式目标文件已存在,沿用现有 `fs::copy` 行为覆盖目标文件,不新增版本化或冲突处理。
+
 ### 安全规则
 
 继续使用现有安全相对路径规则,但校验对象变为 Image folder 内部路径:
@@ -78,6 +97,7 @@ outputPath: "drafts/cup.png"
 - 允许普通文件名,例如 `cup.png`。
 - 允许子目录,例如 `drafts/cup.png`。
 - 保持现有 `.` 路径组件处理即可,不新增复杂规范化逻辑。
+- 不依赖 `canonicalize`,因为目标目录和子目录可能尚不存在。
 
 这样即使模型显式传 `outputPath`,也无法写出 Image Settings 展示的目录。
 
@@ -124,16 +144,22 @@ Image folder 内的最终用户可见路径。该流程不变,只改变最终复
 - `outputPath: "cup.png"` 输出到 `<cwd>/.puffer/workflows/images/cup.png`。
 - `outputPath: "drafts/cup.png"` 输出到
   `<cwd>/.puffer/workflows/images/drafts/cup.png`。
+- `outputPath: ".puffer/workflows/images/cup.png"` 不被特殊兼容或剥离,输出到
+  `<cwd>/.puffer/workflows/images/.puffer/workflows/images/cup.png`。
 - 绝对路径仍被拒绝。
 - `../cup.png` 仍被拒绝。
 - 更新现有 `out/image.png` 相关期望路径,确认它变为 Image folder 内部子路径。
 
 无需新增端到端测试:该变化是纯 Rust 路径解析语义,单元测试能直接覆盖核心行为。
+桌面端已有 Image Settings 路径展示测试,本次不扩大前端测试范围。
 
 ## 影响文件
 
 - `crates/puffer-core/runtime/claude_tools/workflow/image_generation.rs`
 - `resources/tools/image_generation.yaml`
+
+不影响 `apps/puffer-desktop/src-tauri/src/lib.rs` 的 `open_image_dir`;该命令已经打开同一个
+固定目录。
 
 ## 长期收益
 
@@ -141,4 +167,3 @@ Image folder 内的最终用户可见路径。该流程不变,只改变最终复
 - 模型仍可指定文件名,但不能绕过 Image folder。
 - 路径安全边界更窄,默认行为更可预测。
 - 不引入新配置、新 RPC 或新抽象,保持实现面小。
-
