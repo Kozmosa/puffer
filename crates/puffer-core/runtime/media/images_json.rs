@@ -121,7 +121,7 @@ impl ImagesJsonAdapter {
             now_ms(),
             &MediaDiscoveryCache::default(),
         )?;
-        let selected_parameters =
+        let request_parameters =
             selected_parameters_with_defaults(&capability, &request.parameters)?;
 
         let discovery_cache = MediaDiscoveryCache::default();
@@ -152,7 +152,7 @@ impl ImagesJsonAdapter {
             provider,
             auth_store,
             &request,
-            selected_parameters,
+            request_parameters.clone(),
             &execution,
         ) {
             Ok(output) => output,
@@ -164,7 +164,7 @@ impl ImagesJsonAdapter {
             }
         };
 
-        let output_format = output_format_for_parameters(&request.parameters);
+        let output_format = output_format_for_parameters(&request_parameters);
         let filename = format!("image.{}", extension_for_output_format(&output_format));
         let artifact_path = service.write_artifact_bytes(&artifact_id, &filename, &output.bytes)?;
         let artifact = MediaArtifact {
@@ -174,7 +174,13 @@ impl ImagesJsonAdapter {
             path: artifact_path.clone(),
             mime_type: mime_type_for_output_format(&output_format).to_string(),
             byte_count: output.bytes.len() as u64,
-            metadata: artifact_metadata(&request, &artifact_path, &output, created_at_ms),
+            metadata: artifact_metadata(
+                &request,
+                &request_parameters,
+                &artifact_path,
+                &output,
+                created_at_ms,
+            ),
             created_at_ms,
         };
         service.save_artifact(&artifact)?;
@@ -293,17 +299,18 @@ fn image_output_from_response(client: &Client, value: &Value) -> Result<ImageOut
 
 fn artifact_metadata(
     request: &ImagesJsonGenerationRequest,
+    parameters: &BTreeMap<String, String>,
     path: &std::path::Path,
     output: &ImageOutput,
     created_at_ms: u64,
 ) -> Value {
-    let output_format = output_format_for_parameters(&request.parameters);
+    let output_format = output_format_for_parameters(parameters);
     let mut metadata = json!({
         "providerId": request.provider_id,
         "modelId": request.model_id,
         "adapter": request.adapter,
         "prompt": request.prompt,
-        "parameters": request.parameters,
+        "parameters": parameters,
         "mimeType": mime_type_for_output_format(&output_format),
         "localPath": path,
         "byteCount": output.bytes.len() as u64,
@@ -562,6 +569,65 @@ mod tests {
         let request_text = server.join().expect("server");
         assert!(request_text.contains("\"resolution\":\"2k\""));
         assert!(!request_text.contains("\"resolution_choice\""));
+    }
+
+    #[test]
+    fn artifact_metadata_uses_resolved_descriptor_defaults() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request");
+            let request_text = read_http_request(&mut stream);
+            let body = json!({
+                "data": [{"b64_json": "aW1hZ2UtYnl0ZXM="}]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("response");
+            request_text
+        });
+        let mut parameters = image_parameters();
+        parameters[2].values = vec!["png".to_string(), "jpeg".to_string()];
+        parameters[2].default = "jpeg".to_string();
+        let registry = registry_with_provider_parameters(
+            "exact-provider",
+            format!("http://{address}"),
+            parameters,
+        );
+        let service_dir = tempdir().expect("tempdir");
+        let mut request = request();
+        request.parameters.remove("output_format");
+
+        let result = ImagesJsonAdapter::new()
+            .expect("adapter")
+            .execute(
+                &registry,
+                &auth_store(),
+                &MediaGenerationService::new(service_dir.path()),
+                request,
+            )
+            .expect("generation succeeds");
+
+        let request_text = server.join().expect("server");
+        assert!(request_text.contains("\"output_format\":\"jpeg\""));
+        assert_eq!(result.artifact.mime_type, "image/jpeg");
+        assert_eq!(
+            result
+                .artifact
+                .path
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("jpeg")
+        );
+        assert_eq!(
+            result.artifact.metadata["parameters"]["output_format"],
+            "jpeg"
+        );
+        assert_eq!(result.artifact.metadata["mimeType"], "image/jpeg");
     }
 
     #[test]

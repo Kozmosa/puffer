@@ -184,6 +184,113 @@ fn openrouter_remains_discovery_driven_without_static_image_fallbacks() {
 }
 
 #[test]
+fn openai_catalog_declares_current_image_api_models() {
+    let descriptor = provider_descriptor(
+        "openai",
+        include_str!("../../../resources/providers/openai.yaml"),
+    );
+    let image = descriptor
+        .media
+        .as_ref()
+        .and_then(|media| media.image.as_ref())
+        .expect("openai image media descriptor");
+
+    assert_eq!(
+        image.execution.as_ref().map(|execution| execution.adapter),
+        Some(MediaExecutionKind::ImagesJson)
+    );
+    assert_eq!(
+        image
+            .execution
+            .as_ref()
+            .map(|execution| execution.path.as_str()),
+        Some("/v1/images/generations")
+    );
+
+    let expected = BTreeMap::from([
+        ("chatgpt-image-latest", "ChatGPT Image Latest"),
+        ("gpt-image-1", "GPT Image 1"),
+        ("gpt-image-1-mini", "GPT Image 1 Mini"),
+        ("gpt-image-1.5", "GPT Image 1.5"),
+        ("gpt-image-2", "GPT Image 2"),
+    ]);
+    let models_by_id = image
+        .models
+        .iter()
+        .map(|model| (model.id.as_str(), model))
+        .collect::<BTreeMap<_, _>>();
+    let expected_model_ids = expected.keys().copied().collect::<BTreeSet<_>>();
+    let actual_model_ids = models_by_id.keys().copied().collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        actual_model_ids, expected_model_ids,
+        "OpenAI image catalog should mirror currently callable Image API model ids"
+    );
+    assert!(
+        !actual_model_ids.contains("dall-e-2") && !actual_model_ids.contains("dall-e-3"),
+        "OpenAI image catalog should not include DALL-E models removed on 2026-05-12"
+    );
+
+    for (model_id, display_name) in &expected {
+        let model_id = *model_id;
+        let model = models_by_id
+            .get(model_id)
+            .unwrap_or_else(|| panic!("OpenAI should include {model_id}"));
+        assert_eq!(model.display_name.as_deref(), Some(*display_name));
+        assert!(
+            model.operations.contains(&MediaOperation::Generate),
+            "{model_id} should support image generation"
+        );
+        assert_select_parameter(
+            model,
+            "quality",
+            "Quality",
+            &["auto", "low", "medium", "high"],
+            "auto",
+            "quality",
+        );
+        assert_select_parameter(
+            model,
+            "output_format",
+            "Output format",
+            &["png", "jpeg", "webp"],
+            "png",
+            "output_format",
+        );
+
+        if model_id == "gpt-image-2" {
+            assert_select_parameter(
+                model,
+                "size",
+                "Size",
+                &[
+                    "auto",
+                    "1024x1024",
+                    "1024x1536",
+                    "1536x1024",
+                    "2048x2048",
+                    "2048x1152",
+                    "2560x1440",
+                    "3840x2160",
+                    "2160x3840",
+                ],
+                "auto",
+                "size",
+            );
+        } else {
+            assert_select_parameter(
+                model,
+                "size",
+                "Size",
+                &["auto", "1024x1024", "1024x1536", "1536x1024"],
+                "auto",
+                "size",
+            );
+        }
+    }
+}
+
+#[test]
 fn byteplus_catalog_declares_only_current_native_seedream_models() {
     let descriptor = provider_descriptor(
         "byteplus",
@@ -210,6 +317,7 @@ fn byteplus_catalog_declares_only_current_native_seedream_models() {
     let expected = BTreeMap::from([
         ("seedream-5-0-260128", "Seedream 5.0 Lite"),
         ("seedream-4-5-251128", "Seedream 4.5"),
+        ("seedream-4-0-250828", "Seedream 4.0"),
     ]);
     let models_by_id = image
         .models
@@ -240,19 +348,35 @@ fn byteplus_catalog_declares_only_current_native_seedream_models() {
             .iter()
             .map(|parameter| parameter.name.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(
-            parameter_names,
-            BTreeSet::from(["size", "output_format"]),
-            "{model_id} should declare exactly the adapter-supported BytePlus parameters"
-        );
         assert_select_parameter(model, "size", "Size", &["2K"], "2K", "size");
         assert_select_parameter(
             model,
-            "output_format",
-            "Output format",
-            &["png", "jpeg"],
-            "png",
-            "output_format",
+            "response_format",
+            "Response format",
+            &["b64_json", "url"],
+            "b64_json",
+            "response_format",
         );
+        if model_id == "seedream-5-0-260128" {
+            assert_eq!(
+                parameter_names,
+                BTreeSet::from(["size", "output_format", "response_format"]),
+                "{model_id} should declare exactly the adapter-supported BytePlus parameters"
+            );
+            assert_select_parameter(
+                model,
+                "output_format",
+                "Output format",
+                &["png", "jpeg"],
+                "jpeg",
+                "output_format",
+            );
+        } else {
+            assert_eq!(
+                parameter_names,
+                BTreeSet::from(["size", "response_format"]),
+                "{model_id} should omit unsupported output_format but keep API-level response_format"
+            );
+        }
     }
 }

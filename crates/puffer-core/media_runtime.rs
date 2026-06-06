@@ -158,9 +158,15 @@ pub fn generate_exact_image_with_cache(
     registry: &ProviderRegistry,
     auth_store: &AuthStore,
     workspace_root: &Path,
-    request: ExactImageGenerationRequest,
+    mut request: ExactImageGenerationRequest,
     discovery_cache: &ExactMediaDiscoveryCache,
 ) -> Result<ExactImageGenerationResult> {
+    request.parameters = resolved_exact_image_parameters_with_cache(
+        registry,
+        auth_store,
+        &request,
+        discovery_cache,
+    )?;
     let service = MediaGenerationService::new(workspace_root);
     match request.adapter.as_str() {
         "images_json" => {
@@ -211,6 +217,58 @@ pub fn generate_exact_image_with_cache(
         }
         adapter => bail!("image media adapter unavailable for {adapter}"),
     }
+}
+
+/// Resolves exact image parameters against the current capability defaults.
+pub fn resolved_exact_image_parameters_with_cache(
+    registry: &ProviderRegistry,
+    auth_store: &AuthStore,
+    selection: &ExactImageGenerationRequest,
+    discovery_cache: &ExactMediaDiscoveryCache,
+) -> Result<BTreeMap<String, String>> {
+    let capability = exact_image_capability(registry, auth_store, selection, discovery_cache)?;
+    Ok(capability
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let value = selection
+                .parameters
+                .get(&parameter.name)
+                .cloned()
+                .unwrap_or_else(|| parameter.default.clone());
+            (parameter.name.clone(), value)
+        })
+        .collect())
+}
+
+fn exact_image_capability(
+    registry: &ProviderRegistry,
+    auth_store: &AuthStore,
+    selection: &ExactImageGenerationRequest,
+    discovery_cache: &ExactMediaDiscoveryCache,
+) -> Result<crate::runtime::media::capabilities::MediaCapability> {
+    resolve_media_capabilities(
+        registry,
+        auth_store,
+        MediaKind::Image,
+        MediaOperation::Generate,
+        now_ms(),
+        &discovery_cache.inner,
+    )
+    .into_iter()
+    .find(|capability| {
+        capability.provider_id == selection.provider_id
+            && capability.model_id == selection.model_id
+            && capability.adapter == selection.adapter
+    })
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "selected image model unavailable: {}/{} via {}",
+            selection.provider_id,
+            selection.model_id,
+            selection.adapter
+        )
+    })
 }
 
 fn exact_generation_result(job: MediaJob, artifact: MediaArtifact) -> ExactImageGenerationResult {
@@ -385,6 +443,55 @@ mod tests {
         registry
     }
 
+    fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
+        let mut registry = ProviderRegistry::new();
+        registry.register(ProviderDescriptor {
+            id: "byteplus".to_string(),
+            display_name: "BytePlus".to_string(),
+            base_url,
+            default_api: "openai-completions".to_string(),
+            auth_modes: vec![AuthMode::ApiKey],
+            headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            chat_completions_path: None,
+            discovery: None,
+            media: Some(ProviderMediaDescriptor {
+                image: Some(ImageMediaDescriptor {
+                    discovery: None,
+                    execution: Some(MediaExecutionDescriptor {
+                        adapter: MediaExecutionKind::ImagesJson,
+                        base_url: None,
+                        path: "/images/generations".to_string(),
+                    }),
+                    models: vec![MediaModelDescriptor {
+                        id: "seedream-4-5-251128".to_string(),
+                        display_name: Some("Seedream 4.5".to_string()),
+                        execution: None,
+                        operations: vec![MediaOperation::Generate],
+                        parameters: vec![
+                            MediaParameterSpec {
+                                name: "size".to_string(),
+                                label: "Size".to_string(),
+                                values: vec!["2K".to_string()],
+                                default: "2K".to_string(),
+                                request_field: Some("size".to_string()),
+                            },
+                            MediaParameterSpec {
+                                name: "response_format".to_string(),
+                                label: "Response format".to_string(),
+                                values: vec!["b64_json".to_string(), "url".to_string()],
+                                default: "b64_json".to_string(),
+                                request_field: Some("response_format".to_string()),
+                            },
+                        ],
+                    }],
+                }),
+            }),
+            models: Vec::<ModelDescriptor>::new(),
+        });
+        registry
+    }
+
     fn discovered_chat_image_cache() -> ExactMediaDiscoveryCache {
         ExactMediaDiscoveryCache::from_inner_for_test(
             crate::runtime::media::resolver::MediaDiscoveryCache {
@@ -519,6 +626,52 @@ mod tests {
         assert_eq!(result.provider_id, "openrouter");
         assert_eq!(result.model_id, "openrouter/image-chat");
         assert_eq!(std::fs::read(result.path).unwrap(), b"image-bytes");
+    }
+
+    #[test]
+    fn generate_exact_image_prunes_stale_undeclared_parameters_before_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request");
+            let request_text = read_http_request(&mut stream);
+            let body = json!({
+                "data": [{"b64_json": "aW1hZ2UtYnl0ZXM="}]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("response");
+            request_text
+        });
+        let registry = byteplus_seedream_registry(format!("http://{address}"));
+        let workspace = tempdir().expect("tempdir");
+
+        generate_exact_image_with_cache(
+            &registry,
+            &auth_store_for("byteplus"),
+            workspace.path(),
+            ExactImageGenerationRequest {
+                provider_id: "byteplus".to_string(),
+                model_id: "seedream-4-5-251128".to_string(),
+                adapter: "images_json".to_string(),
+                prompt: "draw a precise icon".to_string(),
+                parameters: BTreeMap::from([
+                    ("size".to_string(), "2K".to_string()),
+                    ("output_format".to_string(), "png".to_string()),
+                ]),
+            },
+            &ExactMediaDiscoveryCache::empty(),
+        )
+        .expect("generation succeeds");
+
+        let request_text = server.join().expect("server");
+        assert!(request_text.contains("\"size\":\"2K\""));
+        assert!(request_text.contains("\"response_format\":\"b64_json\""));
+        assert!(!request_text.contains("output_format"));
     }
 
     #[test]

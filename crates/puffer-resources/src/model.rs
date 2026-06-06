@@ -876,11 +876,7 @@ mod tests {
         ];
         let expected_model_ids: std::collections::BTreeSet<_> =
             expected_models.iter().copied().collect();
-        let actual_model_ids: Vec<_> = image
-            .models
-            .iter()
-            .map(|model| model.id.as_str())
-            .collect();
+        let actual_model_ids: Vec<_> = image.models.iter().map(|model| model.id.as_str()).collect();
         let unique_actual_model_ids: std::collections::BTreeSet<_> =
             actual_model_ids.iter().copied().collect();
 

@@ -435,7 +435,7 @@
           Cancel
         </button>
         <button type="button" class="sc-btn" data-variant="default" data-size="sm" disabled={!canSave} onclick={save}>
-          <Icon name="check" size={13} />{saving ? "Saving..." : saveLabel}
+          {saving ? "Saving..." : saveLabel}
         </button>
       </div>
     </footer>

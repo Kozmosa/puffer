@@ -1,6 +1,7 @@
 use crate::AppState;
 use crate::{
-    generate_exact_image_with_cache, ExactImageGenerationRequest, ExactMediaDiscoveryCache,
+    generate_exact_image_with_cache, resolved_exact_image_parameters_with_cache,
+    ExactImageGenerationRequest, ExactMediaDiscoveryCache,
 };
 use anyhow::{bail, Context, Result};
 use puffer_config::ImageMediaConfig;
@@ -73,8 +74,20 @@ pub fn execute_image_generation(
 ) -> Result<String> {
     let parsed: ImageGenerationInput =
         serde_json::from_value(input).context("invalid ImageGeneration input")?;
-    let request = build_image_request(cwd, parsed, &state.config.media.image)?;
+    let mut request = build_image_request(cwd, parsed, &state.config.media.image)?;
     let media_context = media_context.context("ImageGeneration media runtime is not configured")?;
+    request.parameters = resolved_exact_image_parameters_with_cache(
+        media_context.providers,
+        media_context.auth_store,
+        &ExactImageGenerationRequest {
+            provider_id: request.provider.clone(),
+            model_id: request.model.clone(),
+            adapter: request.adapter.clone(),
+            prompt: request.prompt.clone(),
+            parameters: request.parameters.clone(),
+        },
+        media_context.discovery_cache,
+    )?;
     let generated = generate_exact_image_with_cache(
         media_context.providers,
         media_context.auth_store,
@@ -258,6 +271,13 @@ fn image_aspect_ratio(aspect: &str) -> Result<&'static str> {
     }
 }
 
+fn is_dimension_size(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1024x1024" | "1536x1024" | "1024x1536" | "auto"
+    )
+}
+
 fn apply_aspect_parameter(
     parameters: &mut BTreeMap<String, String>,
     aspect: Option<&str>,
@@ -272,8 +292,10 @@ fn apply_aspect_parameter(
         );
         return Ok(());
     }
-    if parameters.contains_key("size") {
-        parameters.insert("size".to_string(), image_size(Some(aspect))?.to_string());
+    if let Some(current_size) = parameters.get("size") {
+        if is_dimension_size(current_size) {
+            parameters.insert("size".to_string(), image_size(Some(aspect))?.to_string());
+        }
         return Ok(());
     }
     bail!("selected image model does not support ImageGeneration aspect")
@@ -714,6 +736,36 @@ mod tests {
     }
 
     #[test]
+    fn builds_request_preserves_model_specific_size_tokens_for_aspect() {
+        let dir = tempdir().unwrap();
+        let settings = puffer_config::ImageMediaConfig {
+            provider_id: Some("byteplus".to_string()),
+            model_id: Some("seedream-4-5-251128".to_string()),
+            adapter: Some("images_json".to_string()),
+            parameters: BTreeMap::from([
+                ("size".to_string(), "2K".to_string()),
+                ("output_format".to_string(), "png".to_string()),
+            ]),
+        };
+
+        let request = build_image_request(
+            dir.path(),
+            ImageGenerationInput {
+                prompt: "make a visual summary".to_string(),
+                prompt_reference: None,
+                aspect: Some("portrait".to_string()),
+                output_path: None,
+                purpose: None,
+                retry_from_error: None,
+            },
+            &settings,
+        )
+        .unwrap();
+
+        assert_eq!(request.parameters["size"], "2K");
+    }
+
+    #[test]
     fn builds_request_rejects_aspect_when_selected_model_has_no_aspect_parameter() {
         let dir = tempdir().unwrap();
         let settings = puffer_config::ImageMediaConfig {
@@ -933,5 +985,4 @@ mod tests {
         assert_eq!(parsed["status"], "succeeded");
         assert_eq!(parsed["purpose"], "test");
     }
-
 }

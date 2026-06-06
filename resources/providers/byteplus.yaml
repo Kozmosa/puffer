@@ -33,8 +33,13 @@ media:
           - name: output_format
             label: Output format
             values: [png, jpeg]
-            default: png
+            default: jpeg
             request_field: output_format
+          - name: response_format
+            label: Response format
+            values: [b64_json, url]
+            default: b64_json
+            request_field: response_format
       - id: seedream-4-5-251128
         display_name: Seedream 4.5
         operations:
@@ -45,8 +50,23 @@ media:
             values: [2K]
             default: 2K
             request_field: size
-          - name: output_format
-            label: Output format
-            values: [png, jpeg]
-            default: png
-            request_field: output_format
+          - name: response_format
+            label: Response format
+            values: [b64_json, url]
+            default: b64_json
+            request_field: response_format
+      - id: seedream-4-0-250828
+        display_name: Seedream 4.0
+        operations:
+          - generate
+        parameters:
+          - name: size
+            label: Size
+            values: [2K]
+            default: 2K
+            request_field: size
+          - name: response_format
+            label: Response format
+            values: [b64_json, url]
+            default: b64_json
+            request_field: response_format
