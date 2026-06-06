@@ -131,6 +131,7 @@ impl MinimaxImageAdapter {
             request.provider_id.clone(),
             request.model_id.clone(),
             request.prompt.clone(),
+            1,
             created_at_ms,
         );
         service.save_job(&job)?;

@@ -205,6 +205,7 @@ mod tests {
             "openai",
             "gpt-image-1",
             "draw a ship",
+            1,
             10,
         );
 
@@ -257,6 +258,7 @@ mod tests {
             "openai",
             "gpt-image-1",
             "draw a ship",
+            1,
             10,
         );
         job.transition(MediaJobStatus::Running, 11).unwrap();

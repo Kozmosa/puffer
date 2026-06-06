@@ -35,6 +35,7 @@ pub(crate) struct MediaJob {
     pub(crate) remote_get_url: Option<String>,
     pub(crate) remote_cancel_url: Option<String>,
     pub(crate) artifact_ids: Vec<String>,
+    pub(crate) requested_count: u8,
     pub(crate) error: Option<String>,
     pub(crate) created_at_ms: u64,
     pub(crate) updated_at_ms: u64,
@@ -48,6 +49,7 @@ impl MediaJob {
         provider_id: impl Into<String>,
         model_id: impl Into<String>,
         prompt: impl Into<String>,
+        requested_count: u8,
         now_ms: u64,
     ) -> Self {
         Self {
@@ -62,6 +64,7 @@ impl MediaJob {
             remote_get_url: None,
             remote_cancel_url: None,
             artifact_ids: Vec::new(),
+            requested_count,
             error: None,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
@@ -85,5 +88,38 @@ impl MediaJob {
             self.artifact_ids.push(artifact_id);
         }
         self.updated_at_ms = now_ms;
+    }
+
+    /// Returns the number of unique artifacts attached to this job.
+    pub(crate) fn produced_count(&self) -> usize {
+        self.artifact_ids.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_job_tracks_requested_and_produced_counts() {
+        let mut job = MediaJob::new(
+            "job-1",
+            MediaKind::Image,
+            "openai",
+            "gpt-image-1",
+            "draw two images",
+            2,
+            10,
+        );
+
+        assert_eq!(job.requested_count, 2);
+        assert_eq!(job.produced_count(), 0);
+
+        job.attach_artifact("artifact-1", 11);
+        job.attach_artifact("artifact-2", 12);
+        job.attach_artifact("artifact-2", 13);
+
+        assert_eq!(job.artifact_ids, vec!["artifact-1", "artifact-2"]);
+        assert_eq!(job.produced_count(), 2);
     }
 }

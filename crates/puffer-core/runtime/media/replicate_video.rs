@@ -230,6 +230,7 @@ where
             REPLICATE_PROVIDER_ID,
             request.model.trim(),
             request.prompt.trim(),
+            1,
             now_ms,
         );
         apply_remote_prediction_metadata(&mut job, &prediction);
