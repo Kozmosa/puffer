@@ -38,7 +38,7 @@ pub(crate) fn plan_image_generation(
     requested_count: u8,
     batch: &MediaBatchDescriptor,
 ) -> Result<ImageGenerationPlan> {
-    if requested_count == 0 {
+    if requested_count == 0 || requested_count > 4 {
         bail!("image generation count must be between 1 and 4");
     }
 
@@ -134,5 +134,20 @@ mod tests {
             plan_image_generation(2, &MediaBatchDescriptor::default()).expect("default plan");
 
         assert_eq!(counts(&plan), vec![1, 1]);
+    }
+
+    #[test]
+    fn rejects_requested_count_outside_supported_range() {
+        let zero = plan_image_generation(0, &per_image_batch()).unwrap_err();
+        let too_many = plan_image_generation(5, &per_image_batch()).unwrap_err();
+
+        assert_eq!(
+            zero.to_string(),
+            "image generation count must be between 1 and 4"
+        );
+        assert_eq!(
+            too_many.to_string(),
+            "image generation count must be between 1 and 4"
+        );
     }
 }

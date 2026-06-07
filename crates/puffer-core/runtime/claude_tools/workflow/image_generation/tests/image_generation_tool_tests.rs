@@ -20,7 +20,7 @@ fn execute_uses_discovery_cache_for_chat_image_output_model() {
     let output = execute_image_generation(
         &mut state,
         dir.path(),
-        json!({"prompt": "draw a ship"}),
+        json!({"prompt": "draw a ship", "count": 1}),
         Some(ImageGenerationMediaContext {
             providers: &registry,
             auth_store: &auth_store,
@@ -70,7 +70,7 @@ fn dispatcher_passes_media_context_to_image_generation_tool() {
         &definition,
         dir.path(),
         &allow_all_filesystem_policy(dir.path()),
-        json!({"prompt": "draw a routed ship"}),
+        json!({"prompt": "draw a routed ship", "count": 1}),
         ProviderToolContext::None,
     )
     .unwrap();

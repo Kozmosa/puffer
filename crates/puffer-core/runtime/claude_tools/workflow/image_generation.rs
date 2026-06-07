@@ -30,16 +30,11 @@ struct ImageGenerationInput {
     prompt_reference: Option<String>,
     #[serde(default)]
     aspect: Option<String>,
-    #[serde(default = "default_image_count")]
     count: u8,
     #[serde(default)]
     purpose: Option<String>,
     #[serde(default)]
     retry_from_error: Option<Value>,
-}
-
-fn default_image_count() -> u8 {
-    1
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -600,7 +595,8 @@ mod tests {
     fn parses_prompt_reference_from_tool_input() {
         let parsed: ImageGenerationInput = serde_json::from_value(json!({
             "prompt": "panel 1 action",
-            "promptReference": "prompts.md"
+            "promptReference": "prompts.md",
+            "count": 1
         }))
         .unwrap();
 
@@ -608,9 +604,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_explicit_image_generation_count() {
+        let parsed: ImageGenerationInput = serde_json::from_value(json!({
+            "prompt": "panel 1 action",
+            "promptReference": "prompts.md",
+            "count": 2
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.prompt_reference.as_deref(), Some("prompts.md"));
+        assert_eq!(parsed.count, 2);
+    }
+
+    #[test]
+    fn rejects_missing_image_generation_count() {
+        let error = serde_json::from_value::<ImageGenerationInput>(json!({
+            "prompt": "panel 1 action"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("missing field `count`"));
+    }
+
+    #[test]
     fn rejects_unknown_image_generation_fields() {
         let error = serde_json::from_value::<ImageGenerationInput>(json!({
             "prompt": "draw a ship",
+            "count": 1,
             "outputPath": "requested/ship.png"
         }))
         .unwrap_err();
@@ -810,7 +830,7 @@ mod tests {
         let error = execute_image_generation(
             &mut state,
             dir.path(),
-            json!({"prompt": "draw a ship"}),
+            json!({"prompt": "draw a ship", "count": 1}),
             Some(ImageGenerationMediaContext {
                 providers: &registry,
                 auth_store: &auth_store,
@@ -848,7 +868,7 @@ mod tests {
         let error = execute_image_generation(
             &mut state,
             dir.path(),
-            json!({"prompt": "draw a ship"}),
+            json!({"prompt": "draw a ship", "count": 1}),
             Some(ImageGenerationMediaContext {
                 providers: &registry,
                 auth_store: &auth_store,
@@ -889,6 +909,7 @@ mod tests {
             dir.path(),
             json!({
                 "prompt": "draw a ship",
+                "count": 1,
                 "purpose": "test"
             }),
             Some(ImageGenerationMediaContext {

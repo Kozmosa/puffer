@@ -1330,6 +1330,36 @@ media:
     }
 
     #[test]
+    fn bundled_image_generation_tool_requires_count_and_describes_multi_image_use() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        let paths = ConfigPaths::discover(&root);
+
+        let loaded = load_tool_resources(&paths, &FsTestRunner).unwrap();
+        let tool = loaded
+            .tools
+            .iter()
+            .find(|tool| tool.value.id == "ImageGeneration")
+            .expect("ImageGeneration tool");
+
+        assert!(tool
+            .value
+            .description
+            .contains("Generate one or more images"));
+        assert!(tool.value.description.contains("count"));
+        assert!(!tool.value.description.contains("Generate one image"));
+
+        let schema = tool.value.input_schema.as_ref().expect("input schema");
+        let required = schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .expect("required array");
+        assert!(required.iter().any(|value| value == "prompt"));
+        assert!(required.iter().any(|value| value == "count"));
+    }
+
+    #[test]
     fn plugin_agents_are_loaded_into_agent_inventory() {
         let temp = tempdir().unwrap();
         let root = temp.path().join("workspace");

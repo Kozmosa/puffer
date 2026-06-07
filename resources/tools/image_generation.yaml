@@ -1,14 +1,15 @@
 id: ImageGeneration
 name: ImageGeneration
 description: |-
-  Generate one image through Puffer's configured image media settings and
-  write the resulting image artifact into the workspace image folder.
+  Generate one or more images through Puffer's configured image media settings
+  and write the resulting image artifacts into the workspace image folder.
 
-  Use this for verified Lambda Skill contracts that have a concrete image
-  prompt and optional aspect ratio. The tool reads a workspace-relative prompt
-  file when the prompt value names one; otherwise it treats prompt as literal
-  text. The result includes media job and artifact metadata for the persisted
-  image artifact.
+  Use one ImageGeneration call for one logical image-generation request. When
+  the user asks for multiple images from one prompt, set count to the requested
+  number instead of issuing multiple count=1 calls. The tool reads a
+  workspace-relative prompt file when the prompt value names one; otherwise it
+  treats prompt as literal text. The result includes one media job id and one
+  artifact entry per persisted image file.
 handler: runtime:workflow:image_generation
 approval_policy: ask
 sandbox_policy: network
@@ -36,6 +37,7 @@ input_schema:
       description: Optional previous error payload for retrying the same prompt.
   required:
     - prompt
+    - count
   additionalProperties: false
 metadata:
   may_spawn_processes: false
