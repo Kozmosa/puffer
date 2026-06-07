@@ -102,7 +102,7 @@
     padding: 2px 24px 8px 2px;
   }
   .pf-attachment-preview-strip[data-variant="message"] {
-    padding: 2px 2px 8px;
+    padding: 8px 2px;
   }
   .pf-attachment-preview {
     position: relative;
