@@ -13,6 +13,189 @@ async function openBrowserPane(page: Page, daemon: FakeDaemon): Promise<void> {
   );
 }
 
+async function waitForDaemonRequest(
+  daemon: FakeDaemon,
+  method: string,
+  predicate: (request: FakeDaemon["requests"][number]) => boolean = () => true,
+  timeoutMs = 5_000
+): Promise<FakeDaemon["requests"][number]> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      daemon.waitForRequest(method, predicate),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for daemon request ${method}`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function waitForNewDaemonRequest(
+  daemon: FakeDaemon,
+  method: string,
+  startIndex: number,
+  predicate: (request: FakeDaemon["requests"][number]) => boolean = () => true,
+  timeoutMs = 5_000
+): Promise<FakeDaemon["requests"][number]> {
+  return waitForDaemonRequest(
+    daemon,
+    method,
+    (request) => daemon.requests.indexOf(request) >= startIndex && predicate(request),
+    timeoutMs
+  );
+}
+
+async function browserViewportHitTarget(
+  page: Page
+): Promise<{ classNames: string[]; isCanvas: boolean; tagName: string }> {
+  return page.locator(".pf-browser-viewport").evaluate((viewport) => {
+    const rect = viewport.getBoundingClientRect();
+    const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {
+      classNames: target ? Array.from(target.classList) : [],
+      isCanvas: target?.classList.contains("pf-browser-canvas") ?? false,
+      tagName: target?.tagName ?? ""
+    };
+  });
+}
+
+async function browserUrlFocusTarget(
+  page: Page
+): Promise<{ ariaLabel: string; classNames: string[]; isUrlInput: boolean; tagName: string }> {
+  return page.evaluate(() => {
+    const target = document.activeElement;
+    const isInput = target instanceof HTMLInputElement;
+    return {
+      ariaLabel: target?.getAttribute("aria-label") ?? "",
+      classNames: target ? Array.from(target.classList) : [],
+      isUrlInput: Boolean(
+        isInput &&
+          (target.classList.contains("pf-browser-address") ||
+            target.closest(".pf-browser-new-tab") !== null)
+      ),
+      tagName: target?.tagName ?? ""
+    };
+  });
+}
+
+function toolbarAddressBar(page: Page) {
+  return page.locator(".pf-browser-toolbar .pf-browser-address");
+}
+
+function newRequestCount(daemon: FakeDaemon, startIndex: number, method: string): number {
+  return daemon.requests.slice(startIndex).filter((request) => request.method === method).length;
+}
+
+test("About blank browser tab shows an in-app new-tab surface that targets the address bar", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openBrowserAgent(page);
+  await openBrowserPane(page, daemon);
+
+  const newTabSurface = page.locator(".pf-browser-new-tab");
+  const newTabUrlInput = newTabSurface.getByLabel("New tab address");
+  const viewport = page.locator(".pf-browser-viewport");
+  await expect(newTabSurface).toBeVisible();
+  await expect(newTabUrlInput).toBeVisible();
+  await expect(viewport).toBeVisible();
+
+  const hitTarget = await browserViewportHitTarget(page);
+  expect(
+    hitTarget.isCanvas,
+    `expected about:blank to be covered by the new-tab surface, hit ${hitTarget.tagName}.${hitTarget.classNames.join(".")}`
+  ).toBe(false);
+
+  const beforeClick = daemon.requests.length;
+  await newTabUrlInput.click();
+
+  await expect(newTabUrlInput).toBeFocused();
+  await page.waitForTimeout(75);
+  expect(newRequestCount(daemon, beforeClick, "browser_input")).toBe(0);
+});
+
+test("New-tab surface submits typed URLs and yields to the browser canvas after navigation", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openBrowserAgent(page);
+  await openBrowserPane(page, daemon);
+
+  const addressBar = toolbarAddressBar(page);
+  const newTabSurface = page.locator(".pf-browser-new-tab");
+  const newTabUrlInput = newTabSurface.getByLabel("New tab address");
+  const viewport = page.locator(".pf-browser-viewport");
+  await expect(newTabSurface).toBeVisible();
+  await newTabUrlInput.click();
+  await expect(newTabUrlInput).toBeFocused();
+
+  const url = "https://newtab.example.test/docs";
+  const beforeNavigate = daemon.requests.length;
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+  await page.keyboard.type(url);
+  await page.keyboard.press("Enter");
+
+  await waitForNewDaemonRequest(
+    daemon,
+    "browser_navigate",
+    beforeNavigate,
+    (request) =>
+      request.params.sessionId === "session-browser:browser:tab-1" &&
+      request.params.url === url
+  );
+  await expect(addressBar).toHaveValue(url);
+  await expect(newTabSurface).toBeHidden();
+
+  const hitTarget = await browserViewportHitTarget(page);
+  expect(
+    hitTarget.isCanvas,
+    `expected non-about:blank pages to expose the browser canvas, hit ${hitTarget.tagName}.${hitTarget.classNames.join(".")}`
+  ).toBe(true);
+
+  const beforeCanvasClick = daemon.requests.length;
+  await viewport.click();
+  await waitForNewDaemonRequest(
+    daemon,
+    "browser_input",
+    beforeCanvasClick,
+    (request) => request.params.sessionId === "session-browser:browser:tab-1",
+    2_000
+  );
+  const pageFocusTarget = await browserUrlFocusTarget(page);
+  expect(pageFocusTarget.isUrlInput).toBe(false);
+});
+
+test("New-tab surface preserves typed input when blank-tab state refreshes", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openBrowserAgent(page);
+  await openBrowserPane(page, daemon);
+
+  const newTabSurface = page.locator(".pf-browser-new-tab");
+  const newTabUrlInput = newTabSurface.getByLabel("New tab address");
+  await expect(newTabSurface).toBeVisible();
+  await newTabUrlInput.click();
+  await newTabUrlInput.fill("docs.example.test");
+
+  daemon.emit("browser:session-browser:browser:tab-1:state", {
+    url: "about:blank",
+    title: "",
+    loading: false,
+    width: 960,
+    height: 720
+  });
+
+  await page.waitForTimeout(50);
+  await expect(newTabUrlInput).toHaveValue("docs.example.test");
+  await expect(toolbarAddressBar(page)).toHaveValue("docs.example.test");
+});
+
 test("Address bar preserves user input when a background state event arrives", async ({ page }) => {
   const daemon = new FakeDaemon();
   await daemon.install(page);
@@ -81,7 +264,7 @@ test("Address bar updates after user submits a URL", async ({ page }) => {
   await expect(addressBar).toHaveValue("https://example.com/submitted/final");
 });
 
-test("Address bar updates when switching tabs even if previously focused", async ({ page }) => {
+test("Address input resets to the new-tab surface when switching tabs even if previously focused", async ({ page }) => {
   const daemon = new FakeDaemon();
   await daemon.install(page);
   await daemon.open(page);
@@ -102,8 +285,8 @@ test("Address bar updates when switching tabs even if previously focused", async
     request.params.action === "open" && request.params.tabId === "tab-2"
   );
 
-  // After opening a new tab, the address bar should show the new tab's URL
-  await expect(addressBar).toHaveValue("about:blank");
+  // After opening a new tab, the address bar should present a clean empty field.
+  await expect(addressBar).toHaveValue("");
 });
 
 test("Status bar shows loading state on reload", async ({ page }) => {
@@ -356,7 +539,7 @@ test("Stale empty tab list is ignored while a new tab is opening", async ({ page
   await expect(page.locator(".pf-browser-tab")).toHaveCount(1);
   await page.waitForTimeout(260);
   await expect(page.locator(".pf-browser-tab")).toHaveCount(2);
-  await expect(page.getByLabel("URL")).toBeEnabled();
+  await expect(toolbarAddressBar(page)).toBeEnabled();
 });
 
 test("Stale tab URL events do not overwrite the active address bar", async ({ page }) => {

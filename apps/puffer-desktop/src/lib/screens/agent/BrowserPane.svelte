@@ -110,6 +110,7 @@
   let viewport: HTMLDivElement | null = $state(null);
   let canvas: HTMLCanvasElement | null = $state(null);
   let addressInput: HTMLInputElement | null = $state(null);
+  let newTabAddressInput: HTMLInputElement | null = $state(null);
   let tabs = $state<BrowserTab[]>([]);
   let activeTabId = $state("");
   let nextTabNumber = 2;
@@ -201,6 +202,11 @@
   let browserControlsEnabled = $derived(Boolean(activeTab && connected && !browserCommandPending));
   let browserAddressEnabled = $derived(
     Boolean(activeTab && !browserCommandPending)
+  );
+  let activeTabIsBlank = $derived(Boolean(activeTab && isBlankBrowserUrl(activeTab.url)));
+  let showNewTabSurface = $derived(Boolean(activeTab && activeTabIsBlank));
+  let addressInputValue = $derived(
+    activeTabIsBlank && isBlankBrowserUrl(urlDraft) ? "" : urlDraft
   );
   let activeDevtools = $derived(activeTab?.devtools ?? []);
   let consoleEvents = $derived(activeDevtools.filter((item) => item.kind === "console"));
@@ -1452,7 +1458,10 @@
   }
 
   function isAddressEditing(): boolean {
-    return addressInput !== null && document.activeElement === addressInput;
+    return (
+      (addressInput !== null && document.activeElement === addressInput) ||
+      (newTabAddressInput !== null && document.activeElement === newTabAddressInput)
+    );
   }
 
   function syncFromActiveTab() {
@@ -1852,15 +1861,62 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
+  function isBlankBrowserUrl(value: string | null | undefined): boolean {
+    const trimmed = (value ?? "").trim();
+    return trimmed === "" || trimmed.toLowerCase() === "about:blank";
+  }
+
+  function normalizeNavigationDraft(value: string): string {
+    const trimmed = value.trim();
+    if (isBlankBrowserUrl(trimmed)) return "about:blank";
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
+    if (
+      trimmed.startsWith("localhost") ||
+      trimmed.startsWith("127.") ||
+      trimmed.startsWith("[::1]")
+    ) {
+      return `http://${trimmed}`;
+    }
+    return `https://${trimmed}`;
+  }
+
+  function updateUrlDraft(value: string) {
+    urlDraft = value;
+  }
+
+  function selectAddressText(event: FocusEvent) {
+    (event.currentTarget as HTMLInputElement).select();
+  }
+
+  function focusAddressInputSoon() {
+    requestAnimationFrame(() => {
+      const target = showNewTabSurface ? newTabAddressInput : addressInput;
+      if (disposed || !target) return;
+      target.focus();
+      target.select();
+    });
+  }
+
+  function stopBrowserOverlayEvent(event: Event) {
+    event.stopPropagation();
+  }
+
+  function blockBrowserOverlayEvent(event: Event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   async function submitUrl(event: Event) {
     event.preventDefault();
     const requestedTab = activeTab;
     if (!activeTabId || !requestedTab) return;
     addressInput?.blur();
+    newTabAddressInput?.blur();
     const requestedGeneration = sessionGeneration;
     const requestedTabId = requestedTab.id;
     const requestedBackendSessionId = requestedTab.backendSessionId || backendSessionId(requestedTabId);
-    const requestedUrl = urlDraft;
+    const requestedUrl = normalizeNavigationDraft(urlDraft);
+    urlDraft = requestedUrl;
     const commandTarget = {
       backendSessionId: requestedBackendSessionId,
       generation: requestedGeneration
@@ -1940,7 +1996,9 @@
   }
 
   function openExternal() {
-    const url = currentUrl && currentUrl !== "about:blank" ? currentUrl : urlDraft;
+    const url = currentUrl && !isBlankBrowserUrl(currentUrl)
+      ? currentUrl
+      : normalizeNavigationDraft(urlDraft);
     if (url && url !== "about:blank") {
       window.open(url, "_blank", "noopener,noreferrer");
     }
@@ -1969,6 +2027,7 @@
         nextTabNumber = nextKnownTabNumber(tabs);
         saveTabs();
         syncFromActiveTab();
+        focusAddressInputSoon();
         browserDebug("tab.add.local-cef", {
           tabId,
           backendSessionId: tab.backendSessionId,
@@ -2003,6 +2062,7 @@
       nextTabNumber = nextKnownTabNumber(tabs);
       saveTabs();
       syncFromActiveTab();
+      focusAddressInputSoon();
       void connectActiveTab(requestedAtGeneration);
     } catch (err) {
       browserDebug("tab.add.error", {
@@ -2747,11 +2807,17 @@
     </button>
     <input
       class="pf-browser-address"
+      type="text"
       aria-label="URL"
+      autocomplete="off"
+      inputmode="url"
+      placeholder={activeTabIsBlank ? "Enter URL" : "URL"}
       spellcheck="false"
       disabled={!browserAddressEnabled}
       bind:this={addressInput}
-      bind:value={urlDraft}
+      value={addressInputValue}
+      onfocus={selectAddressText}
+      oninput={(event) => updateUrlDraft(event.currentTarget.value)}
       onkeydown={(event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
@@ -2795,6 +2861,7 @@
     <div class="pf-browser-viewport" bind:this={viewport}>
       <canvas
         class="pf-browser-canvas"
+        class:newTabActive={showNewTabSurface}
         bind:this={canvas}
         tabindex="0"
         onpointerdown={(event) => sendMouse(event, "mousePressed")}
@@ -2812,6 +2879,59 @@
       {#if !activeTab}
         <div class="pf-browser-empty">
           <button class="pf-browser-empty-action" type="button" disabled={tabOpenPending} onclick={() => void addTab()}>New tab</button>
+        </div>
+      {:else if showNewTabSurface}
+        <div
+          class="pf-browser-new-tab"
+          role="presentation"
+          onpointerdown={stopBrowserOverlayEvent}
+          onpointerup={stopBrowserOverlayEvent}
+          onpointermove={stopBrowserOverlayEvent}
+          onpointercancel={stopBrowserOverlayEvent}
+          onwheel={blockBrowserOverlayEvent}
+          onkeydown={stopBrowserOverlayEvent}
+          onkeyup={stopBrowserOverlayEvent}
+          onpaste={stopBrowserOverlayEvent}
+          oncontextmenu={blockBrowserOverlayEvent}
+        >
+          <form class="pf-browser-new-tab-form" aria-label="New tab" onsubmit={submitUrl}>
+            <div class="pf-browser-new-tab-heading">
+              <span class="pf-browser-new-tab-icon" aria-hidden="true">
+                <Icon name="globe" size={18} />
+              </span>
+              <span>New tab</span>
+            </div>
+            <label class="pf-browser-new-tab-input">
+              <Icon name="link" size={15} />
+              <input
+                type="text"
+                aria-label="New tab address"
+                autocomplete="off"
+                inputmode="url"
+                placeholder="Enter URL"
+                spellcheck="false"
+                disabled={!browserAddressEnabled}
+                bind:this={newTabAddressInput}
+                value={addressInputValue}
+                onfocus={selectAddressText}
+                oninput={(event) => updateUrlDraft(event.currentTarget.value)}
+                onkeydown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void submitUrl(event);
+                }}
+              />
+              <button
+                class="pf-browser-new-tab-go"
+                type="submit"
+                title="Go"
+                disabled={!browserAddressEnabled}
+              >
+                <Icon name="arrow" size={14} />
+              </button>
+            </label>
+          </form>
         </div>
       {:else if !connected && !error}
         <div class="pf-browser-empty">Starting Chrome...</div>
@@ -3038,6 +3158,10 @@
     border-color: var(--ring);
   }
 
+  .pf-browser-address::placeholder {
+    color: var(--muted-foreground);
+  }
+
   .pf-browser-renderer {
     flex: 0 0 auto;
     max-width: 132px;
@@ -3112,6 +3236,11 @@
     background: white;
   }
 
+  .pf-browser-canvas.newTabActive {
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .pf-browser-empty {
     position: absolute;
     inset: 0;
@@ -3131,6 +3260,117 @@
     color: var(--foreground);
     cursor: pointer;
     pointer-events: auto;
+  }
+
+  .pf-browser-new-tab {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--background) 96%, var(--muted)) 0%,
+        color-mix(in oklab, var(--background) 88%, var(--muted)) 100%
+      );
+    color: var(--foreground);
+    pointer-events: auto;
+  }
+
+  .pf-browser-new-tab-form {
+    width: min(560px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .pf-browser-new-tab-heading {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--muted-foreground);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .pf-browser-new-tab-icon {
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--background) 86%, var(--muted));
+    color: var(--foreground);
+  }
+
+  .pf-browser-new-tab-input {
+    height: 42px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 6px 0 12px;
+    border: 1px solid var(--input);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--background) 92%, var(--muted));
+    box-shadow: 0 10px 30px color-mix(in oklab, black 9%, transparent);
+    color: var(--muted-foreground);
+  }
+
+  .pf-browser-new-tab-input:focus-within {
+    border-color: var(--ring);
+    box-shadow:
+      0 0 0 2px color-mix(in oklab, var(--ring) 16%, transparent),
+      0 10px 30px color-mix(in oklab, black 9%, transparent);
+  }
+
+  .pf-browser-new-tab-input input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--foreground);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  .pf-browser-new-tab-input input::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .pf-browser-new-tab-input:has(input:disabled) {
+    opacity: 0.5;
+  }
+
+  .pf-browser-new-tab-go {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--background);
+    color: var(--foreground);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .pf-browser-new-tab-go:hover:not(:disabled) {
+    background: var(--accent);
+  }
+
+  .pf-browser-new-tab-go:disabled {
+    cursor: default;
   }
 
   .pf-browser-devtools {
