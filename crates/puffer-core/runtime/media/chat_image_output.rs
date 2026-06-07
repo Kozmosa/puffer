@@ -116,7 +116,6 @@ impl ChatImageOutputAdapter {
         )?;
 
         let job_id = Uuid::new_v4().to_string();
-        let artifact_id = Uuid::new_v4().to_string();
         let created_at_ms = now_ms();
         let mut job = MediaJob::new(
             job_id.clone(),
@@ -124,45 +123,73 @@ impl ChatImageOutputAdapter {
             request.provider_id.clone(),
             request.model_id.clone(),
             request.prompt.clone(),
-            1,
+            request.count,
             created_at_ms,
         );
         service.save_job(&job)?;
         job.transition(MediaJobStatus::Running, now_ms())?;
         service.save_job(&job)?;
 
-        let output = match self.request_image(provider, auth_store, &execution, &request) {
-            Ok(output) => output,
-            Err(error) => {
-                job.error = Some(format!("{error:#}"));
-                job.transition(MediaJobStatus::Failed, now_ms())?;
-                service.save_job(&job)?;
-                return Err(error);
+        let mut outputs = Vec::new();
+        let mut last_error = None;
+        for _ in 0..request.count {
+            if outputs.len() >= request.count as usize {
+                break;
             }
-        };
+            match self.request_image(provider, auth_store, &execution, &request) {
+                Ok(mut response_outputs) => {
+                    outputs.append(&mut response_outputs);
+                    outputs.truncate(request.count as usize);
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if outputs.is_empty() {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        if outputs.is_empty() {
+            let error = last_error
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "chat image-output produced no images".to_string());
+            job.error = Some(error.clone());
+            job.transition(MediaJobStatus::Failed, now_ms())?;
+            service.save_job(&job)?;
+            bail!(error);
+        }
 
-        let filename = "image.png";
-        let artifact_path =
-            service.write_image_artifact_bytes(&artifact_id, filename, &output.bytes)?;
-        let artifact = MediaArtifact {
-            id: artifact_id.clone(),
-            job_id: job_id.clone(),
-            kind: MediaKind::Image,
-            path: artifact_path.clone(),
-            mime_type: "image/png".to_string(),
-            byte_count: output.bytes.len() as u64,
-            metadata: artifact_metadata(&request, &artifact_path, &output, created_at_ms),
-            created_at_ms,
-        };
-        service.save_artifact(&artifact)?;
-        job.attach_artifact(artifact_id, now_ms());
+        let mut artifacts = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let artifact_id = Uuid::new_v4().to_string();
+            let filename = "image.png";
+            let artifact_path =
+                service.write_image_artifact_bytes(&artifact_id, filename, &output.bytes)?;
+            let artifact = MediaArtifact {
+                id: artifact_id.clone(),
+                job_id: job_id.clone(),
+                kind: MediaKind::Image,
+                path: artifact_path.clone(),
+                mime_type: "image/png".to_string(),
+                byte_count: output.bytes.len() as u64,
+                metadata: artifact_metadata(
+                    &request,
+                    &artifact_path,
+                    &output,
+                    index,
+                    created_at_ms,
+                ),
+                created_at_ms,
+            };
+            service.save_artifact(&artifact)?;
+            job.attach_artifact(artifact_id, now_ms());
+            artifacts.push(artifact);
+        }
         job.transition(MediaJobStatus::Succeeded, now_ms())?;
         service.save_job(&job)?;
 
-        Ok(ChatImageOutputGenerationResult {
-            job,
-            artifacts: vec![artifact],
-        })
+        Ok(ChatImageOutputGenerationResult { job, artifacts })
     }
 
     fn request_image(
@@ -171,7 +198,7 @@ impl ChatImageOutputAdapter {
         auth_store: &AuthStore,
         execution: &MediaExecutionDescriptor,
         request: &ChatImageOutputGenerationRequest,
-    ) -> Result<ChatImageOutput> {
+    ) -> Result<Vec<ChatImageOutput>> {
         let url = provider_execution_url(provider, execution, "chat image-output")?;
         let secrets = provider_error_secrets(provider, auth_store, CredentialAliasMode::Strict);
         let body = ChatImageOutputRequest::new(&request.model_id, &request.prompt).to_body();
@@ -200,7 +227,7 @@ impl ChatImageOutputAdapter {
         }
         let value: Value =
             serde_json::from_str(&body).context("parse chat image-output response")?;
-        chat_output_from_response(&self.client, &value)
+        chat_outputs_from_response(&self.client, &value, request.count)
     }
 }
 
@@ -210,48 +237,71 @@ struct ChatImageOutput {
     remote_source_url: Option<String>,
 }
 
-fn chat_output_from_response(client: &Client, value: &Value) -> Result<ChatImageOutput> {
+fn chat_outputs_from_response(
+    client: &Client,
+    value: &Value,
+    count: u8,
+) -> Result<Vec<ChatImageOutput>> {
+    let mut outputs = Vec::new();
     if let Some(choices) = value.get("choices").and_then(Value::as_array) {
         for choice in choices {
             if let Some(message) = choice.get("message") {
-                if let Some(output) = chat_output_from_message(client, message) {
-                    return output;
+                collect_chat_outputs_from_message(client, message, count, &mut outputs)?;
+                if outputs.len() >= count as usize {
+                    return Ok(outputs);
                 }
             }
         }
     }
     if let Some(images) = value.get("images") {
-        if let Some(output) = chat_output_from_image_array(client, images) {
-            return output;
-        }
+        collect_chat_outputs_from_image_array(client, images, count, &mut outputs)?;
     }
-    bail!("chat image-output response did not contain an image")
+    if outputs.is_empty() {
+        bail!("chat image-output response did not contain an image");
+    }
+    Ok(outputs)
 }
 
-fn chat_output_from_message(client: &Client, message: &Value) -> Option<Result<ChatImageOutput>> {
+fn collect_chat_outputs_from_message(
+    client: &Client,
+    message: &Value,
+    count: u8,
+    outputs: &mut Vec<ChatImageOutput>,
+) -> Result<()> {
     if let Some(images) = message.get("images") {
-        if let Some(output) = chat_output_from_image_array(client, images) {
-            return Some(output);
-        }
+        collect_chat_outputs_from_image_array(client, images, count, outputs)?;
     }
     if let Some(parts) = message.get("content").and_then(Value::as_array) {
         for part in parts {
+            if outputs.len() >= count as usize {
+                return Ok(());
+            }
             if let Some(output) = chat_output_from_image_value(client, part) {
-                return Some(output);
+                outputs.push(output?);
             }
         }
     }
-    None
+    Ok(())
 }
 
-fn chat_output_from_image_array(client: &Client, value: &Value) -> Option<Result<ChatImageOutput>> {
-    let images = value.as_array()?;
+fn collect_chat_outputs_from_image_array(
+    client: &Client,
+    value: &Value,
+    count: u8,
+    outputs: &mut Vec<ChatImageOutput>,
+) -> Result<()> {
+    let Some(images) = value.as_array() else {
+        return Ok(());
+    };
     for image in images {
+        if outputs.len() >= count as usize {
+            return Ok(());
+        }
         if let Some(output) = chat_output_from_image_value(client, image) {
-            return Some(output);
+            outputs.push(output?);
         }
     }
-    None
+    Ok(())
 }
 
 fn chat_output_from_image_value(client: &Client, value: &Value) -> Option<Result<ChatImageOutput>> {
@@ -323,6 +373,7 @@ fn artifact_metadata(
     request: &ChatImageOutputGenerationRequest,
     path: &std::path::Path,
     output: &ChatImageOutput,
+    index: usize,
     created_at_ms: u64,
 ) -> Value {
     let mut metadata = json!({
@@ -331,6 +382,7 @@ fn artifact_metadata(
         "adapter": request.adapter,
         "prompt": request.prompt,
         "parameters": request.parameters,
+        "index": index,
         "mimeType": "image/png",
         "localPath": path,
         "byteCount": output.bytes.len() as u64,
@@ -421,6 +473,27 @@ mod tests {
         let mut buffer = [0_u8; 8192];
         let size = stream.read(&mut buffer).expect("read request");
         String::from_utf8_lossy(&buffer[..size]).to_string()
+    }
+
+    #[test]
+    fn chat_image_output_collects_multiple_images() {
+        let value = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "images": [
+                        {"b64_json": "aW1hZ2UtMQ=="},
+                        {"b64_json": "aW1hZ2UtMg=="}
+                    ]
+                }
+            }]
+        });
+        let client = Client::new();
+
+        let outputs = chat_outputs_from_response(&client, &value, 2).unwrap();
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].bytes, b"image-1");
+        assert_eq!(outputs[1].bytes, b"image-2");
     }
 
     #[test]

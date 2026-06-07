@@ -124,7 +124,6 @@ impl MinimaxImageAdapter {
         )?;
 
         let job_id = Uuid::new_v4().to_string();
-        let artifact_id = Uuid::new_v4().to_string();
         let created_at_ms = now_ms();
         let mut job = MediaJob::new(
             job_id.clone(),
@@ -132,51 +131,67 @@ impl MinimaxImageAdapter {
             request.provider_id.clone(),
             request.model_id.clone(),
             request.prompt.clone(),
-            1,
+            request.count,
             created_at_ms,
         );
         service.save_job(&job)?;
         job.transition(MediaJobStatus::Running, now_ms())?;
         service.save_job(&job)?;
 
-        let output = match self.request_image(
-            provider,
-            auth_store,
-            &execution,
-            &request,
-            selected_parameters,
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                job.error = Some(format!("{error:#}"));
-                job.transition(MediaJobStatus::Failed, now_ms())?;
-                service.save_job(&job)?;
-                return Err(error);
+        let mut outputs = Vec::new();
+        let mut last_error = None;
+        for _ in 0..request.count {
+            match self.request_image(
+                provider,
+                auth_store,
+                &execution,
+                &request,
+                selected_parameters.clone(),
+            ) {
+                Ok(output) => outputs.push(output),
+                Err(error) => last_error = Some(error),
             }
-        };
+        }
+        if outputs.is_empty() {
+            let error = last_error
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "MiniMax image generation produced no images".to_string());
+            job.error = Some(error.clone());
+            job.transition(MediaJobStatus::Failed, now_ms())?;
+            service.save_job(&job)?;
+            bail!(error);
+        }
 
-        let filename = "image.png";
-        let artifact_path =
-            service.write_image_artifact_bytes(&artifact_id, filename, &output.bytes)?;
-        let artifact = MediaArtifact {
-            id: artifact_id.clone(),
-            job_id: job_id.clone(),
-            kind: MediaKind::Image,
-            path: artifact_path.clone(),
-            mime_type: "image/png".to_string(),
-            byte_count: output.bytes.len() as u64,
-            metadata: artifact_metadata(&request, &artifact_path, &output, created_at_ms),
-            created_at_ms,
-        };
-        service.save_artifact(&artifact)?;
-        job.attach_artifact(artifact_id, now_ms());
+        let mut artifacts = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let artifact_id = Uuid::new_v4().to_string();
+            let filename = "image.png";
+            let artifact_path =
+                service.write_image_artifact_bytes(&artifact_id, filename, &output.bytes)?;
+            let artifact = MediaArtifact {
+                id: artifact_id.clone(),
+                job_id: job_id.clone(),
+                kind: MediaKind::Image,
+                path: artifact_path.clone(),
+                mime_type: "image/png".to_string(),
+                byte_count: output.bytes.len() as u64,
+                metadata: artifact_metadata(
+                    &request,
+                    &artifact_path,
+                    &output,
+                    index,
+                    created_at_ms,
+                ),
+                created_at_ms,
+            };
+            service.save_artifact(&artifact)?;
+            job.attach_artifact(artifact_id, now_ms());
+            artifacts.push(artifact);
+        }
         job.transition(MediaJobStatus::Succeeded, now_ms())?;
         service.save_job(&job)?;
 
-        Ok(MinimaxImageGenerationResult {
-            job,
-            artifacts: vec![artifact],
-        })
+        Ok(MinimaxImageGenerationResult { job, artifacts })
     }
 
     fn request_image(
@@ -296,6 +311,7 @@ fn artifact_metadata(
     request: &MinimaxImageGenerationRequest,
     path: &std::path::Path,
     output: &MinimaxOutput,
+    index: usize,
     created_at_ms: u64,
 ) -> Value {
     let mut metadata = json!({
@@ -304,6 +320,7 @@ fn artifact_metadata(
         "adapter": request.adapter,
         "prompt": request.prompt,
         "parameters": request.parameters,
+        "index": index,
         "mimeType": "image/png",
         "localPath": path,
         "byteCount": output.bytes.len() as u64,
