@@ -124,6 +124,9 @@ impl MinimaxImageAdapter {
             &discovery_cache,
         )?;
         let plan = plan_image_generation(request.count, &execution.batch)?;
+        if plan.calls.iter().any(|call| call.requested_count != 1) {
+            bail!("MiniMax image generation supports only per-image call plans");
+        }
 
         let job_id = Uuid::new_v4().to_string();
         let created_at_ms = now_ms();
@@ -142,10 +145,7 @@ impl MinimaxImageAdapter {
 
         let mut outputs = Vec::new();
         let mut last_error = None;
-        for call in &plan.calls {
-            if call.requested_count != 1 {
-                bail!("MiniMax image generation supports only per-image call plans");
-            }
+        for _ in &plan.calls {
             match self.request_image(
                 provider,
                 auth_store,
@@ -154,13 +154,22 @@ impl MinimaxImageAdapter {
                 selected_parameters.clone(),
             ) {
                 Ok(output) => outputs.push(output),
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
+                }
             }
         }
-        if outputs.is_empty() {
+        if outputs.len() != request.count as usize {
             let error = last_error
                 .map(|error| format!("{error:#}"))
-                .unwrap_or_else(|| "MiniMax image generation produced no images".to_string());
+                .unwrap_or_else(|| {
+                    format!(
+                        "MiniMax image generation returned {} image(s), expected {}",
+                        outputs.len(),
+                        request.count
+                    )
+                });
             job.error = Some(error.clone());
             job.transition(MediaJobStatus::Failed, now_ms())?;
             service.save_job(&job)?;
@@ -350,9 +359,10 @@ mod tests {
     use crate::runtime::media::MediaGenerationService;
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, ImageMediaDescriptor, MediaExecutionDescriptor, MediaExecutionKind,
-        MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor,
-        ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        AuthMode, AuthStore, ImageMediaDescriptor, MediaBatchDescriptor, MediaBatchMode,
+        MediaExecutionDescriptor, MediaExecutionKind, MediaModelDescriptor, MediaOperation,
+        MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
+        ProviderRegistry,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -362,6 +372,13 @@ mod tests {
     use tempfile::tempdir;
 
     fn registry_with_provider(base_url: String) -> ProviderRegistry {
+        registry_with_provider_batch(base_url, MediaBatchDescriptor::default())
+    }
+
+    fn registry_with_provider_batch(
+        base_url: String,
+        batch: MediaBatchDescriptor,
+    ) -> ProviderRegistry {
         let mut registry = ProviderRegistry::new();
         registry.register(ProviderDescriptor {
             id: "minimax".to_string(),
@@ -380,7 +397,7 @@ mod tests {
                         adapter: MediaExecutionKind::MinimaxImage,
                         base_url: Some(base_url),
                         path: "/v1/image_generation".to_string(),
-                        batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                        batch,
                     }),
                     models: vec![MediaModelDescriptor {
                         id: "image-01".to_string(),
@@ -481,5 +498,90 @@ mod tests {
             b"image-bytes"
         );
         assert_eq!(result.artifacts[0].metadata["adapter"], "minimax_image");
+    }
+
+    #[test]
+    fn minimax_image_failed_later_call_writes_no_artifacts() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("request");
+                requests.push(read_http_request(&mut stream));
+                let body = if index == 0 {
+                    json!({
+                        "data": {"image_base64": ["aW1hZ2U="]},
+                        "base_resp": {"status_code": 0, "status_msg": "success"}
+                    })
+                    .to_string()
+                } else {
+                    json!({
+                        "data": {},
+                        "base_resp": {"status_code": 1001, "status_msg": "failed"}
+                    })
+                    .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).expect("response");
+            }
+            requests
+        });
+        let registry = registry_with_provider(format!("http://{address}"));
+        let service_dir = tempdir().expect("tempdir");
+        let mut request = request();
+        request.count = 2;
+
+        let error = MinimaxImageAdapter::new()
+            .expect("adapter")
+            .execute(
+                &registry,
+                &auth_store(),
+                &MediaGenerationService::new(service_dir.path()),
+                request,
+            )
+            .expect_err("second call fails");
+
+        assert_eq!(
+            error.to_string(),
+            "MiniMax image generation failed: 1001 failed"
+        );
+        assert_eq!(server.join().expect("server").len(), 2);
+        assert!(!service_dir.path().join(".puffer/media/images").exists());
+    }
+
+    #[test]
+    fn minimax_image_rejects_exact_batch_plan_before_creating_job() {
+        let registry = registry_with_provider_batch(
+            "http://127.0.0.1:9".to_string(),
+            MediaBatchDescriptor {
+                mode: MediaBatchMode::Exact,
+                max_images_per_call: Some(2),
+            },
+        );
+        let service_dir = tempdir().expect("tempdir");
+        let mut request = request();
+        request.count = 2;
+
+        let error = MinimaxImageAdapter::new()
+            .expect("adapter")
+            .execute(
+                &registry,
+                &auth_store(),
+                &MediaGenerationService::new(service_dir.path()),
+                request,
+            )
+            .expect_err("MiniMax rejects exact batch plans");
+
+        assert_eq!(
+            error.to_string(),
+            "MiniMax image generation supports only per-image call plans"
+        );
+        assert!(!service_dir.path().join(".puffer/media/jobs").exists());
+        assert!(!service_dir.path().join(".puffer/media/images").exists());
     }
 }

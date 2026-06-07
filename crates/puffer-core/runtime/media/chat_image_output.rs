@@ -135,7 +135,13 @@ impl ChatImageOutputAdapter {
         let mut outputs = Vec::new();
         let mut last_error = None;
         for call in &plan.calls {
-            match self.request_image(provider, auth_store, &execution, &request) {
+            match self.request_image(
+                provider,
+                auth_store,
+                &execution,
+                &request,
+                call.requested_count,
+            ) {
                 Ok(mut response_outputs) => {
                     let take_count = call.requested_count as usize;
                     if response_outputs.len() < take_count {
@@ -219,6 +225,7 @@ impl ChatImageOutputAdapter {
         auth_store: &AuthStore,
         execution: &MediaExecutionDescriptor,
         request: &ChatImageOutputGenerationRequest,
+        count: u8,
     ) -> Result<Vec<ChatImageOutput>> {
         let url = provider_execution_url(provider, execution, "chat image-output")?;
         let secrets = provider_error_secrets(provider, auth_store, CredentialAliasMode::Strict);
@@ -248,7 +255,7 @@ impl ChatImageOutputAdapter {
         }
         let value: Value =
             serde_json::from_str(&body).context("parse chat image-output response")?;
-        chat_outputs_from_response(&self.client, &value, request.count)
+        chat_outputs_from_response(&self.client, &value, count)
     }
 }
 
