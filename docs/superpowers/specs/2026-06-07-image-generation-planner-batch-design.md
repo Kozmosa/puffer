@@ -50,6 +50,8 @@ verified. Treating all of these as the same batch contract is incorrect.
 - Keep adapter code focused on request/response conversion, not count planning.
 - Keep the public result contract as one job with ordered `artifacts[]`.
 - Avoid provider-specific fallback behavior that hides descriptor bugs.
+- Keep the first implementation serial to avoid concurrency, rollback, and
+  rate-limit complexity.
 
 ## Non-Goals
 
@@ -61,6 +63,7 @@ verified. Treating all of these as the same batch contract is incorrect.
 - Do not add nested provider parameter support solely for speculative batch
   modes.
 - Do not introduce a database, queue, or media gallery.
+- Do not add per-provider concurrency controls in the first implementation.
 
 ## Batch Descriptor
 
@@ -73,7 +76,6 @@ execution:
   path: /images/generations
   batch:
     mode: per_image
-    max_concurrency: 2
 ```
 
 High-performance exact batch mode is opt-in:
@@ -85,7 +87,6 @@ execution:
   batch:
     mode: exact
     max_images_per_call: 4
-    max_concurrency: 1
 ```
 
 Rules:
@@ -98,10 +99,14 @@ Rules:
   `batch.mode` explicitly so resource files document intent.
 - `exact` requires `max_images_per_call >= 2`.
 - `per_image` must not carry `max_images_per_call`.
+- `max_concurrency` is intentionally not part of the descriptor. The first
+  implementation executes plan calls serially; concurrency can be added later
+  only after measuring a concrete performance gap.
 - BytePlus Seedream, Zhipu, MiniMax, and chat-output models should begin as
   `per_image`.
-- OpenAI, xAI, or Vercel models may use `exact` only after focused tests prove
-  their endpoint returns exact counts.
+- All bundled providers should begin as `per_image`. OpenAI, xAI, or Vercel
+  models may move to `exact` only in a later resource-only change after focused
+  tests or live verification prove their endpoint returns exact counts.
 
 ## Planner
 
@@ -110,7 +115,6 @@ Add an image generation planner that owns count splitting for all adapters:
 ```rust
 struct ImageGenerationPlan {
     calls: Vec<ImageCallPlan>,
-    max_concurrency: u8,
 }
 
 struct ImageCallPlan {
@@ -137,14 +141,15 @@ The image runtime should follow one flow for every adapter:
 2. Resolve provider/model/adapter capability and batch descriptor.
 3. Build an `ImageGenerationPlan`.
 4. Create one media job for the user request.
-5. Execute plan calls through the selected adapter.
+5. Execute plan calls serially through the selected adapter.
 6. Normalize each provider response into image outputs.
-7. Persist each output as one artifact with stable job-local index metadata.
+7. Persist outputs only after all plan calls have succeeded.
 8. Succeed only when the final artifact count equals the requested count.
 9. Return one result containing `jobId`, `requestedCount`, and `artifacts[]`.
 
-Adapters should receive one call plan at a time. They should not independently
-loop over the user-requested count.
+Adapters should use the shared planner after resolving the execution descriptor.
+They should not implement bespoke count splitting or infer batch behavior from
+missing descriptor fields.
 
 ## Adapter Responsibilities
 
@@ -155,7 +160,7 @@ loop over the user-requested count.
   supports it.
 - Fail a call if `data[]` contains fewer images than the call requested.
 - If the provider returns more images than requested, take only the planned
-  count and record the provider-returned count in metadata.
+  count.
 
 `minimax_image`:
 
@@ -176,8 +181,9 @@ loop over the user-requested count.
 - A provider response with fewer images than planned fails the call.
 - A failed call fails the job. Do not silently retry through another mode.
 - The tool response should not expose partial artifacts for failed jobs.
-- Local sidecars may remain for diagnostics if a future implementation persists
-  artifacts before a later call fails.
+- The first implementation should not write artifact sidecars until every
+  planned provider call has succeeded. This avoids partial artifacts and
+  rollback logic.
 - Error messages should include the call index and expected/actual counts.
 
 Example:
@@ -188,14 +194,12 @@ image generation returned 1 image(s), expected 2 for call 0
 
 ## Performance
 
-Default `per_image` mode should support bounded concurrency:
+The first implementation gets performance from exact batching only. `per_image`
+mode is serial because the user-facing count is capped at four and serial calls
+avoid rate-limit, cancellation, ordering, and partial-persistence complexity.
 
-- Default `max_concurrency`: `2`.
-- Runtime clamp: no more than `4`.
-- `exact` default `max_concurrency`: `1`.
-
-This keeps multi-image generation faster than serial execution without assuming
-every provider can safely handle wide parallel fan-out.
+If real usage shows serial `per_image` is too slow, add bounded concurrency as a
+separate follow-up after the planner and exact-batch semantics are stable.
 
 ## Testing
 
@@ -205,6 +209,7 @@ Planner tests:
 - `exact max=2 count=4 -> [2,2]`.
 - `exact max=3 count=4 -> [3,1]`.
 - Missing batch descriptor resolves to `per_image`.
+- Planner output contains no concurrency policy.
 
 Adapter tests:
 
@@ -212,6 +217,7 @@ Adapter tests:
 - `images_json exact` sends `n` for batch calls.
 - Under-production fails the call and job.
 - Over-production is truncated to the planned count.
+- Failed multi-call generation writes no artifact sidecars.
 - `minimax_image` and `chat_image_output` use planner calls instead of local
   count loops.
 
@@ -235,10 +241,11 @@ The first implementation should be intentionally small:
 
 - Add batch descriptor parsing and validation.
 - Add the planner.
-- Route all current adapters through planner calls.
+- Route all current adapters through shared planner calls without adding a new
+  generic adapter trait or execution runner.
 - Convert current provider resources to explicit `per_image`.
-- Add `exact` support only where an existing test fixture can prove exact
-  response behavior.
+- Add `exact` support against local fake-provider tests only. Do not mark any
+  bundled real provider as `exact` in the first implementation.
 
 Do not add provider-specific nested request parameters, runtime probes, learned
-capability caches, or automatic fallback in this change.
+capability caches, automatic fallback, or bounded concurrency in this change.
