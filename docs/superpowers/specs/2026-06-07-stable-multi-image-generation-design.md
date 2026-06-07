@@ -24,6 +24,10 @@ This design supersedes any earlier exact-count success requirement in the
 multi-image planning work. A request for two images that produces one image is a
 partial success, not a total failure.
 
+This is a corrective design for the already-started multi-artifact work. It is
+not a second batch framework and should not restart the implementation from
+scratch.
+
 ## Context
 
 The current implementation already has much of the right internal shape:
@@ -44,6 +48,13 @@ whole job when the provider returns fewer images than requested. That discards
 valid generated media and trains the model to avoid `count > 1` by making
 multiple single-image calls.
 
+There is also one provider-specific shortcut that should not survive this
+corrective pass: the Images JSON adapter currently changes
+`sequential_image_generation=disabled` to `auto` when a multi-image exact batch
+call is planned. That is a BytePlus sequence-mode optimization hidden inside a
+generic adapter. It conflicts with descriptor-driven planning and should be
+removed unless a provider descriptor explicitly opts into that mode later.
+
 ## Goals
 
 - Make multi-image user intent produce one logical `ImageGeneration` call.
@@ -51,6 +62,7 @@ multiple single-image calls.
 - Preserve every successfully generated artifact.
 - Keep provider execution serial in the first implementation.
 - Keep provider batch behavior descriptor-driven.
+- Preserve descriptor-selected provider parameters without count-based mutation.
 - Keep artifact preview and desktop attachment rendering artifact-scoped.
 - Make tool descriptions strong enough that models prefer `count`.
 - Remove exact-count failure behavior for partial output.
@@ -65,7 +77,11 @@ multiple single-image calls.
 - No automatic fallback from exact batch mode to per-image mode.
 - No retry UI or per-artifact retry orchestration.
 - No provider-native BytePlus sequence mode as the default path.
+- No count-driven parameter rewrite such as forcing
+  `sequential_image_generation=auto`.
 - No pre-created success JSON or synthetic artifact metadata.
+- No provider-registry schema migration solely to reject older descriptors.
+- No warning/status sub-model for partial generation in the first pass.
 
 ## Recommended Approach
 
@@ -75,7 +91,7 @@ For a user request such as "generate two images", the model-facing contract is:
 
 ```json
 {
-  "prompt": "...",
+  "prompt": "two mobile suits fighting in orbit",
   "count": 2,
   "purpose": "generate two images"
 }
@@ -131,7 +147,7 @@ The public result contract is:
     {
       "artifactId": "artifact-1",
       "index": 0,
-      "path": "/.../image.jpeg",
+      "path": "/workspace/.puffer/media/images/artifact-1/image.jpeg",
       "mimeType": "image/jpeg",
       "size": 123
     }
@@ -166,9 +182,12 @@ Planning rules:
 
 - `per_image` with `count=3` creates `[1, 1, 1]`.
 - `exact` with `max_images_per_call=2` and `count=3` creates `[2, 1]`.
-- missing or invalid batch descriptors are configuration errors after the
-  bundled resources are migrated.
+- bundled provider resources must explicitly declare `batch.mode`.
+- existing Rust defaults may remain as internal test and deserialization
+  defaults; do not expand this change into a provider-registry schema migration.
 - BytePlus remains `per_image` by default.
+- provider request parameters come from descriptor defaults and user settings;
+  the generic planner must not mutate them based on `count`.
 
 This design intentionally does not optimize BytePlus through
 `sequential_image_generation=auto` first. That path can be evaluated later as a
@@ -212,10 +231,9 @@ Do not add a new `Partial` status. The partial condition is derived:
 job.status == Succeeded && job.produced_count() < job.requested_count
 ```
 
-If partial output happens, preserve a warning string only if an existing job or
-artifact metadata field can carry it. Do not add a new warning model in the
-first implementation. The warning is diagnostic; it is not required for
-consumers to render artifacts.
+Do not add a warning field in the first implementation. Consumers that need to
+surface a shortfall can derive it by comparing `artifacts.length` with
+`requestedCount`.
 
 ## Desktop And Session Behavior
 
@@ -289,3 +307,21 @@ The implementation should stay in these existing areas:
 - desktop and daemon result parsing already touched by multi-artifact work
 
 Avoid new crates, new service layers, and new runtime normalization passes.
+Do not modify provider-registry descriptor parsing unless an existing test
+breaks directly because of the `batch.mode` resource declarations.
+Remove generic count-based Images JSON parameter mutation instead of expanding
+it into a provider capability system.
+
+## Plan Review Findings
+
+The earlier planner-batch design contained exact-count success language that no
+longer matches the stability-first goal:
+
+- "The final successful result must contain exactly `requested_count`
+  artifacts."
+- "Persist outputs only after all plan calls have succeeded."
+- "The tool response should not expose partial artifacts for failed jobs."
+
+Those statements are superseded by this design. The execution plan should update
+tests that assert all-or-nothing persistence instead of adding compatibility
+branches around them.
