@@ -1,4 +1,5 @@
 use super::agent::{key_text, scroll_delta};
+use super::command::BrowserCommand;
 use super::cursor::parse_cursor_response;
 use super::params::{parse_input_event, required_string_array};
 use super::ref_resolution::{
@@ -10,7 +11,6 @@ use super::screenshot::{
     BrowserScreenshotFormat,
 };
 use super::selection::parse_copy_selection_response;
-use super::session::BrowserCommand;
 use super::upload::parse_upload_handle_response;
 use super::*;
 use crate::daemon_browser::tabs::BrowserCurrentTabStatus;
@@ -183,7 +183,7 @@ fn cef_remote_root_does_not_create_devtools_targets() {
                         )
                     } else if path.starts_with("/json/list") && list_count == 1 {
                         format!(
-                            r#"[{{"id":"target-1","type":"page","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/target-1"}}]"#
+                            r#"[{{"id":"target-1","type":"page","url":"about:blank","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/target-1"}}]"#
                         )
                     } else {
                         "[]".to_string()

@@ -805,7 +805,7 @@ test("providers page marks connected and disconnected providers", async ({ page 
   await expect(openRouterCard.getByRole("button", { name: "Add connect" })).toBeVisible();
 });
 
-test("providers page marks auth-free local providers as ready", async ({ page }) => {
+test("providers page offers auth-free local providers for default routing", async ({ page }) => {
   const daemon = new FakeDaemon({
     auth: [],
     providers: [
@@ -827,15 +827,12 @@ test("providers page marks auth-free local providers as ready", async ({ page })
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const connectionSummary = page.getByRole("status", { name: "Credential connections" });
-  await expect(connectionSummary).toContainText("1 agent provider ready");
-  await expect(connectionSummary.getByText("Ollama")).toBeVisible();
-  await expect(connectionSummary.getByText("local")).toBeVisible();
+  const providerPicker = page.locator(".pf-settings-pane").getByLabel("Provider");
+  await expect(providerPicker).toHaveValue("ollama");
+  await expect(providerPicker.locator("option")).toContainText(["No provider", "Ollama (ollama)"]);
 
   const ollamaCard = page.locator(".provider-card").filter({ hasText: "Ollama" });
-  await expect(ollamaCard.locator(".status")).toHaveText("Ready");
-  await expect(ollamaCard.getByText("No credentials required")).toBeVisible();
-  await expect(ollamaCard.getByRole("button", { name: "Connect" })).toHaveCount(0);
+  await expect(ollamaCard).toHaveCount(0);
 });
 
 test("provider model picker recovers when refreshed auth changes providers", async ({ page }) => {
@@ -1085,7 +1082,7 @@ test("provider OAuth connect is ignored while login is already busy", async ({ p
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -1110,14 +1107,14 @@ test("provider OAuth connect is ignored while login is already busy", async ({ p
 });
 
 test("provider auth controls are disabled while another provider is busy", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({ auth: [] });
   daemon.delayResponse(
     "login_with_oauth",
     (request) => request.params.providerId === "openai",
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -1174,6 +1171,7 @@ test("provider logout is ignored while already busy", async ({ page }) => {
 
 test("external provider credential import is ignored while already busy", async ({ page }) => {
   const daemon = new FakeDaemon({
+    auth: [],
     externalCredentials: [
       {
         providerId: "openai",
@@ -1190,7 +1188,7 @@ test("external provider credential import is ignored while already busy", async 
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -1217,6 +1215,7 @@ test("external provider credential import is ignored while already busy", async 
 
 test("external credential import disables provider login controls", async ({ page }) => {
   const daemon = new FakeDaemon({
+    auth: [],
     externalCredentials: [
       {
         providerId: "openai",
@@ -1233,7 +1232,7 @@ test("external credential import disables provider login controls", async ({ pag
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -1256,6 +1255,7 @@ test("external credential import disables provider login controls", async ({ pag
 
 test("provider login disables external credential import controls", async ({ page }) => {
   const daemon = new FakeDaemon({
+    auth: [],
     externalCredentials: [
       {
         providerId: "openai",
@@ -1272,7 +1272,7 @@ test("provider login disables external credential import controls", async ({ pag
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -1291,7 +1291,19 @@ test("provider login disables external credential import controls", async ({ pag
 });
 
 test("provider refresh controls are disabled while credentials are busy", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({
+    auth: [
+      {
+        providerId: "anthropic",
+        kind: "api_key",
+        email: null,
+        expiresAtMs: null,
+        scopes: [],
+        planType: null,
+        organizationName: null
+      }
+    ]
+  });
   daemon.delayResponse(
     "login_with_oauth",
     (request) => request.params.providerId === "openai",
@@ -1623,7 +1635,7 @@ test("Secrets settings save and import without rendering raw secret values", asy
   const pane = page.locator(".pf-settings-pane");
   await expect(pane.locator(".label").filter({ hasText: "Secret store" })).toBeVisible();
 
-  await pane.getByLabel("Name").fill("Build token");
+  await pane.getByRole("textbox", { name: "Name", exact: true }).fill("Build token");
   await pane.getByLabel("Description").fill("CI deployment token");
   await pane.getByLabel("Username").fill("ci");
   await pane.getByLabel("Origin").fill("https://build.example");
