@@ -1,9 +1,10 @@
 use super::{
     build_night_directive, execute_compact_prompt_command, handle_plan_command,
     plan_mode_context_message, prepare_btw_prompt_command, prepare_commit_prompt_command,
-    prepare_compact_prompt_command, prepare_plan_prompt_command, prepare_pr_comments_prompt_command,
-    prepare_prompt_command_specialization, prepare_security_review_prompt_command,
-    prepare_statusline_prompt_command, PromptCommandPreparation,
+    prepare_compact_prompt_command, prepare_plan_prompt_command,
+    prepare_pr_comments_prompt_command, prepare_prompt_command_specialization,
+    prepare_security_review_prompt_command, prepare_statusline_prompt_command,
+    PromptCommandPreparation,
 };
 use crate::plans::{ensure_plan_file, persist_plan_output, plan_file_path};
 use crate::{AppState, MessageRole};
@@ -745,15 +746,24 @@ fn spawn_json_server(responses: Vec<Value>) -> String {
 fn night_directive_carries_guardrails_budget_and_gates_pr() {
     // Fork-PR off (experimental default): all guardrails + budget + fenced leads.
     let off = build_night_directive("lead: extend the recall index", false, 1_000_000);
-    assert!(off.contains(".worktree/"), "must mandate worktree isolation");
+    assert!(
+        off.contains(".worktree/"),
+        "must mandate worktree isolation"
+    );
     assert!(off.contains("NON-DESTRUCTIVE"));
     assert!(off.contains("NO DRIFT"));
     assert!(off.contains("SUBAGENTS"));
     assert!(off.contains("end-to-end") && off.contains("SCREENSHOTS"));
     // Leads are embedded but FENCED as untrusted (not framed as commands).
-    assert!(off.contains("<untrusted-leads>"), "leads must be fenced as untrusted");
+    assert!(
+        off.contains("<untrusted-leads>"),
+        "leads must be fenced as untrusted"
+    );
     assert!(off.contains("UNTRUSTED"));
-    assert!(off.contains("lead: extend the recall index"), "autodream leads embedded");
+    assert!(
+        off.contains("lead: extend the recall index"),
+        "autodream leads embedded"
+    );
     // Budget/goal section present.
     assert!(off.contains("budget") && off.contains("1000000"));
     assert!(off.contains("Fork-PR is DISABLED"));

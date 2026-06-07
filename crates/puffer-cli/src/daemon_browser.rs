@@ -213,12 +213,7 @@ impl BrowserRegistry {
             height,
             foreground,
         )?;
-        session.navigate(
-            normalized_url
-                .as_deref()
-                .unwrap_or(DEFAULT_URL)
-                .to_string(),
-        )?;
+        session.navigate(normalized_url.as_deref().unwrap_or(DEFAULT_URL).to_string())?;
         let browser_state = session.state();
         self.sessions
             .lock()
