@@ -4,6 +4,7 @@ use super::http_support::{
     redact_secrets, CredentialAliasMode,
 };
 use super::jobs::{MediaJob, MediaJobStatus};
+use super::planner::plan_image_generation;
 use super::resolver::{
     resolve_image_execution_descriptor, validate_image_generate_selection,
     ImageGenerationSelection, MediaDiscoveryCache,
@@ -122,6 +123,7 @@ impl MinimaxImageAdapter {
             &request.adapter,
             &discovery_cache,
         )?;
+        let plan = plan_image_generation(request.count, &execution.batch)?;
 
         let job_id = Uuid::new_v4().to_string();
         let created_at_ms = now_ms();
@@ -140,7 +142,10 @@ impl MinimaxImageAdapter {
 
         let mut outputs = Vec::new();
         let mut last_error = None;
-        for _ in 0..request.count {
+        for call in &plan.calls {
+            if call.requested_count != 1 {
+                bail!("MiniMax image generation supports only per-image call plans");
+            }
             match self.request_image(
                 provider,
                 auth_store,

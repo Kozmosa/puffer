@@ -4,6 +4,7 @@ use super::http_support::{
     redact_secrets, CredentialAliasMode,
 };
 use super::jobs::{MediaJob, MediaJobStatus};
+use super::planner::plan_image_generation;
 use super::resolver::{
     resolve_image_execution_descriptor, validate_image_generate_selection,
     ImageGenerationSelection, MediaDiscoveryCache,
@@ -114,6 +115,7 @@ impl ChatImageOutputAdapter {
             &request.adapter,
             discovery_cache,
         )?;
+        let plan = plan_image_generation(request.count, &execution.batch)?;
 
         let job_id = Uuid::new_v4().to_string();
         let created_at_ms = now_ms();
@@ -132,20 +134,24 @@ impl ChatImageOutputAdapter {
 
         let mut outputs = Vec::new();
         let mut last_error = None;
-        for _ in 0..request.count {
-            if outputs.len() >= request.count as usize {
-                break;
-            }
+        for call in &plan.calls {
             match self.request_image(provider, auth_store, &execution, &request) {
                 Ok(mut response_outputs) => {
+                    let take_count = call.requested_count as usize;
+                    if response_outputs.len() < take_count {
+                        last_error = Some(anyhow::anyhow!(
+                            "chat image-output returned {} image(s), expected {} for call {}",
+                            response_outputs.len(),
+                            take_count,
+                            call.call_index
+                        ));
+                        break;
+                    }
+                    response_outputs.truncate(take_count);
                     outputs.append(&mut response_outputs);
-                    outputs.truncate(request.count as usize);
                 }
                 Err(error) => {
                     last_error = Some(error);
-                    if outputs.is_empty() {
-                        continue;
-                    }
                     break;
                 }
             }
@@ -154,6 +160,21 @@ impl ChatImageOutputAdapter {
             let error = last_error
                 .map(|error| format!("{error:#}"))
                 .unwrap_or_else(|| "chat image-output produced no images".to_string());
+            job.error = Some(error.clone());
+            job.transition(MediaJobStatus::Failed, now_ms())?;
+            service.save_job(&job)?;
+            bail!(error);
+        }
+        if outputs.len() != request.count as usize {
+            let error = last_error
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "chat image-output returned {} image(s), expected {}",
+                        outputs.len(),
+                        request.count
+                    )
+                });
             job.error = Some(error.clone());
             job.transition(MediaJobStatus::Failed, now_ms())?;
             service.save_job(&job)?;
