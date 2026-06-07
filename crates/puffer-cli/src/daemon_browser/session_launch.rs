@@ -90,6 +90,13 @@ fn default_cef_profile_dir() -> Option<PathBuf> {
     )
 }
 
+/// Emits an opt-in browser backend diagnostic to daemon stderr.
+pub(super) fn log_browser_backend(message: impl AsRef<str>) {
+    if std::env::var_os("PUFFER_BROWSER_LOG").is_some() {
+        eprintln!("puffer-browser: {}", message.as_ref());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

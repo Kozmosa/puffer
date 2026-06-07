@@ -1,5 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { FakeDaemon } from "./support/fakeDaemon";
+
+async function openProviderSetup(page: Page, providerName: string) {
+  const displayName = providerName === "Codex" ? "OpenAI" : providerName;
+  const card = page.locator(".provider-card").filter({ hasText: displayName }).last();
+  await card.getByRole("button", { name: "Add connect" }).click();
+  return page.getByRole("dialog", { name: `Connect ${displayName}` });
+}
 
 test("empty provider registry still offers built-in setup options", async ({ page }) => {
   const daemon = new FakeDaemon({ auth: [], providers: [] });
@@ -12,9 +19,11 @@ test("empty provider registry still offers built-in setup options", async ({ pag
   await expect(page.getByRole("heading", { name: "Anthropic" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "OpenRouter" })).toBeVisible();
 
-  const anthropicCard = page.locator(".provider-card").filter({ hasText: "Anthropic" });
-  await anthropicCard.getByLabel("API key for Anthropic").fill("sk-ant-test");
-  await anthropicCard.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.locator(".provider-card").filter({ hasText: "Anthropic" }).getByRole("button", { name: "Add connect" })).toBeVisible();
+
+  const modal = await openProviderSetup(page, "Anthropic");
+  await modal.getByLabel("API key for Anthropic").fill("sk-ant-test");
+  await modal.getByRole("button", { name: "Add connect", exact: true }).click();
 
   const request = await daemon.waitForRequest("login_with_api_key");
   expect(request.params).toMatchObject({
@@ -22,6 +31,41 @@ test("empty provider registry still offers built-in setup options", async ({ pag
     apiKey: "sk-ant-test"
   });
   await expect(page.getByRole("button", { name: "Project", exact: true })).toBeVisible();
+});
+
+test("custom provider modal saves base URL and API key", async ({ page }) => {
+  const daemon = new FakeDaemon({ auth: [], providers: [] });
+  await daemon.install(page);
+  await daemon.open(page, { forceOnboarding: true, skipOnboarding: false });
+
+  const customCard = page.locator(".provider-card").filter({ hasText: "Custom provider" });
+  await customCard.getByRole("button", { name: "Add connect" }).click();
+
+  const modal = page.getByRole("dialog", { name: "Connect Custom provider" });
+  await expect(modal.getByLabel("Base URL")).toBeVisible();
+  await expect(modal.getByLabel("API key")).toBeVisible();
+  await expect(modal.getByText("Saved credentials")).toHaveCount(0);
+  await expect(modal.getByText("OAuth")).toHaveCount(0);
+
+  await modal.getByLabel("Base URL").fill("https://proxy.example/v1");
+  await modal.getByLabel("API key").fill("sk-custom-test");
+  await modal.getByRole("button", { name: "Add connect" }).click();
+
+  const configRequest = await daemon.waitForRequest("update_config", (request) =>
+    request.params.openaiBaseUrl === "https://proxy.example/v1"
+  );
+  expect(configRequest.params).toMatchObject({
+    defaultProvider: "openai",
+    openaiBaseUrl: "https://proxy.example/v1"
+  });
+
+  const loginRequest = await daemon.waitForRequest("login_with_api_key", (request) =>
+    request.params.apiKey === "sk-custom-test"
+  );
+  expect(loginRequest.params).toMatchObject({
+    providerId: "openai",
+    apiKey: "sk-custom-test"
+  });
 });
 
 test("web preview auto-connects to local dev backend websocket", async ({ page }) => {
@@ -48,7 +92,7 @@ test("default model cannot be saved before provider models load", async ({ page 
     160
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -106,7 +150,7 @@ test("default model load errors stay scoped to the selected provider", async ({ 
     160
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
@@ -737,22 +781,31 @@ test("providers page marks connected and disconnected providers", async ({ page 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const connectionSummary = page.getByRole("status", { name: "Credential connections" });
-  await expect(connectionSummary).toContainText("1 provider connected");
-  await expect(connectionSummary.getByText("OpenRouter")).toBeVisible();
-  await expect(connectionSummary.getByText("api_key")).toBeVisible();
+  const connectedOpenRouterCard = page.locator('[data-section="connected"] .provider-card').filter({ hasText: "OpenRouter" });
+  await expect(connectedOpenRouterCard.locator(".status")).toHaveText("Connected via api_key");
+  await expect(connectedOpenRouterCard.getByRole("button", { name: "Disconnect" })).toBeVisible();
 
-  const openRouterCard = page.locator(".provider-card").filter({ hasText: "OpenRouter" });
-  await expect(openRouterCard.locator(".status")).toHaveText("Connected");
-  await expect(openRouterCard.getByText("connected via api_key")).toBeVisible();
-  await expect(openRouterCard.getByRole("button", { name: "Update key" })).toBeVisible();
+  const openRouterCard = page.locator(".provider-section").filter({ hasText: "Popular providers" }).locator(".provider-card").filter({ hasText: "OpenRouter" });
+  await expect(openRouterCard).toHaveCount(0);
 
   const anthropicCard = page.locator(".provider-card").filter({ hasText: "Anthropic" });
-  await expect(anthropicCard.locator(".status")).toHaveText("Not connected");
-  await expect(anthropicCard.getByRole("button", { name: "Connect" })).toBeVisible();
+  await expect(anthropicCard.locator(".status")).toHaveCount(0);
+  await expect(anthropicCard.getByRole("button", { name: "Add connect" })).toBeVisible();
+
+  daemon.delayResponse(
+    "logout_provider",
+    (request) => request.params.providerId === "openrouter",
+    150
+  );
+  await connectedOpenRouterCard.getByRole("button", { name: "Disconnect" }).click();
+  const logout = await daemon.waitForRequest("logout_provider");
+  expect(logout.params).toMatchObject({ providerId: "openrouter" });
+  await expect(page.getByRole("dialog", { name: /Connect OpenRouter/ })).toHaveCount(0);
+  await expect(connectedOpenRouterCard).toHaveCount(0);
+  await expect(openRouterCard.getByRole("button", { name: "Add connect" })).toBeVisible();
 });
 
-test("providers page marks auth-free local providers as ready", async ({ page }) => {
+test("providers page offers auth-free local providers for default routing", async ({ page }) => {
   const daemon = new FakeDaemon({
     auth: [],
     providers: [
@@ -774,15 +827,12 @@ test("providers page marks auth-free local providers as ready", async ({ page })
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const connectionSummary = page.getByRole("status", { name: "Credential connections" });
-  await expect(connectionSummary).toContainText("1 agent provider ready");
-  await expect(connectionSummary.getByText("Ollama")).toBeVisible();
-  await expect(connectionSummary.getByText("local")).toBeVisible();
+  const providerPicker = page.locator(".pf-settings-pane").getByLabel("Provider");
+  await expect(providerPicker).toHaveValue("ollama");
+  await expect(providerPicker.locator("option")).toContainText(["No provider", "Ollama (ollama)"]);
 
   const ollamaCard = page.locator(".provider-card").filter({ hasText: "Ollama" });
-  await expect(ollamaCard.locator(".status")).toHaveText("Ready");
-  await expect(ollamaCard.getByText("No credentials required")).toBeVisible();
-  await expect(ollamaCard.getByRole("button", { name: "Connect" })).toHaveCount(0);
+  await expect(ollamaCard).toHaveCount(0);
 });
 
 test("provider model picker recovers when refreshed auth changes providers", async ({ page }) => {
@@ -906,18 +956,16 @@ test("settings shortcut is ignored while the new-agent modal is open", async ({ 
 });
 
 test("provider API key connect requires a non-empty key", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({ auth: [] });
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const input = page.getByLabel("API key for Anthropic");
-  const connect = page
-    .locator(".provider-card")
-    .filter({ hasText: "Anthropic" })
-    .getByRole("button", { name: "Update key" });
+  const modal = await openProviderSetup(page, "Anthropic");
+  const input = modal.getByLabel("API key for Anthropic");
+  const connect = modal.getByRole("button", { name: "Add connect" });
 
   await expect(connect).toBeDisabled();
   await input.fill("   ");
@@ -940,46 +988,77 @@ test("provider API key connect requires a non-empty key", async ({ page }) => {
 });
 
 test("provider API key input clears after a successful update", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({ auth: [] });
   daemon.delayResponse(
     "login_with_api_key",
     (request) => request.params.providerId === "anthropic",
     120
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const input = page.getByLabel("API key for Anthropic");
+  const modal = await openProviderSetup(page, "Anthropic");
+  const input = modal.getByLabel("API key for Anthropic");
   await input.fill("sk-should-not-remain-visible");
-  await page
-    .locator(".provider-card")
-    .filter({ hasText: "Anthropic" })
-    .getByRole("button", { name: "Update key" })
-    .click();
+  await modal.getByRole("button", { name: "Add connect" }).click();
 
   await daemon.waitForRequest("login_with_api_key");
   await expect(input).toBeDisabled();
-  await expect(input).toBeEnabled();
-  await expect(input).toHaveValue("");
+  await expect(modal).toHaveCount(0);
 });
 
-test("provider API key enter submit is ignored while login is already busy", async ({ page }) => {
+test("custom provider duplicate connect shows a toast and skips login", async ({ page }) => {
   const daemon = new FakeDaemon();
-  daemon.delayResponse(
-    "login_with_api_key",
-    (request) => request.params.providerId === "anthropic",
-    500
-  );
   await daemon.install(page);
   await daemon.open(page);
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const input = page.getByLabel("API key for Anthropic");
+  const modal = await openProviderSetup(page, "Custom provider");
+  const baseUrl = modal.getByLabel("Base URL");
+  const input = modal.getByLabel("API key");
+  const connect = modal.getByRole("button", { name: "Add connect" });
+
+  await baseUrl.fill("https://proxy.example/v1");
+  await input.fill("sk-duplicate");
+  await connect.click();
+  await daemon.waitForRequest("login_with_api_key");
+  await expect(modal).toHaveCount(0);
+
+  const duplicateModal = await openProviderSetup(page, "Custom provider");
+  await duplicateModal.getByLabel("Base URL").fill("https://proxy.example/v1");
+  await duplicateModal.getByLabel("API key").fill("sk-duplicate");
+  await duplicateModal.getByRole("button", { name: "Add connect" }).click();
+
+  await expect(page.getByText("Provider connection already exists.")).toBeVisible();
+  expect(
+    daemon.requests.filter(
+      (request) =>
+        request.method === "login_with_api_key" &&
+        request.params.providerId === "openai"
+    )
+  ).toHaveLength(1);
+});
+
+test("provider API key enter submit is ignored while login is already busy", async ({ page }) => {
+  const daemon = new FakeDaemon({ auth: [] });
+  daemon.delayResponse(
+    "login_with_api_key",
+    (request) => request.params.providerId === "anthropic",
+    500
+  );
+  await daemon.install(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Providers" }).click();
+
+  const modal = await openProviderSetup(page, "Anthropic");
+  const input = modal.getByLabel("API key for Anthropic");
   await input.fill("sk-repeat-safe");
   await input.press("Enter");
   await daemon.waitForRequest("login_with_api_key");
@@ -996,22 +1075,20 @@ test("provider API key enter submit is ignored while login is already busy", asy
 });
 
 test("provider OAuth connect is ignored while login is already busy", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({ auth: [] });
   daemon.delayResponse(
     "login_with_oauth",
-    (request) => request.params.providerId === "codex",
+    (request) => request.params.providerId === "openai",
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const connect = page
-    .locator(".provider-card")
-    .filter({ hasText: "Codex" })
-    .getByRole("button", { name: "Connect with OAuth" });
+  const modal = await openProviderSetup(page, "Codex");
+  const connect = modal.getByRole("button", { name: "Connect with OAuth" });
   await expect(connect).toBeEnabled();
   await connect.evaluate((button) => {
     (button as HTMLButtonElement).click();
@@ -1024,41 +1101,37 @@ test("provider OAuth connect is ignored while login is already busy", async ({ p
     daemon.requests.filter(
       (request) =>
         request.method === "login_with_oauth" &&
-        request.params.providerId === "codex"
+        request.params.providerId === "openai"
     )
   ).toHaveLength(1);
 });
 
 test("provider auth controls are disabled while another provider is busy", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({ auth: [] });
   daemon.delayResponse(
     "login_with_oauth",
-    (request) => request.params.providerId === "codex",
+    (request) => request.params.providerId === "openai",
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const codexOauth = page
+  const codexModal = await openProviderSetup(page, "Codex");
+  const codexOauth = codexModal.getByRole("button", { name: "Connect with OAuth" });
+  const anthropicConnect = page
     .locator(".provider-card")
-    .filter({ hasText: "Codex" })
-    .getByRole("button", { name: "Connect with OAuth" });
-  const anthropicCard = page.locator(".provider-card").filter({ hasText: "Anthropic" });
-  const anthropicInput = page.getByLabel("API key for Anthropic");
-  const anthropicConnect = anthropicCard.getByRole("button", { name: "Update key" });
+    .filter({ hasText: "Anthropic" })
+    .getByRole("button", { name: "Add connect" });
 
-  await anthropicInput.fill("sk-while-codex-busy");
   await expect(codexOauth).toBeEnabled();
-  await expect(anthropicInput).toBeEnabled();
   await expect(anthropicConnect).toBeEnabled();
 
   await codexOauth.click();
   await daemon.waitForRequest("login_with_oauth");
 
-  await expect(anthropicInput).toBeDisabled();
   await expect(anthropicConnect).toBeDisabled();
 });
 
@@ -1098,9 +1171,10 @@ test("provider logout is ignored while already busy", async ({ page }) => {
 
 test("external provider credential import is ignored while already busy", async ({ page }) => {
   const daemon = new FakeDaemon({
+    auth: [],
     externalCredentials: [
       {
-        providerId: "codex",
+        providerId: "openai",
         source: "codex",
         kind: "oauth",
         description: "Codex CLI OAuth",
@@ -1110,19 +1184,17 @@ test("external provider credential import is ignored while already busy", async 
   });
   daemon.delayResponse(
     "import_external_credential",
-    (request) => request.params.providerId === "codex" && request.params.source === "codex",
+    (request) => request.params.providerId === "openai" && request.params.source === "codex",
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const importButton = page
-    .locator(".provider-card")
-    .filter({ hasText: "Codex" })
-    .getByRole("button", { name: "Use credentials from ~/.codex" });
+  const modal = await openProviderSetup(page, "Codex");
+  const importButton = modal.getByRole("button", { name: "Use credentials from ~/.codex" });
   await expect(importButton).toBeVisible();
   await importButton.evaluate((button) => {
     (button as HTMLButtonElement).click();
@@ -1135,7 +1207,7 @@ test("external provider credential import is ignored while already busy", async 
     daemon.requests.filter(
       (request) =>
         request.method === "import_external_credential" &&
-        request.params.providerId === "codex" &&
+        request.params.providerId === "openai" &&
         request.params.source === "codex"
     )
   ).toHaveLength(1);
@@ -1143,9 +1215,10 @@ test("external provider credential import is ignored while already busy", async 
 
 test("external credential import disables provider login controls", async ({ page }) => {
   const daemon = new FakeDaemon({
+    auth: [],
     externalCredentials: [
       {
-        providerId: "codex",
+        providerId: "openai",
         source: "codex",
         kind: "oauth",
         description: "Codex CLI OAuth",
@@ -1155,39 +1228,37 @@ test("external credential import disables provider login controls", async ({ pag
   });
   daemon.delayResponse(
     "import_external_credential",
-    (request) => request.params.providerId === "codex" && request.params.source === "codex",
+    (request) => request.params.providerId === "openai" && request.params.source === "codex",
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const importButton = page
+  const modal = await openProviderSetup(page, "Codex");
+  const importButton = modal.getByRole("button", { name: "Use credentials from ~/.codex" });
+  const anthropicConnect = page
     .locator(".provider-card")
-    .filter({ hasText: "Codex" })
-    .getByRole("button", { name: "Use credentials from ~/.codex" });
-  const anthropicCard = page.locator(".provider-card").filter({ hasText: "Anthropic" });
-  const anthropicInput = page.getByLabel("API key for Anthropic");
-  const anthropicConnect = anthropicCard.getByRole("button", { name: "Update key" });
+    .filter({ hasText: "Anthropic" })
+    .getByRole("button", { name: "Add connect" });
 
-  await anthropicInput.fill("sk-while-import-busy");
   await expect(importButton).toBeEnabled();
   await expect(anthropicConnect).toBeEnabled();
 
   await importButton.click();
   await daemon.waitForRequest("import_external_credential");
 
-  await expect(anthropicInput).toBeDisabled();
   await expect(anthropicConnect).toBeDisabled();
 });
 
 test("provider login disables external credential import controls", async ({ page }) => {
   const daemon = new FakeDaemon({
+    auth: [],
     externalCredentials: [
       {
-        providerId: "codex",
+        providerId: "openai",
         source: "codex",
         kind: "oauth",
         description: "Codex CLI OAuth",
@@ -1197,18 +1268,18 @@ test("provider login disables external credential import controls", async ({ pag
   });
   daemon.delayResponse(
     "login_with_oauth",
-    (request) => request.params.providerId === "codex",
+    (request) => request.params.providerId === "openai",
     500
   );
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  const card = page.locator(".provider-card").filter({ hasText: "Codex" });
-  const importButton = card.getByRole("button", { name: "Use credentials from ~/.codex" });
-  const oauthButton = card.getByRole("button", { name: "Connect with OAuth" });
+  const modal = await openProviderSetup(page, "Codex");
+  const importButton = modal.getByRole("button", { name: "Use credentials from ~/.codex" });
+  const oauthButton = modal.getByRole("button", { name: "Connect with OAuth" });
 
   await expect(importButton).toBeEnabled();
   await expect(oauthButton).toBeEnabled();
@@ -1220,10 +1291,22 @@ test("provider login disables external credential import controls", async ({ pag
 });
 
 test("provider refresh controls are disabled while credentials are busy", async ({ page }) => {
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({
+    auth: [
+      {
+        providerId: "anthropic",
+        kind: "api_key",
+        email: null,
+        expiresAtMs: null,
+        scopes: [],
+        planType: null,
+        organizationName: null
+      }
+    ]
+  });
   daemon.delayResponse(
     "login_with_oauth",
-    (request) => request.params.providerId === "codex",
+    (request) => request.params.providerId === "openai",
     500
   );
   await daemon.install(page);
@@ -1238,10 +1321,8 @@ test("provider refresh controls are disabled while credentials are busy", async 
 
   const pane = page.locator(".pf-settings-pane");
   const providerRefresh = pane.getByRole("button", { name: "Refresh" });
-  const oauthButton = pane
-    .locator(".provider-card")
-    .filter({ hasText: "Codex" })
-    .getByRole("button", { name: "Connect with OAuth" });
+  const modal = await openProviderSetup(page, "Codex");
+  const oauthButton = modal.getByRole("button", { name: "Connect with OAuth" });
   const settingsLoadsBefore = daemon.requests.filter(
     (request) => request.method === "load_settings_snapshot"
   ).length;
@@ -1257,6 +1338,8 @@ test("provider refresh controls are disabled while credentials are busy", async 
     daemon.requests.filter((request) => request.method === "load_settings_snapshot")
   ).toHaveLength(settingsLoadsBefore);
 
+  await modal.getByRole("button", { name: "Close" }).click();
+  await expect(modal).toHaveCount(0);
   await page.getByRole("button", { name: "General" }).click();
   await expect(accountRefresh).toBeDisabled();
   await accountRefresh.evaluate((button) => (button as HTMLButtonElement).click());
@@ -1272,20 +1355,17 @@ test("settings auth uses the configured daemon when Tauri globals exist", async 
     (window as unknown as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown }).__TAURI__ = {};
     (window as unknown as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
   });
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon({ auth: [] });
   await daemon.install(page);
-  await daemon.open(page);
+  await daemon.open(page, { allowUnauthenticatedWorkspace: true });
 
   await daemon.waitForRequest("load_settings_snapshot");
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Providers" }).click();
 
-  await page.getByLabel("API key for Anthropic").fill("sk-tauri-daemon");
-  await page
-    .locator(".provider-card")
-    .filter({ hasText: "Anthropic" })
-    .getByRole("button", { name: "Update key" })
-    .click();
+  const modal = await openProviderSetup(page, "Anthropic");
+  await modal.getByLabel("API key for Anthropic").fill("sk-tauri-daemon");
+  await modal.getByRole("button", { name: "Add connect" }).click();
 
   const request = await daemon.waitForRequest("login_with_api_key");
   expect(request.params).toMatchObject({
@@ -1555,7 +1635,7 @@ test("Secrets settings save and import without rendering raw secret values", asy
   const pane = page.locator(".pf-settings-pane");
   await expect(pane.locator(".label").filter({ hasText: "Secret store" })).toBeVisible();
 
-  await pane.getByLabel("Name").fill("Build token");
+  await pane.getByRole("textbox", { name: "Name", exact: true }).fill("Build token");
   await pane.getByLabel("Description").fill("CI deployment token");
   await pane.getByLabel("Username").fill("ci");
   await pane.getByLabel("Origin").fill("https://build.example");
