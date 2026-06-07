@@ -546,11 +546,10 @@ impl BackendState {
                         subject: None,
                     });
                     if *success && tool_id == "ImageGeneration" {
-                        if let Some(attachment) =
-                            Self::generated_image_attachment(Path::new(&record.cwd), output)
-                        {
-                            pending_generated_attachments.push(attachment);
-                        }
+                        pending_generated_attachments.extend(Self::generated_image_attachments(
+                            Path::new(&record.cwd),
+                            output,
+                        ));
                     }
                 }
             }
@@ -569,16 +568,40 @@ impl BackendState {
         items
     }
 
-    fn generated_image_attachment(cwd: &Path, output: &str) -> Option<ChatAttachmentDto> {
-        let value: serde_json::Value = serde_json::from_str(output).ok()?;
-        let job_id = value.get("jobId")?.as_str()?.trim();
+    fn generated_image_attachments(cwd: &Path, output: &str) -> Vec<ChatAttachmentDto> {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
+            return Vec::new();
+        };
+        let job_id = value
+            .get("jobId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
         if job_id.is_empty() {
-            return None;
+            return Vec::new();
         }
-        let artifact_id = value.get("artifactId")?.as_str()?.trim();
+        value
+            .get("artifacts")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|artifact| Self::generated_image_attachment(cwd, job_id, artifact))
+            .collect()
+    }
+
+    fn generated_image_attachment(
+        cwd: &Path,
+        job_id: &str,
+        artifact: &serde_json::Value,
+    ) -> Option<ChatAttachmentDto> {
+        let artifact_id = artifact.get("artifactId")?.as_str()?.trim();
         if artifact_id.is_empty() {
             return None;
         }
+        let index = artifact
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize;
         let metadata = generated_media_attachment_metadata(cwd, artifact_id)?;
         Some(ChatAttachmentDto {
             id: format!("generated-image:{artifact_id}"),
@@ -591,7 +614,7 @@ impl BackendState {
             source: ChatAttachmentSourceDto::GeneratedMedia {
                 job_id: job_id.to_string(),
                 artifact_id: artifact_id.to_string(),
-                index: 0,
+                index,
             },
         })
     }
@@ -2926,11 +2949,12 @@ mod tests {
     }
 
     #[test]
-    fn tauri_timeline_attaches_generated_image_to_assistant_message() {
+    fn tauri_timeline_attaches_generated_images_to_assistant_message() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         write_generated_image_artifact(&workspace, "artifact-1", "image.jpeg", b"\xff\xd8\xff\xd9");
+        write_generated_image_artifact(&workspace, "artifact-2", "image.jpeg", b"\xff\xd8\xff\xd9");
         let backend = BackendState::new();
         let mut record = test_session_record(
             "codex",
@@ -2942,8 +2966,12 @@ mod tests {
                     input: "{}".to_string(),
                     output: serde_json::json!({
                         "jobId": "job-1",
-                        "artifactId": "artifact-1",
-                        "status": "succeeded"
+                        "requestedCount": 2,
+                        "status": "succeeded",
+                        "artifacts": [
+                            {"artifactId": "artifact-1", "index": 0, "path": "/ignored-1.png", "mimeType": "image/png", "size": 8},
+                            {"artifactId": "artifact-2", "index": 1, "path": "/ignored-2.png", "mimeType": "image/png", "size": 8}
+                        ]
                     })
                     .to_string(),
                     success: true,
@@ -2964,7 +2992,7 @@ mod tests {
         else {
             panic!("assistant message exists");
         };
-        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments.len(), 2);
         assert!(matches!(
             attachments[0].source,
             crate::dtos::ChatAttachmentSourceDto::GeneratedMedia {
@@ -2972,6 +3000,14 @@ mod tests {
                 ref artifact_id,
                 index
             } if job_id == "job-1" && artifact_id == "artifact-1" && index == 0
+        ));
+        assert!(matches!(
+            attachments[1].source,
+            crate::dtos::ChatAttachmentSourceDto::GeneratedMedia {
+                ref job_id,
+                ref artifact_id,
+                index
+            } if job_id == "job-1" && artifact_id == "artifact-2" && index == 1
         ));
     }
 
