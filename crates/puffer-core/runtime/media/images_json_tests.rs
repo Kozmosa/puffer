@@ -2,9 +2,10 @@ use super::*;
 use crate::runtime::media::MediaGenerationService;
 use indexmap::IndexMap;
 use puffer_provider_registry::{
-    AuthMode, AuthStore, ImageMediaDescriptor, MediaExecutionDescriptor, MediaExecutionKind,
-    MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
-    ProviderMediaDescriptor, ProviderRegistry,
+    AuthMode, AuthStore, ImageMediaDescriptor, MediaBatchDescriptor, MediaBatchMode,
+    MediaExecutionDescriptor, MediaExecutionKind, MediaModelDescriptor, MediaOperation,
+    MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
+    ProviderRegistry,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -25,14 +26,19 @@ fn registry_with_provider_parameters(
     base_url: String,
     parameters: Vec<MediaParameterSpec>,
 ) -> ProviderRegistry {
-    registry_with_provider_parameters_and_execution_limit(provider_id, base_url, parameters, None)
+    registry_with_provider_parameters_and_batch(
+        provider_id,
+        base_url,
+        parameters,
+        per_image_batch(),
+    )
 }
 
-fn registry_with_provider_parameters_and_execution_limit(
+fn registry_with_provider_parameters_and_batch(
     provider_id: &str,
     base_url: String,
     parameters: Vec<MediaParameterSpec>,
-    max_images_per_call: Option<u8>,
+    batch: MediaBatchDescriptor,
 ) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
     registry.register(ProviderDescriptor {
@@ -52,13 +58,7 @@ fn registry_with_provider_parameters_and_execution_limit(
                     adapter: MediaExecutionKind::ImagesJson,
                     base_url: None,
                     path: "/custom/images".to_string(),
-                    batch: match max_images_per_call {
-                        Some(limit) => puffer_provider_registry::MediaBatchDescriptor {
-                            mode: puffer_provider_registry::MediaBatchMode::Exact,
-                            max_images_per_call: Some(limit),
-                        },
-                        None => puffer_provider_registry::MediaBatchDescriptor::default(),
-                    },
+                    batch,
                 }),
                 models: vec![MediaModelDescriptor {
                     id: "exact-image-model".to_string(),
@@ -98,6 +98,20 @@ fn image_parameters() -> Vec<MediaParameterSpec> {
             request_field: Some("output_format".to_string()),
         },
     ]
+}
+
+fn per_image_batch() -> MediaBatchDescriptor {
+    MediaBatchDescriptor {
+        mode: MediaBatchMode::PerImage,
+        max_images_per_call: None,
+    }
+}
+
+fn exact_batch(limit: u8) -> MediaBatchDescriptor {
+    MediaBatchDescriptor {
+        mode: MediaBatchMode::Exact,
+        max_images_per_call: Some(limit),
+    }
 }
 
 fn sequential_generation_parameter() -> MediaParameterSpec {
@@ -198,23 +212,16 @@ fn load_single_saved_job(root: &std::path::Path) -> crate::runtime::media::Media
 }
 
 #[test]
-fn image_call_counts_split_by_execution_limit() {
-    assert_eq!(image_call_counts(2, None), vec![2]);
-    assert_eq!(image_call_counts(2, Some(1)), vec![1, 1]);
-    assert_eq!(image_call_counts(4, Some(3)), vec![3, 1]);
-}
-
-#[test]
-fn images_json_repeats_single_image_calls_when_descriptor_limits_batch_size() {
+fn images_json_repeats_single_image_calls_in_per_image_mode() {
     let (base_url, server) =
         spawn_repeated_image_server_with_body(r#"{"data":[{"b64_json":"aW1hZ2U="}]}"#, 2);
     let mut parameters = image_parameters();
     parameters.push(sequential_generation_parameter());
-    let registry = registry_with_provider_parameters_and_execution_limit(
+    let registry = registry_with_provider_parameters_and_batch(
         "exact-provider",
         base_url,
         parameters,
-        Some(1),
+        per_image_batch(),
     );
     let mut auth_store = AuthStore::default();
     auth_store.set_api_key("exact-provider", "sk-test");
@@ -252,11 +259,89 @@ fn images_json_repeats_single_image_calls_when_descriptor_limits_batch_size() {
 }
 
 #[test]
+fn images_json_uses_exact_batch_mode_when_descriptor_opts_in() {
+    let (base_url, server) = spawn_image_server_with_body(
+        r#"{"data":[{"b64_json":"aW1hZ2UtMQ=="},{"b64_json":"aW1hZ2UtMg=="}]}"#,
+    );
+    let registry = registry_with_provider_parameters_and_batch(
+        "exact-provider",
+        base_url,
+        image_parameters(),
+        exact_batch(4),
+    );
+    let service_dir = tempfile::tempdir().unwrap();
+    let service = MediaGenerationService::new(service_dir.path());
+    let mut request = request();
+    request.count = 2;
+
+    let result = ImagesJsonAdapter::new()
+        .unwrap()
+        .execute(&registry, &auth_store(), &service, request)
+        .unwrap();
+
+    let request_text = server.join().unwrap();
+    assert!(request_text.contains("\"n\":2"));
+    assert_eq!(result.artifacts.len(), 2);
+}
+
+#[test]
+fn images_json_failed_later_per_image_call_writes_no_artifacts() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().expect("request");
+            requests.push(read_http_request(&mut stream));
+            let body = if index == 0 {
+                r#"{"data":[{"b64_json":"aW1hZ2U="}]}"#.to_string()
+            } else {
+                r#"{"data":[]}"#.to_string()
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("response");
+        }
+        requests
+    });
+    let registry = registry_with_provider_parameters_and_batch(
+        "exact-provider",
+        format!("http://{address}"),
+        image_parameters(),
+        per_image_batch(),
+    );
+    let service_dir = tempfile::tempdir().unwrap();
+    let service = MediaGenerationService::new(service_dir.path());
+    let mut request = request();
+    request.count = 2;
+
+    let error = ImagesJsonAdapter::new()
+        .unwrap()
+        .execute(&registry, &auth_store(), &service, request)
+        .expect_err("second call under-produces");
+
+    assert_eq!(
+        error.to_string(),
+        "image generation returned 0 image(s), expected 1 for call 1"
+    );
+    assert_eq!(server.join().unwrap().len(), 2);
+    assert!(!service_dir.path().join(".puffer/media/images").exists());
+}
+
+#[test]
 fn images_json_persists_multiple_response_images_under_one_job() {
     let (base_url, server) = spawn_image_server_with_body(
         r#"{"data":[{"b64_json":"aW1hZ2UtMQ=="},{"b64_json":"aW1hZ2UtMg=="}]}"#,
     );
-    let registry = registry_with_provider(base_url);
+    let registry = registry_with_provider_parameters_and_batch(
+        "exact-provider",
+        base_url,
+        image_parameters(),
+        exact_batch(4),
+    );
     let mut auth_store = AuthStore::default();
     auth_store.set_api_key("exact-provider", "sk-test");
     let service_dir = tempfile::tempdir().unwrap();
@@ -301,7 +386,12 @@ fn images_json_persists_multiple_response_images_under_one_job() {
 fn images_json_fails_when_response_contains_fewer_images_than_requested() {
     let (base_url, server) =
         spawn_image_server_with_body(r#"{"data":[{"b64_json":"aW1hZ2UtMQ=="}]}"#);
-    let registry = registry_with_provider(base_url);
+    let registry = registry_with_provider_parameters_and_batch(
+        "exact-provider",
+        base_url,
+        image_parameters(),
+        exact_batch(4),
+    );
     let mut auth_store = AuthStore::default();
     auth_store.set_api_key("exact-provider", "sk-test");
     let service_dir = tempfile::tempdir().unwrap();
@@ -329,7 +419,7 @@ fn images_json_fails_when_response_contains_fewer_images_than_requested() {
     assert!(request_text.contains("\"n\":2"));
     assert_eq!(
         error.to_string(),
-        "image generation returned 1 image(s), expected 2"
+        "image generation returned 1 image(s), expected 2 for call 0"
     );
     assert_eq!(
         saved_job.status,
@@ -339,7 +429,7 @@ fn images_json_fails_when_response_contains_fewer_images_than_requested() {
     assert!(saved_job.artifact_ids.is_empty());
     assert_eq!(
         saved_job.error.as_deref(),
-        Some("image generation returned 1 image(s), expected 2")
+        Some("image generation returned 1 image(s), expected 2 for call 0")
     );
     assert!(!service_dir.path().join(".puffer/media/images").exists());
 }
@@ -447,7 +537,12 @@ fn request_body_enables_sequential_generation_when_requesting_multiple_images() 
     );
     let mut parameters = image_parameters();
     parameters.push(sequential_generation_parameter());
-    let registry = registry_with_provider_parameters("exact-provider", base_url, parameters);
+    let registry = registry_with_provider_parameters_and_batch(
+        "exact-provider",
+        base_url,
+        parameters,
+        exact_batch(4),
+    );
     let service_dir = tempfile::tempdir().unwrap();
     let service = MediaGenerationService::new(service_dir.path());
     let mut request = ImagesJsonGenerationRequest {
@@ -694,7 +789,7 @@ fn external_http_image_url_is_rejected_before_download() {
         "data": [{"url": "http://example.com/generated.png"}]
     });
 
-    let error = image_outputs_from_response(&Client::new(), &value, 1)
+    let error = image_outputs_from_response(&Client::new(), &value, 1, 0)
         .expect_err("external http URL should fail before download");
 
     assert_eq!(

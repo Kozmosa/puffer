@@ -4,6 +4,7 @@ use super::http_support::{
     redact_secrets, CredentialAliasMode,
 };
 use super::jobs::{MediaJob, MediaJobStatus};
+use super::planner::{plan_image_generation, ImageGenerationPlan};
 use super::resolver::{
     resolve_image_execution_descriptor, validate_image_generate_selection,
     ImageGenerationSelection, MediaDiscoveryCache,
@@ -139,11 +140,10 @@ impl ImagesJsonAdapter {
             &request.adapter,
             &discovery_cache,
         )?;
-        let call_counts = image_call_counts(request.count, execution.batch.max_images_per_call);
-        let max_call_count = call_counts.iter().copied().max().unwrap_or(request.count);
+        let plan = plan_image_generation(request.count, &execution.batch)?;
         let request_parameters = parameters_for_image_count(
             selected_parameters_with_defaults(&capability, &request.parameters)?,
-            max_call_count,
+            plan.max_call_count(),
         );
 
         let job_id = Uuid::new_v4().to_string();
@@ -167,7 +167,7 @@ impl ImagesJsonAdapter {
             &request,
             request_parameters.clone(),
             &execution,
-            &call_counts,
+            &plan,
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -177,6 +177,21 @@ impl ImagesJsonAdapter {
                 return Err(error);
             }
         };
+
+        if outputs.len() != request.count as usize {
+            job.error = Some(format!(
+                "image generation returned {} image(s), expected {}",
+                outputs.len(),
+                request.count
+            ));
+            job.transition(MediaJobStatus::Failed, now_ms())?;
+            service.save_job(&job)?;
+            bail!(
+                "image generation returned {} image(s), expected {}",
+                outputs.len(),
+                request.count
+            );
+        }
 
         let mut artifacts = Vec::new();
         for (index, output) in outputs.into_iter().enumerate() {
@@ -225,19 +240,19 @@ impl ImagesJsonAdapter {
         request: &ImagesJsonGenerationRequest,
         parameters: BTreeMap<String, String>,
         execution: &MediaExecutionDescriptor,
-        call_counts: &[u8],
+        plan: &ImageGenerationPlan,
     ) -> Result<Vec<ImageOutput>> {
         let url = provider_execution_url(provider, execution, "image generation")?;
         let secrets =
             provider_error_secrets(provider, auth_store, CredentialAliasMode::OpenAiCodexAlias);
         let token = bearer_token(provider, auth_store, CredentialAliasMode::OpenAiCodexAlias)?;
         let mut outputs = Vec::new();
-        for count in call_counts {
+        for call in &plan.calls {
             let body = ImagesJsonRequest::new(
                 &request.model_id,
                 &request.prompt,
                 parameters.clone(),
-                *count,
+                call.requested_count,
             )
             .to_body();
             let mut http = self.client.post(url.clone()).json(&body);
@@ -265,7 +280,12 @@ impl ImagesJsonAdapter {
             }
             let value: Value =
                 serde_json::from_str(&body).context("parse image generation response")?;
-            outputs.extend(image_outputs_from_response(&self.client, &value, *count)?);
+            outputs.extend(image_outputs_from_response(
+                &self.client,
+                &value,
+                call.requested_count,
+                call.call_index,
+            )?);
         }
         Ok(outputs)
     }
@@ -317,25 +337,11 @@ fn parameters_for_image_count(
     parameters
 }
 
-fn image_call_counts(total: u8, max_images_per_call: Option<u8>) -> Vec<u8> {
-    if total == 0 {
-        return Vec::new();
-    }
-    let limit = max_images_per_call.unwrap_or(total).max(1).min(total);
-    let mut remaining = total;
-    let mut counts = Vec::new();
-    while remaining > 0 {
-        let count = remaining.min(limit);
-        counts.push(count);
-        remaining -= count;
-    }
-    counts
-}
-
 fn image_outputs_from_response(
     client: &Client,
     value: &Value,
     count: u8,
+    call_index: usize,
 ) -> Result<Vec<ImageOutput>> {
     let Some(items) = value.get("data").and_then(Value::as_array) else {
         bail!("image generation response did not contain an image");
@@ -343,9 +349,10 @@ fn image_outputs_from_response(
     let requested_count = count as usize;
     if items.len() < requested_count {
         bail!(
-            "image generation returned {} image(s), expected {}",
+            "image generation returned {} image(s), expected {} for call {}",
             items.len(),
-            requested_count
+            requested_count,
+            call_index
         );
     }
     let mut outputs = Vec::new();
