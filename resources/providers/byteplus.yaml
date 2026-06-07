@@ -19,6 +19,8 @@ media:
     execution:
       adapter: images_json
       path: /images/generations
+      batch:
+        mode: per_image
     models:
       - id: seedream-5-0-260128
         display_name: Seedream 5.0 Lite

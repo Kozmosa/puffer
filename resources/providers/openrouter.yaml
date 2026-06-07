@@ -21,6 +21,8 @@ media:
     execution:
       adapter: chat_image_output
       path: /chat/completions
+      batch:
+        mode: per_image
 models:
   - id: auto
     display_name: Auto

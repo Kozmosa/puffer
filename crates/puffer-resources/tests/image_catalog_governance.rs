@@ -1,5 +1,5 @@
 use puffer_provider_registry::{
-    MediaExecutionKind, MediaModelDescriptor, MediaOperation, ProviderDescriptor,
+    MediaBatchMode, MediaExecutionKind, MediaModelDescriptor, MediaOperation, ProviderDescriptor,
 };
 use puffer_resources::ProviderPack;
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +43,44 @@ fn provider_descriptor(provider_id: &str, yaml: &str) -> ProviderDescriptor {
     pack.into_descriptor()
 }
 
+fn assert_raw_image_executions_declare_batch_mode(provider_id: &str, yaml: &str) {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).unwrap_or_else(|error| panic!("{provider_id}: {error}"));
+    let image = value
+        .get("media")
+        .and_then(|media| media.get("image"))
+        .unwrap_or_else(|| panic!("{provider_id}: missing media.image"));
+    let execution = image
+        .get("execution")
+        .unwrap_or_else(|| panic!("{provider_id}: missing media.image.execution"));
+    assert!(
+        execution
+            .get("batch")
+            .and_then(|batch| batch.get("mode"))
+            .and_then(serde_yaml::Value::as_str)
+            .is_some(),
+        "{provider_id}: media.image.execution.batch.mode must be explicit"
+    );
+    if let Some(models) = image.get("models").and_then(serde_yaml::Value::as_sequence) {
+        for model in models {
+            if let Some(model_execution) = model.get("execution") {
+                let model_id = model
+                    .get("id")
+                    .and_then(serde_yaml::Value::as_str)
+                    .unwrap_or("<missing>");
+                assert!(
+                    model_execution
+                        .get("batch")
+                        .and_then(|batch| batch.get("mode"))
+                        .and_then(serde_yaml::Value::as_str)
+                        .is_some(),
+                    "{provider_id}/{model_id}: models[].execution.batch.mode must be explicit"
+                );
+            }
+        }
+    }
+}
+
 fn assert_select_parameter(
     model: &MediaModelDescriptor,
     name: &str,
@@ -68,6 +106,37 @@ fn assert_select_parameter(
     );
     assert_eq!(parameter.default, default);
     assert_eq!(parameter.request_field.as_deref(), Some(request_field));
+}
+
+#[test]
+fn bundled_image_executions_declare_explicit_batch_mode() {
+    for (provider_id, yaml) in [
+        ("openai", include_str!("../../../resources/providers/openai.yaml")),
+        ("xai", include_str!("../../../resources/providers/xai.yaml")),
+        ("zhipu", include_str!("../../../resources/providers/zhipu.yaml")),
+        (
+            "byteplus",
+            include_str!("../../../resources/providers/byteplus.yaml"),
+        ),
+        (
+            "minimax",
+            include_str!("../../../resources/providers/minimax.yaml"),
+        ),
+        (
+            "minimax-cn",
+            include_str!("../../../resources/providers/minimax-cn.yaml"),
+        ),
+        (
+            "openrouter",
+            include_str!("../../../resources/providers/openrouter.yaml"),
+        ),
+        (
+            "vercel-ai-gateway",
+            include_str!("../../../resources/providers/vercel-ai-gateway.yaml"),
+        ),
+    ] {
+        assert_raw_image_executions_declare_batch_mode(provider_id, yaml);
+    }
 }
 
 #[test]
@@ -184,7 +253,7 @@ fn openrouter_remains_discovery_driven_without_static_image_fallbacks() {
 }
 
 #[test]
-fn zhipu_images_json_limits_batches_to_single_image_calls() {
+fn zhipu_images_json_uses_per_image_batch_mode() {
     let descriptor = provider_descriptor(
         "zhipu",
         include_str!("../../../resources/providers/zhipu.yaml"),
@@ -201,7 +270,8 @@ fn zhipu_images_json_limits_batches_to_single_image_calls() {
 
     assert_eq!(execution.adapter, MediaExecutionKind::ImagesJson);
     assert_eq!(execution.path, "/images/generations");
-    assert_eq!(execution.max_images_per_call, Some(1));
+    assert_eq!(execution.batch.mode, MediaBatchMode::PerImage);
+    assert_eq!(execution.batch.max_images_per_call, None);
 }
 
 #[test]

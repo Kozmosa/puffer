@@ -12,6 +12,8 @@ media:
       adapter: minimax_image
       base_url: https://api.minimax.io
       path: /v1/image_generation
+      batch:
+        mode: per_image
     models:
       - id: image-01
         display_name: Image 01

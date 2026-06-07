@@ -18,6 +18,8 @@ media:
     execution:
       adapter: images_json
       path: /images/generations
+      batch:
+        mode: per_image
     models:
       - id: grok-imagine-image-quality
         display_name: Grok Imagine Image Quality

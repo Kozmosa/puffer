@@ -21,12 +21,16 @@ media:
     execution:
       adapter: chat_image_output
       path: /chat/completions
+      batch:
+        mode: per_image
     models:
       - id: bfl/flux-2-flex
         display_name: FLUX 2 Flex
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-2-klein-4b
@@ -34,6 +38,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-2-klein-9b
@@ -41,6 +47,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-2-max
@@ -48,6 +56,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-2-pro
@@ -55,6 +65,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-kontext-max
@@ -62,6 +74,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-kontext-pro
@@ -69,6 +83,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-pro-1.0-fill
@@ -76,6 +92,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-pro-1.1
@@ -83,6 +101,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bfl/flux-pro-1.1-ultra
@@ -90,6 +110,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bytedance/seedream-4.0
@@ -97,6 +119,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bytedance/seedream-4.5
@@ -104,6 +128,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: bytedance/seedream-5.0-lite
@@ -111,6 +137,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: google/imagen-4.0-fast-generate-001
@@ -118,6 +146,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: google/imagen-4.0-generate-001
@@ -125,6 +155,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: google/imagen-4.0-ultra-generate-001
@@ -132,6 +164,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: openai/gpt-image-2
@@ -139,6 +173,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: openai/gpt-image-1
@@ -146,6 +182,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: openai/gpt-image-1-mini
@@ -153,6 +191,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: openai/gpt-image-1.5
@@ -160,6 +200,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: prodia/flux-fast-schnell
@@ -167,6 +209,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v2
@@ -174,6 +218,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v3
@@ -181,6 +227,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v4
@@ -188,6 +236,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v4-pro
@@ -195,6 +245,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v4.1
@@ -202,6 +254,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v4.1-pro
@@ -209,6 +263,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v4.1-utility
@@ -216,6 +272,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: recraft/recraft-v4.1-utility-pro
@@ -223,6 +281,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
       - id: xai/grok-imagine-image
@@ -230,6 +290,8 @@ media:
         execution:
           adapter: images_json
           path: /images/generations
+          batch:
+            mode: per_image
         operations:
           - generate
 models:

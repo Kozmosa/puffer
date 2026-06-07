@@ -19,6 +19,8 @@ media:
     execution:
       adapter: images_json
       path: /v1/images/generations
+      batch:
+        mode: per_image
     models:
       - id: gpt-image-2
         display_name: GPT Image 2
