@@ -448,6 +448,12 @@ media:
 }
 
 #[test]
+fn media_execution_kind_parses_openai_video() {
+    let kind: MediaExecutionKind = serde_yaml::from_str("openai_video").expect("parse");
+    assert_eq!(kind, MediaExecutionKind::OpenAiVideo);
+}
+
+#[test]
 fn non_select_image_parameter_kind_is_rejected() {
     let yaml = provider_with_media_yaml(
         r#"
