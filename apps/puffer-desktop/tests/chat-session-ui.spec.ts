@@ -1316,6 +1316,73 @@ test("generated video attachment renders a playable card", async ({ page }) => {
   await expect(video).toHaveAttribute("autoplay", "");
 });
 
+test("missing generated video access falls back without exposing local paths", async ({ page }) => {
+  const sessionId = "session-generated-video-missing-access";
+  const localPath = "/tmp/puffer/.puffer/media/artifacts/artifact-video-missing/generated.mp4";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId,
+        displayName: "Missing generated video access",
+        title: "Missing generated video access",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "generated-video-missing-message",
+            text: "Generated a video that is unavailable.",
+            createdAtMs: baseTime - 30_000,
+            attachments: [
+              {
+                id: "generated-video:artifact-video-missing",
+                name: "Missing video",
+                mimeType: "video/mp4",
+                size: 9,
+                extension: "MP4",
+                kind: "video",
+                state: "available",
+                source: {
+                  kind: "generated_media",
+                  jobId: "job-video-missing",
+                  artifactId: "artifact-video-missing",
+                  index: 0,
+                  localPath
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  daemon.seedGeneratedVideoAccess(sessionId, "artifact-video-missing", { state: "missing" });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Missing generated video access/);
+
+  await daemon.waitForRequest(
+    "create_generated_video_access",
+    (request) =>
+      request.params.sessionId === sessionId &&
+      request.params.artifactId === "artifact-video-missing"
+  );
+  const card = page.getByRole("button", { name: "Open video attachment Missing video" });
+  await expect(card).toBeVisible();
+  await expect(card.locator("video")).toHaveCount(0);
+  await expect(card.locator('[data-testid="video-play-indicator"]')).toHaveCount(0);
+  const messageRow = page.locator(".pf-msg").filter({ has: card });
+  await expect(messageRow).not.toContainText(localPath);
+
+  await card.click();
+  const dialog = page.getByRole("dialog", { name: "Missing video" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Preview unavailable for this attachment.")).toBeVisible();
+});
+
 test("shows two generated image attachments from one image generation result", async ({ page }) => {
   const sessionId = "session-generated-two";
   const daemon = new FakeDaemon({

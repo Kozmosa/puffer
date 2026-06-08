@@ -113,7 +113,7 @@
   type CreatedSessionResult = Awaited<ReturnType<typeof createSession>>;
 
   const STALE_TURN_RETRY_AFTER_MS = 120_000;
-  const GENERATED_IMAGE_PREVIEW_ID_PREFIX = "live-generated-image-";
+  const GENERATED_MEDIA_PREVIEW_ID_PREFIX = "live-generated-image-";
 
   type StreamAttemptSnapshot = {
     liveStreamItems: TimelineItem[];
@@ -1586,14 +1586,14 @@
     setStreamAttemptSnapshot(currentLiveStreamSnapshot());
   }
 
-  function isGeneratedImagePreviewItem(item: TimelineItem): boolean {
-    return item.id.startsWith(GENERATED_IMAGE_PREVIEW_ID_PREFIX);
+  function isGeneratedMediaPreviewItem(item: TimelineItem): boolean {
+    return item.id.startsWith(GENERATED_MEDIA_PREVIEW_ID_PREFIX);
   }
 
-  function discardGeneratedImagePreviewItems(items: TimelineItem[]): TimelineItem[] {
-    const kept = items.filter((item) => !isGeneratedImagePreviewItem(item));
+  function discardGeneratedMediaPreviewItems(items: TimelineItem[]): TimelineItem[] {
+    const kept = items.filter((item) => !isGeneratedMediaPreviewItem(item));
     if (kept.length === items.length) return items;
-    revokeTimelineAttachmentPreviews(items.filter(isGeneratedImagePreviewItem));
+    revokeTimelineAttachmentPreviews(items.filter(isGeneratedMediaPreviewItem));
     return kept;
   }
 
@@ -1620,10 +1620,10 @@
   }
 
   function captureTransientConversationState(): TransientConversationState {
-    const cachedLiveStreamItems = discardGeneratedImagePreviewItems(liveStreamItems);
+    const cachedLiveStreamItems = discardGeneratedMediaPreviewItems(liveStreamItems);
     const cachedStreamAttempt = {
       ...captureStreamAttemptSnapshot(),
-      liveStreamItems: discardGeneratedImagePreviewItems(streamAttemptLiveItems)
+      liveStreamItems: discardGeneratedMediaPreviewItems(streamAttemptLiveItems)
     };
     return {
       submittedMessages,
@@ -3107,7 +3107,7 @@
 
   function revokeAttachmentPreviews(attachments: MessageAttachment[]): void {
     attachments.forEach((attachment) => {
-      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      if (attachment.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(attachment.previewUrl);
     });
   }
 
@@ -3203,7 +3203,7 @@
       return;
     }
     appendLive({
-      id: `${GENERATED_IMAGE_PREVIEW_ID_PREFIX}${result.jobId}`,
+      id: `${GENERATED_MEDIA_PREVIEW_ID_PREFIX}${result.jobId}`,
       kind: "assistant",
       title: "Assistant",
       summary: artifacts.length === 1 ? "Generated image" : `Generated ${artifacts.length} images`,
@@ -3225,7 +3225,7 @@
     );
     if (selectedSession?.id !== sessionId) return;
     appendLive({
-      id: `${GENERATED_IMAGE_PREVIEW_ID_PREFIX}video-${result.jobId}`,
+      id: `${GENERATED_MEDIA_PREVIEW_ID_PREFIX}video-${result.jobId}`,
       kind: "assistant",
       title: "Assistant",
       summary: artifacts.length === 1 ? "Generated video" : `Generated ${artifacts.length} videos`,
@@ -3655,7 +3655,7 @@
   }
 
   function stillMissingFromPersisted(items: TimelineItem[], pending: TimelineItem[]): TimelineItem[] {
-    return discardGeneratedImagePreviewItems(pending)
+    return discardGeneratedMediaPreviewItems(pending)
       .filter((item) => !timelineHasTransientMatch(items, item));
   }
 
@@ -3719,7 +3719,7 @@
     persisted: TimelineItem[],
     pending: TimelineItem[]
   ): TimelineItem[] {
-    pending = discardGeneratedImagePreviewItems(pending);
+    pending = discardGeneratedMediaPreviewItems(pending);
     let searchStart = 0;
     let pendingUnmatched: TimelineItem[] = [];
     let anchored: TimelineItem[] = [];

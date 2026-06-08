@@ -164,7 +164,14 @@
         </div>
       {:else if canPreviewVideo && attachment.previewUrl}
         <div class="pf-attachment-video-frame">
-          <video src={attachment.previewUrl} controls autoplay playsinline></video>
+          <!-- svelte-ignore a11y_media_has_caption: Generated videos do not have caption tracks. -->
+          <video
+            src={attachment.previewUrl}
+            controls
+            autoplay
+            playsinline
+            aria-label={attachment.name}
+          ></video>
         </div>
       {:else}
         <div class="pf-attachment-unavailable">

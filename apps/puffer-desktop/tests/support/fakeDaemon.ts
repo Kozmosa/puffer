@@ -54,6 +54,7 @@ type GeneratedMediaArtifactFixture = {
 type GeneratedMediaResultFixture = Partial<{
   jobId: string;
   requestedCount: number;
+  kind: "image" | "video";
   artifacts: GeneratedMediaArtifactFixture[];
   providerId: string;
   modelId: string;
@@ -2023,7 +2024,7 @@ export class FakeDaemon {
       jobId: fixture?.jobId ?? jobId,
       requestedCount: fixture?.requestedCount ?? artifacts.length,
       artifacts,
-      kind,
+      kind: fixture?.kind ?? kind,
       providerId: fixture?.providerId ?? settings.providerId,
       modelId: fixture?.modelId ?? settings.modelId,
       status: fixture?.status ?? "queued",
