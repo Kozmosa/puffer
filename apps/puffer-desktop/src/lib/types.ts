@@ -207,6 +207,7 @@ export type AskUserQuestionItem = {
   options: AskUserQuestionOption[];
   multiSelect?: boolean;
   searchable?: boolean;
+  secret?: boolean;
 };
 
 export type UserQuestionTimelineItem = TimelineBase & {

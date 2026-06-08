@@ -3,6 +3,7 @@
 use serde_json::Value;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
+use url::Url;
 
 /// Tracks active CDP network requests for one browser page worker.
 #[derive(Debug)]
@@ -32,12 +33,17 @@ impl BrowserNetworkState {
         };
         match method {
             "Network.requestWillBeSent" => {
-                self.active_request_ids.insert(request_id);
-                self.last_activity = Instant::now();
+                if should_track_request(value) {
+                    self.active_request_ids.insert(request_id);
+                    self.last_activity = Instant::now();
+                } else if self.active_request_ids.remove(&request_id) {
+                    self.last_activity = Instant::now();
+                }
             }
             "Network.loadingFinished" | "Network.loadingFailed" => {
-                self.active_request_ids.remove(&request_id);
-                self.last_activity = Instant::now();
+                if self.active_request_ids.remove(&request_id) {
+                    self.last_activity = Instant::now();
+                }
             }
             _ => {}
         }
@@ -54,6 +60,110 @@ impl BrowserNetworkState {
     }
 }
 
+fn should_track_request(value: &Value) -> bool {
+    let request_type = value
+        .pointer("/params/type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if is_non_blocking_resource_type(request_type) {
+        return false;
+    }
+    let method = value
+        .pointer("/params/request/method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        return false;
+    }
+    let Some(url) = value.pointer("/params/request/url").and_then(Value::as_str) else {
+        return true;
+    };
+    is_meaningful_network_url(url)
+}
+
+fn is_non_blocking_resource_type(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "beacon"
+            | "cspviolationreport"
+            | "eventsource"
+            | "ping"
+            | "preflight"
+            | "reporting"
+            | "websocket"
+    )
+}
+
+fn is_meaningful_network_url(value: &str) -> bool {
+    let Ok(parsed) = Url::parse(value) else {
+        return true;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    let query = parsed.query().unwrap_or_default().to_ascii_lowercase();
+    if known_telemetry_host(&host) {
+        return false;
+    }
+    if known_telemetry_path(&path) {
+        return false;
+    }
+    if query.contains("collect") && query.contains("analytics") {
+        return false;
+    }
+    true
+}
+
+fn known_telemetry_host(host: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "amplitude",
+        "analytics.google",
+        "analytics.shopify",
+        "clarity.ms",
+        "connect.facebook",
+        "datadog",
+        "doubleclick",
+        "facebook.com",
+        "fullstory",
+        "google-analytics",
+        "googletagmanager",
+        "heap.io",
+        "hotjar",
+        "intercom",
+        "klaviyo",
+        "mixpanel",
+        "monorail",
+        "pinterest",
+        "posthog",
+        "rudderstack",
+        "segment.io",
+        "sentry",
+        "shopifysvc",
+        "snapchat",
+        "stats.g.doubleclick",
+        "tiktok",
+    ];
+    MARKERS.iter().any(|marker| host.contains(marker))
+}
+
+fn known_telemetry_path(path: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "/analytics",
+        "/beacon",
+        "/collect",
+        "/metrics",
+        "/mp/collect",
+        "/rum",
+        "/session-replay",
+        "/telemetry",
+        "/traces",
+        "/vitals",
+    ];
+    MARKERS.iter().any(|marker| path.contains(marker))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,7 +175,16 @@ mod tests {
 
         network.update_from_cdp(
             "Network.requestWillBeSent",
-            &json!({ "params": { "requestId": "r1" } }),
+            &json!({
+                "params": {
+                    "requestId": "r1",
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://checkout.example.com/api/cart"
+                    }
+                }
+            }),
         );
         assert_eq!(network.active_count(), 1);
 
@@ -81,9 +200,142 @@ mod tests {
         let mut network = BrowserNetworkState::default();
         network.update_from_cdp(
             "Network.requestWillBeSent",
-            &json!({ "params": { "requestId": "r1" } }),
+            &json!({
+                "params": {
+                    "requestId": "r1",
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://checkout.example.com/api/cart"
+                    }
+                }
+            }),
         );
 
         assert!(!network.is_idle_for(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn ignores_beacon_and_preflight_requests() {
+        let mut network = BrowserNetworkState::default();
+
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "beacon",
+                    "type": "Ping",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://checkout.example.com/track"
+                    }
+                }
+            }),
+        );
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "preflight",
+                    "type": "Preflight",
+                    "request": {
+                        "method": "OPTIONS",
+                        "url": "https://checkout.example.com/api/cart"
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(network.active_count(), 0);
+        assert!(network.is_idle_for(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn ignores_known_telemetry_hosts_and_paths() {
+        let mut network = BrowserNetworkState::default();
+
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "ga",
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://www.google-analytics.com/g/collect?v=2"
+                    }
+                }
+            }),
+        );
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "rum",
+                    "type": "XHR",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://checkout.example.com/rum/events"
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(network.active_count(), 0);
+    }
+
+    #[test]
+    fn keeps_unknown_fetch_requests_active() {
+        let mut network = BrowserNetworkState::default();
+
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "cart",
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://checkout.example.com/api/cart"
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(network.active_count(), 1);
+    }
+
+    #[test]
+    fn ignored_redirect_releases_previous_meaningful_request() {
+        let mut network = BrowserNetworkState::default();
+
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "r1",
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://checkout.example.com/api/cart"
+                    }
+                }
+            }),
+        );
+        network.update_from_cdp(
+            "Network.requestWillBeSent",
+            &json!({
+                "params": {
+                    "requestId": "r1",
+                    "type": "Ping",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://checkout.example.com/beacon"
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(network.active_count(), 0);
     }
 }

@@ -162,7 +162,11 @@
         const index = item.questions.indexOf(question);
         const answer = answers[answerKeyFor(question, index)];
         if (!answer) return null;
-        return Array.isArray(answer) ? answer.join(", ") : answer;
+        return isSecretQuestion(question)
+          ? displayAnswer(question, index)
+          : Array.isArray(answer)
+            ? answer.join(", ")
+            : answer;
       })
       .filter((value): value is string => Boolean(value))
       .join(" · ");
@@ -207,6 +211,7 @@
   }
 
   function questionHint(question: AskUserQuestionItem): string {
+    if (isSecretQuestion(question)) return "Type the requested secret value.";
     if (question.type === "input") return "Type the requested value.";
     if (question.searchable) return "Search options, then choose one.";
     return question.multiSelect
@@ -214,7 +219,16 @@
       : "Choose one option, or enter a custom answer.";
   }
 
+  function isSecretQuestion(question: AskUserQuestionItem): boolean {
+    return question.type === "input" && question.secret === true;
+  }
+
+  function inputTypeFor(question: AskUserQuestionItem): "text" | "password" {
+    return isSecretQuestion(question) ? "password" : "text";
+  }
+
   function displayAnswer(question: AskUserQuestionItem, index: number): string {
+    if (isSecretQuestion(question)) return "Secret provided";
     const answer = item.answers?.[answerKeyFor(question, index)];
     if (Array.isArray(answer)) return answer.join(", ");
     if (typeof answer === "string") return answer;
@@ -316,6 +330,8 @@
             {:else}
               <input
                 class="pf-question-direct-input"
+                type={inputTypeFor(question)}
+                autocomplete={isSecretQuestion(question) ? "off" : undefined}
                 value={customValue(index)}
                 disabled={disabled}
                 placeholder="Type answer"

@@ -135,6 +135,7 @@
     type: "input" | "choice";
     options: ConnectorQuestionOption[];
     multiSelect: boolean;
+    secret?: boolean;
   };
 
   type ConnectorMarkdownPart =
@@ -464,7 +465,8 @@
           question,
           type,
           options,
-          multiSelect: record.multiSelect === true
+          multiSelect: record.multiSelect === true,
+          secret: record.secret === true
         };
       })
       .filter((question): question is ConnectorQuestion => question !== null);
@@ -484,6 +486,7 @@
   }
 
   function connectorQuestionInputType(question: ConnectorQuestion): "text" | "password" {
+    if (question.secret === true) return "password";
     const text = `${question.header} ${question.question}`.toLowerCase();
     return /password|secret|token|cookie|key|code|xox|credential/.test(text) ? "password" : "text";
   }

@@ -9,7 +9,8 @@ description: |-
 
   Usage notes:
   - Use `type: "choice"` or omit `type` when the user should select from options
-  - Use `type: "input"` when the user should type a value such as a phone number, login code, password, host, URL, or sender list
+  - Use `type: "input"` when the user should type a non-reusable value such as a phone number, login code, host, URL, or sender list
+  - Do not collect reusable passwords, API keys, cookies, or tokens with this tool. Use RequestSecret with action="collect" so the value is entered as a secret and stored in the encrypted vault.
   - Choice questions let users select "Other" to provide custom text input
   - Use `searchable: true` for single-select catalog questions where users should filter a longer option list
   - Input questions collect the typed answer directly
