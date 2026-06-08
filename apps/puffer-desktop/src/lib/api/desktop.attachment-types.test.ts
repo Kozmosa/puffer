@@ -13,7 +13,10 @@ vi.mock("./daemonClient", () => ({
   canInvokeTauri: () => true,
   canReachDaemon: () => true,
   configuredBrowserRemoteDaemonHandshake: () => null,
-  ensureLocalDaemonClient: async () => ({ request }),
+  ensureLocalDaemonClient: async () => ({
+    request,
+    httpUrl: (path: string) => `http://127.0.0.1:1421${path}`
+  }),
   switchDaemonClient: vi.fn()
 }));
 
@@ -60,6 +63,23 @@ const generatedAttachment: MessageAttachment = {
     index: 0,
     localPath: "/tmp/puffer/.puffer/media/images/artifact-1/image.png",
     remoteSourceUrl: "https://example.test/source.png"
+  }
+};
+
+const generatedVideoAttachment: MessageAttachment = {
+  id: "generated-video:artifact-video-1",
+  name: "Generated video",
+  mimeType: "video/mp4",
+  size: 9,
+  extension: "MP4",
+  kind: "video",
+  state: "available",
+  source: {
+    kind: "generated_media",
+    jobId: "job-video-1",
+    artifactId: "artifact-video-1",
+    index: 0,
+    localPath: "/tmp/puffer/.puffer/media/artifacts/artifact-video-1/generated.mp4"
   }
 };
 
@@ -190,6 +210,54 @@ test("reads generated media previews by artifact id", async () => {
     artifactId: "artifact-1"
   });
   expect(invoke).not.toHaveBeenCalled();
+});
+
+test("creates generated video access URLs from daemon paths", async () => {
+  const { createGeneratedVideoAccess } = await import("./desktop");
+  request.mockResolvedValueOnce({
+    state: "available",
+    path: "/media/generated-video/ticket-1",
+    mimeType: "video/mp4",
+    size: 9,
+    expiresAtMs: 1234
+  });
+
+  await expect(
+    createGeneratedVideoAccess("session-1", "artifact-video-1")
+  ).resolves.toEqual({
+    state: "available",
+    url: "http://127.0.0.1:1421/media/generated-video/ticket-1",
+    mimeType: "video/mp4",
+    size: 9,
+    expiresAtMs: 1234
+  });
+
+  expect(request).toHaveBeenCalledWith("create_generated_video_access", {
+    sessionId: "session-1",
+    artifactId: "artifact-video-1"
+  });
+});
+
+test("formats video attachment prompt lines", async () => {
+  const { formatAgentTurnAttachmentLine } = await import("../agentTurnAttachments");
+  expect(formatAgentTurnAttachmentLine(generatedVideoAttachment)).toBe("[Video: Generated video]");
+});
+
+test("revokes only blob attachment preview URLs", async () => {
+  const { revokeMessageAttachmentPreviews } = await import("../agentTurnAttachments");
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+  revokeMessageAttachmentPreviews([
+    {
+      ...generatedVideoAttachment,
+      previewUrl: "http://127.0.0.1:1421/media/generated-video/ticket-1"
+    },
+    { ...attachment, previewUrl: "blob:image-preview" }
+  ]);
+
+  expect(revoke).toHaveBeenCalledTimes(1);
+  expect(revoke).toHaveBeenCalledWith("blob:image-preview");
+  revoke.mockRestore();
 });
 
 test("reads local file previews by stored attachment id", async () => {

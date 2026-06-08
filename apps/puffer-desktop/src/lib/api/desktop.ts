@@ -14,6 +14,7 @@ import type {
   FolderGroup,
   GenerateMediaInput,
   GenerateMediaResult,
+  GeneratedVideoAccessResult,
   ProviderSummary,
   ProxyTestResult,
   PullRequest,
@@ -166,11 +167,16 @@ type BackendChatAttachment = {
   mimeType: string;
   size: number;
   extension: string;
-  kind: "image" | "file";
+  kind: "image" | "file" | "video";
   state?: AttachmentState;
   source: BackendChatAttachmentSource;
   previewUrl?: string | null;
 };
+
+type BackendGeneratedVideoAccessResult =
+  | { state: "available"; path: string; mimeType: string; size: number; expiresAtMs: number }
+  | { state: "missing" }
+  | { state: "unsupported" };
 
 type BackendTimelineItem =
   | ({
@@ -2480,6 +2486,25 @@ export async function readGeneratedMediaPreview(
     sessionId,
     artifactId
   });
+}
+
+export async function createGeneratedVideoAccess(
+  sessionId: string,
+  artifactId: string
+): Promise<GeneratedVideoAccessResult> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<BackendGeneratedVideoAccessResult>(
+    "create_generated_video_access",
+    { sessionId, artifactId }
+  );
+  if (result.state !== "available") return result;
+  return {
+    state: "available",
+    url: client.httpUrl(result.path),
+    mimeType: result.mimeType,
+    size: result.size,
+    expiresAtMs: result.expiresAtMs
+  };
 }
 
 export async function readMessageAttachmentPreview(

@@ -32,10 +32,14 @@ export type MessageActor = {
   parentSessionId?: string | null;
 };
 
-export type AgentTurnAttachmentKind = "image" | "file";
+export type AgentTurnAttachmentKind = "image" | "file" | "video";
 export type AttachmentState = "available" | "missing";
 export type AttachmentPreviewResult =
   | { state: "available"; mimeType: string; bytes: number[] }
+  | { state: "missing" }
+  | { state: "unsupported" };
+export type GeneratedVideoAccessResult =
+  | { state: "available"; url: string; mimeType: string; size: number; expiresAtMs: number }
   | { state: "missing" }
   | { state: "unsupported" };
 

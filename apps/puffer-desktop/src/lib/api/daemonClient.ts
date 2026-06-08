@@ -153,6 +153,18 @@ export class DaemonClient {
     });
   }
 
+  httpUrl(path: string): string {
+    if (!this.useWebSocket) {
+      throw new Error("Daemon HTTP media URLs require a WebSocket daemon handshake.");
+    }
+    const url = new URL(this.handshake.url);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.pathname = path.startsWith("/") ? path : `/${path}`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
   on<T = unknown>(event: string, handler: (payload: T) => void): () => void {
     if (this.useWebSocket) {
       const wrapped = handler as (payload: unknown) => void;
