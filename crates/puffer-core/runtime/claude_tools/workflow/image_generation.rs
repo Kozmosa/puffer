@@ -304,7 +304,7 @@ mod tests {
     use crate::runtime::claude_tools::{execute_tool, ProviderToolContext};
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, ImageMediaDescriptor, MediaExecutionDescriptor, MediaExecutionKind,
+        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
         MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor,
         ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
@@ -366,9 +366,9 @@ mod tests {
             headers: IndexMap::new(),
             query_params: IndexMap::new(),
             chat_completions_path: None,
-            discovery: None,
-            media: Some(ProviderMediaDescriptor {
-                image: Some(ImageMediaDescriptor {
+        discovery: None,
+        media: Some(ProviderMediaDescriptor {
+                image: Some(MediaKindDescriptor {
                     discovery: None,
                     execution: Some(MediaExecutionDescriptor {
                         adapter: MediaExecutionKind::ImagesJson,
@@ -404,9 +404,10 @@ mod tests {
                                 request_field: Some("output_format".to_string()),
                             },
                         ],
-                    }],
-                }),
+                }],
             }),
+            video: None,
+        }),
             models: Vec::<ModelDescriptor>::new(),
         });
         registry
@@ -423,9 +424,9 @@ mod tests {
             headers: IndexMap::new(),
             query_params: IndexMap::new(),
             chat_completions_path: None,
-            discovery: None,
-            media: Some(ProviderMediaDescriptor {
-                image: Some(ImageMediaDescriptor {
+        discovery: None,
+        media: Some(ProviderMediaDescriptor {
+                image: Some(MediaKindDescriptor {
                     discovery: None,
                     execution: Some(MediaExecutionDescriptor {
                         adapter: MediaExecutionKind::ChatImageOutput,
@@ -433,9 +434,10 @@ mod tests {
                         path: "/chat/completions".to_string(),
                         batch: puffer_provider_registry::MediaBatchDescriptor::default(),
                     }),
-                    models: Vec::new(),
-                }),
+                models: Vec::new(),
             }),
+            video: None,
+        }),
             models: Vec::<ModelDescriptor>::new(),
         });
         registry

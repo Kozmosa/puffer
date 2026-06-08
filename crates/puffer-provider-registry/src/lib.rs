@@ -11,11 +11,11 @@ pub use import::{
     detect_import_candidates, ExternalImportCandidate, ExternalImportFamily, ExternalImportSource,
 };
 pub use model::{
-    AnthropicMessagesCompat, ImageMediaDescriptor, MediaBatchDescriptor, MediaBatchMode,
+    AnthropicMessagesCompat, MediaBatchDescriptor, MediaBatchMode,
     MediaDiscoveryDescriptor, MediaDiscoveryKind, MediaExecutionDescriptor, MediaExecutionKind,
-    MediaModelDescriptor, MediaOperation, MediaParameterSpec, Modality, ModelCompat, ModelCost,
-    ModelDescriptor, ModelDiscoveryConfig, ModelDiscoveryFormat, OpenAiCompletionsCompat,
-    OpenAiResponsesCompat, ProviderDescriptor, ProviderMediaDescriptor, ProviderSource,
-    ProviderSourceKind, RegisteredProvider, ResponsesPath, ThinkingFormat,
+    MediaKindDescriptor, MediaModelDescriptor, MediaOperation, MediaParameterSpec, Modality,
+    ModelCompat, ModelCost, ModelDescriptor, ModelDiscoveryConfig, ModelDiscoveryFormat,
+    OpenAiCompletionsCompat, OpenAiResponsesCompat, ProviderDescriptor, ProviderMediaDescriptor,
+    ProviderSource, ProviderSourceKind, RegisteredProvider, ResponsesPath, ThinkingFormat,
 };
 pub use registry::{canonical_provider_id, ProviderRegistry};

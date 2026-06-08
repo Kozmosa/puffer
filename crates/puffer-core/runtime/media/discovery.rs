@@ -272,9 +272,9 @@ mod tests {
     use super::*;
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, ImageMediaDescriptor, MediaDiscoveryDescriptor, MediaDiscoveryKind,
+        AuthMode, AuthStore, MediaDiscoveryDescriptor, MediaDiscoveryKind,
         MediaExecutionDescriptor, MediaExecutionKind, ModelDescriptor, ProviderDescriptor,
-        ProviderMediaDescriptor, ProviderRegistry,
+        MediaKindDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -294,7 +294,7 @@ mod tests {
             chat_completions_path: None,
             discovery: None,
             media: Some(ProviderMediaDescriptor {
-                image: Some(ImageMediaDescriptor {
+                image: Some(MediaKindDescriptor {
                     discovery: Some(MediaDiscoveryDescriptor {
                         adapter: MediaDiscoveryKind::TrustedImageOutput,
                         path: Some("/models".to_string()),
@@ -311,6 +311,7 @@ mod tests {
                     }),
                     models: Vec::new(),
                 }),
+                video: None,
             }),
             models: Vec::<ModelDescriptor>::new(),
         }

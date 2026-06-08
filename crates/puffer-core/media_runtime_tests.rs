@@ -1,7 +1,7 @@
 use super::*;
 use indexmap::IndexMap;
 use puffer_provider_registry::{
-    AuthMode, AuthStore, ImageMediaDescriptor, MediaExecutionDescriptor, MediaExecutionKind,
+    AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
     MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
     ProviderMediaDescriptor, ProviderRegistry,
 };
@@ -24,7 +24,7 @@ fn minimax_registry(base_url: String) -> ProviderRegistry {
         chat_completions_path: None,
         discovery: None,
         media: Some(ProviderMediaDescriptor {
-            image: Some(ImageMediaDescriptor {
+            image: Some(MediaKindDescriptor {
                 discovery: None,
                 execution: Some(MediaExecutionDescriptor {
                     adapter: MediaExecutionKind::MinimaxImage,
@@ -55,6 +55,7 @@ fn minimax_registry(base_url: String) -> ProviderRegistry {
                     ],
                 }],
             }),
+            video: None,
         }),
         models: Vec::<ModelDescriptor>::new(),
     });
@@ -74,7 +75,7 @@ fn chat_router_registry(base_url: String) -> ProviderRegistry {
         chat_completions_path: None,
         discovery: None,
         media: Some(ProviderMediaDescriptor {
-            image: Some(ImageMediaDescriptor {
+            image: Some(MediaKindDescriptor {
                 discovery: None,
                 execution: Some(MediaExecutionDescriptor {
                     adapter: MediaExecutionKind::ChatImageOutput,
@@ -84,6 +85,7 @@ fn chat_router_registry(base_url: String) -> ProviderRegistry {
                 }),
                 models: Vec::new(),
             }),
+            video: None,
         }),
         models: Vec::<ModelDescriptor>::new(),
     });
@@ -103,7 +105,7 @@ fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
         chat_completions_path: None,
         discovery: None,
         media: Some(ProviderMediaDescriptor {
-            image: Some(ImageMediaDescriptor {
+            image: Some(MediaKindDescriptor {
                 discovery: None,
                 execution: Some(MediaExecutionDescriptor {
                     adapter: MediaExecutionKind::ImagesJson,
@@ -134,6 +136,7 @@ fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
                     ],
                 }],
             }),
+            video: None,
         }),
         models: Vec::<ModelDescriptor>::new(),
     });

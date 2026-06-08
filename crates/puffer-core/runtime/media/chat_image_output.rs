@@ -412,7 +412,7 @@ mod tests {
     use crate::runtime::media::MediaGenerationService;
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, ImageMediaDescriptor, MediaExecutionDescriptor, MediaExecutionKind,
+        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
         MediaModelDescriptor, MediaOperation, ModelDescriptor, ProviderDescriptor,
         ProviderMediaDescriptor, ProviderRegistry,
     };
@@ -436,7 +436,7 @@ mod tests {
             chat_completions_path: Some("/chat/completions".to_string()),
             discovery: None,
             media: Some(ProviderMediaDescriptor {
-                image: Some(ImageMediaDescriptor {
+                image: Some(MediaKindDescriptor {
                     discovery: None,
                     execution: Some(MediaExecutionDescriptor {
                         adapter: MediaExecutionKind::ChatImageOutput,
@@ -452,6 +452,7 @@ mod tests {
                         parameters: Vec::new(),
                     }],
                 }),
+                video: None,
             }),
             models: Vec::<ModelDescriptor>::new(),
         });

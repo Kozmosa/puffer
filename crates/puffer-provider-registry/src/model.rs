@@ -311,12 +311,14 @@ impl ModelCompat {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderMediaDescriptor {
     #[serde(default)]
-    pub image: Option<ImageMediaDescriptor>,
+    pub image: Option<MediaKindDescriptor>,
+    #[serde(default)]
+    pub video: Option<MediaKindDescriptor>,
 }
 
-/// Describes image-generation capability metadata for one provider.
+/// Describes media-generation capability metadata for one provider/kind.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ImageMediaDescriptor {
+pub struct MediaKindDescriptor {
     #[serde(default)]
     pub discovery: Option<MediaDiscoveryDescriptor>,
     #[serde(default)]
@@ -417,6 +419,7 @@ pub enum MediaExecutionKind {
     ImagesJson,
     ChatImageOutput,
     MinimaxImage,
+    ReplicateVideo,
 }
 
 /// Describes image media operations.
@@ -466,17 +469,13 @@ impl ProviderDescriptor {
         let Some(media) = &self.media else {
             return Ok(());
         };
-        let Some(image) = &media.image else {
-            return Ok(());
-        };
 
         let mut errors = Vec::new();
-        if let Some(execution) = &image.execution {
-            execution.validate("media.image.execution", &mut errors);
+        if let Some(image) = &media.image {
+            validate_media_kind_descriptor("media.image", image, &mut errors);
         }
-        for (index, model) in image.models.iter().enumerate() {
-            let location = format!("media.image.models[{index}]");
-            model.validate(&location, &mut errors);
+        if let Some(video) = &media.video {
+            validate_media_kind_descriptor("media.video", video, &mut errors);
         }
 
         if errors.is_empty() {
@@ -484,6 +483,20 @@ impl ProviderDescriptor {
         } else {
             bail!("{}", errors.join("; "))
         }
+    }
+}
+
+fn validate_media_kind_descriptor(
+    location: &str,
+    descriptor: &MediaKindDescriptor,
+    errors: &mut Vec<String>,
+) {
+    if let Some(execution) = &descriptor.execution {
+        execution.validate(&format!("{location}.execution"), errors);
+    }
+    for (index, model) in descriptor.models.iter().enumerate() {
+        let model_location = format!("{location}.models[{index}]");
+        model.validate(&model_location, errors);
     }
 }
 

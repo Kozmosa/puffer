@@ -46,7 +46,9 @@ pub(crate) fn resolve_media_capabilities(
             checked_at_ms,
             discovery_cache,
         ),
-        MediaKind::Video => Vec::new(),
+        MediaKind::Video => {
+            resolve_video_capabilities(registry, auth_store, operation, checked_at_ms)
+        }
     }
 }
 
@@ -117,7 +119,7 @@ pub(crate) fn resolve_image_execution_descriptor<'a>(
         })
         .with_context(unavailable)?;
     let execution = image_execution(image.execution.as_ref(), model).with_context(unavailable)?;
-    if !execution_adapter_is_available(execution.adapter)
+    if !execution_adapter_is_available_for_kind(MediaKind::Image, execution.adapter)
         || adapter_id(execution.adapter) != adapter
     {
         bail!("image media adapter unavailable for {adapter}");
@@ -154,16 +156,16 @@ fn resolve_image_capabilities(
             if !emitted_model_ids.insert(model.id.clone()) {
                 continue;
             }
-            if !image_model_is_available(model, operation) {
+            if !media_model_is_available(model, operation) {
                 continue;
             }
             let Some(execution) = image_execution(image.execution.as_ref(), model) else {
                 continue;
             };
-            if !execution_adapter_is_available(execution.adapter) {
+            if !execution_adapter_is_available_for_kind(MediaKind::Image, execution.adapter) {
                 continue;
             }
-            let parameters = image_parameters(model);
+            let parameters = media_parameters(model);
             capabilities.push(MediaCapability {
                 provider_id: provider.id.clone(),
                 provider_display_name: provider.display_name.clone(),
@@ -175,10 +177,62 @@ fn resolve_image_capabilities(
                 kind: MediaKind::Image,
                 operation: operation_wire_name(operation).to_string(),
                 adapter: adapter_id(execution.adapter).to_string(),
-                defaults: image_defaults(&parameters),
+                defaults: media_defaults(&parameters),
                 parameters,
                 status: "available".to_string(),
                 source: source.to_string(),
+                reason: None,
+                checked_at_ms,
+            });
+        }
+    }
+    capabilities
+}
+
+fn resolve_video_capabilities(
+    registry: &ProviderRegistry,
+    auth_store: &AuthStore,
+    operation: MediaOperation,
+    checked_at_ms: u64,
+) -> Vec<MediaCapability> {
+    let mut capabilities = Vec::new();
+    for provider in registry.providers() {
+        if !provider_is_connected(provider, auth_store) {
+            continue;
+        }
+        let Some(video) = provider
+            .media
+            .as_ref()
+            .and_then(|media| media.video.as_ref())
+        else {
+            continue;
+        };
+        for model in &video.models {
+            if !media_model_is_available(model, operation) {
+                continue;
+            }
+            let Some(execution) = image_execution(video.execution.as_ref(), model) else {
+                continue;
+            };
+            if !execution_adapter_is_available_for_kind(MediaKind::Video, execution.adapter) {
+                continue;
+            }
+            let parameters = media_parameters(model);
+            capabilities.push(MediaCapability {
+                provider_id: provider.id.clone(),
+                provider_display_name: provider.display_name.clone(),
+                model_id: model.id.clone(),
+                model_display_name: model
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| model.id.clone()),
+                kind: MediaKind::Video,
+                operation: operation_wire_name(operation).to_string(),
+                adapter: adapter_id(execution.adapter).to_string(),
+                defaults: media_defaults(&parameters),
+                parameters,
+                status: "available".to_string(),
+                source: "static".to_string(),
                 reason: None,
                 checked_at_ms,
             });
@@ -208,16 +262,17 @@ fn provider_is_connected(provider: &ProviderDescriptor, auth_store: &AuthStore) 
     provider.id == "openai" && auth_store.has_auth("codex")
 }
 
-fn execution_adapter_is_available(adapter: MediaExecutionKind) -> bool {
+fn execution_adapter_is_available_for_kind(kind: MediaKind, adapter: MediaExecutionKind) -> bool {
     matches!(
-        adapter,
-        MediaExecutionKind::ImagesJson
-            | MediaExecutionKind::ChatImageOutput
-            | MediaExecutionKind::MinimaxImage
+        (kind, adapter),
+        (MediaKind::Image, MediaExecutionKind::ImagesJson)
+            | (MediaKind::Image, MediaExecutionKind::ChatImageOutput)
+            | (MediaKind::Image, MediaExecutionKind::MinimaxImage)
+            | (MediaKind::Video, MediaExecutionKind::ReplicateVideo)
     )
 }
 
-fn image_model_is_available(model: &MediaModelDescriptor, operation: MediaOperation) -> bool {
+fn media_model_is_available(model: &MediaModelDescriptor, operation: MediaOperation) -> bool {
     let id = model.id.trim();
     !id.is_empty()
         && !id.eq_ignore_ascii_case("auto")
@@ -225,7 +280,7 @@ fn image_model_is_available(model: &MediaModelDescriptor, operation: MediaOperat
         && model.operations.contains(&operation)
 }
 
-fn image_parameters(model: &MediaModelDescriptor) -> Vec<MediaCapabilityParameter> {
+fn media_parameters(model: &MediaModelDescriptor) -> Vec<MediaCapabilityParameter> {
     model
         .parameters
         .iter()
@@ -243,7 +298,7 @@ fn parameter_from_descriptor(parameter: &MediaParameterSpec) -> MediaCapabilityP
     }
 }
 
-fn image_defaults(parameters: &[MediaCapabilityParameter]) -> BTreeMap<String, String> {
+fn media_defaults(parameters: &[MediaCapabilityParameter]) -> BTreeMap<String, String> {
     parameters
         .iter()
         .map(|parameter| (parameter.name.clone(), parameter.default.clone()))
@@ -276,6 +331,7 @@ pub(crate) fn adapter_id(adapter: MediaExecutionKind) -> &'static str {
         MediaExecutionKind::ImagesJson => "images_json",
         MediaExecutionKind::ChatImageOutput => "chat_image_output",
         MediaExecutionKind::MinimaxImage => "minimax_image",
+        MediaExecutionKind::ReplicateVideo => "replicate_video",
     }
 }
 
@@ -293,7 +349,7 @@ mod tests {
     use super::*;
     use crate::runtime::media::MediaKind;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, ImageMediaDescriptor, MediaExecutionDescriptor, MediaExecutionKind,
+        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
         MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor,
         ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
@@ -326,7 +382,7 @@ mod tests {
 
     fn image_media(model_id: &str) -> ProviderMediaDescriptor {
         ProviderMediaDescriptor {
-            image: Some(ImageMediaDescriptor {
+            image: Some(MediaKindDescriptor {
                 discovery: None,
                 execution: Some(MediaExecutionDescriptor {
                     adapter: MediaExecutionKind::ImagesJson,
@@ -360,6 +416,51 @@ mod tests {
                             values: vec!["png".to_string()],
                             default: "png".to_string(),
                             request_field: Some("output_format".to_string()),
+                        },
+                    ],
+                }],
+            }),
+            video: None,
+        }
+    }
+
+    fn video_media(model_id: &str) -> ProviderMediaDescriptor {
+        video_media_with_adapter(MediaExecutionKind::ReplicateVideo, model_id)
+    }
+
+    fn video_media_with_adapter(
+        adapter: MediaExecutionKind,
+        model_id: &str,
+    ) -> ProviderMediaDescriptor {
+        ProviderMediaDescriptor {
+            image: None,
+            video: Some(MediaKindDescriptor {
+                discovery: None,
+                execution: Some(MediaExecutionDescriptor {
+                    adapter,
+                    base_url: None,
+                    path: "/v1/predictions".to_string(),
+                    batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                }),
+                models: vec![MediaModelDescriptor {
+                    id: model_id.to_string(),
+                    display_name: Some("Display Video".to_string()),
+                    execution: None,
+                    operations: vec![MediaOperation::Generate],
+                    parameters: vec![
+                        MediaParameterSpec {
+                            name: "aspect_ratio".to_string(),
+                            label: "Aspect ratio".to_string(),
+                            values: vec!["16:9".to_string(), "9:16".to_string()],
+                            default: "16:9".to_string(),
+                            request_field: Some("aspect_ratio".to_string()),
+                        },
+                        MediaParameterSpec {
+                            name: "duration".to_string(),
+                            label: "Duration".to_string(),
+                            values: vec!["5".to_string(), "8".to_string()],
+                            default: "5".to_string(),
+                            request_field: Some("duration".to_string()),
                         },
                     ],
                 }],
@@ -409,6 +510,56 @@ mod tests {
                 request_field: Some("size".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn connected_provider_with_replicate_video_descriptor_is_available() {
+        let registry = registry_with(vec![provider(
+            "replicate",
+            vec![AuthMode::ApiKey],
+            Some(video_media("owner/model-version")),
+        )]);
+        let auth = auth_for("replicate");
+
+        let capabilities = resolve_media_capabilities(
+            &registry,
+            &auth,
+            MediaKind::Video,
+            MediaOperation::Generate,
+            42,
+            &MediaDiscoveryCache::default(),
+        );
+
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities[0].adapter, "replicate_video");
+        assert_eq!(
+            capabilities[0].defaults.get("duration"),
+            Some(&"5".to_string())
+        );
+    }
+
+    #[test]
+    fn video_descriptor_with_image_adapter_is_not_available() {
+        let registry = registry_with(vec![provider(
+            "replicate",
+            vec![AuthMode::ApiKey],
+            Some(video_media_with_adapter(
+                MediaExecutionKind::ImagesJson,
+                "owner/model-version",
+            )),
+        )]);
+        let auth = auth_for("replicate");
+
+        let capabilities = resolve_media_capabilities(
+            &registry,
+            &auth,
+            MediaKind::Video,
+            MediaOperation::Generate,
+            42,
+            &MediaDiscoveryCache::default(),
+        );
+
+        assert!(capabilities.is_empty());
     }
 
     #[test]

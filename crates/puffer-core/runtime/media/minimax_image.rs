@@ -353,10 +353,10 @@ mod tests {
     use crate::runtime::media::MediaGenerationService;
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, ImageMediaDescriptor, MediaBatchDescriptor, MediaBatchMode,
+        AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode,
         MediaExecutionDescriptor, MediaExecutionKind, MediaModelDescriptor, MediaOperation,
-        MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
-        ProviderRegistry,
+        MediaKindDescriptor, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
+        ProviderMediaDescriptor, ProviderRegistry,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -385,7 +385,7 @@ mod tests {
             chat_completions_path: None,
             discovery: None,
             media: Some(ProviderMediaDescriptor {
-                image: Some(ImageMediaDescriptor {
+                image: Some(MediaKindDescriptor {
                     discovery: None,
                     execution: Some(MediaExecutionDescriptor {
                         adapter: MediaExecutionKind::MinimaxImage,
@@ -416,6 +416,7 @@ mod tests {
                         ],
                     }],
                 }),
+                video: None,
             }),
             models: Vec::<ModelDescriptor>::new(),
         });

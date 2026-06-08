@@ -2,10 +2,10 @@ use super::*;
 use crate::runtime::media::MediaGenerationService;
 use indexmap::IndexMap;
 use puffer_provider_registry::{
-    AuthMode, AuthStore, ImageMediaDescriptor, MediaBatchDescriptor, MediaBatchMode,
+    AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode,
     MediaExecutionDescriptor, MediaExecutionKind, MediaModelDescriptor, MediaOperation,
-    MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
-    ProviderRegistry,
+    MediaKindDescriptor, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
+    ProviderMediaDescriptor, ProviderRegistry,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -52,7 +52,7 @@ fn registry_with_provider_parameters_and_batch(
         chat_completions_path: None,
         discovery: None,
         media: Some(ProviderMediaDescriptor {
-            image: Some(ImageMediaDescriptor {
+            image: Some(MediaKindDescriptor {
                 discovery: None,
                 execution: Some(MediaExecutionDescriptor {
                     adapter: MediaExecutionKind::ImagesJson,
@@ -68,6 +68,7 @@ fn registry_with_provider_parameters_and_batch(
                     parameters,
                 }],
             }),
+            video: None,
         }),
         models: Vec::<ModelDescriptor>::new(),
     });

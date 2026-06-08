@@ -116,6 +116,72 @@ media:
 }
 
 #[test]
+fn provider_media_descriptor_accepts_video_models() {
+    let yaml = r#"
+id: replicate
+display_name: Replicate
+base_url: https://api.replicate.com
+default_api: openai-responses
+auth_modes: [api_key]
+media:
+  video:
+    execution:
+      adapter: replicate_video
+      path: /v1/predictions
+    models:
+      - id: owner/model-version
+        display_name: Video Model
+        operations: [generate]
+        parameters:
+          - name: aspect_ratio
+            label: Aspect ratio
+            values: ["16:9", "9:16"]
+            default: "16:9"
+          - name: duration
+            label: Duration
+            values: ["5", "8"]
+            default: "5"
+"#;
+
+    let provider: ProviderDescriptor = serde_yaml::from_str(yaml).expect("parse provider");
+    provider
+        .validate_media_descriptors()
+        .expect("valid media descriptor");
+    assert!(provider.media.unwrap().video.is_some());
+}
+
+#[test]
+fn provider_media_descriptor_rejects_invalid_video_parameter_default() {
+    let yaml = r#"
+id: replicate
+display_name: Replicate
+base_url: https://api.replicate.com
+default_api: openai-responses
+auth_modes: [api_key]
+media:
+  video:
+    execution:
+      adapter: replicate_video
+      path: /v1/predictions
+    models:
+      - id: owner/model-version
+        operations: [generate]
+        parameters:
+          - name: duration
+            label: Duration
+            values: ["5"]
+            default: "8"
+"#;
+
+    let provider: ProviderDescriptor = serde_yaml::from_str(yaml).expect("parse provider");
+    let error = provider
+        .validate_media_descriptors()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("media.video.models[0].parameters[0].default"));
+}
+
+#[test]
 fn missing_image_execution_batch_defaults_to_per_image() {
     let yaml = provider_with_basic_image_execution(
         "      adapter: images_json\n      path: /v1/images/generations",
