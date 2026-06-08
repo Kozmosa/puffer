@@ -4075,6 +4075,8 @@
         turnStatusHint = "Waiting for answer";
         const id = liveQuestionId(ev.turnId, ev.requestId);
         const questions = normalizeUserQuestions(ev.questions);
+        const questionMeta =
+          ev.metadata && typeof ev.metadata === "object" ? ev.metadata : undefined;
         appendLive({
           id,
           kind: "question",
@@ -4083,7 +4085,8 @@
           body: "",
           meta: [],
           status: "pending",
-          questions
+          questions,
+          metadata: questionMeta
         });
         turnQuestionLookup = {
           ...turnQuestionLookup,
@@ -4168,6 +4171,7 @@
         type: item.type === "input" ? "input" as const : "choice" as const,
         multiSelect: item.multiSelect === true,
         searchable: item.searchable === true,
+        secret: item.secret === true,
         options: Array.isArray(item.options)
           ? item.options
               .map((option) =>

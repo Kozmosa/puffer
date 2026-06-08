@@ -405,6 +405,7 @@ function normalizeAskUserQuestions(raw: unknown): AskUserQuestionItem[] {
       type: item.type === "input" ? "input" as const : "choice" as const,
       multiSelect: item.multiSelect === true,
       searchable: item.searchable === true,
+      secret: item.secret === true,
       options: Array.isArray(item.options)
         ? item.options
             .map(asRecord)

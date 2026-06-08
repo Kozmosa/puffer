@@ -7,6 +7,11 @@ description: |-
   DOM snapshots, element refs, screenshots, or browser input. Each call carries
   one structured browser action and the exact arguments that the runtime will
   execute. This tool does not expose a shell command surface.
+
+  Prefer DOM-ready navigation followed by `snapshot` or an action-specific
+  assertion. Use `waitNetworkIdle` only when the task explicitly requires
+  meaningful page network traffic to become quiet; background telemetry and
+  beacon requests are not a useful readiness signal.
 handler: runtime:browser
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -50,7 +55,7 @@ input_schema:
         - scroll
         - scrollIntoView
         - evaluate
-      description: Browser action to perform. Use open for creating or reusing a tab at a URL.
+      description: Browser action to perform. Use open for creating or reusing a tab at a URL; openScreenshot and openConsoleLogs wait for DOM readiness, not full network idle.
     sessionId:
       type: string
       description: Puffer session id. Defaults to the current agent session.
@@ -135,12 +140,12 @@ input_schema:
       type: integer
       minimum: 1
       maximum: 10000
-      description: Quiet network window for waitNetworkIdle. Defaults to 500.
+      description: Quiet meaningful-network window for explicit waitNetworkIdle calls. Defaults to 500.
     timeoutMs:
       type: integer
       minimum: 1
       maximum: 120000
-      description: Maximum wait for waitNetworkIdle. Defaults to 30000.
+      description: Maximum wait for explicit waitNetworkIdle calls. Defaults to 30000.
   required:
     - action
   additionalProperties: false
