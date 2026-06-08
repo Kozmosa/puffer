@@ -16,6 +16,8 @@ global form framework or preserve old UI behavior for single-option selects.
 - Hide dropdown controls when a field has only one available choice.
 - Keep capability loading lazy and preserve the current media config contract.
 - Improve clarity without adding broad abstractions or new backend behavior.
+- Keep stale saved selections recoverable instead of hiding them behind
+  read-only values.
 
 ## Non-Goals
 
@@ -24,6 +26,7 @@ global form framework or preserve old UI behavior for single-option selects.
 - No changes to media capability DTOs, saved config shape, or generation
   execution.
 - No compatibility mode for the old single-option dropdown UI.
+- No video settings schema change to store adapter identifiers.
 
 ## UX Design
 
@@ -38,6 +41,11 @@ loading block:
 - borders, spacing, background, and typography aligned with the existing
   connector setup loading surface.
 
+The loading block is implemented as local modal markup and CSS. It may copy the
+visual language of the connector loading state, but it should not introduce a
+shared loading component until a second media or settings modal needs the same
+API.
+
 The modal keeps existing warning and empty states, including unavailable saved
 model warnings and `No image capabilities available.` / `No video capabilities
 available.` messages.
@@ -51,6 +59,9 @@ Each selectable field uses the same rule:
   a dropdown.
 - If the current saved value is unavailable, keep the existing unavailable
   select/warning behavior so the stale value is visible and actionable.
+- If a capability parameter has no advertised values, render its default as a
+  read-only value and let the existing save normalization keep the request
+  stable. Do not add parameter validation UI in this change.
 
 The rule applies to:
 
@@ -63,6 +74,11 @@ The rule applies to:
 The read-only value row is a simple local element, not an input. It uses the
 same label spacing as fields and a muted bordered value container so it reads as
 configuration, not editable text.
+
+Accessible names remain attached to editable controls only. Read-only values use
+plain text with the same visible label; tests should assert text visibility
+instead of calling `getByLabel()` for fields that intentionally no longer render
+form controls.
 
 ## State And Data Flow
 
@@ -80,6 +96,14 @@ The UI change does not bypass `chooseDefaultCapability()`,
 still participate in saves through the current state values. Saving continues
 to call `updateConfig({ media })` with the current `MediaSettings` shape.
 
+Image capability identity remains provider + model + adapter because image
+settings persist all three fields. Video settings persist provider + model only,
+so video saved-selection availability and selected-capability lookup must not
+require a persisted adapter. If multiple video capabilities share the same
+provider and model with different adapters, the modal may use the first matching
+capability for the current session; adding adapter persistence is a separate
+schema decision and is outside this UI polish.
+
 ## Stability And Performance
 
 The implementation stays inside `MediaSettingsModal.svelte`, so there is no
@@ -87,6 +111,10 @@ cross-screen coupling and no additional RPC. Capability resolution remains lazy
 and still happens only when the modal opens. Derived option lists are reused for
 rendering decisions, avoiding extra scans beyond the small capability arrays
 already present in the modal.
+
+The implementation should prefer a few local helper functions or snippets over
+new Svelte component files. A helper component is only justified if the local
+markup becomes duplicated enough to obscure the modal's main flow.
 
 ## Tests
 
@@ -102,3 +130,7 @@ Playwright coverage should verify:
   option;
 - stale saved image selections still show the unavailable warning and do not
   collapse into a read-only value.
+
+Focused component-level tests are acceptable if they are already part of the
+desktop test harness, but this change should not introduce a new test framework
+or screenshot baseline.
