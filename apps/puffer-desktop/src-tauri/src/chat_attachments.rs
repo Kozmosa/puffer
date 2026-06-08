@@ -219,6 +219,18 @@ mod tests {
         assert_eq!(dto.extension, "PNG");
         assert_eq!(dto.kind, "image");
         assert_eq!(dto.state, "available");
+        let session_uuid = uuid::Uuid::parse_str(&session_id).unwrap();
+        let stored = store
+            .load_staged_attachments(session_uuid, std::slice::from_ref(&dto.id))
+            .unwrap()
+            .remove(0);
+        let expected_path = store.attachment_original_path(session_uuid, &stored);
+        let value = serde_json::to_value(&dto).unwrap();
+        assert_eq!(value["source"]["kind"], "local_file");
+        assert_eq!(
+            value["source"]["path"].as_str().unwrap(),
+            expected_path.display().to_string()
+        );
     }
 
     #[test]

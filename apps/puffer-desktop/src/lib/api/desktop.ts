@@ -6,6 +6,7 @@ import type {
   AuthProviderStatus,
   AskUserQuestionItem,
   BrowserRenderer,
+  ChatAttachmentUpload,
   DesktopPinState,
   DiffSnapshot,
   DraftProxyEndpoint,
@@ -148,8 +149,16 @@ type BackendActorFields = {
 };
 
 type BackendChatAttachmentSource =
-  | { kind: "user_upload" }
-  | { kind: "generated_media"; jobId: string; artifactId: string; index: number };
+  | { kind: "local_file"; path: string }
+  | { kind: "remote_url"; url: string }
+  | {
+      kind: "generated_media";
+      jobId: string;
+      artifactId: string;
+      index: number;
+      localPath?: string | null;
+      remoteSourceUrl?: string | null;
+    };
 
 type BackendChatAttachment = {
   id: string;
@@ -160,6 +169,7 @@ type BackendChatAttachment = {
   kind: "image" | "file";
   state?: AttachmentState;
   source: BackendChatAttachmentSource;
+  previewUrl?: string | null;
 };
 
 type BackendTimelineItem =
@@ -301,7 +311,7 @@ type BackendRemoteOperation = RemoteOperation;
 
 type StageChatAttachmentHook = (
   sessionId: string,
-  attachment: MessageAttachment
+  attachment: ChatAttachmentUpload
 ) => Promise<MessageAttachment> | MessageAttachment;
 
 type ReadChatAttachmentPreviewHook = (
@@ -379,6 +389,9 @@ function normalizeDiff(value: BackendDiff): DiffSnapshot {
 }
 
 function normalizeMessageAttachment(value: BackendChatAttachment): MessageAttachment {
+  const previewUrl =
+    value.previewUrl ??
+    (value.kind === "image" && value.source.kind === "remote_url" ? value.source.url : undefined);
   return {
     id: value.id,
     name: value.name,
@@ -387,7 +400,8 @@ function normalizeMessageAttachment(value: BackendChatAttachment): MessageAttach
     extension: value.extension,
     kind: value.kind,
     state: value.state,
-    source: value.source
+    source: value.source,
+    ...(previewUrl !== undefined ? { previewUrl } : {})
   };
 }
 
@@ -1449,7 +1463,7 @@ export type AgentTurnOptions = {
   attachmentIds?: string[];
 };
 export type AgentTurnSubmitOptions = AgentTurnOptions & {
-  displayAttachments?: MessageAttachment[];
+  displayAttachments?: ChatAttachmentUpload[];
 };
 export type StaleTurnRecoveryResult =
   | { recovery: "retry_started"; turnId: string }
@@ -1458,7 +1472,7 @@ export type StaleTurnRecoveryResult =
 
 export async function stageChatAttachment(
   sessionId: string,
-  attachment: MessageAttachment
+  attachment: ChatAttachmentUpload
 ): Promise<MessageAttachment> {
   const hook = devStageChatAttachmentHook();
   if (hook) return hook(sessionId, attachment);
@@ -2475,7 +2489,34 @@ export async function readMessageAttachmentPreview(
   if (attachment.source.kind === "generated_media") {
     return readGeneratedMediaPreview(sessionId, attachment.source.artifactId);
   }
+  if (attachment.source.kind === "remote_url") {
+    return { state: "unsupported" };
+  }
   return readChatAttachmentPreview(sessionId, attachment.id);
+}
+
+export type DownloadImageFromUrlResult = {
+  path: string;
+};
+
+export async function openImageContainingFolder(path: string): Promise<void> {
+  if (!canInvokeTauri()) {
+    throw new Error("Opening an image folder requires the Tauri desktop shell.");
+  }
+  await invoke("open_image_containing_folder", { path });
+}
+
+export async function downloadImageFromUrl(
+  url: string,
+  suggestedName?: string
+): Promise<DownloadImageFromUrlResult> {
+  if (!canInvokeTauri()) {
+    throw new Error("Downloading an image requires the Tauri desktop shell.");
+  }
+  return invoke<DownloadImageFromUrlResult>("download_image_from_url", {
+    url,
+    suggestedName
+  });
 }
 
 export async function localModelStatus(modelId = "minicpm5"): Promise<LocalModelStatus> {

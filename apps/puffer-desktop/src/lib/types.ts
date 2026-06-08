@@ -49,14 +49,27 @@ export type AgentTurnAttachment = {
 };
 
 export type AttachmentPreviewSource =
-  | { kind: "user_upload" }
-  | { kind: "generated_media"; jobId: string; artifactId: string; index: number };
+  | { kind: "local_file"; path: string }
+  | { kind: "remote_url"; url: string }
+  | {
+      kind: "generated_media";
+      jobId: string;
+      artifactId: string;
+      index: number;
+      localPath?: string | null;
+      remoteSourceUrl?: string | null;
+    };
 
 export type MessageAttachment = AgentTurnAttachment & {
   state?: AttachmentState;
   source: AttachmentPreviewSource;
-  file?: File;
   previewUrl?: string | null;
+};
+
+export type ChatAttachmentUpload = AgentTurnAttachment & {
+  file: File;
+  previewUrl?: string | null;
+  state?: AttachmentState;
 };
 
 export type FolderGroup = {
@@ -351,6 +364,7 @@ export type GeneratedMediaArtifactResult = {
   path: string;
   mimeType: string;
   size: number;
+  remoteSourceUrl?: string | null;
 };
 
 export type GenerateMediaResult = {

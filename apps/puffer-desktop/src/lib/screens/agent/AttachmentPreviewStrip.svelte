@@ -1,8 +1,9 @@
 <script lang="ts" module>
   import type { MessageAttachment } from "../../types";
+  import type { ComposerAttachmentDraft } from "./attachments";
 
   export type AttachmentPreviewVariant = "composer" | "message";
-  export type AttachmentPreviewItem = MessageAttachment;
+  export type AttachmentPreviewItem = ComposerAttachmentDraft | MessageAttachment;
 </script>
 
 <script lang="ts">
@@ -32,6 +33,24 @@
       ? `Open image attachment ${attachment.name}`
       : `Open attachment details for ${attachment.name}`;
   }
+
+  function isMessageAttachment(attachment: AttachmentPreviewItem): attachment is MessageAttachment {
+    return "source" in attachment;
+  }
+
+  function openMessageAttachment(attachment: AttachmentPreviewItem): void {
+    if (!isMessageAttachment(attachment)) return;
+    onOpenChatIntent?.(attachmentOpenIntent(attachment));
+  }
+
+  function isMissingImageAttachment(attachment: AttachmentPreviewItem): boolean {
+    return (
+      attachment.kind === "image" &&
+      isMessageAttachment(attachment) &&
+      attachment.state === "missing" &&
+      attachment.previewUrl === null
+    );
+  }
 </script>
 
 {#snippet attachmentPreviewContent(attachment: AttachmentPreviewItem)}
@@ -39,7 +58,7 @@
     <div class="pf-attachment-thumb">
       <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
     </div>
-  {:else if attachment.kind === "image" && attachment.state === "missing" && attachment.previewUrl === null}
+  {:else if isMissingImageAttachment(attachment)}
     <div class="pf-attachment-thumb" data-state="missing" aria-hidden="true">
       <Icon name="image" size={20} />
     </div>
@@ -69,7 +88,7 @@
           class="pf-attachment-preview pf-attachment-preview-action"
           aria-label={attachmentOpenLabel(attachment)}
           title={attachment.name}
-          onclick={() => onOpenChatIntent?.(attachmentOpenIntent(attachment))}
+          onclick={() => openMessageAttachment(attachment)}
         >
           {@render attachmentPreviewContent(attachment)}
         </button>

@@ -8,6 +8,7 @@ mod dtos;
 mod events;
 mod files;
 mod fs_watch;
+mod image_actions;
 mod local_model;
 mod lsp;
 mod media_capabilities;
@@ -52,6 +53,8 @@ const REGISTERED_TAURI_COMMANDS: &[&str] = &[
     "start_ssh_daemon",
     "stage_chat_attachment",
     "read_chat_attachment_preview",
+    "open_image_containing_folder",
+    "download_image_from_url",
     "run_agent_turn",
     "resolve_permission",
     "resolve_user_question",
@@ -500,6 +503,8 @@ pub fn run() {
             start_ssh_daemon,
             chat_attachments::stage_chat_attachment,
             chat_attachments::read_chat_attachment_preview,
+            image_actions::open_image_containing_folder,
+            image_actions::download_image_from_url,
             run_agent_turn,
             resolve_permission,
             resolve_user_question,

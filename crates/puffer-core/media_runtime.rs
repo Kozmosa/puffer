@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default TTL for trusted media discovery results.
 pub const MEDIA_DISCOVERY_TTL_MS: u64 = 5 * 60 * 1_000;
+const REMOTE_SOURCE_URL_METADATA_KEY: &str = "remoteSourceUrl";
 
 /// Describes one exact media capability suitable for client display.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +71,7 @@ pub struct ExactGeneratedArtifact {
     pub path: PathBuf,
     pub mime_type: String,
     pub byte_count: u64,
+    pub remote_source_url: Option<String>,
 }
 
 /// Carries the persisted job and artifacts produced by exact image generation.
@@ -105,6 +107,8 @@ pub struct GeneratedMediaAttachmentMetadata {
     pub mime_type: String,
     pub byte_count: u64,
     pub state: String,
+    pub local_path: Option<String>,
+    pub remote_source_url: Option<String>,
 }
 
 /// Carries trusted media discovery results used by capability resolution.
@@ -150,6 +154,8 @@ pub fn generated_media_attachment_metadata_with_fallback(
                 mime_type: mime_type.to_string(),
                 byte_count: fallback_byte_count,
                 state: "missing".to_string(),
+                local_path: None,
+                remote_source_url: None,
             })
         }
     }
@@ -185,6 +191,10 @@ fn generated_media_attachment_metadata_from_artifact(
     } else {
         "missing"
     };
+    let local_path = canonical_path
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let remote_source_url = media_artifact_remote_source_url(&artifact);
     let mime_type = canonical_path
         .as_ref()
         .and_then(|path| canonical_generated_image_mime_type(path, Some(&artifact.mime_type)))
@@ -198,6 +208,8 @@ fn generated_media_attachment_metadata_from_artifact(
         mime_type,
         byte_count: artifact.byte_count,
         state: state.to_string(),
+        local_path,
+        remote_source_url,
     })
 }
 
@@ -206,6 +218,14 @@ fn valid_generated_media_artifact_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn media_artifact_remote_source_url(artifact: &MediaArtifact) -> Option<String> {
+    artifact
+        .metadata
+        .get(REMOTE_SOURCE_URL_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 /// Reads generated image preview bytes by artifact id.
@@ -593,12 +613,16 @@ fn exact_generation_result(
     let artifacts = artifacts
         .into_iter()
         .enumerate()
-        .map(|(index, artifact)| ExactGeneratedArtifact {
-            artifact_id: artifact.id,
-            index,
-            path: artifact.path,
-            mime_type: artifact.mime_type,
-            byte_count: artifact.byte_count,
+        .map(|(index, artifact)| {
+            let remote_source_url = media_artifact_remote_source_url(&artifact);
+            ExactGeneratedArtifact {
+                artifact_id: artifact.id,
+                index,
+                path: artifact.path,
+                mime_type: artifact.mime_type,
+                byte_count: artifact.byte_count,
+                remote_source_url,
+            }
         })
         .collect();
     ExactImageGenerationResult {

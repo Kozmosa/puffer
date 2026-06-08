@@ -28,7 +28,7 @@ export function stripAttachmentPreviewUrls(item: TimelineItem): TimelineItem {
   if (!item.attachments?.length) return item;
   return {
     ...item,
-    attachments: item.attachments.map(({ previewUrl: _previewUrl, file: _file, ...attachment }) => attachment)
+    attachments: item.attachments.map(({ previewUrl: _previewUrl, ...attachment }) => attachment)
   };
 }
 

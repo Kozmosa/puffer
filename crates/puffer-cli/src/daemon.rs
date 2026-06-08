@@ -143,6 +143,8 @@ struct GenerateMediaArtifactResult {
     path: String,
     mime_type: String,
     size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_source_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2301,6 +2303,7 @@ fn generate_image_media_job(state: &DaemonState, prompt: String, count: u8) -> R
             path: artifact.path.display().to_string(),
             mime_type: artifact.mime_type,
             size: artifact.byte_count,
+            remote_source_url: artifact.remote_source_url,
         })
         .collect();
     let result = GenerateMediaResult {
@@ -5377,6 +5380,7 @@ mod tests {
                     path: "/tmp/image-1.png".to_string(),
                     mime_type: "image/png".to_string(),
                     size: 10,
+                    remote_source_url: None,
                 },
                 GenerateMediaArtifactResult {
                     artifact_id: "artifact-2".to_string(),
@@ -5384,6 +5388,7 @@ mod tests {
                     path: "/tmp/image-2.png".to_string(),
                     mime_type: "image/png".to_string(),
                     size: 11,
+                    remote_source_url: None,
                 },
             ],
             kind: "image".to_string(),

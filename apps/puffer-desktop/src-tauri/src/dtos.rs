@@ -105,13 +105,22 @@ pub(crate) struct ChatAttachmentDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ChatAttachmentSourceDto {
-    UserUpload,
+    LocalFile {
+        path: String,
+    },
+    RemoteUrl {
+        url: String,
+    },
     GeneratedMedia {
         #[serde(rename = "jobId")]
         job_id: String,
         #[serde(rename = "artifactId")]
         artifact_id: String,
         index: usize,
+        #[serde(rename = "localPath", skip_serializing_if = "Option::is_none")]
+        local_path: Option<String>,
+        #[serde(rename = "remoteSourceUrl", skip_serializing_if = "Option::is_none")]
+        remote_source_url: Option<String>,
     },
 }
 
@@ -137,7 +146,12 @@ impl ChatAttachmentDto {
                 StoredAttachmentKind::File => "file".to_string(),
             },
             state: state.to_string(),
-            source: ChatAttachmentSourceDto::UserUpload,
+            source: ChatAttachmentSourceDto::LocalFile {
+                path: store
+                    .attachment_original_path(session_id, attachment)
+                    .display()
+                    .to_string(),
+            },
         }
     }
 }

@@ -3112,7 +3112,9 @@
         kind: "generated_media",
         jobId,
         artifactId: artifact.artifactId,
-        index: artifact.index
+        index: artifact.index,
+        ...(artifact.path ? { localPath: artifact.path } : {}),
+        ...(artifact.remoteSourceUrl ? { remoteSourceUrl: artifact.remoteSourceUrl } : {})
       },
       previewUrl: null
     };
@@ -3141,7 +3143,9 @@
         kind: "generated_media",
         jobId,
         artifactId: artifact.artifactId,
-        index: artifact.index
+        index: artifact.index,
+        ...(artifact.path ? { localPath: artifact.path } : {}),
+        ...(artifact.remoteSourceUrl ? { remoteSourceUrl: artifact.remoteSourceUrl } : {})
       },
       previewUrl: URL.createObjectURL(new Blob([bytes], { type: preview.mimeType }))
     };

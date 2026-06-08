@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   defaultFakeMediaCapabilities,
   FakeDaemon,
@@ -51,6 +51,25 @@ async function openSession(page: Page, name: RegExp): Promise<void> {
   await page.getByRole("button", { name }).first().click();
 }
 
+async function expectOverlayActionBeforeClose(
+  actionButton: Locator,
+  closeButton: Locator
+): Promise<void> {
+  const closeHandle = await closeButton.elementHandle();
+  if (!closeHandle) throw new Error("close button handle was unavailable");
+  try {
+    expect(
+      await actionButton.evaluate(
+        (action, close) =>
+          Boolean(action.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING),
+        closeHandle
+      )
+    ).toBe(true);
+  } finally {
+    await closeHandle.dispose();
+  }
+}
+
 async function reconnectBackend(page: Page, daemon: FakeDaemon): Promise<void> {
   await daemon.dropConnections();
   const banner = page.locator(".connection-banner");
@@ -99,7 +118,11 @@ async function installAttachmentStageHook(page: Page): Promise<void> {
       return {
         ...rest,
         id: `staged-${String(attachment.id)}`,
-        state: "available"
+        state: "available",
+        source: {
+          kind: "local_file",
+          path: `/tmp/puffer/attachments/staged-${String(attachment.id)}`
+        }
       };
     };
   });
@@ -247,7 +270,7 @@ test("composer add content menu attaches image and file drafts", async ({ page }
           extension: "PNG",
           size: imageBuffer.length,
           state: "available",
-          source: { kind: "user_upload" }
+          source: { kind: "local_file", path: "/tmp/puffer/attachments/sample.png" }
         },
         {
           id: attachmentIds[1],
@@ -257,7 +280,7 @@ test("composer add content menu attaches image and file drafts", async ({ page }
           extension: "PDF",
           size: pdfBuffer.length,
           state: "available",
-          source: { kind: "user_upload" }
+          source: { kind: "local_file", path: "/tmp/puffer/attachments/report.pdf" }
         }
       ]
     },
@@ -1373,6 +1396,141 @@ test("message attachments open image preview and file details", async ({ page })
   await expect(page.getByRole("button", { name: "Files" })).toHaveAttribute("aria-pressed", "false");
 });
 
+test("attachment overlay shows folder action for local image source", async ({ page }) => {
+  const sessionId = "session-local-image-overlay-action";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId,
+        displayName: "Local image overlay action",
+        title: "Local image overlay action",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "local-image-overlay-action-message",
+            text: "Local image attachment.",
+            createdAtMs: baseTime - 30_000,
+            attachments: [
+              {
+                id: "local-image-overlay-action",
+                name: "local-action.png",
+                mimeType: "image/png",
+                size: onePixelPngBytes.length,
+                extension: "PNG",
+                kind: "image",
+                state: "available",
+                source: {
+                  kind: "local_file",
+                  path: "/tmp/puffer/attachments/local-action.png"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  daemon.seedAttachmentPreview(sessionId, "local-image-overlay-action", {
+    state: "available",
+    mimeType: "image/png",
+    bytes: onePixelPngBytes
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Local image overlay action/);
+
+  const thumbnail = page.getByRole("button", { name: "Open image attachment local-action.png" });
+  await expect(thumbnail).toBeVisible();
+  await thumbnail.click();
+
+  const overlay = page.getByTestId("attachment-overlay");
+  await expect(overlay).toBeVisible();
+  const actions = overlay.locator(".pf-attachment-dialog-actions");
+  const folderButton = actions.getByRole("button", { name: "Open image folder" });
+  const closeButton = actions.getByRole("button", { name: "Close attachment preview" });
+  await expect(folderButton).toBeVisible();
+  await expectOverlayActionBeforeClose(folderButton, closeButton);
+
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+});
+
+test("attachment overlay shows download action for remote URL image source", async ({ page }) => {
+  const sessionId = "session-remote-image-overlay-action";
+  const remoteUrl = "https://images.example.test/remote-action.png";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId,
+        displayName: "Remote image overlay action",
+        title: "Remote image overlay action",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "remote-image-overlay-action-message",
+            text: "Remote image attachment.",
+            createdAtMs: baseTime - 30_000,
+            attachments: [
+              {
+                id: "remote-image-overlay-action",
+                name: "remote-action.png",
+                mimeType: "image/png",
+                size: onePixelPngBytes.length,
+                extension: "PNG",
+                kind: "image",
+                state: "available",
+                source: {
+                  kind: "remote_url",
+                  url: remoteUrl
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Remote image overlay action/);
+
+  const thumbnail = page.getByRole("button", { name: "Open image attachment remote-action.png" });
+  await expect(thumbnail).toBeVisible();
+  await thumbnail.click();
+
+  const overlay = page.getByTestId("attachment-overlay");
+  await expect(overlay).toBeVisible();
+  const actions = overlay.locator(".pf-attachment-dialog-actions");
+  const downloadButton = actions.getByRole("button", { name: "Download image" });
+  const closeButton = actions.getByRole("button", { name: "Close attachment preview" });
+  await expect(downloadButton).toBeVisible();
+  await expectOverlayActionBeforeClose(downloadButton, closeButton);
+  expect(
+    daemon.requests.some(
+      (request) =>
+        request.method === "read_chat_attachment_preview" &&
+        request.params.attachmentId === "remote-image-overlay-action"
+    )
+  ).toBe(false);
+
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+});
+
 test("restored pending attachment without preview opens unavailable detail", async ({ page }) => {
   const sessionId = "session-restored-attachment";
   await page.addInitScript(
@@ -1397,7 +1555,7 @@ test("restored pending attachment without preview opens unavailable detail", asy
                 size: 68,
                 extension: "PNG",
                 kind: "image",
-                source: { kind: "user_upload" }
+                source: { kind: "local_file", path: "/tmp/puffer/attachments/stale.png" }
               }
             ]
           }
@@ -1466,7 +1624,7 @@ test("missing persisted image attachment opens unavailable detail", async ({ pag
                 extension: "PNG",
                 kind: "image",
                 state: "missing",
-                source: { kind: "user_upload" }
+                source: { kind: "local_file", path: "/tmp/puffer/attachments/lost.png" }
               }
             ]
           }

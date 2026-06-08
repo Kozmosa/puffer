@@ -87,6 +87,8 @@ struct GenerateMediaArtifactResult {
     path: String,
     mime_type: String,
     size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_source_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -628,6 +630,8 @@ impl BackendState {
                 job_id: job_id.to_string(),
                 artifact_id: artifact_id.to_string(),
                 index,
+                local_path: metadata.local_path,
+                remote_source_url: metadata.remote_source_url,
             },
         })
     }
@@ -879,6 +883,7 @@ impl BackendState {
                 path: artifact.path.display().to_string(),
                 mime_type: artifact.mime_type,
                 size: artifact.byte_count,
+                remote_source_url: artifact.remote_source_url,
             })
             .collect();
         Ok(GenerateMediaResult {
@@ -2362,6 +2367,7 @@ mod tests {
                     path: "/tmp/image-1.png".to_string(),
                     mime_type: "image/png".to_string(),
                     size: 10,
+                    remote_source_url: None,
                 },
                 GenerateMediaArtifactResult {
                     artifact_id: "artifact-2".to_string(),
@@ -2369,6 +2375,7 @@ mod tests {
                     path: "/tmp/image-2.png".to_string(),
                     mime_type: "image/png".to_string(),
                     size: 11,
+                    remote_source_url: None,
                 },
             ],
             kind: "image".to_string(),
@@ -3011,15 +3018,22 @@ mod tests {
             crate::dtos::ChatAttachmentSourceDto::GeneratedMedia {
                 ref job_id,
                 ref artifact_id,
-                index
+                index,
+                ..
             } if job_id == "job-1" && artifact_id == "artifact-1" && index == 0
         ));
+        let value = serde_json::to_value(&attachments[0]).unwrap();
+        assert!(value["source"]["localPath"]
+            .as_str()
+            .unwrap()
+            .ends_with("artifact-1/image.jpeg"));
         assert!(matches!(
             attachments[1].source,
             crate::dtos::ChatAttachmentSourceDto::GeneratedMedia {
                 ref job_id,
                 ref artifact_id,
-                index
+                index,
+                ..
             } if job_id == "job-1" && artifact_id == "artifact-2" && index == 1
         ));
     }

@@ -57,7 +57,8 @@
     | "pin"
     | "trash"
     | "alert"
-    | "bot";
+    | "bot"
+    | "download";
 </script>
 
 <script lang="ts">
@@ -75,6 +76,7 @@
   import CoinsIcon from "lucide-svelte/icons/coins";
   import CopyIcon from "lucide-svelte/icons/copy";
   import CpuIcon from "lucide-svelte/icons/cpu";
+  import DownloadIcon from "lucide-svelte/icons/download";
   import EyeIcon from "lucide-svelte/icons/eye";
   import EyeOffIcon from "lucide-svelte/icons/eye-off";
   import ExternalLinkIcon from "lucide-svelte/icons/external-link";
@@ -186,7 +188,8 @@
     pin: PinIcon,
     trash: Trash2Icon,
     alert: TriangleAlertIcon,
-    bot: BotIcon
+    bot: BotIcon,
+    download: DownloadIcon
   };
 
   let { name, size = 14, color, strokeWidth = 1.8 }: Props = $props();

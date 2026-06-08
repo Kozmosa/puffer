@@ -1364,6 +1364,8 @@ fn generated_image_attachment(
             job_id: job_id.to_string(),
             artifact_id: artifact_id.to_string(),
             index,
+            local_path: metadata.local_path,
+            remote_source_url: metadata.remote_source_url,
         },
     })
 }
@@ -2164,9 +2166,14 @@ mod tests {
         assert_eq!(attachments[1].id, "generated-image:artifact-2");
         assert!(matches!(
             attachments[0].source,
-            ChatAttachmentSourceDto::GeneratedMedia { ref job_id, ref artifact_id, index }
+            ChatAttachmentSourceDto::GeneratedMedia { ref job_id, ref artifact_id, index, .. }
                 if job_id == "job-1" && artifact_id == "artifact-1" && index == 0
         ));
+        let value = serde_json::to_value(&attachments[0]).unwrap();
+        assert!(value["source"]["localPath"]
+            .as_str()
+            .unwrap()
+            .ends_with("artifact-1/image.png"));
     }
 
     #[test]
