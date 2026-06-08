@@ -258,7 +258,7 @@
   let settingsLoading = $state(false);
   let settingsRefreshGeneration = 0;
   let groupsRefreshGeneration = 0;
-  const GROUPS_PAGE_SIZE = 30;
+  const GROUPS_PAGE_SIZE = 100;
   let authBusyProviderId = $state<string | null>(null);
   let authError = $state<string | null>(null);
   let externalCredentials = $state<ExternalCredential[]>([]);
