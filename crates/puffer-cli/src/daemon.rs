@@ -32,17 +32,17 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use indexmap::IndexMap;
 use puffer_config::{
-    ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, MediaConfig, ProxyConfig,
-    ProxyEndpoint, ProxyScheme, PufferConfig,
+    ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, MediaConfig,
+    MediaGenerationConfig, ProxyConfig, ProxyEndpoint, ProxyScheme, PufferConfig,
 };
 use puffer_core::{
     command_surface, default_effort_level, discover_exact_media_capabilities, dispatch_command,
     enter_plan_mode, execute_connect_flow, execute_user_turn_streaming_with_permissions_and_cancel,
-    generate_exact_image_with_cache, list_exact_media_capabilities_with_cache,
+    generate_exact_media_with_cache, list_exact_media_capabilities_with_cache,
     provider_preference_family, read_generated_media_preview_by_artifact, supported_effort_levels,
     with_user_question_prompt_handler, AppState, BrowserPermissionPromptActionSet,
     BrowserPermissionPromptSource, BrowserPermissionPromptTargetClass, CancelToken,
-    ExactImageGenerationRequest, ExactMediaDiscoveryCache, MediaCapabilityView, MessageRole,
+    ExactMediaDiscoveryCache, ExactMediaGenerationRequest, MediaCapabilityView, MessageRole,
     ModelPreferenceFamily, PermissionPromptAction, PermissionPromptRequest, ToolCallRequest,
     ToolInvocation, TurnStreamEvent, UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
@@ -2239,39 +2239,19 @@ fn handle_generate_media(state: &DaemonState, params: &Value) -> Result<Value> {
         anyhow::bail!("/{kind} requires a prompt");
     }
     let count = input.count;
-    match kind.as_str() {
-        "image" => generate_image_media_job(state, prompt, count),
-        "video" => generate_video_media_job(state, prompt),
-        _ => unreachable!("media kind was validated"),
-    }
+    generate_media_job(state, &kind, prompt, count)
 }
 
-fn generate_image_media_job(state: &DaemonState, prompt: String, count: u8) -> Result<Value> {
+fn generate_media_job(state: &DaemonState, kind: &str, prompt: String, count: u8) -> Result<Value> {
     let config = state.config_snapshot();
-    let image_config = config
-        .media
-        .image
-        .ok_or_else(|| anyhow::anyhow!("image media provider/model/adapter is not configured"))?;
-    let provider_id = non_empty_media_field(&image_config.provider_id, "provider_id")
-        .context("image media provider/model/adapter is not configured")?;
-    let model_id = non_empty_media_field(&image_config.model_id, "model_id")
-        .context("image media provider/model/adapter is not configured")?;
-    let adapter = non_empty_media_field(&image_config.adapter, "adapter")
-        .context("image media provider/model/adapter is not configured")?;
+    let selection = media_selection_for_kind(config.media, kind)?;
     let inputs = state.build_runtime_inputs_without_discovery()?;
     let discovery_cache = state.exact_media_discovery_cache(&inputs);
-    let generation = generate_exact_image_with_cache(
+    let generation = generate_exact_media_with_cache(
         &inputs.providers,
         &inputs.auth_store,
         &state.paths.workspace_root,
-        ExactImageGenerationRequest {
-            provider_id,
-            model_id,
-            adapter,
-            prompt: prompt.clone(),
-            parameters: image_config.parameters,
-            count,
-        },
+        exact_media_generation_request(kind, prompt.clone(), count, selection)?,
         &discovery_cache,
     )?;
     let artifacts = generation
@@ -2290,7 +2270,7 @@ fn generate_image_media_job(state: &DaemonState, prompt: String, count: u8) -> R
         job_id: generation.job_id,
         requested_count: generation.requested_count,
         artifacts,
-        kind: "image".to_string(),
+        kind: generation.kind,
         provider_id: generation.provider_id,
         model_id: generation.model_id,
         status: generation.status,
@@ -2299,46 +2279,35 @@ fn generate_image_media_job(state: &DaemonState, prompt: String, count: u8) -> R
     Ok(serde_json::to_value(result)?)
 }
 
-fn generate_video_media_job(state: &DaemonState, _prompt: String) -> Result<Value> {
-    let inputs = state.build_runtime_inputs_without_discovery()?;
-    let discovery_cache = ExactMediaDiscoveryCache::empty();
-    let available = list_media_capabilities(
-        &inputs.providers,
-        &inputs.auth_store,
-        Some("video"),
-        &discovery_cache,
-    )
-    .into_iter()
-    .any(|capability| capability.kind == "video" && capability.status == "available");
-    if !available {
-        anyhow::bail!("No video capabilities available");
+fn media_selection_for_kind(media: MediaConfig, kind: &str) -> Result<MediaGenerationConfig> {
+    match kind {
+        "image" => media.image,
+        "video" => media.video,
+        _ => anyhow::bail!("unsupported media kind `{kind}`"),
     }
-    let config = state.config_snapshot();
-    let Some(video_config) = config.media.video else {
-        anyhow::bail!("video media provider/model is not configured");
-    };
-    let provider_id = non_empty_media_field(&video_config.provider_id, "provider_id")
-        .context("video media provider/model is not configured")?;
-    let model_id = non_empty_media_field(&video_config.model_id, "model_id")
-        .context("video media provider/model is not configured")?;
-    let selected_available = list_media_capabilities(
-        &inputs.providers,
-        &inputs.auth_store,
-        Some("video"),
-        &discovery_cache,
-    )
-    .into_iter()
-    .any(|capability| {
-        capability.kind == "video"
-            && capability.provider_id == provider_id
-            && capability.model_id == model_id
-            && capability.adapter == video_config.adapter
-            && capability.status == "available"
-    });
-    if !selected_available {
-        anyhow::bail!("video media capability unavailable for {provider_id}/{model_id}");
-    }
-    anyhow::bail!("Video generation is not supported yet")
+    .ok_or_else(|| anyhow::anyhow!("{kind} media provider/model/adapter is not configured"))
+}
+
+fn exact_media_generation_request(
+    kind: &str,
+    prompt: String,
+    count: u8,
+    selection: MediaGenerationConfig,
+) -> Result<ExactMediaGenerationRequest> {
+    let missing_context = format!("{kind} media provider/model/adapter is not configured");
+    Ok(ExactMediaGenerationRequest {
+        kind: kind.to_string(),
+        provider_id: non_empty_media_field(&selection.provider_id, "provider_id")
+            .context(missing_context.clone())?,
+        model_id: non_empty_media_field(&selection.model_id, "model_id")
+            .context(missing_context.clone())?,
+        operation: non_empty_media_field(&selection.operation, "operation")
+            .context(missing_context.clone())?,
+        adapter: non_empty_media_field(&selection.adapter, "adapter").context(missing_context)?,
+        prompt,
+        parameters: selection.parameters,
+        count,
+    })
 }
 
 fn non_empty_media_field(value: &str, field: &str) -> Result<String> {
@@ -5733,6 +5702,72 @@ models:
         .expect("write openrouter override");
     }
 
+    fn write_replicate_video_resource_override(paths: &ConfigPaths) {
+        let providers_dir = paths.workspace_config_dir.join("resources/providers");
+        std::fs::create_dir_all(&providers_dir).expect("provider resources dir");
+        std::fs::write(
+            providers_dir.join("replicate.yaml"),
+            r#"id: replicate
+display_name: Replicate
+base_url: https://api.replicate.com
+default_api: openai-completions
+auth_modes:
+  - api_key
+media:
+  video:
+    discovery:
+      adapter: static
+    execution:
+      adapter: replicate_video
+      path: /v1/predictions
+    models:
+      - id: owner/model-version
+        display_name: Video Model
+        operations:
+          - generate
+        parameters:
+          - name: aspect_ratio
+            label: Aspect ratio
+            values: ["16:9", "9:16"]
+            default: "16:9"
+            request_field: aspect_ratio
+          - name: duration
+            label: Duration
+            values: ["5", "8"]
+            default: "5"
+            request_field: duration
+models: []
+"#,
+        )
+        .expect("write replicate override");
+    }
+
+    fn daemon_state_with_replicate_video_capability() -> (
+        PufferHomeEnvGuard,
+        tempfile::TempDir,
+        DaemonState,
+    ) {
+        let home_guard = PufferHomeEnvGuard::set();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        write_replicate_video_resource_override(&paths);
+        let mut auth_store = AuthStore::default();
+        auth_store.set_api_key("replicate", "sk-test");
+        auth_store
+            .save(&paths.user_config_dir.join("auth.json"))
+            .expect("save auth");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+        (home_guard, temp, state)
+    }
+
     #[test]
     fn high_volume_browser_events_require_explicit_subscription() {
         assert!(requires_explicit_subscription(
@@ -5949,6 +5984,42 @@ models:
         assert!(capabilities.iter().all(|capability| {
             capability["adapter"] == "images_json" && capability["status"] == "available"
         }));
+    }
+
+    #[test]
+    fn daemon_list_media_capabilities_returns_video_capability() {
+        let (_home_guard, _temp, state) = daemon_state_with_replicate_video_capability();
+
+        let response =
+            handle_list_media_capabilities(&state, &json!({"kind": "video"})).expect("response");
+        let capabilities = response["capabilities"].as_array().expect("capabilities");
+
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities[0]["adapter"], "replicate_video");
+    }
+
+    #[test]
+    fn daemon_generate_media_requires_video_adapter_setting() {
+        let (_home_guard, _temp, state) = daemon_state_with_replicate_video_capability();
+        {
+            let mut config = state.config.lock().unwrap();
+            config.media.video = Some(MediaGenerationConfig {
+                provider_id: "replicate".to_string(),
+                model_id: "owner/model-version".to_string(),
+                operation: "generate".to_string(),
+                adapter: "images_json".to_string(),
+                parameters: BTreeMap::from([
+                    ("aspect_ratio".to_string(), "16:9".to_string()),
+                    ("duration".to_string(), "5".to_string()),
+                ]),
+            });
+        }
+
+        let error = handle_generate_media(&state, &json!({"kind": "video", "prompt": "animate"}))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("selected video model unavailable"));
     }
 
     #[test]

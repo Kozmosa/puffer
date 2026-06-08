@@ -15,9 +15,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::prelude::*;
 use puffer_config::{builtin_captcha_solvers, ConfigPaths};
 use puffer_core::{
-    discover_exact_media_capabilities, generate_exact_image_with_cache,
+    discover_exact_media_capabilities, generate_exact_media_with_cache,
     generated_media_attachment_metadata_with_fallback, read_generated_media_preview_by_artifact,
-    ExactImageGenerationRequest, ExactMediaDiscoveryCache, GeneratedMediaPreviewResult,
+    ExactMediaDiscoveryCache, ExactMediaGenerationRequest, GeneratedMediaPreviewResult,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::load_resources;
@@ -819,39 +819,24 @@ impl BackendState {
             bail!("/{kind} requires a prompt");
         }
         let count = input.count;
-        match kind.as_str() {
-            "image" => self.generate_image_media_job(prompt, count),
-            "video" => self.generate_video_media_job(prompt),
-            _ => unreachable!("media kind was validated"),
-        }
+        self.generate_media_job(&kind, prompt, count)
     }
 
-    fn generate_image_media_job(&self, prompt: String, count: u8) -> Result<GenerateMediaResult> {
+    fn generate_media_job(
+        &self,
+        kind: &str,
+        prompt: String,
+        count: u8,
+    ) -> Result<GenerateMediaResult> {
         let config = self.load_config()?;
-        let image_config = config
-            .media
-            .image
-            .ok_or_else(|| anyhow!("image media provider/model/adapter is not configured"))?;
-        let provider_id = non_empty_media_field(&image_config.provider_id, "provider_id")
-            .context("image media provider/model/adapter is not configured")?;
-        let model_id = non_empty_media_field(&image_config.model_id, "model_id")
-            .context("image media provider/model/adapter is not configured")?;
-        let adapter = non_empty_media_field(&image_config.adapter, "adapter")
-            .context("image media provider/model/adapter is not configured")?;
+        let selection = stored_media_selection_for_kind(config.media, kind)?;
         let (providers, auth_store) = self.media_runtime_inputs()?;
         let discovery_cache = self.exact_media_discovery_cache(&providers, &auth_store);
-        let generation = generate_exact_image_with_cache(
+        let generation = generate_exact_media_with_cache(
             &providers,
             &auth_store,
             &self.default_workspace()?,
-            ExactImageGenerationRequest {
-                provider_id,
-                model_id,
-                adapter,
-                prompt: prompt.clone(),
-                parameters: image_config.parameters,
-                count,
-            },
+            exact_media_generation_request_from_stored(kind, prompt.clone(), count, selection)?,
             &discovery_cache,
         )?;
         let artifacts = generation
@@ -870,42 +855,12 @@ impl BackendState {
             job_id: generation.job_id,
             requested_count: generation.requested_count,
             artifacts,
-            kind: "image".to_string(),
+            kind: generation.kind,
             provider_id: generation.provider_id,
             model_id: generation.model_id,
             status: generation.status,
             prompt,
         })
-    }
-
-    fn generate_video_media_job(&self, _prompt: String) -> Result<GenerateMediaResult> {
-        let capabilities = self.list_media_capabilities(json!({"kind": "video"}))?;
-        let available = capabilities
-            .iter()
-            .any(|capability| capability.kind == "video" && capability.status == "available");
-        if !available {
-            bail!("No video capabilities available");
-        }
-        let config = self.load_config()?;
-        let video_config = config
-            .media
-            .video
-            .ok_or_else(|| anyhow!("video media provider/model is not configured"))?;
-        let provider_id = non_empty_media_field(&video_config.provider_id, "provider_id")
-            .context("video media provider/model is not configured")?;
-        let model_id = non_empty_media_field(&video_config.model_id, "model_id")
-            .context("video media provider/model is not configured")?;
-        let selected_available = capabilities.iter().any(|capability| {
-            capability.kind == "video"
-                && capability.provider_id == provider_id
-                && capability.model_id == model_id
-                && capability.adapter == video_config.adapter
-                && capability.status == "available"
-        });
-        if !selected_available {
-            bail!("video media capability unavailable for {provider_id}/{model_id}");
-        }
-        bail!("Video generation is not supported yet")
     }
 
     fn read_generated_media_preview(&self, params: Value) -> Result<GeneratedMediaPreviewResult> {
@@ -2791,7 +2746,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_media_returns_clear_video_no_capability_error() {
+    fn generate_media_requires_video_provider_and_model_settings() {
         let _lock = TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set_home(dir.path());
@@ -2807,7 +2762,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("No video capabilities available"));
+            .contains("video media provider/model/adapter is not configured"));
     }
 
     #[test]
@@ -3797,6 +3752,40 @@ fn non_empty_media_field(value: &str, field: &str) -> Result<String> {
         bail!("media selection `{field}` is empty");
     }
     Ok(trimmed.to_string())
+}
+
+fn stored_media_selection_for_kind(
+    media: StoredMediaConfig,
+    kind: &str,
+) -> Result<StoredMediaGenerationConfig> {
+    match kind {
+        "image" => media.image,
+        "video" => media.video,
+        _ => bail!("unsupported media kind `{kind}`"),
+    }
+    .ok_or_else(|| anyhow!("{kind} media provider/model/adapter is not configured"))
+}
+
+fn exact_media_generation_request_from_stored(
+    kind: &str,
+    prompt: String,
+    count: u8,
+    selection: StoredMediaGenerationConfig,
+) -> Result<ExactMediaGenerationRequest> {
+    let missing_context = format!("{kind} media provider/model/adapter is not configured");
+    Ok(ExactMediaGenerationRequest {
+        kind: kind.to_string(),
+        provider_id: non_empty_media_field(&selection.provider_id, "provider_id")
+            .context(missing_context.clone())?,
+        model_id: non_empty_media_field(&selection.model_id, "model_id")
+            .context(missing_context.clone())?,
+        operation: non_empty_media_field(&selection.operation, "operation")
+            .context(missing_context.clone())?,
+        adapter: non_empty_media_field(&selection.adapter, "adapter").context(missing_context)?,
+        prompt,
+        parameters: selection.parameters,
+        count,
+    })
 }
 
 fn media_settings_dto(config: &StoredMediaConfig) -> MediaSettingsDto {

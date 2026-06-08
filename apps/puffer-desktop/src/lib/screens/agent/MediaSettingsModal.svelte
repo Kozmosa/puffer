@@ -24,8 +24,8 @@
 
   let { kind, sessionCwd, settings, settingsReady = true, onSaved, onClose }: Props = $props();
   const IMAGE_OUTPUT_DIR_RELATIVE = ".puffer/media/images";
-  const VIDEO_ASPECT_RATIO_PARAMETER_NAMES = ["aspect_ratio", "aspectRatio"];
-  const VIDEO_DURATION_PARAMETER_NAMES = ["duration", "duration_seconds", "durationSeconds"];
+  const VIDEO_ASPECT_RATIO_PARAMETER_NAMES = ["aspect_ratio"];
+  const VIDEO_DURATION_PARAMETER_NAMES = ["duration"];
   const initialSaved = untrack(() => mediaSettingsForKind(kind, settings));
   const initialParameters = untrack(() => initialSaved?.parameters ?? {});
 
@@ -463,11 +463,11 @@
   }
 
   function videoAspectRatioFromParameters(value: Record<string, string>): string {
-    return value.aspect_ratio ?? value.aspectRatio ?? "16:9";
+    return value.aspect_ratio ?? "16:9";
   }
 
   function videoDurationFromParameters(value: Record<string, string>): number {
-    const duration = value.duration ?? value.duration_seconds ?? value.durationSeconds ?? "8";
+    const duration = value.duration ?? "8";
     return parseDurationSeconds(duration) ?? 8;
   }
 

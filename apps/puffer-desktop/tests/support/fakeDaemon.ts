@@ -210,14 +210,18 @@ function normalizeMediaSelection(value: unknown): FakeMediaSelection | null {
   if (
     typeof record.providerId !== "string" ||
     typeof record.modelId !== "string" ||
-    typeof record.adapter !== "string"
+    record.operation !== "generate" ||
+    typeof record.adapter !== "string" ||
+    !record.parameters ||
+    typeof record.parameters !== "object" ||
+    Array.isArray(record.parameters)
   ) {
     return null;
   }
   return {
     providerId: record.providerId,
     modelId: record.modelId,
-    operation: "generate",
+    operation: record.operation,
     adapter: record.adapter,
     parameters: normalizeStringRecord(record.parameters)
   };
@@ -1948,7 +1952,7 @@ export class FakeDaemon {
     }
     const settings = this.settingsConfig.media[kind];
     if (!settings) {
-      throw new Error(`${kind} media provider/model is not configured.`);
+      throw new Error(`${kind} media provider/model/adapter is not configured.`);
     }
     const capability = capabilities.find(
       (item) =>
@@ -1957,10 +1961,9 @@ export class FakeDaemon {
         item.adapter === settings.adapter
     );
     if (!capability) {
-      throw new Error(`${kind} media capability unavailable for ${settings.providerId}/${settings.modelId}.`);
-    }
-    if (kind === "video") {
-      throw new Error("Video generation is not supported yet.");
+      throw new Error(
+        `selected ${kind} model unavailable: ${settings.providerId}/${settings.modelId} via ${settings.adapter}`
+      );
     }
     const jobId = `media-job-${Date.now().toString(36)}`;
     const fixture = this.generatedMediaResult;

@@ -5,7 +5,7 @@ import {
   ONE_PIXEL_JPEG_BASE64,
   type FakeMediaCapability
 } from "./support/fakeDaemon";
-import type { MessageAttachment } from "../src/lib/types";
+import type { MediaSettings, MessageAttachment } from "../src/lib/types";
 
 const baseTime = Date.now();
 const onePixelPngBytes = Array.from(
@@ -15,10 +15,11 @@ const onePixelPngBytes = Array.from(
   )
 );
 
-const configuredImageMedia = {
+const configuredImageMedia: MediaSettings = {
   image: {
     providerId: "openai",
     modelId: "gpt-image-1",
+    operation: "generate",
     adapter: "images_json",
     parameters: {
       size: "1024x1024",
@@ -26,12 +27,7 @@ const configuredImageMedia = {
       output_format: "png"
     }
   },
-  video: {
-    providerId: null,
-    modelId: null,
-    aspectRatio: "16:9",
-    durationSeconds: 8
-  }
+  video: null
 };
 
 type FakeMediaCapabilityParameter = FakeMediaCapability["parameters"][number];
@@ -102,6 +98,20 @@ function singleOptionImageCapability(): FakeMediaCapability {
 }
 
 function singleOptionVideoCapability(): FakeMediaCapability {
+  const parameters = [
+    mediaParameter({
+      name: "aspect_ratio",
+      label: "Aspect ratio",
+      values: ["16:9"],
+      defaultValue: "16:9"
+    }),
+    mediaParameter({
+      name: "duration",
+      label: "Duration",
+      values: ["8"],
+      defaultValue: "8"
+    })
+  ];
   return {
     providerId: "runway",
     providerDisplayName: "Runway",
@@ -109,9 +119,45 @@ function singleOptionVideoCapability(): FakeMediaCapability {
     modelDisplayName: "Gen-4",
     kind: "video",
     operation: "generate",
-    adapter: "video_json",
-    parameters: [],
-    defaults: {},
+    adapter: "replicate_video",
+    parameters,
+    defaults: Object.fromEntries(
+      parameters.map((parameter) => [parameter.name, parameter.default])
+    ),
+    status: "available",
+    source: "fake-daemon",
+    reason: null,
+    checkedAtMs: baseTime
+  };
+}
+
+function configurableVideoCapability(): FakeMediaCapability {
+  const parameters = [
+    mediaParameter({
+      name: "aspect_ratio",
+      label: "Aspect ratio",
+      values: ["16:9", "9:16"],
+      defaultValue: "16:9"
+    }),
+    mediaParameter({
+      name: "duration",
+      label: "Duration",
+      values: ["8", "12"],
+      defaultValue: "8"
+    })
+  ];
+  return {
+    providerId: "runway",
+    providerDisplayName: "Runway",
+    modelId: "gen-4",
+    modelDisplayName: "Gen-4",
+    kind: "video",
+    operation: "generate",
+    adapter: "replicate_video",
+    parameters,
+    defaults: Object.fromEntries(
+      parameters.map((parameter) => [parameter.name, parameter.default])
+    ),
     status: "available",
     source: "fake-daemon",
     reason: null,
@@ -525,18 +571,8 @@ test("composer image generation settings modal saves media config from daemon ca
   });
   daemon.setSettingsConfig({
     media: {
-      image: {
-        providerId: null,
-        modelId: null,
-        adapter: null,
-        parameters: {}
-      },
-      video: {
-        providerId: null,
-        modelId: null,
-        aspectRatio: "16:9",
-        durationSeconds: 8
-      }
+      image: null,
+      video: null
     }
   });
   await daemon.install(page);
@@ -588,6 +624,7 @@ test("composer image generation settings modal saves media config from daemon ca
       image: {
         providerId: "byteplus",
         modelId: "seedream-3",
+        operation: "generate",
         adapter: "images_json",
         parameters: {
           size: "1280x720",
@@ -595,12 +632,7 @@ test("composer image generation settings modal saves media config from daemon ca
           output_format: "png"
         }
       },
-      video: {
-        providerId: null,
-        modelId: null,
-        aspectRatio: "16:9",
-        durationSeconds: 8
-      }
+      video: null
     }
   });
   await expect(dialog).toHaveCount(0);
@@ -747,21 +779,17 @@ test("composer image generation settings clamps unsupported saved parameters", a
   daemon.setSettingsConfig({
     media: {
       image: {
-        providerId: null,
-        modelId: null,
-        adapter: null,
+        providerId: "openai",
+        modelId: "gpt-image-1",
+        operation: "generate",
+        adapter: "images_json",
         parameters: {
           size: "2048x2048",
           quality: "ultra",
           output_format: "gif"
         }
       },
-      video: {
-        providerId: null,
-        modelId: null,
-        aspectRatio: "16:9",
-        durationSeconds: 8
-      }
+      video: null
     }
   });
   await daemon.install(page);
@@ -788,6 +816,7 @@ test("composer image generation settings clamps unsupported saved parameters", a
       image: {
         providerId: "openai",
         modelId: "gpt-image-1",
+        operation: "generate",
         adapter: "images_json",
         parameters: {
           size: "1024x1024",
@@ -838,10 +867,62 @@ test("composer video generation settings modal remains reachable without capabil
     (request) => request.params.kind === "video"
   );
   await expect(dialog.getByText("No video capabilities available.")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Save video generation settings" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
 
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
+});
+
+test("composer video generation settings shows capability loading status", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [configurableVideoCapability()],
+    sessions: [
+      {
+        sessionId: "session-video-settings-loading",
+        displayName: "Video settings loading",
+        title: "Video settings loading",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-loading-seed",
+            text: "Open video settings while capabilities load.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.delayResponse(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video",
+    500
+  );
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Video settings loading/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Video generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video generation settings" });
+  await expect(dialog).toBeVisible();
+  const status = dialog.getByRole("status");
+  await expect(status).toBeVisible();
+  await expect(status).toContainText("Loading video capabilities...");
+  await expect(status).toContainText("Checking available video generation models.");
+  await expect(status.locator(".pf-media-loading-spinner")).toBeVisible();
+
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await expect(dialog.getByLabel("Aspect ratio")).toHaveValue("16:9");
 });
 
 test("composer video generation settings renders saved single choices as read-only values", async ({
@@ -872,17 +953,16 @@ test("composer video generation settings renders saved single choices as read-on
   });
   daemon.setSettingsConfig({
     media: {
-      image: {
-        providerId: null,
-        modelId: null,
-        adapter: null,
-        parameters: {}
-      },
+      image: null,
       video: {
         providerId: "runway",
         modelId: "gen-4",
-        aspectRatio: "16:9",
-        durationSeconds: 8
+        operation: "generate",
+        adapter: "replicate_video",
+        parameters: {
+          aspect_ratio: "16:9",
+          duration: "8"
+        }
       }
     }
   });
@@ -906,24 +986,86 @@ test("composer video generation settings renders saved single choices as read-on
   await expectReadOnlyField(dialog, "Aspect ratio", "16:9");
   await expectReadOnlyField(dialog, "Duration", "8s");
 
-  await dialog.getByRole("button", { name: "Save video generation settings" }).click();
+  await dialog.getByRole("button", { name: "Save" }).click();
   const update = await daemon.waitForRequest(
     "update_config",
     (request) => "media" in request.params
   );
   expect(update.params).toEqual({
     media: {
-      image: {
-        providerId: null,
-        modelId: null,
-        adapter: null,
-        parameters: {}
-      },
+      image: null,
       video: {
         providerId: "runway",
         modelId: "gen-4",
-        aspectRatio: "16:9",
-        durationSeconds: 8
+        operation: "generate",
+        adapter: "replicate_video",
+        parameters: {
+          aspect_ratio: "16:9",
+          duration: "8"
+        }
+      }
+    }
+  });
+});
+
+test("composer video generation settings saves configurable video defaults", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [configurableVideoCapability()],
+    sessions: [
+      {
+        sessionId: "session-video-settings-configurable",
+        displayName: "Configurable video settings",
+        title: "Configurable video settings",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-configurable-seed",
+            text: "Tune configurable video settings.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Configurable video settings/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Video generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video generation settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
+  await expect(dialog.getByRole("combobox")).toHaveCount(2);
+  await dialog.getByLabel("Aspect ratio").selectOption("9:16");
+  await dialog.getByLabel("Duration").selectOption("12");
+
+  await dialog.getByRole("button", { name: "Save" }).click();
+  const update = await daemon.waitForRequest(
+    "update_config",
+    (request) => "media" in request.params
+  );
+  expect(update.params).toEqual({
+    media: {
+      image: null,
+      video: {
+        providerId: "runway",
+        modelId: "gen-4",
+        operation: "generate",
+        adapter: "replicate_video",
+        parameters: {
+          aspect_ratio: "9:16",
+          duration: "12"
+        }
       }
     }
   });
@@ -957,6 +1099,7 @@ test("composer media generation settings marks stale saved image model invalid",
       image: {
         providerId: "openai",
         modelId: "old-image-model",
+        operation: "generate",
         adapter: "images_json",
         parameters: {
           size: "1024x1024",
@@ -964,12 +1107,7 @@ test("composer media generation settings marks stale saved image model invalid",
           output_format: "png"
         }
       },
-      video: {
-        providerId: null,
-        modelId: null,
-        aspectRatio: "16:9",
-        durationSeconds: 8
-      }
+      video: null
     }
   });
   await daemon.install(page);
