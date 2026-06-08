@@ -7,6 +7,7 @@ pub(crate) mod images_json;
 pub(crate) mod jobs;
 pub(crate) mod minimax_image;
 pub(crate) mod planner;
+pub(crate) mod openai_video;
 pub(crate) mod replicate_video;
 pub(crate) mod resolver;
 
