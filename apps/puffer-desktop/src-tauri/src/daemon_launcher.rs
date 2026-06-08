@@ -6,7 +6,11 @@
 //! opens a local port-forward to the remote WebSocket so the frontend can
 //! continue to connect to `ws://127.0.0.1:<localport>/ws` transparently.
 
+#[path = "daemon_process.rs"]
+mod daemon_process;
+
 use anyhow::{Context, Result};
+use daemon_process::terminate_existing_daemon;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
@@ -257,6 +261,10 @@ impl ChildExt for Child {
 }
 
 fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
+    spawn_daemon_attempt(workspace_cwd, true)
+}
+
+fn spawn_daemon_attempt(workspace_cwd: PathBuf, may_replace_existing: bool) -> Result<DaemonChild> {
     let binary = resolve_puffer_binary()?;
     // Workspace is keyed by (host, path). The caller decides where sessions
     // live by picking `workspace_cwd` — typically $HOME, but the UI's
@@ -312,6 +320,9 @@ fn spawn_daemon(workspace_cwd: PathBuf) -> Result<DaemonChild> {
         let status = child.wait().ok();
         let message = daemon_handshake_failure_message(status, &stderr_text);
         if message.contains("another Puffer daemon is already running") {
+            if may_replace_existing && terminate_existing_daemon(&user_config_dir())? {
+                return spawn_daemon_attempt(workspace_cwd, false);
+            }
             if let Some(handshake) = existing_daemon_handshake(&workspace_cwd) {
                 return Ok(DaemonChild::attached(handshake));
             }

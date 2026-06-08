@@ -1,7 +1,12 @@
 //! Native Chromium Embedded Framework host commands for Puffer Desktop.
 
-use anyhow::{anyhow, bail, Context, Result};
+#[path = "cef_error_buffer.rs"]
+mod cef_error_buffer;
+
 use crate::browser_debug::{cef_log, cef_result, cef_state_summary};
+use anyhow::{anyhow, bail, Context, Result};
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+use cef_error_buffer::ErrorBuffer;
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 use puffer_config::{stage_builtin_captcha_extension, CaptchaExtensionSeed, ConfigPaths};
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
@@ -11,9 +16,9 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::c_void;
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
-use std::ffi::CString;
+use std::ffi::{c_char, CStr, CString};
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 use std::fs::{self, File};
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
@@ -24,6 +29,8 @@ use std::process::Command;
 use std::sync::OnceLock;
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 use std::time::Duration;
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+use tauri::WebviewWindow;
 use tauri::Window;
 
 const DEFAULT_REMOTE_DEBUGGING_PORT: u16 = 9333;
@@ -238,7 +245,7 @@ fn rect_summary(rect: CefBrowserRect) -> String {
 /// Opens a native CEF browser over the main window for packaged-app smoke tests.
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 pub(crate) fn browser_cef_native_smoke_open(
-    window: Window,
+    window: WebviewWindow,
     url: String,
 ) -> Result<Value, String> {
     let rect = CefBrowserRect {
@@ -248,7 +255,7 @@ pub(crate) fn browser_cef_native_smoke_open(
         height: 600.0,
     };
     let state = with_native_browser("__cef_smoke__", |session_id| {
-        native_open(session_id, window_handle(&window)?, &url, rect)
+        native_open(session_id, webview_window_handle(&window)?, &url, rect)
     })?;
     Ok(state)
 }
@@ -256,7 +263,7 @@ pub(crate) fn browser_cef_native_smoke_open(
 /// Creates hidden native CEF browser targets for daemon-owned browser sessions.
 #[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
 pub(crate) fn browser_cef_native_prewarm_targets(
-    window: Window,
+    window: WebviewWindow,
     count: usize,
 ) -> Result<(), String> {
     let rect = CefBrowserRect {
@@ -268,7 +275,12 @@ pub(crate) fn browser_cef_native_prewarm_targets(
     for index in 0..count {
         let session_id = format!("__cef_prewarm_{index}__");
         with_native_browser(&session_id, |session_id| {
-            native_open(session_id, window_handle(&window)?, "about:blank", rect)?;
+            native_open(
+                session_id,
+                webview_window_handle(&window)?,
+                "about:blank",
+                rect,
+            )?;
             native_hide(session_id)
         })?;
     }
@@ -317,6 +329,13 @@ fn window_handle(window: &Window) -> Result<*mut c_void> {
         let _ = window;
         bail!("native CEF embedding is only implemented on macOS")
     }
+}
+
+#[cfg(all(target_os = "macos", puffer_desktop_cef_native))]
+fn webview_window_handle(window: &WebviewWindow) -> Result<*mut c_void> {
+    window
+        .ns_window()
+        .map_err(|error| anyhow!("read Tauri NSWindow handle: {error}"))
 }
 
 impl CefRuntime {
@@ -752,7 +771,11 @@ fn native_cef_extension_dirs() -> Result<String> {
         return Ok(String::new());
     }
     let mut dirs = Vec::new();
-    for extension in browser.extensions.iter().filter(|extension| extension.enabled) {
+    for extension in browser
+        .extensions
+        .iter()
+        .filter(|extension| extension.enabled)
+    {
         push_extension_dir(&mut dirs, PathBuf::from(&extension.path));
     }
     if browser.captcha.enabled {
@@ -959,42 +982,6 @@ fn cstring_path(path: &Path) -> Result<CString> {
     CString::new(path.to_string_lossy().as_bytes()).context("encode CEF path")
 }
 
-struct ErrorBuffer {
-    bytes: Vec<c_char>,
-}
-
-impl ErrorBuffer {
-    fn new() -> Self {
-        Self {
-            bytes: vec![0; 2048],
-        }
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut c_char {
-        self.bytes.as_mut_ptr()
-    }
-
-    fn len(&self) -> usize {
-        self.bytes.len()
-    }
-
-    fn message(&self) -> String {
-        unsafe { CStr::from_ptr(self.bytes.as_ptr()) }
-            .to_string_lossy()
-            .trim()
-            .to_string()
-    }
-
-    fn result(self, ok: i32, context: &str) -> Result<()> {
-        if ok != 0 {
-            return Ok(());
-        }
-        let message = self.message();
-        if message.is_empty() {
-            bail!("{context} failed");
-        }
-        bail!("{context}: {message}")
-    }
-}
 #[cfg(test)]
+#[path = "cef_host_tests.rs"]
 mod cef_host_tests;

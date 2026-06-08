@@ -180,6 +180,11 @@ void HandleScheduledMessagePumpWork(int64_t delay_ms);
 void PostScheduledMessagePumpWork(int64_t delay_ms);
 void ScheduleMessagePumpWork(int64_t delay_ms);
 void RetireBrowserSlotLater(const std::string& session_id);
+void FocusBrowserSlot(BrowserSlot* slot);
+void PrepareBrowserInputEvent(NSEvent* event);
+bool HasInteractivePumpSlots();
+bool IsBrowserInputEvent(NSEvent* event);
+void RequestInputPumpWindow();
 
 void LogPump(const char* event, int64_t delay_ms) {
   if (!std::getenv("PUFFER_CEF_LOG_PUMP")) {
@@ -233,6 +238,17 @@ bool HasActivePumpSlots() {
   return false;
 }
 
+bool HasInteractivePumpSlots() {
+  for (const auto& entry : g_slots) {
+    const BrowserSlot* slot = entry.second;
+    if (slot && !slot->closing && slot->browser && slot->container &&
+        ![slot->container isHidden]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void KillActivePumpTimer() {
   if (!g_active_pump_timer) {
     return;
@@ -245,7 +261,7 @@ void ScheduleActivePumpTimer(int64_t delay_ms);
 
 void RunActivePumpWork() {
   KillActivePumpTimer();
-  if (!g_initialized || !HasActivePumpSlots()) {
+  if (!g_initialized || (!HasActivePumpSlots() && !HasInteractivePumpSlots())) {
     return;
   }
   const int64_t now_ms = CurrentTimeMs();
@@ -269,10 +285,20 @@ void ScheduleActivePumpTimer(int64_t delay_ms) {
                                 }];
   NSRunLoop* run_loop = [NSRunLoop currentRunLoop];
   [run_loop addTimer:g_active_pump_timer forMode:NSRunLoopCommonModes];
+  [run_loop addTimer:g_active_pump_timer forMode:NSEventTrackingRunLoopMode];
 }
 
 void RequestActivePumpWindow() {
   if (!g_initialized || !HasActivePumpSlots()) {
+    return;
+  }
+  g_active_pump_until_ms = std::max(g_active_pump_until_ms,
+                                    CurrentTimeMs() + kActivePumpWindowMs);
+  ScheduleActivePumpTimer(0);
+}
+
+void RequestInputPumpWindow() {
+  if (!g_initialized || !HasInteractivePumpSlots()) {
     return;
   }
   g_active_pump_until_ms = std::max(g_active_pump_until_ms,
@@ -535,6 +561,17 @@ class PufferCefApp : public CefApp, public CefBrowserProcessHandler {
     if (!command_line) {
       return;
     }
+    command_line->AppendSwitch("disable-background-timer-throttling");
+    command_line->AppendSwitch("disable-backgrounding-occluded-windows");
+    command_line->AppendSwitch("disable-renderer-backgrounding");
+    if (!std::getenv("PUFFER_CEF_ENABLE_GPU")) {
+      command_line->AppendSwitch("disable-gpu");
+      command_line->AppendSwitch("disable-gpu-compositing");
+      command_line->AppendSwitch("disable-gpu-rasterization");
+      command_line->AppendSwitch("disable-zero-copy");
+      LogCefHost("command-line", "disable-gpu process=" +
+                                     CefToString(process_type));
+    }
     if (!std::getenv("PUFFER_CEF_USE_REAL_KEYCHAIN")) {
       command_line->AppendSwitch("use-mock-keychain");
       LogCefHost("command-line", "use-mock-keychain process=" +
@@ -584,6 +621,90 @@ void ResizeBrowserView(BrowserSlot* slot) {
   slot->browser->GetHost()->WasResized();
 }
 
+NSView* BrowserViewForSlot(BrowserSlot* slot) {
+  if (!slot || !slot->browser) {
+    return nil;
+  }
+  return CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(slot->browser->GetHost()->GetWindowHandle());
+}
+
+void FocusBrowserSlot(BrowserSlot* slot) {
+  if (!slot || !slot->browser || !slot->container || [slot->container isHidden]) {
+    return;
+  }
+  NSView* browser_view = BrowserViewForSlot(slot);
+  NSWindow* window = [slot->container window];
+  if (window && browser_view) {
+    [window makeFirstResponder:browser_view];
+  }
+  slot->browser->GetHost()->SetFocus(true);
+  ScheduleMessagePumpWork(0);
+}
+
+bool IsBrowserInputEvent(NSEvent* event) {
+  if (!event) {
+    return false;
+  }
+  switch ([event type]) {
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeLeftMouseUp:
+    case NSEventTypeLeftMouseDragged:
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeRightMouseUp:
+    case NSEventTypeRightMouseDragged:
+    case NSEventTypeOtherMouseDown:
+    case NSEventTypeOtherMouseUp:
+    case NSEventTypeOtherMouseDragged:
+    case NSEventTypeMouseMoved:
+    case NSEventTypeScrollWheel:
+    case NSEventTypeKeyDown:
+    case NSEventTypeKeyUp:
+    case NSEventTypeFlagsChanged:
+      return true;
+    default:
+      return false;
+  }
+}
+
+BrowserSlot* SlotForWindowPoint(NSWindow* window, NSPoint window_point) {
+  if (!window) {
+    return nullptr;
+  }
+  NSView* content = [window contentView];
+  if (!content) {
+    return nullptr;
+  }
+  NSPoint content_point = [content convertPoint:window_point fromView:nil];
+  for (const auto& entry : g_slots) {
+    BrowserSlot* slot = entry.second;
+    if (!slot || slot->closing || !slot->container || [slot->container isHidden]) {
+      continue;
+    }
+    if ([slot->container superview] != content) {
+      continue;
+    }
+    if (NSPointInRect(content_point, [slot->container frame])) {
+      return slot;
+    }
+  }
+  return nullptr;
+}
+
+void PrepareBrowserInputEvent(NSEvent* event) {
+  if (!event) {
+    return;
+  }
+  switch ([event type]) {
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeOtherMouseDown:
+      FocusBrowserSlot(SlotForWindowPoint([event window], [event locationInWindow]));
+      break;
+    default:
+      break;
+  }
+}
+
 bool SetSlotBounds(BrowserSlot* slot,
                    void* ns_window_ptr,
                    double x,
@@ -610,7 +731,7 @@ bool SetSlotBounds(BrowserSlot* slot,
     [slot->container setWantsLayer:YES];
     [slot->container setHidden:NO];
     [content addSubview:slot->container positioned:NSWindowAbove relativeTo:nil];
-  } else if ([slot->container superview] != content) {
+  } else {
     [slot->container removeFromSuperview];
     [content addSubview:slot->container positioned:NSWindowAbove relativeTo:nil];
   }
@@ -781,8 +902,16 @@ std::string RunStringOnMain(Fn fn) {
 }
 
 - (void)pufferCefSendEvent:(NSEvent*)event {
+  const bool browser_input = IsBrowserInputEvent(event);
+  if (browser_input) {
+    PrepareBrowserInputEvent(event);
+    RequestInputPumpWindow();
+  }
   CefScopedSendingEvent sendingEventScoper;
   [self pufferCefSendEvent:event];
+  if (browser_input) {
+    RequestInputPumpWindow();
+  }
 }
 @end
 
