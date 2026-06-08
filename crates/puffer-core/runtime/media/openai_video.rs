@@ -198,6 +198,234 @@ impl OpenAiVideoTask {
     }
 }
 
+use super::{MediaArtifact, MediaGenerationService, MediaJob, MediaKind};
+use std::time::Duration;
+use uuid::Uuid;
+
+const VIDEO_MIME_TYPE: &str = "video/mp4";
+const OPENAI_VIDEO_ADAPTER: &str = "openai_video";
+
+/// Bounded backoff while polling video tasks.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OpenAiVideoPollingConfig {
+    pub(crate) max_attempts: usize,
+    pub(crate) delay: Duration,
+}
+
+impl Default for OpenAiVideoPollingConfig {
+    fn default() -> Self {
+        // Video renders take minutes; poll every 3s up to ~10 minutes.
+        Self {
+            max_attempts: 200,
+            delay: Duration::from_millis(3_000),
+        }
+    }
+}
+
+/// Submits and polls OpenAI-compatible video tasks into media jobs.
+pub(crate) struct OpenAiVideoAdapter<T = ReqwestOpenAiVideoTransport> {
+    api_token: String,
+    submit_url: String,
+    provider_id: String,
+    transport: T,
+}
+
+impl OpenAiVideoAdapter<ReqwestOpenAiVideoTransport> {
+    /// Creates a production adapter. `submit_url` is the absolute task-creation
+    /// URL built by the caller via `provider_execution_url`.
+    pub(crate) fn new(
+        api_token: impl Into<String>,
+        submit_url: impl Into<String>,
+        provider_id: impl Into<String>,
+    ) -> Result<Self> {
+        let api_token = api_token.into().trim().to_string();
+        if api_token.is_empty() {
+            bail!("video API token is required");
+        }
+        Ok(Self {
+            api_token,
+            submit_url: submit_url.into().trim_end_matches('/').to_string(),
+            provider_id: provider_id.into(),
+            transport: ReqwestOpenAiVideoTransport::default(),
+        })
+    }
+}
+
+impl<T> OpenAiVideoAdapter<T>
+where
+    T: OpenAiVideoTransport,
+{
+    #[cfg(test)]
+    pub(crate) fn with_transport(
+        api_token: impl Into<String>,
+        submit_url: impl Into<String>,
+        provider_id: impl Into<String>,
+        transport: T,
+    ) -> Self {
+        Self {
+            api_token: api_token.into().trim().to_string(),
+            submit_url: submit_url.into().trim_end_matches('/').to_string(),
+            provider_id: provider_id.into(),
+            transport,
+        }
+    }
+
+    /// Submits a task and persists the queued job (task id in `provider_job_id`).
+    pub(crate) fn submit(
+        &self,
+        service: &MediaGenerationService,
+        request: OpenAiVideoRequest,
+        now_ms: u64,
+    ) -> Result<MediaJob> {
+        let response =
+            self.transport
+                .submit_task(&self.submit_url, &self.api_token, &request.request_body())?;
+        let task = OpenAiVideoTask::from_value(response)?;
+        let mut job = MediaJob::new(
+            Uuid::new_v4().to_string(),
+            MediaKind::Video,
+            &self.provider_id,
+            request.model.trim(),
+            request.prompt.trim(),
+            1,
+            now_ms,
+        );
+        job.adapter = Some(OPENAI_VIDEO_ADAPTER.to_string());
+        job.provider_job_id = Some(task.id.clone());
+        self.apply_task(service, job, task, now_ms)
+    }
+
+    fn poll_url(&self, job: &MediaJob) -> Result<String> {
+        let id = job
+            .provider_job_id
+            .as_ref()
+            .context("video job is missing a task id")?;
+        Ok(format!("{}/{id}", self.submit_url))
+    }
+
+    /// Polls a non-terminal job once and persists the resulting state.
+    pub(crate) fn poll(
+        &self,
+        service: &MediaGenerationService,
+        job: MediaJob,
+        now_ms: u64,
+    ) -> Result<MediaJob> {
+        if job.status.is_terminal() {
+            return Ok(job);
+        }
+        let url = self.poll_url(&job)?;
+        let response = self.transport.poll_task(&url, &self.api_token)?;
+        let task = OpenAiVideoTask::from_value(response)?;
+        self.apply_task(service, job, task, now_ms)
+    }
+
+    /// Polls until the job reaches a terminal status.
+    pub(crate) fn poll_until_terminal(
+        &self,
+        service: &MediaGenerationService,
+        mut job: MediaJob,
+        config: OpenAiVideoPollingConfig,
+        mut sleep: impl FnMut(Duration),
+        mut now_ms: impl FnMut() -> u64,
+    ) -> Result<MediaJob> {
+        for attempt in 0..config.max_attempts {
+            job = self.poll(service, job, now_ms())?;
+            if job.status.is_terminal() {
+                return Ok(job);
+            }
+            if attempt + 1 < config.max_attempts {
+                sleep(config.delay);
+            }
+        }
+        bail!(
+            "video job `{}` did not reach a terminal status after {} polls",
+            job.id,
+            config.max_attempts
+        )
+    }
+
+    fn apply_task(
+        &self,
+        service: &MediaGenerationService,
+        mut job: MediaJob,
+        task: OpenAiVideoTask,
+        now_ms: u64,
+    ) -> Result<MediaJob> {
+        match task.media_status()? {
+            MediaJobStatus::Queued | MediaJobStatus::Running => {
+                job.transition(task.media_status()?, now_ms)?;
+                service.save_job(&job)?;
+                Ok(job)
+            }
+            MediaJobStatus::Succeeded => self.complete_succeeded(service, job, &task, now_ms),
+            MediaJobStatus::Failed => {
+                job.error = task.error.clone().or(Some("video task failed".to_string()));
+                job.transition(MediaJobStatus::Failed, now_ms)?;
+                service.save_job(&job)?;
+                Ok(job)
+            }
+            MediaJobStatus::Canceled => {
+                job.transition(MediaJobStatus::Canceled, now_ms)?;
+                service.save_job(&job)?;
+                Ok(job)
+            }
+        }
+    }
+
+    fn complete_succeeded(
+        &self,
+        service: &MediaGenerationService,
+        mut job: MediaJob,
+        task: &OpenAiVideoTask,
+        now_ms: u64,
+    ) -> Result<MediaJob> {
+        if !job.artifact_ids.is_empty() {
+            job.transition(MediaJobStatus::Succeeded, now_ms)?;
+            service.save_job(&job)?;
+            return Ok(job);
+        }
+        let url = task
+            .video_url
+            .clone()
+            .context("completed video task is missing `metadata.url`")?;
+        let bytes = match self.transport.download_bytes(&url) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                job.error = Some(format!("{error:#}"));
+                job.transition(MediaJobStatus::Failed, now_ms)?;
+                service.save_job(&job)?;
+                return Err(error);
+            }
+        };
+        let artifact_id = Uuid::new_v4().to_string();
+        let path = service.write_artifact_bytes(
+            &artifact_id,
+            &format!("openai-video-{artifact_id}.mp4"),
+            &bytes,
+        )?;
+        let artifact = MediaArtifact {
+            id: artifact_id.clone(),
+            job_id: job.id.clone(),
+            kind: MediaKind::Video,
+            path,
+            mime_type: VIDEO_MIME_TYPE.to_string(),
+            byte_count: bytes.len() as u64,
+            metadata: json!({
+                "provider": self.provider_id,
+                "taskId": task.id,
+                "remoteStatus": task.status,
+            }),
+            created_at_ms: now_ms,
+        };
+        service.save_artifact(&artifact)?;
+        job.attach_artifact(artifact_id, now_ms);
+        job.error = None;
+        job.transition(MediaJobStatus::Succeeded, now_ms)?;
+        service.save_job(&job)?;
+        Ok(job)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +528,66 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown video task status"));
+    }
+
+    use super::super::MediaGenerationService;
+    use std::cell::RefCell;
+
+    struct ScriptedTransport {
+        submit: Value,
+        polls: RefCell<Vec<Value>>,
+    }
+
+    impl OpenAiVideoTransport for ScriptedTransport {
+        fn submit_task(&self, _url: &str, _token: &str, _body: &Value) -> Result<Value> {
+            Ok(self.submit.clone())
+        }
+        fn poll_task(&self, _url: &str, _token: &str) -> Result<Value> {
+            Ok(self.polls.borrow_mut().remove(0))
+        }
+        fn download_bytes(&self, _url: &str) -> Result<Vec<u8>> {
+            Ok(b"MP4BYTES".to_vec())
+        }
+    }
+
+    #[test]
+    fn submit_then_poll_downloads_video_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = MediaGenerationService::new(dir.path());
+        let transport = ScriptedTransport {
+            submit: json!({ "id": "vid-9", "status": "queued" }),
+            polls: RefCell::new(vec![
+                json!({ "id": "vid-9", "status": "in_progress" }),
+                json!({ "id": "vid-9", "status": "completed", "metadata": { "url": "https://cdn.example.com/v.mp4" } }),
+            ]),
+        };
+        let adapter = OpenAiVideoAdapter::with_transport(
+            "token",
+            "https://relaydance.com/v1/video/generations",
+            "relaydance",
+            transport,
+        );
+
+        let request = OpenAiVideoRequest {
+            model: "m".into(),
+            prompt: "a cat".into(),
+            params: vec![],
+        };
+        let job = adapter.submit(&service, request, 1).expect("submit");
+        let job = adapter
+            .poll_until_terminal(
+                &service,
+                job,
+                OpenAiVideoPollingConfig {
+                    max_attempts: 5,
+                    delay: Duration::from_millis(0),
+                },
+                |_| {},
+                || 2,
+            )
+            .expect("poll");
+
+        assert_eq!(job.status, MediaJobStatus::Succeeded);
+        assert_eq!(job.artifact_ids.len(), 1);
     }
 }
