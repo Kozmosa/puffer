@@ -36,6 +36,74 @@ const IMAGE_PROVIDER_YAMLS: &[(&str, &str)] = &[
     ),
 ];
 
+const ALL_PROVIDER_YAMLS: &[(&str, &str)] = &[
+    (
+        "anthropic",
+        include_str!("../../../resources/providers/anthropic.yaml"),
+    ),
+    (
+        "byteplus",
+        include_str!("../../../resources/providers/byteplus.yaml"),
+    ),
+    (
+        "cerebras",
+        include_str!("../../../resources/providers/cerebras.yaml"),
+    ),
+    ("groq", include_str!("../../../resources/providers/groq.yaml")),
+    (
+        "kimi-coding",
+        include_str!("../../../resources/providers/kimi-coding.yaml"),
+    ),
+    (
+        "kimi-openai",
+        include_str!("../../../resources/providers/kimi-openai.yaml"),
+    ),
+    (
+        "llama-cpp",
+        include_str!("../../../resources/providers/llama-cpp.yaml"),
+    ),
+    (
+        "lmstudio",
+        include_str!("../../../resources/providers/lmstudio.yaml"),
+    ),
+    (
+        "minicpm5",
+        include_str!("../../../resources/providers/minicpm5.yaml"),
+    ),
+    (
+        "minimax",
+        include_str!("../../../resources/providers/minimax.yaml"),
+    ),
+    (
+        "minimax-cn",
+        include_str!("../../../resources/providers/minimax-cn.yaml"),
+    ),
+    ("ollama", include_str!("../../../resources/providers/ollama.yaml")),
+    (
+        "openai",
+        include_str!("../../../resources/providers/openai.yaml"),
+    ),
+    (
+        "openrouter",
+        include_str!("../../../resources/providers/openrouter.yaml"),
+    ),
+    (
+        "relaydance",
+        include_str!("../../../resources/providers/relaydance.yaml"),
+    ),
+    (
+        "vercel-ai-gateway",
+        include_str!("../../../resources/providers/vercel-ai-gateway.yaml"),
+    ),
+    ("vllm", include_str!("../../../resources/providers/vllm.yaml")),
+    (
+        "worldrouter",
+        include_str!("../../../resources/providers/worldrouter.yaml"),
+    ),
+    ("xai", include_str!("../../../resources/providers/xai.yaml")),
+    ("zhipu", include_str!("../../../resources/providers/zhipu.yaml")),
+];
+
 fn provider_descriptor(provider_id: &str, yaml: &str) -> ProviderDescriptor {
     let pack: ProviderPack = serde_yaml::from_str(yaml)
         .unwrap_or_else(|err| panic!("{provider_id}.yaml should parse: {err}"));
@@ -163,6 +231,77 @@ fn bundled_image_provider_descriptors_validate_and_do_not_duplicate_model_ids() 
             ids.len(),
             unique_ids.len(),
             "{provider_id} image model ids must be unique"
+        );
+    }
+}
+
+#[test]
+fn relaydance_declares_executable_video_descriptor() {
+    let descriptor = provider_descriptor(
+        "relaydance",
+        include_str!("../../../resources/providers/relaydance.yaml"),
+    );
+    descriptor
+        .validate_media_descriptors()
+        .expect("relaydance media descriptor validates");
+    let video = descriptor
+        .media
+        .as_ref()
+        .and_then(|media| media.video.as_ref())
+        .expect("relaydance video media descriptor");
+    let execution = video
+        .execution
+        .as_ref()
+        .expect("relaydance video execution descriptor");
+
+    assert_eq!(execution.adapter, MediaExecutionKind::OpenAiVideo);
+    assert_eq!(execution.path, "/v1/video/generations");
+
+    let model = video
+        .models
+        .iter()
+        .find(|model| model.id == "doubao-seedance-2-0-720p")
+        .expect("relaydance should include Seedance 2.0 720p");
+    assert_eq!(model.display_name.as_deref(), Some("Seedance 2.0 (720p)"));
+    assert_eq!(model.operations, vec![MediaOperation::Generate]);
+
+    let parameters = model
+        .parameters
+        .iter()
+        .map(|parameter| {
+            (
+                parameter.name.as_str(),
+                (
+                    parameter.default.as_str(),
+                    parameter.request_field.as_deref(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(parameters.get("duration"), Some(&("5", Some("seconds"))));
+    assert_eq!(
+        parameters.get("resolution"),
+        Some(&("720p", Some("metadata.resolution")))
+    );
+    assert_eq!(
+        parameters.get("ratio"),
+        Some(&("16:9", Some("metadata.ratio")))
+    );
+}
+
+#[test]
+fn only_relaydance_declares_first_pass_video_media() {
+    for (provider_id, yaml) in ALL_PROVIDER_YAMLS {
+        let descriptor = provider_descriptor(provider_id, yaml);
+        let has_video = descriptor
+            .media
+            .as_ref()
+            .and_then(|media| media.video.as_ref())
+            .is_some();
+        assert_eq!(
+            has_video,
+            *provider_id == "relaydance",
+            "{provider_id} must not declare media.video until a Puffer video adapter exists"
         );
     }
 }
