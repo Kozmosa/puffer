@@ -72,6 +72,8 @@ fn key_event_params(
     text: Option<String>,
     modifiers: u32,
 ) -> Value {
+    let key = normalized_key_value(&key);
+    let code = normalized_code_value(&key, &code);
     let event_text = key_event_text(&event_type, &key, text);
     let mut params = Map::new();
     params.insert("type".to_string(), json!(event_type));
@@ -114,7 +116,24 @@ fn key_event_text(event_type: &str, key: &str, text: Option<String>) -> Option<S
     if key == "Enter" {
         return Some("\r".to_string());
     }
+    if key == " " {
+        return Some(" ".to_string());
+    }
     text
+}
+
+fn normalized_key_value(key: &str) -> String {
+    match key {
+        "Space" => " ".to_string(),
+        _ => key.to_string(),
+    }
+}
+
+fn normalized_code_value(key: &str, code: &str) -> String {
+    if !code.is_empty() && code != key {
+        return code.to_string();
+    }
+    code_from_printable_key(key).unwrap_or_else(|| code.to_string())
 }
 
 fn virtual_key_code(key: &str, code: &str) -> Option<u32> {
@@ -122,18 +141,77 @@ fn virtual_key_code(key: &str, code: &str) -> Option<u32> {
         "Backspace" => Some(8),
         "Tab" => Some(9),
         "Enter" => Some(13),
+        "Shift" => Some(16),
+        "Control" => Some(17),
+        "Alt" => Some(18),
+        "CapsLock" => Some(20),
         "Escape" => Some(27),
+        "Esc" => Some(27),
         " " => Some(32),
+        "Space" => Some(32),
+        "PageUp" => Some(33),
+        "PageDown" => Some(34),
+        "End" => Some(35),
+        "Home" => Some(36),
         "ArrowLeft" => Some(37),
         "ArrowUp" => Some(38),
         "ArrowRight" => Some(39),
         "ArrowDown" => Some(40),
+        "Insert" => Some(45),
         "Delete" => Some(46),
-        _ => virtual_key_code_from_code(code),
+        "Meta" => virtual_key_code_from_code(code).or(Some(91)),
+        "ContextMenu" => Some(93),
+        _ => virtual_key_code_from_code(code).or_else(|| virtual_key_code_from_key(key)),
     }
 }
 
 fn virtual_key_code_from_code(code: &str) -> Option<u32> {
+    let mapped = match code {
+        "Backspace" => 8,
+        "Tab" => 9,
+        "Enter" | "NumpadEnter" => 13,
+        "ShiftLeft" | "ShiftRight" => 16,
+        "ControlLeft" | "ControlRight" => 17,
+        "AltLeft" | "AltRight" => 18,
+        "Pause" => 19,
+        "CapsLock" => 20,
+        "Escape" => 27,
+        "Space" => 32,
+        "PageUp" => 33,
+        "PageDown" => 34,
+        "End" => 35,
+        "Home" => 36,
+        "ArrowLeft" => 37,
+        "ArrowUp" => 38,
+        "ArrowRight" => 39,
+        "ArrowDown" => 40,
+        "PrintScreen" => 44,
+        "Insert" => 45,
+        "Delete" => 46,
+        "MetaLeft" => 91,
+        "MetaRight" => 92,
+        "ContextMenu" => 93,
+        "NumpadMultiply" => 106,
+        "NumpadAdd" => 107,
+        "NumpadSubtract" => 109,
+        "NumpadDecimal" => 110,
+        "NumpadDivide" => 111,
+        "Semicolon" => 186,
+        "Equal" => 187,
+        "Comma" => 188,
+        "Minus" => 189,
+        "Period" => 190,
+        "Slash" => 191,
+        "Backquote" => 192,
+        "BracketLeft" => 219,
+        "Backslash" => 220,
+        "BracketRight" => 221,
+        "Quote" => 222,
+        _ => 0,
+    };
+    if mapped != 0 {
+        return Some(mapped);
+    }
     if let Some(letter) = code.strip_prefix("Key") {
         return single_ascii(letter)
             .filter(u8::is_ascii_uppercase)
@@ -144,7 +222,62 @@ fn virtual_key_code_from_code(code: &str) -> Option<u32> {
             .filter(u8::is_ascii_digit)
             .map(u32::from);
     }
+    if let Some(digit) = code.strip_prefix("Numpad") {
+        return single_ascii(digit)
+            .filter(u8::is_ascii_digit)
+            .map(|value| u32::from(value - b'0') + 96);
+    }
+    if let Some(number) = code.strip_prefix('F') {
+        if let Ok(function_key) = number.parse::<u32>() {
+            if (1..=24).contains(&function_key) {
+                return Some(111 + function_key);
+            }
+        }
+    }
     None
+}
+
+fn virtual_key_code_from_key(key: &str) -> Option<u32> {
+    code_from_printable_key(key).and_then(|code| virtual_key_code_from_code(&code))
+}
+
+fn code_from_printable_key(key: &str) -> Option<String> {
+    let mapped = match key {
+        " " => "Space",
+        "`" | "~" => "Backquote",
+        "-" | "_" => "Minus",
+        "=" | "+" => "Equal",
+        "[" | "{" => "BracketLeft",
+        "]" | "}" => "BracketRight",
+        "\\" | "|" => "Backslash",
+        ";" | ":" => "Semicolon",
+        "'" | "\"" => "Quote",
+        "," | "<" => "Comma",
+        "." | ">" => "Period",
+        "/" | "?" => "Slash",
+        ")" => "Digit0",
+        "!" => "Digit1",
+        "@" => "Digit2",
+        "#" => "Digit3",
+        "$" => "Digit4",
+        "%" => "Digit5",
+        "^" => "Digit6",
+        "&" => "Digit7",
+        "*" => "Digit8",
+        "(" => "Digit9",
+        _ => "",
+    };
+    if !mapped.is_empty() {
+        return Some(mapped.to_string());
+    }
+    single_ascii(key)
+        .filter(u8::is_ascii_alphabetic)
+        .map(|value| format!("Key{}", char::from(value).to_ascii_uppercase()))
+        .or_else(|| {
+            single_ascii(key)
+                .filter(u8::is_ascii_digit)
+                .map(|value| format!("Digit{}", char::from(value)))
+        })
 }
 
 fn key_location(code: &str) -> u32 {
@@ -230,5 +363,72 @@ mod tests {
         assert_eq!(params["nativeVirtualKeyCode"], 13);
         assert!(params.get("text").is_none());
         assert!(params.get("unmodifiedText").is_none());
+    }
+
+    #[test]
+    fn named_space_key_is_normalized_with_text() {
+        let params = key_event_params(
+            "rawKeyDown".to_string(),
+            "Space".to_string(),
+            "Space".to_string(),
+            None,
+            0,
+        );
+
+        assert_eq!(params["key"], " ");
+        assert_eq!(params["code"], "Space");
+        assert_eq!(params["windowsVirtualKeyCode"], 32);
+        assert_eq!(params["nativeVirtualKeyCode"], 32);
+        assert_eq!(params["text"], " ");
+        assert_eq!(params["unmodifiedText"], " ");
+    }
+
+    #[test]
+    fn punctuation_code_maps_to_virtual_key() {
+        let params = key_event_params(
+            "rawKeyDown".to_string(),
+            ":".to_string(),
+            "Semicolon".to_string(),
+            Some(":".to_string()),
+            8,
+        );
+
+        assert_eq!(params["code"], "Semicolon");
+        assert_eq!(params["windowsVirtualKeyCode"], 186);
+        assert_eq!(params["nativeVirtualKeyCode"], 186);
+        assert_eq!(params["location"], 0);
+        assert_eq!(params["text"], ":");
+    }
+
+    #[test]
+    fn punctuation_key_without_dom_code_gets_canonical_code() {
+        let params = key_event_params(
+            "rawKeyDown".to_string(),
+            "?".to_string(),
+            "?".to_string(),
+            Some("?".to_string()),
+            8,
+        );
+
+        assert_eq!(params["code"], "Slash");
+        assert_eq!(params["windowsVirtualKeyCode"], 191);
+        assert_eq!(params["nativeVirtualKeyCode"], 191);
+        assert_eq!(params["text"], "?");
+    }
+
+    #[test]
+    fn modifier_code_maps_virtual_key_and_location() {
+        let params = key_event_params(
+            "rawKeyDown".to_string(),
+            "Shift".to_string(),
+            "ShiftRight".to_string(),
+            None,
+            8,
+        );
+
+        assert_eq!(params["windowsVirtualKeyCode"], 16);
+        assert_eq!(params["nativeVirtualKeyCode"], 16);
+        assert_eq!(params["location"], 2);
+        assert!(params.get("text").is_none());
     }
 }

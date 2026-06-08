@@ -22,9 +22,16 @@ function browserTab(tabId: string, url = `https://${tabId}.example`, connected =
     connected,
     active: false,
     backendSessionId: `session-browser:browser:${tabId}`,
+    nativeCefSessionId: nativeCefSessionId(tabId),
     createdAtMs: Date.now(),
     updatedAtMs: Date.now()
   };
+}
+
+function nativeCefSessionId(tabId: string): string {
+  const match = /(\d+)$/.exec(tabId);
+  const index = match ? Math.max(0, Number(match[1]) - 1) : 0;
+  return `__cef_prewarm_${index}__`;
 }
 
 function browserTabForSession(
@@ -987,31 +994,31 @@ test("CEF Browser tab close also clears the daemon tab record", async ({ page })
     page.evaluate(() => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
-        ?.filter((call) => call.cmd === "browser_cef_native_close")
+        ?.filter((call) => call.cmd === "browser_cef_native_hide")
         .map((call) => call.args.sessionId);
     })
-  ).toEqual(["session-browser:browser:tab-1"]);
+  ).toEqual(["__cef_prewarm_0__"]);
   await expect(page.locator(".pf-browser-tab")).toHaveCount(0);
 });
 
 test("CEF Browser tab close ignores stale native open results", async ({ page }) => {
   const daemon = new FakeDaemon();
-  const closedBackendSessionId = "session-browser:browser:tab-2";
-  await installNativeCefStub(page, { delayOpenSessionIds: [closedBackendSessionId] });
+  const closedNativeSessionId = nativeCefSessionId("tab-2");
+  await installNativeCefStub(page, { delayOpenSessionIds: [closedNativeSessionId] });
   await daemon.install(page);
   await daemon.open(page);
 
   await openRegressionAgent(page);
   await openAgentPanel(page, "Browser");
   await expect.poll(() =>
-    page.evaluate(() => {
+    page.evaluate((sessionId) => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
         ?.some((call) =>
           call.cmd === "browser_cef_native_open" &&
-          call.args.sessionId === "session-browser:browser:tab-1"
+          call.args.sessionId === sessionId
         ) ?? false;
-    })
+    }, nativeCefSessionId("tab-1"))
   ).toBe(true);
 
   await page.getByRole("button", { name: "New tab" }).click();
@@ -1022,25 +1029,15 @@ test("CEF Browser tab close ignores stale native open results", async ({ page })
       return win.__pufferNativeCefInvokes
         ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
         .length ?? 0;
-    }, closedBackendSessionId)
+    }, closedNativeSessionId)
   ).toBe(1);
 
-  await page.getByLabel("URL").fill("gmail.com");
-  await page.getByLabel("URL").press("Enter");
-  await expect.poll(() =>
-    page.evaluate((sessionId) => {
-      const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
-      return win.__pufferNativeCefInvokes
-        ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
-        .length ?? 0;
-    }, closedBackendSessionId)
-  ).toBe(2);
   await expect.poll(() =>
     page.evaluate(() => {
       const win = window as unknown as { __pufferNativeCefPendingCommands?: () => number };
       return win.__pufferNativeCefPendingCommands?.() ?? 0;
     })
-  ).toBe(2);
+  ).toBe(1);
 
   await page.getByRole("button", { name: /^Close tab 2:/ }).click();
   await daemon.waitForRequest("browser_agent", (request) =>
@@ -1053,7 +1050,7 @@ test("CEF Browser tab close ignores stale native open results", async ({ page })
     const win = window as unknown as { __pufferReleaseNativeCefCommands?: () => number };
     return win.__pufferReleaseNativeCefCommands?.() ?? 0;
   });
-  expect(released).toBe(2);
+  expect(released).toBe(1);
   await expect(page.locator(".pf-browser-tab")).toHaveCount(1);
   await expect(page.getByRole("button", { name: /^Close tab 2:/ })).toHaveCount(0);
   await expect.poll(() =>
@@ -1062,14 +1059,13 @@ test("CEF Browser tab close ignores stale native open results", async ({ page })
       return win.__pufferNativeCefInvokes
         ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
         .length ?? 0;
-    }, closedBackendSessionId)
-  ).toBe(2);
+    }, closedNativeSessionId)
+  ).toBe(1);
 });
 
-test("CEF Browser closing-slot open errors allocate a fresh local tab", async ({ page }) => {
+test("CEF Browser ignores saved local tabs after daemon restart", async ({ page }) => {
   const daemon = new FakeDaemon();
-  const retiredBackendSessionId = "session-browser:browser:tab-2";
-  await installNativeCefStub(page, { rejectOpenSessionIds: [retiredBackendSessionId] });
+  await installNativeCefStub(page);
   await page.addInitScript(() => {
     window.localStorage.setItem(
       "puffer-browser-tabs:session-browser",
@@ -1094,31 +1090,32 @@ test("CEF Browser closing-slot open errors allocate a fresh local tab", async ({
   await openAgentPanel(page, "Browser");
 
   await expect.poll(() =>
-    page.evaluate((sessionId) => {
-      const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
-      return win.__pufferNativeCefInvokes
-        ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
-        .length ?? 0;
-    }, retiredBackendSessionId)
-  ).toBe(1);
-  await expect.poll(() =>
     page.evaluate(() => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
-        ?.some((call) =>
-          call.cmd === "browser_cef_native_open" &&
-          call.args.sessionId === "session-browser:browser:tab-3"
-        ) ?? false;
+        ?.some((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === "__cef_prewarm_0__") ?? false;
     })
   ).toBe(true);
+  const openedSessions = await page.evaluate(() => {
+    const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
+    return win.__pufferNativeCefInvokes
+      ?.filter((call) => call.cmd === "browser_cef_native_open")
+      .map((call) => call.args.sessionId) ?? [];
+  });
+  expect(openedSessions).not.toContain("session-browser:browser:tab-2");
+  expect(openedSessions).not.toContain("__cef_prewarm_1__");
   await expect(page.locator(".pf-browser-renderer")).toHaveText("CEF");
   await expect(page.locator(".pf-browser-tab")).toHaveCount(1);
-  expect(daemon.requests.filter((request) => request.method === "browser_open")).toHaveLength(0);
+  expect(daemon.requests.some((request) =>
+    request.method === "browser_agent" &&
+    request.params.action === "open" &&
+    request.params.tabId === "tab-1"
+  )).toBe(true);
 });
 
-test("CEF Browser new tabs skip retired native backend ids", async ({ page }) => {
+test("CEF Browser new tabs skip recently closed daemon ids", async ({ page }) => {
   const daemon = new FakeDaemon();
-  const retiredBackendSessionId = "session-browser:browser:tab-2";
+  const retiredNativeSessionId = nativeCefSessionId("tab-2");
   await installNativeCefStub(page, { retireClosedSessions: true });
   await daemon.install(page);
   await daemon.open(page);
@@ -1126,14 +1123,14 @@ test("CEF Browser new tabs skip retired native backend ids", async ({ page }) =>
   await openRegressionAgent(page);
   await openAgentPanel(page, "Browser");
   await expect.poll(() =>
-    page.evaluate(() => {
+    page.evaluate((sessionId) => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
         ?.some((call) =>
           call.cmd === "browser_cef_native_open" &&
-          call.args.sessionId === "session-browser:browser:tab-1"
+          call.args.sessionId === sessionId
         ) ?? false;
-    })
+    }, nativeCefSessionId("tab-1"))
   ).toBe(true);
 
   await page.getByRole("button", { name: "New tab" }).click();
@@ -1144,7 +1141,7 @@ test("CEF Browser new tabs skip retired native backend ids", async ({ page }) =>
       return win.__pufferNativeCefInvokes
         ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
         .length ?? 0;
-    }, retiredBackendSessionId)
+    }, retiredNativeSessionId)
   ).toBe(1);
 
   await page.getByRole("button", { name: /^Close tab 2:/ }).click();
@@ -1157,19 +1154,19 @@ test("CEF Browser new tabs skip retired native backend ids", async ({ page }) =>
     return win.__pufferNativeCefInvokes
       ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
       .length ?? 0;
-  }, retiredBackendSessionId);
+  }, retiredNativeSessionId);
 
   await page.getByRole("button", { name: "New tab" }).click();
   await expect(page.locator(".pf-browser-tab")).toHaveCount(2);
   await expect.poll(() =>
-    page.evaluate(() => {
+    page.evaluate((sessionId) => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
         ?.some((call) =>
           call.cmd === "browser_cef_native_open" &&
-          call.args.sessionId === "session-browser:browser:tab-3"
+          call.args.sessionId === sessionId
         ) ?? false;
-    })
+    }, nativeCefSessionId("tab-3"))
   ).toBe(true);
   await expect.poll(() =>
     page.evaluate((sessionId) => {
@@ -1177,13 +1174,12 @@ test("CEF Browser new tabs skip retired native backend ids", async ({ page }) =>
       return win.__pufferNativeCefInvokes
         ?.filter((call) => call.cmd === "browser_cef_native_open" && call.args.sessionId === sessionId)
         .length ?? 0;
-    }, retiredBackendSessionId)
+    }, retiredNativeSessionId)
   ).toBe(tab2OpenCountAfterClose);
   await expect(page.locator(".pf-browser-renderer")).toHaveText("CEF");
-  expect(daemon.requests.filter((request) => request.method === "browser_open")).toHaveLength(0);
 });
 
-test("CEF Browser keeps local tabs after late empty daemon tab events", async ({ page }) => {
+test("CEF Browser clears tabs after late empty daemon tab events", async ({ page }) => {
   const daemon = new FakeDaemon();
   await installNativeCefStub(page);
   await daemon.install(page);
@@ -1192,14 +1188,14 @@ test("CEF Browser keeps local tabs after late empty daemon tab events", async ({
   await openRegressionAgent(page);
   await openAgentPanel(page, "Browser");
   await expect.poll(() =>
-    page.evaluate(() => {
+    page.evaluate((sessionId) => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
         ?.some((call) =>
           call.cmd === "browser_cef_native_open" &&
-          call.args.sessionId === "session-browser:browser:tab-1"
+          call.args.sessionId === sessionId
         ) ?? false;
-    })
+    }, nativeCefSessionId("tab-1"))
   ).toBe(true);
 
   await page.getByRole("button", { name: "New tab" }).click();
@@ -1213,13 +1209,13 @@ test("CEF Browser keeps local tabs after late empty daemon tab events", async ({
   daemon.emit("browser:session-browser:tabs", { activeTabId: null, tabs: [] });
 
   await page.waitForTimeout(50);
-  await expect(page.locator(".pf-browser-tab")).toHaveCount(1);
-  await expect(page.locator(".pf-browser-renderer")).toHaveText("CEF");
+  await expect(page.locator(".pf-browser-tab")).toHaveCount(0);
+  await expect(page.locator(".pf-browser-status")).toHaveText("No pages");
 });
 
 test("CEF Browser updates tab title and favicon after native navigation settles", async ({ page }) => {
   const daemon = new FakeDaemon();
-  const sessionId = "session-browser:browser:tab-1";
+  const sessionId = nativeCefSessionId("tab-1");
   await installNativeCefStub(page);
   await daemon.install(page);
   await daemon.open(page);
@@ -1227,14 +1223,14 @@ test("CEF Browser updates tab title and favicon after native navigation settles"
   await openRegressionAgent(page);
   await openAgentPanel(page, "Browser");
   await expect.poll(() =>
-    page.evaluate(() => {
+    page.evaluate((targetSessionId) => {
       const win = window as unknown as { __pufferNativeCefInvokes?: { cmd: string; args: Record<string, unknown> }[] };
       return win.__pufferNativeCefInvokes
         ?.some((call) =>
           call.cmd === "browser_cef_native_open" &&
-          call.args.sessionId === "session-browser:browser:tab-1"
+          call.args.sessionId === targetSessionId
         ) ?? false;
-    })
+    }, sessionId)
   ).toBe(true);
   await page.evaluate((targetSessionId) => {
     const win = window as unknown as {
@@ -1339,7 +1335,7 @@ test("rapid Browser new-tab clicks allocate unique tab ids", async ({ page }) =>
     daemon.requests
       .filter((request) => request.method === "browser_agent" && request.params.action === "open")
       .map((request) => request.params.tabId)
-  ).toEqual(["tab-2", "tab-3"]);
+  ).toEqual(["tab-1", "tab-2", "tab-3"]);
   await expect(page.locator(".pf-browser-tab")).toHaveCount(3);
 });
 
