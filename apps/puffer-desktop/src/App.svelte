@@ -3090,6 +3090,21 @@
     return `generated-image:${artifactId}`;
   }
 
+  function generatedVideoExtension(mimeType: string): string {
+    switch (mimeType.toLowerCase()) {
+      case "video/mp4":
+        return "MP4";
+      case "video/webm":
+        return "WEBM";
+      default:
+        return "VIDEO";
+    }
+  }
+
+  function generatedVideoAttachmentId(artifactId: string): string {
+    return `generated-video:${artifactId}`;
+  }
+
   function revokeAttachmentPreviews(attachments: MessageAttachment[]): void {
     attachments.forEach((attachment) => {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
@@ -3151,6 +3166,29 @@
     };
   }
 
+  function generatedVideoAttachment(
+    jobId: string,
+    artifact: GeneratedMediaArtifactResult
+  ): MessageAttachment {
+    return {
+      id: generatedVideoAttachmentId(artifact.artifactId),
+      name: "Generated video",
+      mimeType: artifact.mimeType || "video/*",
+      size: artifact.size || 0,
+      extension: generatedVideoExtension(artifact.mimeType || "video/*"),
+      kind: "video",
+      state: artifact.path ? "available" : "missing",
+      source: {
+        kind: "generated_media",
+        jobId,
+        artifactId: artifact.artifactId,
+        index: artifact.index,
+        ...(artifact.path ? { localPath: artifact.path } : {}),
+        ...(artifact.remoteSourceUrl ? { remoteSourceUrl: artifact.remoteSourceUrl } : {})
+      }
+    };
+  }
+
   async function appendGeneratedImagePreview(
     sessionId: string,
     result: GenerateMediaResult
@@ -3169,6 +3207,28 @@
       kind: "assistant",
       title: "Assistant",
       summary: artifacts.length === 1 ? "Generated image" : `Generated ${artifacts.length} images`,
+      body: "",
+      meta: [],
+      status: result.status,
+      attachments
+    });
+  }
+
+  async function appendGeneratedVideoPreview(
+    sessionId: string,
+    result: GenerateMediaResult
+  ): Promise<void> {
+    const artifacts = result.artifacts ?? [];
+    if (artifacts.length === 0) return;
+    const attachments = artifacts.map((artifact) =>
+      generatedVideoAttachment(result.jobId, artifact)
+    );
+    if (selectedSession?.id !== sessionId) return;
+    appendLive({
+      id: `${GENERATED_IMAGE_PREVIEW_ID_PREFIX}video-${result.jobId}`,
+      kind: "assistant",
+      title: "Assistant",
+      summary: artifacts.length === 1 ? "Generated video" : `Generated ${artifacts.length} videos`,
       body: "",
       meta: [],
       status: result.status,
@@ -3203,7 +3263,8 @@
         await appendGeneratedImagePreview(sessionId, result);
         statusMessage = generatedImageStatusMessage(result.status);
       } else {
-        statusMessage = `Video media job ${result.jobId.slice(0, 8)} ${result.status}.`;
+        await appendGeneratedVideoPreview(sessionId, result);
+        statusMessage = `Video generation ${result.status}.`;
       }
       return true;
     } catch (error) {

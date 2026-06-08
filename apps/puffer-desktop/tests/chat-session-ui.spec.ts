@@ -1822,6 +1822,78 @@ test("normal image text still routes to chat", async ({ page }) => {
   expect(daemon.requests.filter((candidate) => candidate.method === "generate_media")).toHaveLength(0);
 });
 
+test("video slash success appends a generated video attachment", async ({ page }) => {
+  const sessionId = "session-video-preview-success";
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [singleOptionVideoCapability()],
+    sessions: [
+      {
+        sessionId,
+        displayName: "Video preview success",
+        title: "Video preview success",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-preview-seed",
+            text: "Generate videos here.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({
+    media: {
+      image: null,
+      video: {
+        providerId: "runway",
+        modelId: "gen-4",
+        operation: "generate",
+        adapter: "replicate_video",
+        parameters: { duration: "8", aspect_ratio: "16:9" }
+      }
+    }
+  });
+  daemon.setGeneratedMediaResult({
+    jobId: "media-job-video-success",
+    requestedCount: 1,
+    kind: "video",
+    artifacts: [
+      {
+        artifactId: "artifact-video-live",
+        index: 0,
+        path: "/tmp/puffer/.puffer/media/artifacts/artifact-video-live/generated.mp4",
+        mimeType: "video/mp4",
+        size: 9
+      }
+    ],
+    status: "succeeded"
+  });
+  daemon.seedGeneratedVideoAccess(sessionId, "artifact-video-live", {
+    state: "available",
+    path: "/media/generated-video/fake-video-live",
+    mimeType: "video/mp4",
+    size: 9,
+    expiresAtMs: baseTime + 60_000,
+    bytes: Buffer.from("mp4-bytes")
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Video preview success/);
+
+  await page.locator(".pf-composer textarea").fill("/video animate this logo");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const card = page.getByRole("button", { name: "Open video attachment Generated video" });
+  await expect(card).toBeVisible();
+  await expect(page.locator(".pf-msg").filter({ has: card })).not.toContainText("media-job-video-success");
+});
+
 test("explicit video slash trigger fails clearly without capability", async ({ page }) => {
   const daemon = new FakeDaemon({
     mediaCapabilities: [],
