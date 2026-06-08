@@ -1,5 +1,6 @@
 use crate::runtime::permission_prompt::{
-    prompt_for_permission, PermissionPromptAction, PermissionPromptRequest,
+    prompt_for_permission, prompt_for_user_question, PermissionPromptAction,
+    PermissionPromptRequest, UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
 use crate::runtime::secrets::register_masked_secret;
 use crate::AppState;
@@ -33,6 +34,8 @@ struct RequestSecretInput {
     origin: Option<String>,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 /// Searches, creates, or requests one encrypted user secret.
@@ -52,6 +55,7 @@ pub fn execute_request_secret(state: &mut AppState, cwd: &Path, input: Value) ->
         "request" | "get" | "reveal" => request_secret(state, vault, parsed),
         "search" | "list" => search_secrets(vault, parsed),
         "create" => create_secret(vault, parsed),
+        "collect" => collect_secret(state, vault, parsed),
         other => bail!("unsupported RequestSecret action `{other}`"),
     }
 }
@@ -167,6 +171,74 @@ fn create_secret(vault: SecretVault, parsed: RequestSecretInput) -> Result<Strin
     }))?)
 }
 
+fn collect_secret(
+    state: &mut AppState,
+    vault: SecretVault,
+    parsed: RequestSecretInput,
+) -> Result<String> {
+    let label = parsed
+        .label
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .context("RequestSecret collect requires `name` or `label`")?;
+    let question = collect_secret_prompt(&label, parsed.prompt.as_deref());
+    let response = prompt_for_user_question(UserQuestionPromptRequest {
+        questions: json!([{
+            "type": "input",
+            "question": question,
+            "header": "Secret",
+            "secret": true
+        }]),
+    })
+    .context("RequestSecret collect requires an active user question prompt")?;
+    let value = collect_secret_answer(&response, &question)?;
+    let summary = vault.put(SecretUpsert {
+        id: parsed.id,
+        label,
+        description: parsed.description,
+        value: value.clone(),
+        username: parsed.username,
+        origin: parsed.origin,
+        source: "agent".to_string(),
+    })?;
+    let token = register_masked_secret(state, value)?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "secret": token,
+        "created": true,
+        "stored": secret_summary_json(summary),
+    }))?)
+}
+
+fn collect_secret_prompt(label: &str, prompt: Option<&str>) -> String {
+    prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!("Enter the secret value to save as encrypted Puffer secret `{label}`.")
+        })
+}
+
+fn collect_secret_answer(response: &UserQuestionPromptResponse, question: &str) -> Result<String> {
+    if let Some(answer) = response.answers.get(question).and_then(Value::as_str) {
+        let answer = answer.trim().to_string();
+        if !answer.is_empty() {
+            return Ok(answer);
+        }
+    }
+    let string_answers = response
+        .answers
+        .values()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|answer| !answer.is_empty())
+        .collect::<Vec<_>>();
+    if let [answer] = string_answers.as_slice() {
+        return Ok((*answer).to_string());
+    }
+    bail!("secret collection was canceled or returned no value")
+}
+
 fn prompt_for_secret(secret_id: &str, label: &str, reason: Option<&str>) -> PermissionPromptAction {
     let summary = format!("Agent requested encrypted secret `{label}` ({secret_id})");
     let reason = reason
@@ -216,7 +288,7 @@ fn secret_summary_json(summary: SecretSummary) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::with_permission_prompt_handler;
+    use crate::runtime::{with_permission_prompt_handler, with_user_question_prompt_handler};
     use crate::AppState;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine;
@@ -427,5 +499,59 @@ mod tests {
             vault.reveal("Pager token").unwrap().value,
             "raw-pager-secret"
         );
+    }
+
+    #[test]
+    fn request_secret_collect_prompts_saves_and_returns_masked_token_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let _secret_env = secret_test_env(dir.path());
+        let mut state = temp_state(dir.path());
+        let prompt = "Enter the Ridge checkout password to save in Puffer.";
+
+        let output = with_user_question_prompt_handler(
+            move |request| {
+                assert_eq!(request.questions[0]["type"], "input");
+                assert_eq!(request.questions[0]["secret"], true);
+                assert_eq!(request.questions[0]["question"], prompt);
+                crate::runtime::UserQuestionPromptResponse {
+                    answers: serde_json::Map::from_iter([(
+                        prompt.to_string(),
+                        json!("raw-collected-password"),
+                    )]),
+                    annotations: serde_json::Map::new(),
+                }
+            },
+            || {
+                execute_request_secret(
+                    &mut state,
+                    dir.path(),
+                    json!({
+                        "action": "collect",
+                        "name": "Ridge checkout",
+                        "description": "Checkout login credential",
+                        "origin": "https://ridge.com",
+                        "username": "user@example.com",
+                        "prompt": prompt
+                    }),
+                )
+            },
+        )
+        .unwrap();
+
+        assert!(output.contains("PUFFER_SECRET_"));
+        assert!(output.contains("Ridge checkout"));
+        assert!(!output.contains("raw-collected-password"));
+        let paths = ConfigPaths::discover(dir.path());
+        let vault = SecretVault::open(SecretVault::default_path(&paths.user_config_dir)).unwrap();
+        let stored = vault.reveal("Ridge checkout").unwrap();
+        assert_eq!(stored.value, "raw-collected-password");
+        let summary = vault
+            .search("Ridge checkout", 10)
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.label == "Ridge checkout")
+            .unwrap();
+        assert_eq!(summary.origin.as_deref(), Some("https://ridge.com"));
+        assert_eq!(summary.username.as_deref(), Some("user@example.com"));
     }
 }

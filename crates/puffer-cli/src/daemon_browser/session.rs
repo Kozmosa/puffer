@@ -349,7 +349,7 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Waits until the page worker reports that the current document finished loading.
+    /// Waits until the page worker reports that the current document reached DOM ready.
     pub(super) fn wait_for_load(&self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
         loop {
@@ -961,7 +961,7 @@ fn handle_cdp_message(
                 });
             }
         }
-        "Page.loadEventFired" | "Page.frameStoppedLoading" => {
+        "Page.domContentEventFired" | "Page.loadEventFired" | "Page.frameStoppedLoading" => {
             let id = send_state_eval(socket, next_id);
             pending.insert(id, PendingKind::StateEval);
         }

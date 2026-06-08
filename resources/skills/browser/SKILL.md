@@ -3,6 +3,7 @@ name: browser
 description: Use the managed Chrome Browser tab through the internal CLI to inspect pages, open tabs, and interact with UI through snapshots and refs.
 allowed-tools:
   - Bash
+  - RequestSecret
 argument-hint: "[url or browser task]"
 arguments: target
 user-invocable: true
@@ -20,17 +21,37 @@ Target: $target
 
 Workflow:
 
-1. Open or find the tab.
+1. Resolve login credentials when the task involves signing in.
+   - Before asking the user for credentials or attempting manual login, call
+     `RequestSecret` with `action: "search"` using the site name, domain,
+     origin, visible username/email hint, or login URL.
+   - If exactly one relevant credential is available, request it by id/name and
+     use the returned `PUFFER_SECRET_...` placeholder in the browser command
+     that fills the password or token field. Never print the secret value.
+   - If multiple matches are available, choose only when the metadata is
+     unambiguous; otherwise ask the user which stored credential to use.
+   - If no matching credential exists and login cannot proceed without one,
+     call `RequestSecret` with `action: "collect"`, a clear `name`, `origin`,
+     optional `username`, and a short `prompt` so the user can enter the value
+     into a masked secret prompt. Use the returned `PUFFER_SECRET_...`
+     placeholder; do not ask the user to paste passwords, tokens, cookies, or
+     API keys into chat or `AskUserQuestion`.
+
+2. Open or find the tab.
    - `browser list` lists tabs for the current agent session.
    - `browser open https://example.com --label docs --width 1280 --height 900` opens or reuses a managed Chrome tab.
    - `browser tab new https://example.com --label scratch` forces a fresh tab.
    - `browser tab focus t1` switches the active agent-facing tab handle.
+   - Treat DOM readiness plus a fresh snapshot as the default page-ready signal.
+     Do not wait for full network idle unless the user explicitly asks to debug
+     network quiescence or a page-specific workflow requires all background
+     requests to stop.
 
-2. Snapshot before interacting.
+3. Snapshot before interacting.
    - `browser snapshot --tab-id t1` returns visible text and fresh refs like `@e1`.
    - Refs are scoped to the tab and the latest snapshot. Re-snapshot after navigation, form submits, reloads, or dynamic page updates.
 
-3. Act on refs.
+4. Act on refs.
    - `browser click @e3 --tab-id t1` clicks an element from the latest snapshot.
    - `browser focus @e3 --tab-id t1` focuses an element without clicking it.
    - `browser fill @e5 "hello" --tab-id t1` replaces text in an editable control.
@@ -41,7 +62,7 @@ Workflow:
    - `browser check @e7 --tab-id t1` and `browser uncheck @e7 --tab-id t1` toggle checkbox-like controls.
    - `browser press Enter --tab-id t1` sends a key.
 
-4. Verify with another snapshot.
+5. Verify with another snapshot.
    Use a new snapshot after each action that could change the page. Prefer refs over brittle coordinates and prefer the current tab id or label over positional assumptions.
 
 Global options:
