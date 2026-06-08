@@ -81,6 +81,7 @@
   let durationOptions = $derived(videoDurationOptions(durationParameter, durationSeconds));
   let aspectRatioLabel = $derived(aspectRatioParameter?.label ?? "Aspect ratio");
   let durationFieldLabel = $derived(durationParameter?.label ?? "Duration");
+  let mediaContentReady = $derived(settingsReady && !loading);
   let hasAvailableCapabilities = $derived(availableCapabilities.length > 0);
   let savedSelectionMissing = $derived(
     !loading &&
@@ -240,16 +241,6 @@
 
   function formatDurationLabel(value: number): string {
     return `${value}s`;
-  }
-
-  function mediaCapabilitiesLoadingPrimary(mediaKind: MediaKind): string {
-    return `Loading ${mediaKind} capabilities...`;
-  }
-
-  function mediaCapabilitiesLoadingSecondary(mediaKind: MediaKind): string {
-    return mediaKind === "image"
-      ? "Checking available image generation models."
-      : "Checking available video generation models.";
   }
 
   function modelLabel(capability: MediaCapabilityInfo): string {
@@ -561,16 +552,6 @@
   });
 </script>
 
-{#snippet loadingBlock(primary: string, secondary: string)}
-  <div class="pf-media-loading" role="status" aria-live="polite">
-    <span class="pf-media-loading-spinner" aria-hidden="true"></span>
-    <div>
-      <strong>{primary}</strong>
-      <span>{secondary}</span>
-    </div>
-  </div>
-{/snippet}
-
 {#snippet readOnlyField(label: string, value: string)}
   <div class="pf-media-field">
     <span class="pf-field-label">{label}</span>
@@ -612,17 +593,13 @@
     </header>
 
     <div class="pf-modal-body pf-media-modal-body">
-      {#if !settingsReady}
-        {@render loadingBlock(mediaCapabilitiesLoadingPrimary(kind), mediaCapabilitiesLoadingSecondary(kind))}
-      {:else if loading}
-        {@render loadingBlock(mediaCapabilitiesLoadingPrimary(kind), mediaCapabilitiesLoadingSecondary(kind))}
-      {:else if error}
+      {#if mediaContentReady && error}
         <p class="pf-media-state" data-warning="true" role="alert">{error}</p>
-      {:else if !hasAvailableCapabilities && connectStateMessage}
-        <p class="pf-media-state" data-warning="true">{connectStateMessage}</p>
-      {:else if !hasAvailableCapabilities}
-        <p class="pf-media-state">No {kind} capabilities available.</p>
-      {:else}
+      {:else if mediaContentReady && !hasAvailableCapabilities && connectStateMessage}
+        <p class="pf-media-empty-state" data-warning="true">{connectStateMessage}</p>
+      {:else if mediaContentReady && !hasAvailableCapabilities}
+        <p class="pf-media-empty-state">No {kind} capabilities available.</p>
+      {:else if mediaContentReady}
         {#if savedSelectionMissing}
           <p class="pf-media-state" data-warning="true" role="alert">Saved model is no longer available.</p>
         {/if}
@@ -943,52 +920,6 @@
     line-height: 1.4;
   }
 
-  .pf-media-loading {
-    min-height: 180px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 24px;
-    color: var(--muted-foreground);
-    background: color-mix(in oklab, var(--muted) 20%, var(--background));
-  }
-
-  .pf-media-loading strong,
-  .pf-media-loading span {
-    display: block;
-  }
-
-  .pf-media-loading strong {
-    color: var(--foreground);
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .pf-media-loading span {
-    margin-top: 2px;
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .pf-media-loading-spinner {
-    width: 18px;
-    height: 18px;
-    flex: 0 0 auto;
-    border: 2px solid color-mix(in oklab, var(--muted-foreground) 22%, transparent);
-    border-top-color: var(--muted-foreground);
-    border-radius: 50%;
-    animation: pf-media-spin 0.8s linear infinite;
-  }
-
-  @keyframes pf-media-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   .pf-media-state {
     margin: 0;
     min-height: 36px;
@@ -1006,6 +937,21 @@
   .pf-media-state[data-warning="true"] {
     border-color: color-mix(in oklab, var(--destructive) 30%, var(--border));
     background: color-mix(in oklab, var(--destructive) 8%, var(--background));
+    color: var(--foreground);
+  }
+
+  .pf-media-empty-state {
+    margin: 0;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    padding: 0;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .pf-media-empty-state[data-warning="true"] {
     color: var(--foreground);
   }
 
