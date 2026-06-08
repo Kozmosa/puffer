@@ -4,58 +4,81 @@ Date: 2026-06-08
 
 ## Summary
 
-Puffer should replace the split image/video media settings and generation paths
-with a single exact media runtime for image and video generation. The runtime is
-descriptor driven, adapter executed, and job/artifact backed.
+Puffer should converge image and video generation onto one exact media
+selection, capability, validation, job, and artifact contract. This is not a
+from-scratch media platform. The repo already has a useful foundation in
+`crates/puffer-core/runtime/media`: exact image capability resolution,
+image adapters, job/artifact sidecars, preview helpers, and a Replicate video
+adapter module.
 
-The first version supports only `generate` operations for `image` and `video`.
-It intentionally does not add a workflow engine, arbitrary request-template DSL,
-provider-specific UI, audio generation, video editing, video extension, or
-natural-language media intent routing.
+V1 should therefore focus on closing the gaps:
+
+- unify persisted image/video defaults;
+- expose video capabilities through the same resolver surface as image;
+- make desktop settings fully capability-parameter driven;
+- route `/video` through the existing job/artifact runtime once a concrete
+  video adapter is available;
+- keep all provider-specific request logic inside existing adapter modules.
 
 ## Goals
 
-- Support every connected provider that declares executable image or video
-  generation capabilities.
-- Store image and video defaults with the same typed selection contract.
-- Render settings UI from capability parameters instead of hard-coded fields.
-- Normalize sync image APIs and async video APIs into one job/artifact flow.
-- Keep provider-specific complexity inside adapters.
-- Make stale settings and unsupported parameter values fail predictably.
-- Keep runtime performance bounded with capability caching and lazy artifact
-  loading.
+- Support every connected provider that declares a concrete media capability
+  whose adapter is implemented.
+- Store image and video defaults with the same selection shape.
+- Render image and video settings from capability parameters, with no
+  hard-coded video `aspectRatio` or `durationSeconds` UI logic.
+- Reuse existing media job and artifact persistence instead of adding a new
+  crate, database, object store, or workflow engine.
+- Normalize sync image and async video execution behind daemon/API results that
+  reference jobs and persisted artifacts.
+- Make unsupported provider/model/adapter/parameter selections fail before a
+  provider request is sent.
 
 ## Non-Goals
 
-- No backward-compatible config shape preservation.
-- No session-scoped media overrides in this version.
-- No provider-specific settings components.
-- No generic dynamic form builder beyond simple capability parameter rendering.
-- No request-template execution in provider YAML.
-- No DAG/workflow engine for media jobs.
-- No fake progress percentages when a provider does not return real progress.
-- No generated media bytes embedded directly in transcript events.
+- No backward-compatible media config shape preservation.
+- No generic provider request-template DSL.
+- No new `puffer-media` workspace crate.
+- No generic async adapter trait unless duplication across at least two video
+  adapters proves it is needed.
+- No provider-specific Svelte settings components.
+- No dynamic video discovery in V1.
+- No audio generation, video edit, video extend, image-to-video, or video-to-
+  video operation.
+- No natural-language media intent detection.
+- No fake progress percentages.
+- No generated media bytes in transcript events.
 
-## Current Problems
+## Current State And Gaps
 
-The current image path is closer to the desired architecture than video, but the
-contracts are still split:
+Already present:
 
-- image settings persist provider id, model id, adapter, and parameters;
-- video settings persist provider id, model id, aspect ratio, and duration;
-- image parameters are capability driven;
-- video settings are partly hard-coded in the desktop UI;
-- image generation can be modeled as direct execution;
-- most production video providers require submit, poll, download, and persist.
+- `MediaKind::Image` and `MediaKind::Video`;
+- `MediaCapability` and `MediaCapabilityParameter`;
+- exact image resolver and capability DTOs;
+- image execution adapters: `images_json`, `chat_image_output`,
+  `minimax_image`;
+- `MediaGenerationService` job and artifact sidecars;
+- generated image preview/attachment helpers;
+- `replicate_video.rs` with submit, poll, cancel, download, and persistence
+  tests;
+- desktop and daemon media settings DTOs;
+- desktop `MediaSettingsModal` with image parameters from capabilities.
 
-This split makes video provider onboarding fragile. Each new provider would
-either need UI special cases or a growing list of hand-mapped video fields. The
-long-term runtime should instead make image and video variants of the same
-selection, validation, execution, and artifact lifecycle.
+Remaining gaps:
+
+- `ProviderMediaDescriptor` only models image;
+- video capability resolution currently returns no selectable capabilities;
+- video settings persist provider/model plus special fields instead of adapter
+  and parameters;
+- desktop video settings still depend on hard-coded aspect/duration defaults;
+- `/video` generation reports unsupported/no-capability instead of executing a
+  validated video adapter;
+- generated media preview helpers are image-biased.
 
 ## Unified Settings Contract
 
-Replace the current split media config with one selection type per media kind:
+Replace the current split image/video settings with one selection type:
 
 ```ts
 type MediaSettings = {
@@ -66,30 +89,38 @@ type MediaSettings = {
 type MediaGenerationSelection = {
   providerId: string;
   modelId: string;
-  kind: "image" | "video";
   operation: "generate";
   adapter: string;
   parameters: Record<string, string>;
 };
 ```
 
+The media branch (`image` or `video`) supplies the kind, so the selection does
+not need a duplicate `kind` field. Capability identity remains:
+
+```text
+kind + providerId + modelId + operation + adapter
+```
+
 Rules:
 
-- `providerId`, `modelId`, `kind`, `operation`, and `adapter` identify the exact
-  executable capability.
-- `parameters` stores only capability parameter names and string values.
-- Duration values are saved as capability values such as `"8"`, not as a
-  separate number field.
-- Display formatting belongs to UI helpers, not persisted config.
-- `null` means no default is configured for that media kind.
+- `null` means that media kind is not configured.
+- `parameters` stores capability parameter names and exact string values.
+- Values such as video duration are persisted as capability values, for example
+  `"8"`, not as separate numeric fields.
+- UI helpers may display `"8"` as `8s`; display formatting is not persisted.
+- Saving settings validates against currently available capabilities.
+- Generation validates again to catch stale config.
 
-This removes image-only and video-only config fields. It also avoids adding a
-parallel video `parameters` bag while keeping legacy `aspectRatio` and
-`durationSeconds`.
+This intentionally removes:
+
+- `ImageMediaSettings.adapter` as an image-only special case;
+- `VideoMediaSettings.aspectRatio`;
+- `VideoMediaSettings.durationSeconds`.
 
 ## Capability Contract
 
-All selectable media models are represented by the same capability DTO:
+Keep one DTO for image and video:
 
 ```ts
 type MediaCapabilityInfo = {
@@ -119,255 +150,287 @@ type MediaCapabilityParameterInfo = {
 
 Rules:
 
-- Only `status == "available"` capabilities are selectable or executable.
-- Capability identity is provider id, model id, kind, operation, and adapter.
-- Parameter values are exact strings allowed by the adapter.
-- Empty `values` means the parameter is fixed at `default`.
-- Descriptor metadata may declare static capabilities, but the resolver is the
-  authority for availability.
-- Diagnostic unavailable capabilities may be returned in verbose tooling, but
-  normal settings UI filters to available capabilities.
+- Normal UI lists only `status == "available"` capabilities.
+- `values` must be non-empty and must include `default`.
+- One-value parameters render as read-only settings.
+- Multi-value parameters render as selects.
+- `requestField` maps the selection parameter name to the provider request
+  field inside the adapter.
+- Capability DTOs stay descriptor/adapter output, not frontend inference.
 
 ## Provider Descriptor Model
 
-Provider descriptors may declare media support under a shared media branch:
+The provider registry should model media by kind, not by image-only structs.
+Since backward compatibility is out of scope, the clean target shape is:
 
-```yaml
-media:
-  image:
-    models:
-      - id: gpt-image-1
-        display_name: GPT Image 1
-        operation: generate
-        adapter: openai_images
-        parameters:
-          size: ["1024x1024", "1024x1536", "1536x1024"]
-          quality: ["auto", "low", "medium", "high"]
-          output_format: ["png", "jpeg", "webp"]
-  video:
-    models:
-      - id: runway-gen-4
-        display_name: Gen-4
-        operation: generate
-        adapter: runway_video
-        parameters:
-          aspect_ratio: ["16:9", "9:16"]
-          duration: ["5", "10"]
+```rust
+pub struct ProviderMediaDescriptor {
+    pub image: Option<MediaKindDescriptor>,
+    pub video: Option<MediaKindDescriptor>,
+}
+
+pub struct MediaKindDescriptor {
+    pub discovery: Option<MediaDiscoveryDescriptor>,
+    pub execution: Option<MediaExecutionDescriptor>,
+    pub models: Vec<MediaModelDescriptor>,
+}
+```
+
+`MediaModelDescriptor`, `MediaParameterSpec`, `MediaExecutionDescriptor`, and
+`MediaOperation::Generate` remain shared. `MediaExecutionKind` grows only when
+an adapter is implemented. For V1 video, the only new execution kind should be:
+
+```rust
+pub enum MediaExecutionKind {
+    ImagesJson,
+    ChatImageOutput,
+    MinimaxImage,
+    ReplicateVideo,
+}
 ```
 
 Descriptor rules:
 
-- Model ids must be concrete. Empty ids, `auto`, wildcards, and regexes are
-  invalid.
-- Adapter names must match implemented runtime adapters.
-- Descriptor parameters are declarative constraints, not executable templates.
-- Auth, base URL, headers, and provider provenance continue to come from the
-  existing provider registry and auth store.
-- Dynamic discovery can supplement descriptors only when the adapter can parse
-  structured provider capability data.
+- Model ids must be concrete. Empty ids, `auto`, wildcards, and regex markers
+  are invalid.
+- `operations` must include `generate`.
+- Each parameter must have a non-empty name, label, values list, and default.
+- `default` must be one of `values`.
+- Provider-level execution can be overridden by model-level execution.
+- Static descriptors are enough for V1 video. Dynamic video discovery is
+  deferred.
+
+Example:
+
+```yaml
+media:
+  video:
+    execution:
+      adapter: replicate_video
+      path: /v1/predictions
+    models:
+      - id: owner/model-version
+        display_name: Replicate Video Model
+        operations: [generate]
+        parameters:
+          - name: aspect_ratio
+            label: Aspect ratio
+            values: ["16:9", "9:16"]
+            default: "16:9"
+          - name: duration
+            label: Duration
+            values: ["5", "8"]
+            default: "5"
+```
 
 ## Capability Resolution
 
-The resolver input is:
+The resolver continues to take:
 
 ```text
-ProviderRegistry + AuthStore + MediaKind + operation + descriptor metadata + discovery cache
+ProviderRegistry + AuthStore + MediaKind + MediaOperation + discovery cache
 ```
 
-Resolution:
+V1 behavior:
 
-```text
-for provider in registered providers:
-  if provider is not connected and not explicitly auth-free:
-    emit diagnostic unavailable reason, skip selectable capability
-  for descriptor model matching kind and operation:
-    if model id is invalid:
-      skip
-    if adapter is not implemented:
-      skip
-    if parameters are invalid for adapter:
-      skip
-    emit available capability
-```
+- image resolution keeps the current static + trusted image discovery path;
+- video resolution uses static descriptors only;
+- providers without auth are skipped unless explicitly auth-free;
+- descriptors with unimplemented execution adapters are skipped;
+- invalid model ids and invalid parameters are skipped;
+- emitted capability identity includes kind, operation, and adapter.
 
-The daemon caches capability results by provider auth/config fingerprint, media
-kind, and operation. Cache invalidates when auth, provider descriptor, base URL,
-or relevant provider settings change. The desktop UI requests only the current
-kind when a settings modal opens.
-
-## Runtime Boundary
-
-The runtime should expose a small internal contract:
+Validation should be kind-generic:
 
 ```rust
-trait MediaProviderAdapter {
-    fn capabilities(&self, context: MediaProviderContext) -> Vec<MediaCapability>;
-    async fn submit_generate(&self, request: MediaGenerateRequest) -> MediaJobUpdate;
-    async fn poll_job(&self, job: MediaJob) -> MediaJobUpdate;
-    async fn download_artifacts(&self, job: MediaJob) -> Vec<MediaArtifact>;
+pub(crate) struct MediaGenerationSelection<'a> {
+    pub(crate) kind: MediaKind,
+    pub(crate) provider_id: &'a str,
+    pub(crate) model_id: &'a str,
+    pub(crate) operation: MediaOperation,
+    pub(crate) adapter: &'a str,
+    pub(crate) parameters: &'a BTreeMap<String, String>,
 }
 ```
 
-Sync image APIs are represented as jobs that complete immediately after
-`submit_generate`. Async video APIs use submit, poll, and download. The UI and
-transcript only observe unified job and artifact states.
+The existing image-specific validation can be kept as a wrapper while callers
+move to the generic path.
 
-The adapter owns:
+## Runtime Boundary
 
-- provider request shape;
-- request field mapping through `requestField`;
-- provider response parsing;
-- async job id extraction;
-- artifact URL expiry handling;
-- provider-specific error redaction.
+Do not introduce a generic async adapter trait in V1. The existing adapter
+style is enough:
 
-The shared runtime owns:
+- `ImagesJsonAdapter::execute(...)`;
+- `MinimaxImageAdapter::execute(...)`;
+- `ChatImageOutputAdapter::execute_with_discovery_cache(...)`;
+- `ReplicateVideoAdapter::submit(...)`;
+- `ReplicateVideoAdapter::poll(...)`;
+- `ReplicateVideoAdapter::poll_until_terminal(...)`;
+- `ReplicateVideoAdapter::cancel(...)`.
 
-- selection validation;
-- job persistence;
-- polling schedule;
-- artifact persistence;
-- transcript-facing metadata;
-- cancellation where adapters support it.
+Add a small public media-runtime facade instead:
+
+```rust
+pub struct ExactMediaGenerationRequest {
+    pub kind: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub operation: String,
+    pub adapter: String,
+    pub prompt: String,
+    pub parameters: BTreeMap<String, String>,
+    pub count: u8,
+}
+```
+
+The facade dispatches by `kind + adapter`. Unsupported adapters fail before
+network I/O.
+
+V1 execution:
+
+- image requests continue to return completed/succeeded jobs and artifacts;
+- video requests submit and poll Replicate to a terminal state inside the daemon
+  request path;
+- background job continuation can be added later if a second UX needs it.
+
+This avoids building a worker scheduler before the desktop has a real need for
+detached long-running job management.
 
 ## Job And Artifact Contract
 
-Jobs are sidecar state, not transcript content:
+Keep existing job statuses:
 
-```ts
-type MediaJob = {
-  jobId: string;
-  kind: "image" | "video";
-  providerId: string;
-  modelId: string;
-  operation: "generate";
-  adapter: string;
-  status: "queued" | "running" | "completed" | "failed" | "canceling" | "canceled";
-  prompt: string;
-  parameters: Record<string, string>;
-  providerJobId: string | null;
-  progress: number | null;
-  error: string | null;
-  createdAtMs: number;
-  updatedAtMs: number;
-};
+```text
+queued
+running
+succeeded
+failed
+canceled
 ```
 
-Artifacts are persisted locally:
+Do not add `canceling`, `expired`, `streaming`, or `completed` in V1. Provider
+remote status can be preserved in `remote_status`.
 
-```ts
-type MediaArtifact = {
-  artifactId: string;
-  jobId: string;
-  kind: "image" | "video";
-  path: string;
-  mimeType: string;
-  size: number;
-  index: number;
-  remoteSourceUrl: string | null;
-};
+Extend `MediaJob` only where it improves exact replay and diagnostics:
+
+```rust
+pub(crate) adapter: Option<String>,
+pub(crate) parameters: BTreeMap<String, String>,
 ```
 
-Image artifacts are stored under `.puffer/media/images`. Video artifacts are
-stored under `.puffer/media/videos`. Transcript events and attachments reference
-artifact ids or local paths. Provider URLs are treated as temporary unless an
-adapter explicitly marks them durable.
+These fields let video polling/resume paths know which adapter and settings
+created a job without reading transient request state.
+
+Artifacts stay in the existing structure:
+
+- image bytes may use `.puffer/media/images` where current preview code expects
+  image-specific paths;
+- generic/video bytes use `.puffer/media/artifacts`;
+- all artifacts have sidecars under `.puffer/media/artifact-sidecars`;
+- transcript attachments reference artifact ids and local metadata, not bytes.
+
+Video preview support should be metadata-first in V1. The UI can show local path,
+MIME type, and open/save actions without loading entire video bytes into memory.
 
 ## Desktop UI Design
 
-`MediaSettingsModal` becomes kind-generic:
+`MediaSettingsModal` becomes capability-parameter driven for both kinds:
 
-- The title remains `Image generation settings` or `Video generation settings`.
-- The primary button label is always `Save`.
-- Loading uses the same status block for image and video:
+- title remains `Image generation settings` or `Video generation settings`;
+- primary button is always `Save`;
+- loading status aligns by kind:
   - `Loading image capabilities...`
   - `Checking available image generation models.`
   - `Loading video capabilities...`
   - `Checking available video generation models.`
-- Provider and model controls are rendered from available capabilities.
-- Parameter controls are rendered from `capability.parameters`.
-- Parameters with more than one value render as selects.
-- Parameters with exactly one value or fixed defaults render read-only rows.
-- Stale saved selections show an unavailable warning and cannot save until
-  changed.
+- provider/model controls come from available capabilities;
+- parameter controls come from `capability.parameters`;
+- one-value parameters render read-only rows;
+- multi-value parameters render selects;
+- stale saved selections show warning and disable save until changed.
 
-The modal never knows that video has aspect ratio or duration. Those are just
-capability parameters with labels and values.
+The modal should not contain field-name special cases for `aspect_ratio`,
+`duration`, `size`, `quality`, or `output_format`. Those are labels and values
+from capabilities.
 
-Generated media loading UI should use one attachment loading surface for image
-and video. The surface may show kind-specific labels, but it uses the same
-spinner, failure, retry, and artifact preview behavior. Video shows a real
-progress indicator only when the job update includes provider progress.
+Generated media attachment loading should share one surface for image and video,
+with kind-specific labels only where helpful. Video shows progress only if the
+job has real provider progress.
 
 ## Error Handling
 
-Validation runs twice:
+Errors should be early and specific:
 
-- on settings save, to clamp or reject unsupported parameter values;
-- on generation start, to prevent stale config from executing.
+- no media default: `<kind> media provider/model is not configured`;
+- no capability: `No <kind> capabilities available`;
+- stale selection:
+  `selected <kind> model unavailable: <provider>/<model> via <adapter>`;
+- unsupported parameter:
+  `<kind> generation parameter unsupported: <name>=<value>`;
+- unsupported adapter:
+  `<kind> media adapter unavailable for <adapter>`;
+- provider failure: redacted adapter error;
+- video output download failure: failed job with persisted error.
 
-Error behavior:
-
-- No configured media default: tell the user to configure that media kind.
-- No available capability: show the no-capability state in settings and reject
-  generation.
-- Stale saved provider/model/adapter: show unavailable saved model warning.
-- Unsupported saved parameter: reset to the capability default during settings
-  save, and reject during generation if it reaches runtime.
-- Provider request failure: surface a redacted adapter error.
-- Artifact download failure: fail the job unless at least one artifact was
-  persisted and the adapter declares partial success support.
+Settings save may clamp missing parameter values to defaults, but generation
+must reject unknown parameter names and unsupported values.
 
 ## Performance And Stability
 
-- Capability resolution is lazy and kind-scoped.
-- Resolved capabilities are cached in the daemon, not in each Svelte component.
-- UI does not scan all providers when opening a modal; it calls
-  `list_media_capabilities({ kind })`.
-- Polling uses bounded backoff and stops on terminal job states.
-- Artifact previews are lazy loaded and size-aware.
-- Video files are never loaded into memory for transcript rendering.
-- Adapter tests cover request construction and response parsing without live
-  provider calls.
+- Capability resolution stays lazy and kind-scoped.
+- Capability caches live in daemon/core runtime, not in Svelte components.
+- Video static descriptors do not require live provider discovery.
+- Replicate polling uses the existing bounded backoff.
+- Video bytes are written to disk and not loaded into transcript memory.
+- Provider URLs are downloaded before a job is exposed as succeeded.
+- Tests use mocked transports; no live provider calls are required.
 
 ## Testing Strategy
 
 Unit tests:
 
-- provider descriptor validation rejects invalid media models;
-- capability resolver emits only exact available capabilities;
-- settings validation accepts only capability parameter values;
-- adapter request mapping sends selected model and parameters;
-- sync image adapter jobs complete immediately;
-- async video adapter jobs move through queued/running/completed states.
+- provider descriptor validation accepts image and video descriptors;
+- invalid video model ids and invalid parameters are rejected;
+- resolver emits video capabilities only for connected providers with
+  `replicate_video`;
+- generic selection validation rejects stale provider/model/adapter and invalid
+  parameter values;
+- facade dispatch rejects unsupported adapters before HTTP;
+- Replicate video request maps `aspect_ratio` and `duration` parameters into
+  the current request shape.
 
 Desktop tests:
 
-- image and video settings show matching loading UI;
+- image and video settings show aligned loading UI;
 - `Save` label is stable for both kinds;
-- single-value parameters render read-only;
-- multi-value parameters render selects and persist selected values;
-- video settings do not hard-code aspect ratio or duration;
-- stale selections show warnings and disabled save behavior.
+- video settings render capability parameters without hard-coded defaults;
+- selecting video aspect ratio/duration writes `parameters`;
+- stale selections warn and cannot save;
+- generated video attachment metadata renders without reading video bytes.
 
 Integration tests:
 
-- `/image` and `/video` generation both create jobs and persisted artifacts;
-- generated image and video attachments reference local artifact metadata;
-- provider URL outputs are downloaded before completed jobs are exposed.
+- `list_media_capabilities(kind=video)` returns descriptor-backed capabilities
+  for a connected Replicate provider;
+- `/video` with valid config creates a video job and persisted artifact through
+  mocked transport;
+- `/image` still works through existing image adapters after the settings shape
+  change.
 
 ## Implementation Slices
 
-1. Replace media settings shape with `MediaGenerationSelection`.
-2. Update desktop fake daemon and frontend types to the unified shape.
-3. Convert `MediaSettingsModal` to parameter-driven rendering for both kinds.
-4. Update capability resolver identity to include kind, operation, and adapter.
-5. Introduce the shared media job contract for image and video.
-6. Wrap current image execution as immediate-complete jobs.
-7. Add the first video adapter using submit, poll, download, and persist.
-8. Align generated media attachment loading UI for image and video.
-9. Add provider descriptors for each implemented adapter only.
+1. Add the unified media selection config and DTOs.
+2. Update frontend/fake daemon settings shape and media modal tests.
+3. Convert `MediaSettingsModal` to parameter-driven rendering for video.
+4. Generalize provider media descriptor from image-only to image/video.
+5. Add `replicate_video` as an execution kind and descriptor-backed capability.
+6. Generalize selection validation across media kinds.
+7. Add the exact media generation facade and keep image wrappers intact.
+8. Wire daemon and desktop `generate_media` to the facade for image/video.
+9. Add metadata-first generated video attachment UI support.
 
-These slices should land incrementally with tests in the same step. Provider
-coverage should grow only when an adapter can execute that provider's declared
-capability.
+Each slice should land with tests. Stop and revisit the design if a slice
+requires a scheduler, a new crate, provider-specific UI, dynamic video
+discovery, or a generic adapter trait.
+
