@@ -1,5 +1,9 @@
 use super::capabilities::MediaCapabilityParameter;
-use super::{MediaArtifact, MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
+use super::video_jobs::{
+    complete_video_job, persist_failed_video_job, poll_video_until_terminal, video_poll_url,
+    CompletedVideoTask, VideoPollingConfig,
+};
+use super::{MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
@@ -7,7 +11,6 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use uuid::Uuid;
 
-const VIDEO_MIME_TYPE: &str = "video/mp4";
 const BYTEPLUS_VIDEO_ADAPTER: &str = "byteplus_video";
 
 pub(crate) struct BytePlusVideoRequest {
@@ -155,6 +158,17 @@ fn byteplus_error_message(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn byteplus_task_error_context(
+    provider_id: &str,
+    task_id: Option<&str>,
+    error: &anyhow::Error,
+) -> String {
+    format!(
+        "{error:#}: provider={provider_id} adapter={BYTEPLUS_VIDEO_ADAPTER} task={}",
+        task_id.unwrap_or("unknown")
+    )
+}
+
 pub(crate) trait BytePlusVideoTransport {
     /// Submits a BytePlus video task and returns its JSON response.
     fn submit_task(&self, url: &str, api_token: &str, body: &Value) -> Result<Value>;
@@ -212,20 +226,7 @@ fn byteplus_video_json_response(
     serde_json::from_str(&text).with_context(|| format!("parse {label} response JSON"))
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BytePlusVideoPollingConfig {
-    pub(crate) max_attempts: usize,
-    pub(crate) delay: Duration,
-}
-
-impl Default for BytePlusVideoPollingConfig {
-    fn default() -> Self {
-        Self {
-            max_attempts: 200,
-            delay: Duration::from_millis(3_000),
-        }
-    }
-}
+pub(crate) type BytePlusVideoPollingConfig = VideoPollingConfig;
 
 pub(crate) struct BytePlusVideoAdapter<T = ReqwestBytePlusVideoTransport> {
     api_token: String,
@@ -307,22 +308,6 @@ where
         self.apply_task(service, job, task, now_ms)
     }
 
-    fn poll_url(&self, job: &MediaJob) -> Result<String> {
-        let id = job
-            .provider_job_id
-            .as_ref()
-            .context("video job is missing a task id")?;
-        let mut url =
-            reqwest::Url::parse(&self.submit_url).context("video submit URL must be absolute")?;
-        {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| anyhow!("video submit URL cannot be a base"))?;
-            segments.push(id);
-        }
-        Ok(url.to_string())
-    }
-
     /// Polls a non-terminal BytePlus job once and persists the resulting state.
     pub(crate) fn poll(
         &self,
@@ -333,9 +318,20 @@ where
         if job.status.is_terminal() {
             return Ok(job);
         }
-        let url = self.poll_url(&job)?;
+        let url = video_poll_url(&self.submit_url, &job)?;
         let response = self.transport.poll_task(&url, &self.api_token)?;
-        let task = BytePlusVideoTask::from_poll_value(response)?;
+        let task = match BytePlusVideoTask::from_poll_value(response) {
+            Ok(task) => task,
+            Err(error) => {
+                let diagnostic = byteplus_task_error_context(
+                    &self.provider_id,
+                    job.provider_job_id.as_deref(),
+                    &error,
+                );
+                persist_failed_video_job(service, job, diagnostic.clone(), now_ms)?;
+                return Err(anyhow!(diagnostic));
+            }
+        };
         self.apply_task(service, job, task, now_ms)
     }
 
@@ -343,25 +339,14 @@ where
     pub(crate) fn poll_until_terminal(
         &self,
         service: &MediaGenerationService,
-        mut job: MediaJob,
+        job: MediaJob,
         config: BytePlusVideoPollingConfig,
-        mut sleep: impl FnMut(Duration),
-        mut now_ms: impl FnMut() -> u64,
+        sleep: impl FnMut(Duration),
+        now_ms: impl FnMut() -> u64,
     ) -> Result<MediaJob> {
-        for attempt in 0..config.max_attempts {
-            job = self.poll(service, job, now_ms())?;
-            if job.status.is_terminal() {
-                return Ok(job);
-            }
-            if attempt + 1 < config.max_attempts {
-                sleep(config.delay);
-            }
-        }
-        bail!(
-            "video job `{}` did not reach a terminal status after {} polls",
-            job.id,
-            config.max_attempts
-        )
+        poll_video_until_terminal(job, config, sleep, now_ms, |job, now_ms| {
+            self.poll(service, job, now_ms)
+        })
     }
 
     fn apply_task(
@@ -379,12 +364,14 @@ where
                 Ok(job)
             }
             MediaJobStatus::Succeeded => self.complete_succeeded(service, job, &task, now_ms),
-            MediaJobStatus::Failed => {
-                job.error = task.error.clone().or(Some("video task failed".to_string()));
-                job.transition(MediaJobStatus::Failed, now_ms)?;
-                service.save_job(&job)?;
-                Ok(job)
-            }
+            MediaJobStatus::Failed => persist_failed_video_job(
+                service,
+                job,
+                task.error
+                    .clone()
+                    .unwrap_or_else(|| "video task failed".to_string()),
+                now_ms,
+            ),
             MediaJobStatus::Canceled => {
                 job.transition(MediaJobStatus::Canceled, now_ms)?;
                 service.save_job(&job)?;
@@ -396,54 +383,24 @@ where
     fn complete_succeeded(
         &self,
         service: &MediaGenerationService,
-        mut job: MediaJob,
+        job: MediaJob,
         task: &BytePlusVideoTask,
         now_ms: u64,
     ) -> Result<MediaJob> {
-        if !job.artifact_ids.is_empty() {
-            job.transition(MediaJobStatus::Succeeded, now_ms)?;
-            service.save_job(&job)?;
-            return Ok(job);
-        }
-        let url = task
-            .video_url
-            .clone()
-            .context("completed video task is missing content.video_url")?;
-        let bytes = match self.transport.download_bytes(&url) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                job.error = Some(format!("{error:#}"));
-                job.transition(MediaJobStatus::Failed, now_ms)?;
-                service.save_job(&job)?;
-                return Err(error);
-            }
-        };
-        let artifact_id = Uuid::new_v4().to_string();
-        let path = service.write_artifact_bytes(
-            &artifact_id,
-            &format!("byteplus-video-{artifact_id}.mp4"),
-            &bytes,
-        )?;
-        let artifact = MediaArtifact {
-            id: artifact_id.clone(),
-            job_id: job.id.clone(),
-            kind: MediaKind::Video,
-            path,
-            mime_type: VIDEO_MIME_TYPE.to_string(),
-            byte_count: bytes.len() as u64,
-            metadata: json!({
-                "provider": self.provider_id,
-                "taskId": task.id,
-                "remoteStatus": task.status,
-            }),
-            created_at_ms: now_ms,
-        };
-        service.save_artifact(&artifact)?;
-        job.attach_artifact(artifact_id, now_ms);
-        job.error = None;
-        job.transition(MediaJobStatus::Succeeded, now_ms)?;
-        service.save_job(&job)?;
-        Ok(job)
+        complete_video_job(
+            service,
+            job,
+            CompletedVideoTask {
+                provider_id: &self.provider_id,
+                task_id: &task.id,
+                remote_status: &task.status,
+                video_url: task.video_url.as_deref(),
+                filename_prefix: "byteplus-video",
+                missing_url_message: "completed video task is missing content.video_url",
+            },
+            now_ms,
+            |url| self.transport.download_bytes(url),
+        )
     }
 }
 
@@ -451,6 +408,7 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::RefCell;
 
     fn submit_fixture() -> serde_json::Value {
         serde_json::from_str(include_str!("fixtures/byteplus_submit_task.json")).expect("fixture")
@@ -458,6 +416,25 @@ mod tests {
 
     fn poll_fixture() -> serde_json::Value {
         serde_json::from_str(include_str!("fixtures/byteplus_poll_task.json")).expect("fixture")
+    }
+
+    struct ScriptedTransport {
+        submit: Value,
+        polls: RefCell<Vec<Value>>,
+    }
+
+    impl BytePlusVideoTransport for ScriptedTransport {
+        fn submit_task(&self, _url: &str, _api_token: &str, _body: &Value) -> Result<Value> {
+            Ok(self.submit.clone())
+        }
+
+        fn poll_task(&self, _url: &str, _api_token: &str) -> Result<Value> {
+            Ok(self.polls.borrow_mut().remove(0))
+        }
+
+        fn download_bytes(&self, _url: &str) -> Result<Vec<u8>> {
+            Ok(b"MP4BYTES".to_vec())
+        }
     }
 
     #[test]
@@ -483,5 +460,53 @@ mod tests {
         assert_eq!(body["model"], json!("dreamina-seedance-2-0-260128"));
         assert_eq!(body["content"][0]["type"], json!("text"));
         assert_eq!(body["content"][0]["text"], json!("a cat"));
+    }
+
+    #[test]
+    fn poll_parser_failure_marks_job_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = MediaGenerationService::new(dir.path());
+        let adapter = BytePlusVideoAdapter::with_transport(
+            "token",
+            "https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks",
+            "byteplus",
+            ScriptedTransport {
+                submit: json!({ "id": "task-1" }),
+                polls: RefCell::new(vec![json!({ "status": "running" })]),
+            },
+        );
+        let request = BytePlusVideoRequest {
+            model: "dreamina-seedance-2-0-260128".to_string(),
+            prompt: "a cat".to_string(),
+            params: vec![],
+        };
+        let job = adapter
+            .submit(&service, request, BTreeMap::new(), 1)
+            .expect("submit");
+
+        let error = adapter
+            .poll(&service, job.clone(), 2)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("poll video task response missing task id"));
+
+        let saved = service.load_job(&job.id).expect("saved job");
+        assert_eq!(saved.status, MediaJobStatus::Failed);
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("poll video task response missing task id")));
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("provider=byteplus")));
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("adapter=byteplus_video")));
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("task=task-1")));
     }
 }

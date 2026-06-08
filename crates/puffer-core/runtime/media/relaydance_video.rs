@@ -1,9 +1,17 @@
 use super::capabilities::MediaCapabilityParameter;
-use anyhow::{anyhow, bail, Result};
+use super::video_jobs::{
+    complete_video_job, persist_failed_video_job, poll_video_until_terminal, video_poll_url,
+    CompletedVideoTask, VideoPollingConfig,
+};
+use super::{MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
+use anyhow::{anyhow, bail, Context, Result};
+use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::time::Duration;
+use uuid::Uuid;
 
-/// One OpenAI-compatible video generation request (`POST /v1/video/generations`).
+/// One Relaydance video generation request (`POST /v1/video/generations`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RelaydanceVideoRequest {
     pub(crate) model: String,
@@ -49,7 +57,7 @@ impl RelaydanceVideoRequest {
     }
 }
 
-/// Maps a validated selection's parameters into an OpenAI-video request.
+/// Maps a validated selection's parameters into a Relaydance video request.
 ///
 /// Emits params in capability order using each parameter's `request_field`
 /// (only parameters that declare one). The selected value (already defaulted
@@ -80,11 +88,7 @@ pub(crate) fn relaydance_video_request_from_parameters(
     Ok(request)
 }
 
-use super::MediaJobStatus;
-use anyhow::Context;
-use reqwest::blocking::Client;
-
-/// Abstracts OpenAI-compatible video HTTP operations for production and tests.
+/// Abstracts Relaydance video HTTP operations for production and tests.
 pub(crate) trait RelaydanceVideoTransport {
     /// Submits a video task and returns its JSON response.
     fn submit_task(&self, url: &str, api_token: &str, body: &Value) -> Result<Value>;
@@ -144,7 +148,7 @@ fn relaydance_video_json_response(
     serde_json::from_str(&text).with_context(|| format!("parse {label} response JSON"))
 }
 
-/// Normalized view of an OpenAI-compatible video task response.
+/// Normalized view of a Relaydance video task response.
 ///
 /// Envelope confirmed from New API `dto/relaydance_video.go`: `id`, `status`
 /// (`queued|in_progress|completed|failed`), the video URL at `metadata.url`,
@@ -186,7 +190,7 @@ impl RelaydanceVideoTask {
         })
     }
 
-    /// Maps the OpenAI-video status string onto a media job status.
+    /// Maps the Relaydance status string onto a media job status.
     pub(crate) fn media_status(&self) -> Result<MediaJobStatus> {
         match self.status.trim().to_ascii_lowercase().as_str() {
             "queued" | "pending" => Ok(MediaJobStatus::Queued),
@@ -274,31 +278,11 @@ fn relaydance_video_url(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-use super::{MediaArtifact, MediaGenerationService, MediaJob, MediaKind};
-use std::time::Duration;
-use uuid::Uuid;
-
-const VIDEO_MIME_TYPE: &str = "video/mp4";
 const RELAYDANCE_VIDEO_ADAPTER: &str = "relaydance_video";
 
-/// Bounded backoff while polling video tasks.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RelaydanceVideoPollingConfig {
-    pub(crate) max_attempts: usize,
-    pub(crate) delay: Duration,
-}
+pub(crate) type RelaydanceVideoPollingConfig = VideoPollingConfig;
 
-impl Default for RelaydanceVideoPollingConfig {
-    fn default() -> Self {
-        // Video renders take minutes; poll every 3s up to ~10 minutes.
-        Self {
-            max_attempts: 200,
-            delay: Duration::from_millis(3_000),
-        }
-    }
-}
-
-/// Submits and polls OpenAI-compatible video tasks into media jobs.
+/// Submits and polls Relaydance video tasks into media jobs.
 pub(crate) struct RelaydanceVideoAdapter<T = ReqwestRelaydanceVideoTransport> {
     api_token: String,
     submit_url: String,
@@ -385,21 +369,7 @@ where
     }
 
     fn poll_url(&self, job: &MediaJob) -> Result<String> {
-        let id = job
-            .provider_job_id
-            .as_ref()
-            .context("video job is missing a task id")?;
-        // Append `/{id}` to the URL PATH, preserving any query string the
-        // submit URL carries (e.g. `provider_execution_url` query_params).
-        let mut url =
-            reqwest::Url::parse(&self.submit_url).context("video submit URL must be absolute")?;
-        {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| anyhow!("video submit URL cannot be a base"))?;
-            segments.push(id);
-        }
-        Ok(url.to_string())
+        video_poll_url(&self.submit_url, job)
     }
 
     /// Polls a non-terminal job once and persists the resulting state.
@@ -436,25 +406,14 @@ where
     pub(crate) fn poll_until_terminal(
         &self,
         service: &MediaGenerationService,
-        mut job: MediaJob,
+        job: MediaJob,
         config: RelaydanceVideoPollingConfig,
-        mut sleep: impl FnMut(Duration),
-        mut now_ms: impl FnMut() -> u64,
+        sleep: impl FnMut(Duration),
+        now_ms: impl FnMut() -> u64,
     ) -> Result<MediaJob> {
-        for attempt in 0..config.max_attempts {
-            job = self.poll(service, job, now_ms())?;
-            if job.status.is_terminal() {
-                return Ok(job);
-            }
-            if attempt + 1 < config.max_attempts {
-                sleep(config.delay);
-            }
-        }
-        bail!(
-            "video job `{}` did not reach a terminal status after {} polls",
-            job.id,
-            config.max_attempts
-        )
+        poll_video_until_terminal(job, config, sleep, now_ms, |job, now_ms| {
+            self.poll(service, job, now_ms)
+        })
     }
 
     fn apply_task(
@@ -472,12 +431,14 @@ where
                 Ok(job)
             }
             MediaJobStatus::Succeeded => self.complete_succeeded(service, job, &task, now_ms),
-            MediaJobStatus::Failed => {
-                job.error = task.error.clone().or(Some("video task failed".to_string()));
-                job.transition(MediaJobStatus::Failed, now_ms)?;
-                service.save_job(&job)?;
-                Ok(job)
-            }
+            MediaJobStatus::Failed => persist_failed_video_job(
+                service,
+                job,
+                task.error
+                    .clone()
+                    .unwrap_or_else(|| "video task failed".to_string()),
+                now_ms,
+            ),
             MediaJobStatus::Canceled => {
                 job.transition(MediaJobStatus::Canceled, now_ms)?;
                 service.save_job(&job)?;
@@ -489,60 +450,31 @@ where
     fn complete_succeeded(
         &self,
         service: &MediaGenerationService,
-        mut job: MediaJob,
+        job: MediaJob,
         task: &RelaydanceVideoTask,
         now_ms: u64,
     ) -> Result<MediaJob> {
-        if !job.artifact_ids.is_empty() {
-            job.transition(MediaJobStatus::Succeeded, now_ms)?;
-            service.save_job(&job)?;
-            return Ok(job);
-        }
-        let url = task
-            .video_url
-            .clone()
-            .context("completed video task is missing `metadata.url`")?;
-        let bytes = match self.transport.download_bytes(&url) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                job.error = Some(format!("{error:#}"));
-                job.transition(MediaJobStatus::Failed, now_ms)?;
-                service.save_job(&job)?;
-                return Err(error);
-            }
-        };
-        let artifact_id = Uuid::new_v4().to_string();
-        let path = service.write_artifact_bytes(
-            &artifact_id,
-            &format!("relaydance-video-{artifact_id}.mp4"),
-            &bytes,
-        )?;
-        let artifact = MediaArtifact {
-            id: artifact_id.clone(),
-            job_id: job.id.clone(),
-            kind: MediaKind::Video,
-            path,
-            mime_type: VIDEO_MIME_TYPE.to_string(),
-            byte_count: bytes.len() as u64,
-            metadata: json!({
-                "provider": self.provider_id,
-                "taskId": task.id,
-                "remoteStatus": task.status,
-            }),
-            created_at_ms: now_ms,
-        };
-        service.save_artifact(&artifact)?;
-        job.attach_artifact(artifact_id, now_ms);
-        job.error = None;
-        job.transition(MediaJobStatus::Succeeded, now_ms)?;
-        service.save_job(&job)?;
-        Ok(job)
+        complete_video_job(
+            service,
+            job,
+            CompletedVideoTask {
+                provider_id: &self.provider_id,
+                task_id: &task.id,
+                remote_status: &task.status,
+                video_url: task.video_url.as_deref(),
+                filename_prefix: "relaydance-video",
+                missing_url_message: "completed video task is missing `metadata.url`",
+            },
+            now_ms,
+            |url| self.transport.download_bytes(url),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn parameter(name: &str, request_field: &str, default: &str) -> MediaCapabilityParameter {
         MediaCapabilityParameter {

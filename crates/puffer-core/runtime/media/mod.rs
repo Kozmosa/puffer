@@ -11,6 +11,7 @@ pub(crate) mod planner;
 pub(crate) mod relaydance_video;
 pub(crate) mod replicate_video;
 pub(crate) mod resolver;
+pub(crate) mod video_jobs;
 
 pub(crate) use artifacts::MediaArtifact;
 pub(crate) use capabilities::MediaKind;
