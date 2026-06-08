@@ -79,6 +79,7 @@ pub(super) struct BrowserSession {
     last_active: Arc<Mutex<Instant>>,
     alive: Arc<AtomicBool>,
     root: Option<BrowserRootSession>,
+    native_cef_session_id: Option<String>,
 }
 
 impl BrowserRootSession {
@@ -249,16 +250,13 @@ impl BrowserRootSession {
 
     pub(super) fn is_alive(&self) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        inner
-            .child
-            .as_mut()
-            .map(|child| {
-                child
-                    .try_wait()
-                    .map(|status| status.is_none())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(true)
+        match inner.child.as_mut() {
+            Some(child) => child
+                .try_wait()
+                .map(|status| status.is_none())
+                .unwrap_or(false),
+            None => true,
+        }
     }
 }
 
@@ -275,6 +273,7 @@ impl BrowserSession {
         foreground: bool,
     ) -> Result<Self> {
         let target = root.allocate_target()?;
+        let native_cef_session_id = target.native_cef_session_id.clone();
         let (tx, rx) = mpsc::channel();
         let state = Arc::new(Mutex::new(BrowserState {
             url: DEFAULT_URL.to_string(),
@@ -314,6 +313,7 @@ impl BrowserSession {
             last_active,
             alive,
             root: Some(root),
+            native_cef_session_id,
         })
     }
 
@@ -331,14 +331,18 @@ impl BrowserSession {
             last_active,
             alive: Arc::new(AtomicBool::new(true)),
             root: None,
+            native_cef_session_id: None,
         }
     }
 
+    /// Returns the native desktop CEF slot id that owns this CDP target, when known.
+    pub(super) fn native_cef_session_id(&self) -> Option<String> {
+        self.native_cef_session_id.clone()
+    }
     pub(super) fn state(&self) -> BrowserState {
         self.touch();
         self.state.lock().unwrap().clone()
     }
-
     pub(super) fn navigate(&self, url: String) -> Result<()> {
         self.send(BrowserCommand::Navigate(url.clone()))?;
         let mut state = self.state.lock().unwrap();
@@ -385,15 +389,12 @@ impl BrowserSession {
     pub(super) fn reload(&self) -> Result<()> {
         self.send(BrowserCommand::Reload)
     }
-
     pub(super) fn history(&self, direction: BrowserHistoryDirection) -> Result<()> {
         self.send(BrowserCommand::History(direction))
     }
-
     pub(super) fn resize(&self, width: u32, height: u32) -> Result<()> {
         self.send(BrowserCommand::Resize { width, height })
     }
-
     pub(super) fn input(&self, event: BrowserInputEvent) -> Result<()> {
         self.send(BrowserCommand::Input(event))
     }

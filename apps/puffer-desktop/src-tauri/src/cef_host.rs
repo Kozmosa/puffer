@@ -274,11 +274,12 @@ pub(crate) fn browser_cef_native_prewarm_targets(
     };
     for index in 0..count {
         let session_id = format!("__cef_prewarm_{index}__");
+        let prewarm_url = format!("about:blank#puffer-cef-slot={session_id}");
         with_native_browser(&session_id, |session_id| {
             native_open(
                 session_id,
                 webview_window_handle(&window)?,
-                "about:blank",
+                &prewarm_url,
                 rect,
             )?;
             native_hide(session_id)

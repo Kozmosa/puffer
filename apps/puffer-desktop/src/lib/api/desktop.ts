@@ -1984,6 +1984,7 @@ export type BrowserTabInfo = {
   connected: boolean;
   active: boolean;
   backendSessionId: string;
+  nativeCefSessionId?: string | null;
   createdAtMs: number;
   updatedAtMs: number;
 };

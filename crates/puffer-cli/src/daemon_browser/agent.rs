@@ -693,11 +693,19 @@ fn ensure_backend_session(
         height,
         !background,
     )?;
+    let native_cef_session_id = state
+        .browsers
+        .tabs
+        .lock()
+        .unwrap()
+        .tab(root_session_id, tab_id)
+        .and_then(|tab| tab.native_cef_session_id);
     state.browsers.tabs.lock().unwrap().open_tab(
         root_session_id,
         Some(tab_id.to_string()),
         None,
         backend_id.to_string(),
+        native_cef_session_id,
         browser_state,
         false,
     );
@@ -824,6 +832,7 @@ mod tests {
             Some(tab_id.clone()),
             None,
             backend_id.clone(),
+            None,
             test_browser_state("about:blank"),
             true,
         );
@@ -845,6 +854,7 @@ mod tests {
             Some("existing".to_string()),
             None,
             backend_session_id("root", "existing"),
+            None,
             test_browser_state("https://example.com"),
             true,
         );
