@@ -1247,6 +1247,67 @@ test("persisted ImageGeneration results render as assistant image attachments", 
   await expect(page.getByTestId("attachment-overlay")).toBeVisible();
 });
 
+test("generated video attachment renders a playable card", async ({ page }) => {
+  const sessionId = "session-generated-video-card";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId,
+        displayName: "Generated video card",
+        title: "Generated video card",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "generated-video-message",
+            text: "Generated a video.",
+            createdAtMs: baseTime - 30_000,
+            attachments: [
+              {
+                id: "generated-video:artifact-video-card",
+                name: "Generated video",
+                mimeType: "video/mp4",
+                size: 9,
+                extension: "MP4",
+                kind: "video",
+                state: "available",
+                source: {
+                  kind: "generated_media",
+                  jobId: "job-video-card",
+                  artifactId: "artifact-video-card",
+                  index: 0,
+                  localPath: "/tmp/puffer/.puffer/media/artifacts/artifact-video-card/generated.mp4"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  daemon.seedGeneratedVideoAccess(sessionId, "artifact-video-card", {
+    state: "available",
+    path: "/media/generated-video/fake-video-card",
+    mimeType: "video/mp4",
+    size: 9,
+    expiresAtMs: baseTime + 60_000,
+    bytes: Buffer.from("mp4-bytes")
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Generated video card/);
+
+  const card = page.getByRole("button", { name: "Open video attachment Generated video" });
+  await expect(card).toBeVisible();
+  await expect(card.locator("video")).toHaveAttribute("preload", "metadata");
+  await expect(card.locator('[data-testid="video-play-indicator"]')).toBeVisible();
+  await expect(page.locator(".pf-msg").filter({ has: card })).not.toContainText("/tmp/puffer");
+});
+
 test("shows two generated image attachments from one image generation result", async ({ page }) => {
   const sessionId = "session-generated-two";
   const daemon = new FakeDaemon({

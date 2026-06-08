@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import AttachmentPreviewStrip from "./AttachmentPreviewStrip.svelte";
-  import { readMessageAttachmentPreview } from "../../api/desktop";
+  import { createGeneratedVideoAccess, readMessageAttachmentPreview } from "../../api/desktop";
   import type { ChatOpenIntent } from "../../chatOpenIntent";
   import type { MessageAttachment } from "../../types";
 
@@ -33,7 +33,11 @@
   }
 
   function needsPreview(attachment: MessageAttachment): boolean {
-    return attachment.kind === "image" && !attachment.previewUrl && attachment.state !== "missing";
+    return (
+      (attachment.kind === "image" || attachment.kind === "video") &&
+      !attachment.previewUrl &&
+      attachment.state !== "missing"
+    );
   }
 
   function previewCandidates(): MessageAttachment[] {
@@ -58,7 +62,7 @@
   function attachmentsForDisplay(): MessageAttachment[] {
     if (!attachments.length || !sessionId) return attachments;
     return attachments.map((attachment) => {
-      if (attachment.kind !== "image" || attachment.previewUrl) return attachment;
+      if (attachment.previewUrl) return attachment;
       const previewUrl = previewUrls[previewKey(sessionId, attachment.id)];
       return previewUrl ? { ...attachment, previewUrl } : attachment;
     });
@@ -69,7 +73,7 @@
     if (entries.length === 0) return;
     const next = { ...previewUrls };
     for (const [key, previewUrl] of entries) {
-      URL.revokeObjectURL(previewUrl);
+      if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
       delete next[key];
       previewMisses.delete(key);
     }
@@ -97,17 +101,24 @@
 
     previewLoads.add(key);
     try {
-      const preview = await readMessageAttachmentPreview(targetSessionId, attachment);
+      const preview =
+        attachment.kind === "video" && attachment.source.kind === "generated_media"
+          ? await createGeneratedVideoAccess(targetSessionId, attachment.source.artifactId)
+          : await readMessageAttachmentPreview(targetSessionId, attachment);
       if (destroyed || !previewStillNeeded(targetSessionId, attachment.id)) return;
       if (preview.state !== "available") {
         previewMisses.set(key, missState);
         return;
       }
 
-      const bytes = new Uint8Array(preview.bytes);
-      const previewUrl = URL.createObjectURL(new Blob([bytes], { type: preview.mimeType }));
+      const previewUrl =
+        "url" in preview
+          ? preview.url
+          : URL.createObjectURL(
+              new Blob([new Uint8Array(preview.bytes)], { type: preview.mimeType })
+            );
       const previous = previewUrls[key];
-      if (previous) URL.revokeObjectURL(previous);
+      if (previous?.startsWith("blob:")) URL.revokeObjectURL(previous);
       previewMisses.delete(key);
       previewUrls = {
         ...previewUrls,

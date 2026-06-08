@@ -31,6 +31,8 @@
   function attachmentOpenLabel(attachment: AttachmentPreviewItem): string {
     return attachment.kind === "image"
       ? `Open image attachment ${attachment.name}`
+      : attachment.kind === "video"
+        ? `Open video attachment ${attachment.name}`
       : `Open attachment details for ${attachment.name}`;
   }
 
@@ -57,6 +59,19 @@
   {#if attachment.previewUrl && attachment.kind === "image"}
     <div class="pf-attachment-thumb">
       <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
+    </div>
+  {:else if attachment.previewUrl && attachment.kind === "video"}
+    <div class="pf-attachment-video-thumb">
+      <video
+        src={attachment.previewUrl}
+        preload="metadata"
+        muted
+        playsinline
+        aria-label={attachment.name}
+      ></video>
+      <span class="pf-attachment-video-play" data-testid="video-play-indicator" aria-hidden="true">
+        <Icon name="play" size={18} />
+      </span>
     </div>
   {:else if isMissingImageAttachment(attachment)}
     <div class="pf-attachment-thumb" data-state="missing" aria-hidden="true">
@@ -136,6 +151,7 @@
     cursor: pointer;
   }
   .pf-attachment-preview-action:hover .pf-attachment-thumb,
+  .pf-attachment-preview-action:hover .pf-attachment-video-thumb,
   .pf-attachment-preview-action:hover .pf-attachment-file-card {
     border-color: color-mix(in oklab, var(--primary) 58%, var(--border));
   }
@@ -165,6 +181,30 @@
     height: 100%;
     display: block;
     object-fit: cover;
+  }
+  .pf-attachment-video-thumb {
+    position: relative;
+    width: 112px;
+    height: 64px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--muted);
+  }
+  .pf-attachment-video-thumb video {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+  }
+  .pf-attachment-video-play {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    background: color-mix(in oklab, black 24%, transparent);
   }
   .pf-attachment-file-card {
     width: 224px;

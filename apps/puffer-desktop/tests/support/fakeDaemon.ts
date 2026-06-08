@@ -31,6 +31,18 @@ export type AttachmentPreviewFixture =
   | { state: "missing" }
   | { state: "unsupported" };
 
+type GeneratedVideoAccessFixture =
+  | {
+      state: "available";
+      path: string;
+      mimeType: string;
+      size: number;
+      expiresAtMs: number;
+      bytes?: Buffer;
+    }
+  | { state: "missing" }
+  | { state: "unsupported" };
+
 type GeneratedMediaArtifactFixture = {
   artifactId: string;
   index: number;
@@ -460,6 +472,7 @@ export class FakeDaemon {
   private readonly timelines = new Map<string, JsonRecord[]>();
   private readonly attachmentPreviews = new Map<string, AttachmentPreviewFixture>();
   private readonly generatedMediaPreviews = new Map<string, AttachmentPreviewFixture>();
+  private readonly generatedVideoAccesses = new Map<string, GeneratedVideoAccessFixture>();
   private generatedMediaResult: GeneratedMediaResultFixture | null = null;
   private readonly details = new Map<string, SessionDetailOverrides>();
   private groupedSessionFilter: ((metadata: JsonRecord) => boolean) | null = null;
@@ -1077,6 +1090,22 @@ export class FakeDaemon {
         this.sockets.delete(socket);
       });
     });
+    const httpOrigin = expectedUrl.origin.replace(/^ws/, "http");
+    await page.route(`${httpOrigin}/media/generated-video/**`, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const access = Array.from(this.generatedVideoAccesses.values()).find(
+        (entry) => entry.state === "available" && entry.path === path
+      );
+      if (!access || access.state !== "available") {
+        await route.fulfill({ status: 404, body: "" });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: access.mimeType,
+        body: access.bytes ?? Buffer.from("mp4-bytes")
+      });
+    });
   }
 
   async dropConnections(): Promise<void> {
@@ -1195,6 +1224,14 @@ export class FakeDaemon {
     preview: AttachmentPreviewFixture
   ): void {
     this.generatedMediaPreviews.set(this.generatedMediaPreviewKey(sessionId, artifactId), preview);
+  }
+
+  seedGeneratedVideoAccess(
+    sessionId: string,
+    artifactId: string,
+    access: GeneratedVideoAccessFixture
+  ): void {
+    this.generatedVideoAccesses.set(this.generatedMediaPreviewKey(sessionId, artifactId), access);
   }
 
   setGeneratedMediaResult(result: GeneratedMediaResultFixture | null): void {
@@ -1340,6 +1377,8 @@ export class FakeDaemon {
         return this.readChatAttachmentPreview(request.params);
       case "read_generated_media_preview":
         return this.readGeneratedMediaPreview(request.params);
+      case "create_generated_video_access":
+        return this.createGeneratedVideoAccess(request.params);
       case "start_connector_setup":
         return this.startConnectorSetup(request.params);
       case "cancel_turn": {
@@ -1774,6 +1813,18 @@ export class FakeDaemon {
     return this.generatedMediaPreviews.get(this.generatedMediaPreviewKey(sessionId, artifactId)) ?? {
       state: "missing"
     };
+  }
+
+  private createGeneratedVideoAccess(params: JsonRecord): GeneratedVideoAccessFixture {
+    const sessionId = String(params.sessionId ?? "");
+    const artifactId = String(params.artifactId ?? "");
+    const access = this.generatedVideoAccesses.get(
+      this.generatedMediaPreviewKey(sessionId, artifactId)
+    );
+    if (!access) return { state: "missing" };
+    if (access.state !== "available") return access;
+    const { bytes: _bytes, ...wire } = access;
+    return wire;
   }
 
   private attachmentPreviewKey(sessionId: string, attachmentId: string): string {
