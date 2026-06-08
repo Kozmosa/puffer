@@ -58,6 +58,23 @@ Rejected alternatives:
   leak UI RPC concerns into the agent layer and bypass the clearer
   workflow-tool permission and transcript semantics.
 
+## Recheck Outcome
+
+The first design pass included one unnecessary cleanup: renaming the existing
+`ImageGenerationMediaContext` to a generic media context. That is not needed for
+the fix. Two tools do not justify shared context abstraction churn when the
+existing image context is local, tested, and only used by image generation.
+
+This design keeps the long-term direction descriptor-driven, but the first
+implementation should be conservative:
+
+- Add `VideoGeneration` as a sibling of `ImageGeneration`.
+- Add a small `VideoGenerationMediaContext` for provider/auth/discovery inputs.
+- Do not rename or move image generation code unless a direct compile boundary
+  requires it.
+- Extract helper functions only when image and video need identical behavior in
+  the same implementation step.
+
 ## Tool Contract
 
 Add `resources/tools/video_generation.yaml`:
@@ -142,15 +159,19 @@ The module should be intentionally small:
 6. Execute `generate_exact_media_with_cache`.
 7. Return compact JSON metadata.
 
-The existing image-only `ImageGenerationMediaContext` should become a neutral
-`MediaGenerationContext` used by both tools. This is not a compatibility shim;
-it removes a misleading name now that both image and video workflow tools share
-the same provider/auth/discovery inputs.
+The module owns a small `VideoGenerationMediaContext` carrying providers,
+auth store, and exact media discovery cache. Keep the existing
+`ImageGenerationMediaContext` in place. If a later third media workflow needs
+the same wiring, extract a shared context then.
 
 Dispatcher changes stay narrow:
 
 - `workflow/mod.rs` exports `video_generation`.
-- `execute_workflow_tool_with_media_context` accepts `MediaGenerationContext`.
+- `execute_tool` constructs one `ImageGenerationMediaContext` and one
+  `VideoGenerationMediaContext` from the same provider/auth/discovery inputs.
+- `execute_workflow_tool_with_media_context` accepts the two contexts as
+  separate optional arguments. This is deliberately explicit; do not introduce a
+  generic media-context trait or enum for two tools.
 - Match arm `"VideoGeneration"` calls
   `workflow::video_generation::execute_video_generation`.
 
