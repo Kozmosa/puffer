@@ -4,6 +4,10 @@
   import { listMediaCapabilities, updateConfig } from "../../api/desktop";
   import Icon from "../../design/Icon.svelte";
   import { focusTrap } from "../../focusTrap";
+  import {
+    availableMediaCapabilities,
+    mediaCapabilityConnectStateMessage
+  } from "./mediaCapabilityState";
   import type {
     MediaCapabilityInfo,
     MediaCapabilityParameterInfo,
@@ -48,9 +52,8 @@
   let durationSeconds = $state(videoDurationFromParameters(initialParameters));
   let appliedSettingsKey = $state(untrack(() => mediaSettingsKey(kind, settings)));
 
-  let availableCapabilities = $derived(
-    capabilities.filter((capability) => capability.kind === kind && capability.status === "available")
-  );
+  let availableCapabilities = $derived(availableMediaCapabilities(capabilities, kind));
+  let connectStateMessage = $derived(mediaCapabilityConnectStateMessage(capabilities, kind));
   let providerOptions = $derived.by(() => {
     const seen = new Set<string>();
     const out: { id: string; label: string }[] = [];
@@ -615,6 +618,8 @@
         {@render loadingBlock(mediaCapabilitiesLoadingPrimary(kind), mediaCapabilitiesLoadingSecondary(kind))}
       {:else if error}
         <p class="pf-media-state" data-warning="true" role="alert">{error}</p>
+      {:else if !hasAvailableCapabilities && connectStateMessage}
+        <p class="pf-media-state" data-warning="true">{connectStateMessage}</p>
       {:else if !hasAvailableCapabilities}
         <p class="pf-media-state">No {kind} capabilities available.</p>
       {:else}
