@@ -210,12 +210,12 @@ impl BrowserRootSession {
         let mut inner = self.inner.lock().unwrap();
         touch_root(&mut inner);
         ensure_root_alive(&mut inner)?;
-        if inner.owns_targets || target.close_on_release {
-            close_page_target(&inner.browser_ws, &target.target_id)
-        } else {
+        if !inner.owns_targets && !target.close_on_release {
+            super::chrome::reset_reusable_page_target(target)?;
             inner.reusable_targets.push(target.clone());
-            Ok(())
+            return Ok(());
         }
+        close_page_target(&inner.browser_ws, &target.target_id)
     }
 
     /// Terminates the shared Chrome process for this root owner.

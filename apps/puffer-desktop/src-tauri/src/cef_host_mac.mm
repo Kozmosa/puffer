@@ -675,16 +675,19 @@ BrowserSlot* SlotForWindowPoint(NSWindow* window, NSPoint window_point) {
     return nullptr;
   }
   NSPoint content_point = [content convertPoint:window_point fromView:nil];
-  for (const auto& entry : g_slots) {
-    BrowserSlot* slot = entry.second;
-    if (!slot || slot->closing || !slot->container || [slot->container isHidden]) {
-      continue;
-    }
-    if ([slot->container superview] != content) {
-      continue;
-    }
-    if (NSPointInRect(content_point, [slot->container frame])) {
-      return slot;
+  NSView* hit_view = [content hitTest:content_point];
+  for (NSView* view = hit_view; view && view != content; view = [view superview]) {
+    for (const auto& entry : g_slots) {
+      BrowserSlot* slot = entry.second;
+      if (!slot || slot->closing || !slot->container || [slot->container isHidden]) {
+        continue;
+      }
+      if ([slot->container superview] != content) {
+        continue;
+      }
+      if (view == slot->container) {
+        return slot;
+      }
     }
   }
   return nullptr;

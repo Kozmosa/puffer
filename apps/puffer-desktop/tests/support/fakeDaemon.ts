@@ -226,9 +226,16 @@ function browserTabInfo(tabId: string, url = "about:blank", active = true): Json
     connected: true,
     active,
     backendSessionId: `${session.sessionId}:browser:${tabId}`,
+    nativeCefSessionId: nativeCefSessionId(tabId),
     createdAtMs: now,
     updatedAtMs: Date.now()
   };
+}
+
+function nativeCefSessionId(tabId: string): string {
+  const match = /(\d+)$/.exec(tabId);
+  const index = match ? Math.max(0, Number(match[1]) - 1) : 0;
+  return `__cef_prewarm_${index}__`;
 }
 
 function browserState(url = "about:blank"): JsonRecord {

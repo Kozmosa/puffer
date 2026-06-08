@@ -2,15 +2,20 @@ use anyhow::{anyhow, bail, Context, Result};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{connect, Message, WebSocket};
 use url::Url;
 
 use super::ct_runtime;
-use super::CHROME_START_TIMEOUT;
+use super::worker::set_read_timeout;
+use super::{send_cdp, CDP_READ_TIMEOUT, CHROME_START_TIMEOUT, DEFAULT_URL};
 
 const NATIVE_CEF_SLOT_FRAGMENT_PREFIX: &str = "puffer-cef-slot=";
+const TARGET_RESET_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub(super) struct ChromePageTarget {
@@ -184,6 +189,38 @@ pub(super) fn close_page_target(browser_ws: &str, target_id: &str) -> Result<()>
     Ok(())
 }
 
+/// Restores one reusable remote page target to its neutral blank slot state.
+pub(super) fn reset_reusable_page_target(target: &ChromePageTarget) -> Result<()> {
+    let reset_url = reusable_page_target_reset_url(target);
+    let (mut socket, _) = connect(target.page_ws.as_str())
+        .with_context(|| format!("connect to reusable page target {}", target.target_id))?;
+    set_read_timeout(&socket, Some(CDP_READ_TIMEOUT));
+    let mut next_id = 1u64;
+    let id = send_cdp(
+        &mut socket,
+        &mut next_id,
+        "Page.stopLoading",
+        serde_json::json!({}),
+    );
+    wait_for_cdp_response(&mut socket, id, "stop reusable target loading")?;
+    let id = send_cdp(
+        &mut socket,
+        &mut next_id,
+        "Page.navigate",
+        serde_json::json!({ "url": reset_url }),
+    );
+    wait_for_cdp_response(&mut socket, id, "navigate reusable target to neutral URL")?;
+    let id = send_cdp(
+        &mut socket,
+        &mut next_id,
+        "Page.resetNavigationHistory",
+        serde_json::json!({}),
+    );
+    wait_for_cdp_response(&mut socket, id, "reset reusable target history")?;
+    let _ = socket.close(None);
+    Ok(())
+}
+
 /// Finds the custom Chromium executable Puffer should manage.
 pub(super) fn resolve_chrome_executable() -> Option<PathBuf> {
     ct_runtime::discover_chrome_executable()
@@ -292,6 +329,45 @@ fn native_cef_session_id_from_url(value: &str) -> Option<String> {
     (!native_id.is_empty()).then(|| native_id.to_string())
 }
 
+fn reusable_page_target_reset_url(target: &ChromePageTarget) -> String {
+    target
+        .native_cef_session_id
+        .as_deref()
+        .map(|id| format!("{DEFAULT_URL}#{NATIVE_CEF_SLOT_FRAGMENT_PREFIX}{id}"))
+        .unwrap_or_else(|| DEFAULT_URL.to_string())
+}
+
+fn wait_for_cdp_response(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    response_id: u64,
+    action: &str,
+) -> Result<()> {
+    let start = Instant::now();
+    while start.elapsed() < TARGET_RESET_TIMEOUT {
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                if value.get("id").and_then(Value::as_u64) != Some(response_id) {
+                    continue;
+                }
+                if let Some(error) = value.get("error") {
+                    bail!("{action} failed: {error}");
+                }
+                return Ok(());
+            }
+            Ok(Message::Close(_)) => bail!("{action} failed: target socket closed"),
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(error) => return Err(error).with_context(|| action.to_string()),
+        }
+    }
+    bail!("timed out while {action}");
+}
+
 pub(super) fn devtools_http_base(browser_ws: &str) -> Result<String> {
     let parsed = Url::parse(browser_ws).context("parse Chrome DevTools URL")?;
     let host = parsed
@@ -307,6 +383,8 @@ pub(super) fn devtools_http_base(browser_ws: &str) -> Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn parse_reusable_page_target_keeps_remote_owner() {
@@ -377,6 +455,66 @@ mod tests {
         assert_eq!(
             target.native_cef_session_id.as_deref(),
             Some("__cef_prewarm_2__")
+        );
+    }
+
+    #[test]
+    fn reset_reusable_page_target_restores_native_slot_and_history() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let page_ws = format!(
+            "ws://{}/devtools/page/target-1",
+            listener.local_addr().unwrap()
+        );
+        let messages = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let server_messages = Arc::clone(&messages);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            loop {
+                let Message::Text(text) = socket.read().unwrap() else {
+                    continue;
+                };
+                let value: Value = serde_json::from_str(&text).unwrap();
+                let id = value.get("id").and_then(Value::as_u64).unwrap();
+                let done = value.get("method").and_then(Value::as_str)
+                    == Some("Page.resetNavigationHistory");
+                server_messages.lock().unwrap().push(value);
+                socket
+                    .send(Message::Text(
+                        json!({ "id": id, "result": {} }).to_string().into(),
+                    ))
+                    .unwrap();
+                if done {
+                    break;
+                }
+            }
+        });
+        let target = ChromePageTarget {
+            target_id: "target-1".to_string(),
+            page_ws,
+            close_on_release: false,
+            native_cef_session_id: Some("__cef_prewarm_2__".to_string()),
+        };
+
+        reset_reusable_page_target(&target).unwrap();
+        server.join().unwrap();
+
+        let messages = messages.lock().unwrap();
+        let methods = messages
+            .iter()
+            .map(|message| message.get("method").and_then(Value::as_str).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            vec![
+                "Page.stopLoading",
+                "Page.navigate",
+                "Page.resetNavigationHistory"
+            ]
+        );
+        assert_eq!(
+            messages[1].pointer("/params/url").and_then(Value::as_str),
+            Some("about:blank#puffer-cef-slot=__cef_prewarm_2__")
         );
     }
 }
