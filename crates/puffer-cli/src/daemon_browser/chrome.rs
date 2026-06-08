@@ -10,11 +10,14 @@ use url::Url;
 use super::ct_runtime;
 use super::CHROME_START_TIMEOUT;
 
+const NATIVE_CEF_SLOT_FRAGMENT_PREFIX: &str = "puffer-cef-slot=";
+
 #[derive(Clone, Debug)]
 pub(super) struct ChromePageTarget {
     pub(super) target_id: String,
     pub(super) page_ws: String,
     pub(super) close_on_release: bool,
+    pub(super) native_cef_session_id: Option<String>,
 }
 
 /// Waits for Chrome to publish its browser-level DevTools WebSocket URL.
@@ -261,16 +264,32 @@ fn parse_page_target(value: &Value, close_on_release: bool) -> Result<ChromePage
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("Chrome target response missing webSocketDebuggerUrl"))?;
+    let native_cef_session_id = value
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(native_cef_session_id_from_url);
     Ok(ChromePageTarget {
         target_id: target_id.to_string(),
         page_ws: page_ws.to_string(),
         close_on_release,
+        native_cef_session_id,
     })
 }
 
 fn is_reusable_page_target(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("page")
-        && value.get("url").and_then(Value::as_str) == Some("about:blank")
+    if value.get("type").and_then(Value::as_str) != Some("page") {
+        return false;
+    }
+    let Some(url) = value.get("url").and_then(Value::as_str) else {
+        return false;
+    };
+    url == "about:blank" || native_cef_session_id_from_url(url).is_some()
+}
+
+fn native_cef_session_id_from_url(value: &str) -> Option<String> {
+    let fragment = value.strip_prefix("about:blank#")?;
+    let native_id = fragment.strip_prefix(NATIVE_CEF_SLOT_FRAGMENT_PREFIX)?;
+    (!native_id.is_empty()).then(|| native_id.to_string())
 }
 
 pub(super) fn devtools_http_base(browser_ws: &str) -> Result<String> {
@@ -302,6 +321,7 @@ mod tests {
 
         assert_eq!(target.target_id, "page-1");
         assert!(!target.close_on_release);
+        assert!(target.native_cef_session_id.is_none());
     }
 
     #[test]
@@ -317,6 +337,7 @@ mod tests {
 
         assert_eq!(target.target_id, "page-2");
         assert!(target.close_on_release);
+        assert!(target.native_cef_session_id.is_none());
     }
 
     #[test]
@@ -327,11 +348,35 @@ mod tests {
             "url": "about:blank",
             "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/page/page-1"
         })));
-        assert!(!is_reusable_page_target(&json!({
+        assert!(is_reusable_page_target(&json!({
             "id": "page-2",
             "type": "page",
-            "url": "http://127.0.0.1:1420/native-start",
+            "url": "about:blank#puffer-cef-slot=__cef_prewarm_0__",
             "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/page/page-2"
         })));
+        assert!(!is_reusable_page_target(&json!({
+            "id": "page-3",
+            "type": "page",
+            "url": "http://127.0.0.1:1420/native-start",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/page/page-3"
+        })));
+    }
+
+    #[test]
+    fn native_cef_session_id_is_read_from_prewarm_url() {
+        let target = parse_page_target(
+            &json!({
+                "id": "page-1",
+                "url": "about:blank#puffer-cef-slot=__cef_prewarm_2__",
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/page/page-1"
+            }),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            target.native_cef_session_id.as_deref(),
+            Some("__cef_prewarm_2__")
+        );
     }
 }

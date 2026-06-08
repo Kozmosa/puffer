@@ -189,7 +189,11 @@ impl BrowserRegistry {
         if let Some(session) = self.live_session(&session_id) {
             if session.resize(width, height).is_ok() {
                 let browser_state = session.state();
-                self.record_backend_state(&session_id, &browser_state);
+                self.record_backend_state(
+                    &session_id,
+                    &browser_state,
+                    session.native_cef_session_id(),
+                );
                 browser_debug(
                     "open.reuse-live",
                     format!(
@@ -215,11 +219,12 @@ impl BrowserRegistry {
         )?;
         session.navigate(normalized_url.as_deref().unwrap_or(DEFAULT_URL).to_string())?;
         let browser_state = session.state();
+        let native_cef_session_id = session.native_cef_session_id();
         self.sessions
             .lock()
             .unwrap()
             .insert(session_id.clone(), session);
-        self.record_backend_state(&session_id, &browser_state);
+        self.record_backend_state(&session_id, &browser_state, native_cef_session_id);
         browser_debug(
             "open.ok",
             format!(
@@ -394,11 +399,15 @@ impl BrowserRegistry {
                 }
             }
         }
+        let native_cef_session_id = self
+            .live_session(&backend_id)
+            .and_then(|session| session.native_cef_session_id());
         let tab = self.tabs.lock().unwrap().open_tab(
             &root_session_id,
             Some(tab_id),
             label,
             backend_id,
+            native_cef_session_id,
             browser_state,
             activate,
         );
@@ -625,7 +634,12 @@ impl BrowserRegistry {
         self.shutdown_global_root()
     }
 
-    fn record_backend_state(&self, session_id: &str, browser_state: &BrowserState) {
+    fn record_backend_state(
+        &self,
+        session_id: &str,
+        browser_state: &BrowserState,
+        native_cef_session_id: Option<String>,
+    ) {
         if let Some((root_session_id, tab_id)) = parse_backend_session_id(session_id) {
             browser_debug(
                 "tab.record-backend",
@@ -638,6 +652,7 @@ impl BrowserRegistry {
                 root_session_id,
                 tab_id,
                 session_id.to_string(),
+                native_cef_session_id,
                 browser_state.clone(),
             );
         }

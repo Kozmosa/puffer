@@ -19,6 +19,7 @@ pub(crate) struct BrowserTabInfo {
     pub(crate) connected: bool,
     pub(crate) active: bool,
     pub(crate) backend_session_id: String,
+    pub(crate) native_cef_session_id: Option<String>,
     pub(crate) created_at_ms: u64,
     pub(crate) updated_at_ms: u64,
 }
@@ -108,6 +109,7 @@ impl BrowserTabRegistry {
         requested_tab_id: Option<String>,
         label: Option<String>,
         backend_session_id: String,
+        native_cef_session_id: Option<String>,
         state: BrowserState,
         activate: bool,
     ) -> BrowserTabInfo {
@@ -132,6 +134,7 @@ impl BrowserTabRegistry {
             existing.connected = true;
             existing.active = active;
             existing.backend_session_id = backend_session_id;
+            existing.native_cef_session_id = native_cef_session_id;
             existing.updated_at_ms = now;
         } else {
             set.tabs.push(BrowserTabInfo {
@@ -143,6 +146,7 @@ impl BrowserTabRegistry {
                 connected: true,
                 active,
                 backend_session_id,
+                native_cef_session_id,
                 created_at_ms: now,
                 updated_at_ms: now,
             });
@@ -190,6 +194,7 @@ impl BrowserTabRegistry {
         root_session_id: &str,
         tab_id: &str,
         backend_session_id: String,
+        native_cef_session_id: Option<String>,
         state: BrowserState,
     ) {
         let set = self
@@ -206,6 +211,7 @@ impl BrowserTabRegistry {
             existing.loading = state.loading;
             existing.connected = true;
             existing.backend_session_id = backend_session_id;
+            existing.native_cef_session_id = native_cef_session_id;
             existing.updated_at_ms = now;
         } else {
             set.tabs.push(BrowserTabInfo {
@@ -217,6 +223,7 @@ impl BrowserTabRegistry {
                 connected: true,
                 active: false,
                 backend_session_id,
+                native_cef_session_id,
                 created_at_ms: now,
                 updated_at_ms: now,
             });
@@ -279,6 +286,7 @@ impl BrowserTabInfo {
             connected: false,
             active: false,
             backend_session_id: backend_session_id(root_session_id, tab_id),
+            native_cef_session_id: None,
             created_at_ms: now,
             updated_at_ms: now,
         }

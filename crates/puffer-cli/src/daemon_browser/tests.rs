@@ -106,6 +106,7 @@ fn open_tab_skips_navigation_when_live_tab_already_has_requested_url() {
         Some("main".to_string()),
         Some("Gmail monitor".to_string()),
         backend_id,
+        None,
         state.lock().unwrap().clone(),
         false,
     );
@@ -311,6 +312,7 @@ fn cleanup_root_metadata_preserves_disconnected_tab_handles() {
         Some("t1".to_string()),
         None,
         "root-session:browser:t1".to_string(),
+        None,
         browser_state,
         true,
     );
@@ -353,6 +355,7 @@ fn cleanup_root_metadata_drops_tab_set_on_root_close() {
         Some("t1".to_string()),
         None,
         "root-session:browser:t1".to_string(),
+        None,
         browser_state,
         true,
     );
@@ -395,6 +398,7 @@ fn current_tab_context_reports_empty_url() {
         Some("t1".to_string()),
         None,
         "root-session:browser:t1".to_string(),
+        None,
         BrowserState {
             url: String::new(),
             title: "Blank".to_string(),
@@ -423,6 +427,7 @@ fn current_tab_context_reports_about_blank() {
         Some("t1".to_string()),
         None,
         "root-session:browser:t1".to_string(),
+        None,
         BrowserState {
             url: "about:blank".to_string(),
             title: String::new(),
@@ -450,6 +455,7 @@ fn current_tab_context_extracts_origin_host_port_and_title() {
         Some("t1".to_string()),
         None,
         "root-session:browser:t1".to_string(),
+        None,
         BrowserState {
             url: "https://docs.example.com:8443/path?q=1".to_string(),
             title: "Docs".to_string(),
