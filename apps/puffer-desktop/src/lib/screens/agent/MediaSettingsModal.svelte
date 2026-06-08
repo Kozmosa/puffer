@@ -69,14 +69,7 @@
   let modelOptions = $derived(
     availableCapabilities.filter((capability) => capability.providerId === providerId)
   );
-  let selectedCapability = $derived(
-    availableCapabilities.find(
-      (capability) =>
-        capability.providerId === providerId &&
-        capability.modelId === modelId &&
-        capability.adapter === adapter
-    ) ?? null
-  );
+  let selectedCapability = $derived(currentMatchingCapability());
   let hasAvailableCapabilities = $derived(availableCapabilities.length > 0);
   let savedSelectionMissing = $derived(
     !loading &&
@@ -121,12 +114,7 @@
 
   function chooseDefaultCapability() {
     if (availableCapabilities.length === 0) return;
-    const savedCapability = availableCapabilities.find(
-      (capability) =>
-        capability.providerId === providerId &&
-        capability.modelId === modelId &&
-        capability.adapter === adapter
-    );
+    const savedCapability = currentMatchingCapability();
     if (savedCapability) return;
     if (savedSelectionIsConfigured(kind, settings)) return;
     const first = availableCapabilities[0];
@@ -163,6 +151,88 @@
 
   function currentCapabilityKey(): string {
     return modelId ? [providerId, modelId, adapter].join("\u0000") : "";
+  }
+
+  function currentMatchingCapability(): MediaCapabilityInfo | null {
+    return (
+      availableCapabilities.find((capability) =>
+        capabilityMatchesIdentity(capability, kind, providerId, modelId, adapter)
+      ) ?? null
+    );
+  }
+
+  function capabilityMatchesIdentity(
+    capability: MediaCapabilityInfo,
+    mediaKind: MediaKind,
+    selectedProviderId: string | null | undefined,
+    selectedModelId: string | null | undefined,
+    selectedAdapter: string | null | undefined
+  ): boolean {
+    if (!selectedProviderId || !selectedModelId) return false;
+    if (capability.providerId !== selectedProviderId || capability.modelId !== selectedModelId) {
+      return false;
+    }
+    return mediaKind !== "image" || capability.adapter === selectedAdapter;
+  }
+
+  function providerSelectionIsUnavailable(): boolean {
+    return Boolean(providerId && !providerOptions.some((provider) => provider.id === providerId));
+  }
+
+  function modelSelectionIsUnavailable(): boolean {
+    return Boolean(
+      modelId &&
+        !modelOptions.some((capability) =>
+          capabilityMatchesIdentity(capability, kind, providerId, modelId, adapter)
+        )
+    );
+  }
+
+  function shouldRenderProviderSelect(): boolean {
+    return providerOptions.length !== 1 || providerSelectionIsUnavailable();
+  }
+
+  function shouldRenderModelSelect(): boolean {
+    return modelOptions.length !== 1 || modelSelectionIsUnavailable();
+  }
+
+  function readOnlyProviderLabel(): string {
+    return (
+      providerOptions.find((provider) => provider.id === providerId)?.label ??
+      providerOptions[0]?.label ??
+      providerId
+    );
+  }
+
+  function readOnlyModelLabel(): string {
+    const capability = selectedCapability ?? modelOptions[0] ?? null;
+    return capability ? modelLabel(capability) : modelId;
+  }
+
+  function shouldRenderParameterSelect(parameter: MediaCapabilityParameterInfo): boolean {
+    return parameter.values.length > 1;
+  }
+
+  function shouldRenderAspectRatioSelect(): boolean {
+    return aspectRatioOptions.length !== 1;
+  }
+
+  function shouldRenderDurationSelect(): boolean {
+    return durationOptions.length !== 1;
+  }
+
+  function durationLabel(value: number): string {
+    return `${value}s`;
+  }
+
+  function mediaCapabilitiesLoadingPrimary(mediaKind: MediaKind): string {
+    return `Loading ${mediaKind} capabilities...`;
+  }
+
+  function mediaCapabilitiesLoadingSecondary(mediaKind: MediaKind): string {
+    return mediaKind === "image"
+      ? "Checking available image generation models."
+      : "Checking available video generation models.";
   }
 
   function modelLabel(capability: MediaCapabilityInfo): string {
@@ -223,17 +293,25 @@
   ): boolean {
     if (mediaKind === "image") {
       const image = mediaSettings.image;
-      return available.some(
-        (capability) =>
-          capability.providerId === image.providerId &&
-          capability.modelId === image.modelId &&
-          capability.adapter === image.adapter
+      return available.some((capability) =>
+        capabilityMatchesIdentity(
+          capability,
+          mediaKind,
+          image.providerId,
+          image.modelId,
+          image.adapter
+        )
       );
     }
     const video = mediaSettings.video;
-    return available.some(
-      (capability) =>
-        capability.providerId === video.providerId && capability.modelId === video.modelId
+    return available.some((capability) =>
+      capabilityMatchesIdentity(
+        capability,
+        mediaKind,
+        video.providerId,
+        video.modelId,
+        null
+      )
     );
   }
 
@@ -333,6 +411,23 @@
   });
 </script>
 
+{#snippet loadingBlock(primary: string, secondary: string)}
+  <div class="pf-media-loading" role="status" aria-live="polite">
+    <span class="pf-media-loading-spinner" aria-hidden="true"></span>
+    <div>
+      <strong>{primary}</strong>
+      <span>{secondary}</span>
+    </div>
+  </div>
+{/snippet}
+
+{#snippet readOnlyField(label: string, value: string)}
+  <div class="pf-media-field">
+    <span class="pf-field-label">{label}</span>
+    <div class="pf-media-readonly-value">{value}</div>
+  </div>
+{/snippet}
+
 <div
   class="pf-modal-scrim"
   role="presentation"
@@ -368,9 +463,12 @@
 
     <div class="pf-modal-body pf-media-modal-body">
       {#if !settingsReady}
-        <p class="pf-media-state">Loading generation settings...</p>
+        {@render loadingBlock(
+          "Loading generation settings...",
+          "Waiting for media defaults from the daemon."
+        )}
       {:else if loading}
-        <p class="pf-media-state">Loading {kind} capabilities...</p>
+        {@render loadingBlock(mediaCapabilitiesLoadingPrimary(kind), mediaCapabilitiesLoadingSecondary(kind))}
       {:else if error}
         <p class="pf-media-state" data-warning="true" role="alert">{error}</p>
       {:else if !hasAvailableCapabilities}
@@ -381,57 +479,67 @@
         {/if}
 
         <div class="pf-media-form-grid">
-          <label class="pf-media-field">
-            <span class="pf-field-label">Provider</span>
-            <select
-              class="sc-input"
-              value={providerId}
-              onchange={(event) => handleProviderChange(event.currentTarget.value)}
-            >
-              {#if providerId && !providerOptions.some((provider) => provider.id === providerId)}
-                <option value={providerId} disabled>{providerId} unavailable</option>
-              {/if}
-              {#each providerOptions as provider}
-                <option value={provider.id}>{provider.label}</option>
-              {/each}
-            </select>
-          </label>
+          {#if shouldRenderProviderSelect()}
+            <label class="pf-media-field">
+              <span class="pf-field-label">Provider</span>
+              <select
+                class="sc-input"
+                value={providerId}
+                onchange={(event) => handleProviderChange(event.currentTarget.value)}
+              >
+                {#if providerSelectionIsUnavailable()}
+                  <option value={providerId} disabled>{providerId} unavailable</option>
+                {/if}
+                {#each providerOptions as provider}
+                  <option value={provider.id}>{provider.label}</option>
+                {/each}
+              </select>
+            </label>
+          {:else}
+            {@render readOnlyField("Provider", readOnlyProviderLabel())}
+          {/if}
 
-          <label class="pf-media-field">
-            <span class="pf-field-label">Model</span>
-            <select
-              class="sc-input"
-              value={selectedCapability
-                ? capabilityKey(selectedCapability)
-                : currentCapabilityKey()}
-              onchange={(event) => handleCapabilityChange(event.currentTarget.value)}
-            >
-              {#if modelId && !modelOptions.some(
-                  (capability) => capability.modelId === modelId && capability.adapter === adapter
-                )}
-                <option value={currentCapabilityKey()} disabled>{modelId} unavailable</option>
-              {/if}
-              {#each modelOptions as capability}
-                <option value={capabilityKey(capability)}>{modelLabel(capability)}</option>
-              {/each}
-            </select>
-          </label>
+          {#if shouldRenderModelSelect()}
+            <label class="pf-media-field">
+              <span class="pf-field-label">Model</span>
+              <select
+                class="sc-input"
+                value={selectedCapability
+                  ? capabilityKey(selectedCapability)
+                  : currentCapabilityKey()}
+                onchange={(event) => handleCapabilityChange(event.currentTarget.value)}
+              >
+                {#if modelSelectionIsUnavailable()}
+                  <option value={currentCapabilityKey()} disabled>{modelId} unavailable</option>
+                {/if}
+                {#each modelOptions as capability}
+                  <option value={capabilityKey(capability)}>{modelLabel(capability)}</option>
+                {/each}
+              </select>
+            </label>
+          {:else}
+            {@render readOnlyField("Model", readOnlyModelLabel())}
+          {/if}
 
           {#if kind === "image"}
             {#if selectedCapability}
               {#each selectedCapability.parameters as parameter (parameter.name)}
-                <label class="pf-media-field">
-                  <span class="pf-field-label">{parameter.label}</span>
-                  <select
-                    class="sc-input"
-                    value={parameterValue(parameter)}
-                    onchange={(event) => setParameterValue(parameter.name, event.currentTarget.value)}
-                  >
-                    {#each parameter.values as option}
-                      <option value={option}>{option}</option>
-                    {/each}
-                  </select>
-                </label>
+                {#if shouldRenderParameterSelect(parameter)}
+                  <label class="pf-media-field">
+                    <span class="pf-field-label">{parameter.label}</span>
+                    <select
+                      class="sc-input"
+                      value={parameterValue(parameter)}
+                      onchange={(event) => setParameterValue(parameter.name, event.currentTarget.value)}
+                    >
+                      {#each parameter.values as option}
+                        <option value={option}>{option}</option>
+                      {/each}
+                    </select>
+                  </label>
+                {:else}
+                  {@render readOnlyField(parameter.label, parameterValue(parameter))}
+                {/if}
               {/each}
             {/if}
             {#if imageDir}
@@ -460,26 +568,38 @@
               {/if}
             {/if}
           {:else}
-            <label class="pf-media-field">
-              <span class="pf-field-label">Aspect ratio</span>
-              <select class="sc-input" value={aspectRatio} onchange={(event) => (aspectRatio = event.currentTarget.value)}>
-                {#each aspectRatioOptions as option}
-                  <option value={option}>{option}</option>
-                {/each}
-              </select>
-            </label>
-            <label class="pf-media-field">
-              <span class="pf-field-label">Duration</span>
-              <select
-                class="sc-input"
-                value={String(durationSeconds)}
-                onchange={(event) => (durationSeconds = Number(event.currentTarget.value))}
-              >
-                {#each durationOptions as option}
-                  <option value={String(option)}>{option}s</option>
-                {/each}
-              </select>
-            </label>
+            {#if shouldRenderAspectRatioSelect()}
+              <label class="pf-media-field">
+                <span class="pf-field-label">Aspect ratio</span>
+                <select
+                  class="sc-input"
+                  value={aspectRatio}
+                  onchange={(event) => (aspectRatio = event.currentTarget.value)}
+                >
+                  {#each aspectRatioOptions as option}
+                    <option value={option}>{option}</option>
+                  {/each}
+                </select>
+              </label>
+            {:else}
+              {@render readOnlyField("Aspect ratio", aspectRatio)}
+            {/if}
+            {#if shouldRenderDurationSelect()}
+              <label class="pf-media-field">
+                <span class="pf-field-label">Duration</span>
+                <select
+                  class="sc-input"
+                  value={String(durationSeconds)}
+                  onchange={(event) => (durationSeconds = Number(event.currentTarget.value))}
+                >
+                  {#each durationOptions as option}
+                    <option value={String(option)}>{durationLabel(option)}</option>
+                  {/each}
+                </select>
+              </label>
+            {:else}
+              {@render readOnlyField("Duration", durationLabel(durationSeconds))}
+            {/if}
           {/if}
         </div>
       {/if}
@@ -629,6 +749,21 @@
     min-width: 0;
   }
 
+  .pf-media-readonly-value {
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0 10px;
+    color: var(--foreground);
+    background: color-mix(in oklab, var(--muted) 18%, var(--background));
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
   .pf-media-path-row {
     display: flex;
     min-width: 0;
@@ -654,6 +789,52 @@
     background: color-mix(in oklab, var(--destructive) 8%, var(--background));
     font-size: 12px;
     line-height: 1.4;
+  }
+
+  .pf-media-loading {
+    min-height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    color: var(--muted-foreground);
+    background: color-mix(in oklab, var(--muted) 20%, var(--background));
+  }
+
+  .pf-media-loading strong,
+  .pf-media-loading span {
+    display: block;
+  }
+
+  .pf-media-loading strong {
+    color: var(--foreground);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .pf-media-loading span {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .pf-media-loading-spinner {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    border: 2px solid color-mix(in oklab, var(--muted-foreground) 22%, transparent);
+    border-top-color: var(--muted-foreground);
+    border-radius: 50%;
+    animation: pf-media-spin 0.8s linear infinite;
+  }
+
+  @keyframes pf-media-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .pf-media-state {

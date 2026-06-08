@@ -34,6 +34,91 @@ const configuredImageMedia = {
   }
 };
 
+type FakeMediaCapabilityParameter = FakeMediaCapability["parameters"][number];
+
+function mediaParameter(input: {
+  name: string;
+  label: string;
+  values: string[];
+  defaultValue: string;
+  requestField?: string | null;
+}): FakeMediaCapabilityParameter {
+  return {
+    name: input.name,
+    label: input.label,
+    values: input.values,
+    default: input.defaultValue,
+    requestField: input.requestField === undefined ? input.name : input.requestField
+  };
+}
+
+function imageCapability(input: {
+  providerId: string;
+  providerDisplayName: string;
+  modelId: string;
+  modelDisplayName: string;
+  parameters: FakeMediaCapabilityParameter[];
+}): FakeMediaCapability {
+  return {
+    providerId: input.providerId,
+    providerDisplayName: input.providerDisplayName,
+    modelId: input.modelId,
+    modelDisplayName: input.modelDisplayName,
+    kind: "image",
+    operation: "generate",
+    adapter: "images_json",
+    parameters: input.parameters,
+    defaults: Object.fromEntries(
+      input.parameters.map((parameter) => [parameter.name, parameter.default])
+    ),
+    status: "available",
+    source: "fake-daemon",
+    reason: null,
+    checkedAtMs: baseTime
+  };
+}
+
+function singleOptionImageCapability(): FakeMediaCapability {
+  return imageCapability({
+    providerId: "openai",
+    providerDisplayName: "OpenAI",
+    modelId: "gpt-image-1",
+    modelDisplayName: "GPT Image 1",
+    parameters: [
+      mediaParameter({
+        name: "size",
+        label: "Size",
+        values: ["1024x1024"],
+        defaultValue: "1024x1024"
+      }),
+      mediaParameter({
+        name: "quality",
+        label: "Quality",
+        values: [],
+        defaultValue: "auto"
+      })
+    ]
+  });
+}
+
+function singleOptionVideoCapability(): FakeMediaCapability {
+  return {
+    providerId: "runway",
+    providerDisplayName: "Runway",
+    modelId: "gen-4",
+    modelDisplayName: "Gen-4",
+    kind: "video",
+    operation: "generate",
+    adapter: "video_json",
+    parameters: [],
+    defaults: {},
+    status: "available",
+    source: "fake-daemon",
+    reason: null,
+    checkedAtMs: baseTime
+  };
+}
+
 function generatedAttachment(jobId: string, artifactId: string, index: number): MessageAttachment {
   return {
     id: `generated-image:${artifactId}`,
@@ -45,6 +130,18 @@ function generatedAttachment(jobId: string, artifactId: string, index: number): 
     state: "available",
     source: { kind: "generated_media", jobId, artifactId, index }
   };
+}
+
+async function expectReadOnlyField(dialog: Locator, label: string, value: string): Promise<void> {
+  const field = dialog
+    .locator(".pf-media-field")
+    .filter({ hasText: label })
+    .filter({ hasText: value });
+  await expect(field).toHaveCount(1);
+  await expect(field).toBeVisible();
+  await expect(field.locator("select")).toHaveCount(0);
+  await expect(field.getByText(label, { exact: true })).toBeVisible();
+  await expect(field.getByText(value, { exact: true })).toBeVisible();
 }
 
 async function openSession(page: Page, name: RegExp): Promise<void> {
@@ -324,47 +421,84 @@ test("composer add content menu attaches image and file drafts", async ({ page }
 test("composer image generation settings modal saves media config from daemon capabilities", async ({ page }) => {
   const imageCapabilities: FakeMediaCapability[] = [
     ...defaultFakeMediaCapabilities(),
-    {
+    imageCapability({
+      providerId: "openai",
+      providerDisplayName: "OpenAI",
+      modelId: "gpt-image-2",
+      modelDisplayName: "GPT Image 2",
+      parameters: [
+        mediaParameter({
+          name: "size",
+          label: "Size",
+          values: ["1024x1024", "1024x1536", "1536x1024"],
+          defaultValue: "1024x1024"
+        }),
+        mediaParameter({
+          name: "quality",
+          label: "Quality",
+          values: ["auto", "high"],
+          defaultValue: "auto"
+        }),
+        mediaParameter({
+          name: "output_format",
+          label: "Output format",
+          values: ["png", "webp"],
+          defaultValue: "png"
+        })
+      ]
+    }),
+    imageCapability({
       providerId: "byteplus",
       providerDisplayName: "BytePlus",
       modelId: "seedream-3",
       modelDisplayName: "Seedream 3",
-      kind: "image",
-      operation: "generate",
-      adapter: "images_json",
       parameters: [
-        {
+        mediaParameter({
           name: "size",
           label: "Size",
           values: ["1024x1024", "1280x720", "720x1280"],
-          default: "1024x1024",
-          requestField: "size"
-        },
-        {
+          defaultValue: "1024x1024"
+        }),
+        mediaParameter({
           name: "quality",
           label: "Quality",
           values: ["standard", "high"],
-          default: "standard",
-          requestField: "quality"
-        },
-        {
+          defaultValue: "standard"
+        }),
+        mediaParameter({
           name: "output_format",
           label: "Output format",
           values: ["png", "webp"],
-          default: "png",
-          requestField: "output_format"
-        }
-      ],
-      defaults: {
-        size: "1024x1024",
-        quality: "standard",
-        output_format: "png"
-      },
-      status: "available",
-      source: "fake-daemon",
-      reason: null,
-      checkedAtMs: baseTime
-    }
+          defaultValue: "png"
+        })
+      ]
+    }),
+    imageCapability({
+      providerId: "byteplus",
+      providerDisplayName: "BytePlus",
+      modelId: "seedream-4",
+      modelDisplayName: "Seedream 4",
+      parameters: [
+        mediaParameter({
+          name: "size",
+          label: "Size",
+          values: ["1024x1024", "1280x720", "720x1280"],
+          defaultValue: "1024x1024"
+        }),
+        mediaParameter({
+          name: "quality",
+          label: "Quality",
+          values: ["standard", "high"],
+          defaultValue: "standard"
+        }),
+        mediaParameter({
+          name: "output_format",
+          label: "Output format",
+          values: ["png", "webp"],
+          defaultValue: "png"
+        })
+      ]
+    })
   ];
   const daemon = new FakeDaemon({
     mediaCapabilities: imageCapabilities,
@@ -415,11 +549,16 @@ test("composer image generation settings modal saves media config from daemon ca
 
   const dialog = page.getByRole("dialog", { name: "Image generation settings" });
   await expect(dialog).toBeVisible();
-  await daemon.waitForRequest("list_media_capabilities", (request) => request.params.kind === "image");
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "image"
+  );
   await expect(dialog.getByLabel("Provider")).toHaveValue("openai");
   await expect(dialog.getByLabel("Model")).toHaveValue(
     ["openai", "gpt-image-1", "images_json"].join("\u0000")
   );
+  await expect(dialog.getByRole("combobox", { name: "Provider" })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "Model" })).toBeVisible();
   const imageFolder = dialog.getByLabel("Image folder");
   await expect(imageFolder).toHaveValue("/tmp/puffer/.puffer/media/images");
   await expect(imageFolder).toHaveJSProperty("readOnly", true);
@@ -471,7 +610,10 @@ test("composer image generation settings modal saves media config from daemon ca
 
   const reopenedDialog = page.getByRole("dialog", { name: "Image generation settings" });
   await expect(reopenedDialog).toBeVisible();
-  await daemon.waitForRequest("list_media_capabilities", (request) => request.params.kind === "image");
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "image"
+  );
   await expect(reopenedDialog.getByLabel("Provider")).toHaveValue("byteplus");
   await expect(reopenedDialog.getByLabel("Model")).toHaveValue(
     ["byteplus", "seedream-3", "images_json"].join("\u0000")
@@ -480,6 +622,103 @@ test("composer image generation settings modal saves media config from daemon ca
   await expect(reopenedDialog.getByLabel("Quality")).toHaveValue("standard");
   await expect(reopenedDialog.getByLabel("Output format")).toHaveValue("png");
   expect(daemon.requests.filter((request) => request.method === "update_config")).toHaveLength(1);
+});
+
+test("composer image generation settings shows capability loading status", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-image-settings-loading",
+        displayName: "Image settings loading",
+        title: "Image settings loading",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "image-settings-loading-seed",
+            text: "Open image settings while capabilities load.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.delayResponse(
+    "list_media_capabilities",
+    (request) => request.params.kind === "image",
+    500
+  );
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Image settings loading/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Image generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Image generation settings" });
+  await expect(dialog).toBeVisible();
+  const status = dialog.getByRole("status");
+  await expect(status).toBeVisible();
+  await expect(status).toContainText("Loading image capabilities...");
+  await expect(status).toContainText("Checking available image generation models.");
+  await expect(status.locator(".pf-media-loading-spinner")).toBeVisible();
+
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "image"
+  );
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await expect(dialog.getByText("Image folder", { exact: true })).toBeVisible();
+});
+
+test("composer image generation settings renders single choices as read-only values", async ({
+  page
+}) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [singleOptionImageCapability()],
+    sessions: [
+      {
+        sessionId: "session-image-settings-single-option",
+        displayName: "Single-option image settings",
+        title: "Single-option image settings",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "image-settings-single-option-seed",
+            text: "Open single-option image settings.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Single-option image settings/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Image generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Image generation settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "image"
+  );
+  await expect(dialog.getByRole("combobox")).toHaveCount(0);
+  await expectReadOnlyField(dialog, "Provider", "OpenAI");
+  await expectReadOnlyField(dialog, "Model", "GPT Image 1");
+  await expectReadOnlyField(dialog, "Size", "1024x1024");
+  await expectReadOnlyField(dialog, "Quality", "auto");
 });
 
 test("composer image generation settings clamps unsupported saved parameters", async ({ page }) => {
@@ -594,12 +833,100 @@ test("composer video generation settings modal remains reachable without capabil
 
   const dialog = page.getByRole("dialog", { name: "Video generation settings" });
   await expect(dialog).toBeVisible();
-  await daemon.waitForRequest("list_media_capabilities", (request) => request.params.kind === "video");
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
   await expect(dialog.getByText("No video capabilities available.")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Save video generation settings" })).toBeDisabled();
 
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
+});
+
+test("composer video generation settings renders saved single choices as read-only values", async ({
+  page
+}) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [singleOptionVideoCapability()],
+    sessions: [
+      {
+        sessionId: "session-video-settings-single-option",
+        displayName: "Single-option video settings",
+        title: "Single-option video settings",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-single-option-seed",
+            text: "Open single-option video settings.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({
+    media: {
+      image: {
+        providerId: null,
+        modelId: null,
+        adapter: null,
+        parameters: {}
+      },
+      video: {
+        providerId: "runway",
+        modelId: "gen-4",
+        aspectRatio: "16:9",
+        durationSeconds: 8
+      }
+    }
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Single-option video settings/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Video generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video generation settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
+  await expect(dialog.getByText("Saved model is no longer available.")).toHaveCount(0);
+  await expect(dialog.getByRole("combobox")).toHaveCount(0);
+  await expectReadOnlyField(dialog, "Provider", "Runway");
+  await expectReadOnlyField(dialog, "Model", "Gen-4");
+  await expectReadOnlyField(dialog, "Aspect ratio", "16:9");
+  await expectReadOnlyField(dialog, "Duration", "8s");
+
+  await dialog.getByRole("button", { name: "Save video generation settings" }).click();
+  const update = await daemon.waitForRequest(
+    "update_config",
+    (request) => "media" in request.params
+  );
+  expect(update.params).toEqual({
+    media: {
+      image: {
+        providerId: null,
+        modelId: null,
+        adapter: null,
+        parameters: {}
+      },
+      video: {
+        providerId: "runway",
+        modelId: "gen-4",
+        aspectRatio: "16:9",
+        durationSeconds: 8
+      }
+    }
+  });
 });
 
 test("composer media generation settings marks stale saved image model invalid", async ({ page }) => {
@@ -654,6 +981,9 @@ test("composer media generation settings marks stale saved image model invalid",
 
   const dialog = page.getByRole("dialog", { name: "Image generation settings" });
   await expect(dialog.getByText("Saved model is no longer available.")).toBeVisible();
+  await expect(
+    dialog.locator(".pf-media-field").filter({ hasText: "Model" }).locator("select")
+  ).toHaveCount(1);
   await expect(dialog.getByLabel("Model")).toHaveValue(
     ["openai", "old-image-model", "images_json"].join("\u0000")
   );

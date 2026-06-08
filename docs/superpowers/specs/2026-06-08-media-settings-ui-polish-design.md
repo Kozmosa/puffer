@@ -134,3 +134,21 @@ Playwright coverage should verify:
 Focused component-level tests are acceptable if they are already part of the
 desktop test harness, but this change should not introduce a new test framework
 or screenshot baseline.
+
+## Implementation Record
+
+Implemented locally in `MediaSettingsModal.svelte`:
+
+- capability matching helpers now keep image identity as provider + model +
+  adapter while matching saved video settings by provider + model only;
+- single-option provider, model, image parameter, aspect ratio, and duration
+  fields render as read-only values;
+- stale saved provider/model selections still render editable selects with the
+  unavailable warning path;
+- settings snapshot loading and capability loading use a local status block with
+  spinner, primary text, and secondary text.
+
+Focused Playwright coverage lives in `apps/puffer-desktop/tests/chat-session-ui.spec.ts`
+and covers loading, single-option image fields, single-option video fields,
+multi-option image saves, unsupported saved parameter normalization, and stale
+saved image model recovery.
