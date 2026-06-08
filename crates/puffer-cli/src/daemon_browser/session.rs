@@ -1,22 +1,4 @@
 //! Root Chrome ownership and per-page CDP worker sessions.
-
-use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
-use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message, WebSocket};
-
-use crate::daemon::ServerEnvelope;
-
 use super::chrome::{
     close_page_target, create_page_target, ensure_chrome_executable, initial_page_target,
     read_devtools_ws_url, read_remote_devtools_ws_url, wait_for_initial_page_targets,
@@ -54,9 +36,23 @@ use super::{
     BrowserHistoryDirection, BrowserInputEvent, BrowserState, CDP_READ_TIMEOUT, DEFAULT_URL,
 };
 use crate::browser_profiles::prepare_managed_profile;
+use crate::daemon::ServerEnvelope;
+use anyhow::{anyhow, bail, Context, Result};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::net::TcpStream;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{connect, Message, WebSocket};
 const CEF_REMOTE_START_TIMEOUT: Duration = Duration::from_secs(10);
 const CEF_TARGET_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
-
 #[derive(Clone)]
 pub(super) struct BrowserRootSession {
     inner: Arc<Mutex<BrowserRootState>>,
@@ -70,7 +66,6 @@ struct BrowserRootState {
     reusable_targets: Vec<ChromePageTarget>,
     last_active: Instant,
 }
-
 #[derive(Clone)]
 pub(super) struct BrowserSession {
     tx: Sender<BrowserCommand>,
@@ -81,7 +76,6 @@ pub(super) struct BrowserSession {
     root: Option<BrowserRootSession>,
     native_cef_session_id: Option<String>,
 }
-
 impl BrowserRootSession {
     /// Spawns one shared Chrome root owner for a browser session tree.
     pub(super) fn spawn(
@@ -103,13 +97,11 @@ impl BrowserRootSession {
             super::chrome::terminate_profile_processes(&launch.user_data_dir);
             remove_stale_devtools_port(&launch.user_data_dir)?;
         }
-
         let mut command = Command::new(&chrome);
         configure_chrome_command(&mut command, &launch, width, height, &launch_settings);
         let mut child = command
             .spawn()
             .with_context(|| format!("launch Chrome at {}", chrome.display()))?;
-
         let browser_ws = match read_devtools_ws_url(&mut child, &launch.user_data_dir) {
             Ok(url) => url,
             Err(error) => {
@@ -144,7 +136,6 @@ impl BrowserRootSession {
             })),
         })
     }
-
     fn spawn_cef_remote_root(
         profile_dir: &PathBuf,
         launch_settings: &BrowserLaunchSettings,
@@ -155,12 +146,14 @@ impl BrowserRootSession {
             );
             return Ok(None);
         };
-        log_browser_backend(format!("trying native CEF DevTools on 127.0.0.1:{port}"));
+        log_browser_backend(format!(
+            "trying native CEF DevTools on loopback port {port}"
+        ));
         let browser_ws = match read_remote_devtools_ws_url(port, CEF_REMOTE_START_TIMEOUT) {
             Ok(browser_ws) => browser_ws,
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!("native CEF DevTools on 127.0.0.1:{port} was not reachable")
+                    format!("native CEF DevTools on loopback port {port} was not reachable")
                 });
             }
         };
@@ -177,7 +170,7 @@ impl BrowserRootSession {
             launch_settings.extension_dirs(),
         )?;
         seed_extensions(&browser_ws, launch_settings.seeds())?;
-        log_browser_backend(format!("using native CEF DevTools on 127.0.0.1:{port}"));
+        log_browser_backend(format!("using native CEF DevTools at {browser_ws}"));
         Ok(Some(Self {
             inner: Arc::new(Mutex::new(BrowserRootState {
                 profile_dir: cef_profile_dir,
@@ -192,7 +185,7 @@ impl BrowserRootSession {
 
     pub(super) fn allocate_target(&self) -> Result<ChromePageTarget> {
         let mut inner = self.inner.lock().unwrap();
-        touch_root(&mut inner);
+        inner.last_active = Instant::now();
         ensure_root_alive(&mut inner)?;
         if let Some(target) = inner.reusable_targets.pop() {
             return Ok(target);
@@ -207,15 +200,20 @@ impl BrowserRootSession {
     }
 
     pub(super) fn close_target(&self, target: &ChromePageTarget) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        touch_root(&mut inner);
-        ensure_root_alive(&mut inner)?;
-        if !inner.owns_targets && !target.close_on_release {
+        let (browser_ws, owns_targets) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.last_active = Instant::now();
+            ensure_root_alive(&mut inner)?;
+            (inner.browser_ws.clone(), inner.owns_targets)
+        };
+        if !owns_targets && !target.close_on_release {
             super::chrome::reset_reusable_page_target(target)?;
+            let mut inner = self.inner.lock().unwrap();
+            inner.last_active = Instant::now();
             inner.reusable_targets.push(target.clone());
             return Ok(());
         }
-        close_page_target(&inner.browser_ws, &target.target_id)
+        close_page_target(&browser_ws, &target.target_id)
     }
 
     /// Terminates the shared Chrome process for this root owner.
@@ -241,7 +239,7 @@ impl BrowserRootSession {
 
     pub(super) fn touch(&self) {
         let mut inner = self.inner.lock().unwrap();
-        touch_root(&mut inner);
+        inner.last_active = Instant::now();
     }
 
     pub(super) fn idle_for(&self) -> Duration {
@@ -561,6 +559,7 @@ fn run_cdp_worker(
     };
     set_read_timeout(&socket, Some(CDP_READ_TIMEOUT));
 
+    let use_screencast = target.native_cef_session_id.is_none();
     let mut next_id = 1u64;
     let mut pending = HashMap::<u64, PendingKind>::new();
     let _ = send_cdp(&mut socket, &mut next_id, "Page.enable", json!({}));
@@ -571,8 +570,10 @@ fn run_cdp_worker(
     if foreground {
         let _ = send_cdp(&mut socket, &mut next_id, "Page.bringToFront", json!({}));
     }
-    let _ = apply_viewport(&mut socket, &mut next_id, width, height);
-    let _ = start_screencast(&mut socket, &mut next_id, width, height);
+    if use_screencast {
+        let _ = apply_viewport(&mut socket, &mut next_id, width, height);
+        let _ = start_screencast(&mut socket, &mut next_id, width, height);
+    }
     let id = send_state_eval(&mut socket, &mut next_id);
     pending.insert(id, PendingKind::StateEval);
 
@@ -598,6 +599,7 @@ fn run_cdp_worker(
                     &channel_state,
                     &events,
                     foreground,
+                    use_screencast,
                 ),
                 Err(TryRecvError::Empty) => break,
             }
@@ -636,7 +638,6 @@ fn run_cdp_worker(
             }
         }
     }
-    let _ = socket.close(None);
     let _ = root.close_target(&target);
     alive.store(false, Ordering::SeqCst);
     if let Some(reply) = shutdown_reply {
@@ -653,6 +654,7 @@ fn handle_command(
     channel_state: &str,
     events: &broadcast::Sender<ServerEnvelope>,
     foreground: bool,
+    use_screencast: bool,
 ) {
     match command {
         BrowserCommand::Navigate(url) => {
@@ -697,9 +699,11 @@ fn handle_command(
             if foreground {
                 let _ = send_cdp(socket, next_id, "Page.bringToFront", json!({}));
             }
-            let _ = apply_viewport(socket, next_id, width, height);
-            let _ = send_cdp(socket, next_id, "Page.stopScreencast", json!({}));
-            let _ = start_screencast(socket, next_id, width, height);
+            if use_screencast {
+                let _ = apply_viewport(socket, next_id, width, height);
+                let _ = send_cdp(socket, next_id, "Page.stopScreencast", json!({}));
+                let _ = start_screencast(socket, next_id, width, height);
+            }
         }
         BrowserCommand::Input(event) => {
             let _ = send_input(socket, next_id, event);
@@ -988,13 +992,9 @@ fn ensure_root_alive(inner: &mut BrowserRootState) -> Result<()> {
     };
     if let Some(status) = child.try_wait().context("check Chrome root status")? {
         bail!(
-            "Chrome root for profile {} exited unexpectedly: {status}",
+            "Chrome root {} exited: {status}",
             inner.profile_dir.display()
         );
     }
     Ok(())
-}
-
-fn touch_root(inner: &mut BrowserRootState) {
-    inner.last_active = Instant::now();
 }

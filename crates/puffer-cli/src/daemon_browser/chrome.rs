@@ -71,6 +71,13 @@ pub(super) fn initial_page_target(browser_ws: &str) -> Result<Option<ChromePageT
 
 /// Returns all page targets currently published by the DevTools endpoint.
 pub(super) fn initial_page_targets(browser_ws: &str) -> Result<Vec<ChromePageTarget>> {
+    if let Ok(targets) = initial_page_targets_via_cdp(browser_ws) {
+        return Ok(targets);
+    }
+    initial_page_targets_via_http(browser_ws)
+}
+
+fn initial_page_targets_via_http(browser_ws: &str) -> Result<Vec<ChromePageTarget>> {
     let endpoint = format!("{}/json/list", devtools_http_base(browser_ws)?);
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -91,6 +98,29 @@ pub(super) fn initial_page_targets(browser_ws: &str) -> Result<Vec<ChromePageTar
         .iter()
         .filter(|target| is_reusable_page_target(target))
         .map(|target| parse_page_target(target, false))
+        .collect()
+}
+
+fn initial_page_targets_via_cdp(browser_ws: &str) -> Result<Vec<ChromePageTarget>> {
+    let (mut socket, _) = connect(browser_ws).context("connect to browser DevTools websocket")?;
+    set_read_timeout(&socket, Some(CDP_READ_TIMEOUT));
+    let mut next_id = 1u64;
+    let id = send_cdp(
+        &mut socket,
+        &mut next_id,
+        "Target.getTargets",
+        serde_json::json!({}),
+    );
+    let response = wait_for_cdp_response(&mut socket, id, "list browser targets")?;
+    let targets = response
+        .get("result")
+        .and_then(|result| result.get("targetInfos"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("Target.getTargets response missing targetInfos"))?;
+    targets
+        .iter()
+        .filter(|target| is_reusable_target_info(target))
+        .map(|target| parse_target_info(browser_ws, target))
         .collect()
 }
 
@@ -130,25 +160,35 @@ pub(super) fn wait_for_initial_page_targets(
 
 /// Waits for an already-running DevTools HTTP endpoint to publish its browser WebSocket URL.
 pub(super) fn read_remote_devtools_ws_url(port: u16, timeout: Duration) -> Result<String> {
-    let endpoint = format!("http://127.0.0.1:{port}/json/version");
+    let endpoints = remote_devtools_version_endpoints(port);
     let client = Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_millis(500))
         .build()
         .context("build DevTools HTTP client")?;
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Ok(response) = client.get(&endpoint).send() {
-            if let Ok(response) = response.error_for_status() {
-                if let Ok(value) = response.json::<Value>() {
-                    if let Some(ws) = value.get("webSocketDebuggerUrl").and_then(Value::as_str) {
-                        return Ok(ws.to_string());
+        for endpoint in &endpoints {
+            if let Ok(response) = client.get(endpoint).send() {
+                if let Ok(response) = response.error_for_status() {
+                    if let Ok(value) = response.json::<Value>() {
+                        if let Some(ws) = value.get("webSocketDebuggerUrl").and_then(Value::as_str)
+                        {
+                            return Ok(ws.to_string());
+                        }
                     }
                 }
             }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    bail!("DevTools endpoint at {endpoint} did not publish a browser WebSocket URL");
+    bail!("DevTools endpoint on loopback port {port} did not publish a browser WebSocket URL");
+}
+
+fn remote_devtools_version_endpoints(port: u16) -> Vec<String> {
+    vec![
+        format!("http://[::1]:{port}/json/version"),
+        format!("http://127.0.0.1:{port}/json/version"),
+    ]
 }
 
 /// Creates a new Chrome page target and returns its target id and DevTools WebSocket URL.
@@ -217,7 +257,6 @@ pub(super) fn reset_reusable_page_target(target: &ChromePageTarget) -> Result<()
         serde_json::json!({}),
     );
     wait_for_cdp_response(&mut socket, id, "reset reusable target history")?;
-    let _ = socket.close(None);
     Ok(())
 }
 
@@ -313,7 +352,32 @@ fn parse_page_target(value: &Value, close_on_release: bool) -> Result<ChromePage
     })
 }
 
+fn parse_target_info(browser_ws: &str, value: &Value) -> Result<ChromePageTarget> {
+    let target_id = value
+        .get("targetId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("Target info missing targetId"))?;
+    let url = value.get("url").and_then(Value::as_str).unwrap_or_default();
+    Ok(ChromePageTarget {
+        target_id: target_id.to_string(),
+        page_ws: page_ws_for_target(browser_ws, target_id)?,
+        close_on_release: false,
+        native_cef_session_id: native_cef_session_id_from_url(url),
+    })
+}
+
 fn is_reusable_page_target(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("page") {
+        return false;
+    }
+    let Some(url) = value.get("url").and_then(Value::as_str) else {
+        return false;
+    };
+    url == "about:blank" || native_cef_session_id_from_url(url).is_some()
+}
+
+fn is_reusable_target_info(value: &Value) -> bool {
     if value.get("type").and_then(Value::as_str) != Some("page") {
         return false;
     }
@@ -329,6 +393,14 @@ fn native_cef_session_id_from_url(value: &str) -> Option<String> {
     (!native_id.is_empty()).then(|| native_id.to_string())
 }
 
+fn page_ws_for_target(browser_ws: &str, target_id: &str) -> Result<String> {
+    let mut parsed = Url::parse(browser_ws).context("parse Chrome DevTools URL")?;
+    parsed.set_path(&format!("/devtools/page/{target_id}"));
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.to_string())
+}
+
 fn reusable_page_target_reset_url(target: &ChromePageTarget) -> String {
     target
         .native_cef_session_id
@@ -341,7 +413,7 @@ fn wait_for_cdp_response(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     response_id: u64,
     action: &str,
-) -> Result<()> {
+) -> Result<Value> {
     let start = Instant::now();
     while start.elapsed() < TARGET_RESET_TIMEOUT {
         match socket.read() {
@@ -355,7 +427,7 @@ fn wait_for_cdp_response(
                 if let Some(error) = value.get("error") {
                     bail!("{action} failed: {error}");
                 }
-                return Ok(());
+                return Ok(value);
             }
             Ok(Message::Close(_)) => bail!("{action} failed: target socket closed"),
             Ok(_) => {}
@@ -369,14 +441,19 @@ fn wait_for_cdp_response(
 }
 
 pub(super) fn devtools_http_base(browser_ws: &str) -> Result<String> {
-    let parsed = Url::parse(browser_ws).context("parse Chrome DevTools URL")?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| anyhow!("Chrome DevTools URL missing host"))?;
-    let port = parsed
-        .port()
-        .ok_or_else(|| anyhow!("Chrome DevTools URL missing port"))?;
-    Ok(format!("http://{host}:{port}"))
+    let mut parsed = Url::parse(browser_ws).context("parse Chrome DevTools URL")?;
+    let scheme = match parsed.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        scheme => bail!("unsupported Chrome DevTools URL scheme {scheme}"),
+    };
+    parsed
+        .set_scheme(scheme)
+        .map_err(|_| anyhow!("set DevTools HTTP URL scheme"))?;
+    parsed.set_path("");
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]
@@ -437,6 +514,80 @@ mod tests {
             "type": "page",
             "url": "http://127.0.0.1:1420/native-start",
             "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/page/page-3"
+        })));
+    }
+
+    #[test]
+    fn target_info_builds_page_websocket_and_native_slot() {
+        let target = parse_target_info(
+            "ws://127.0.0.1:9333/devtools/browser/browser-1",
+            &json!({
+                "targetId": "page-1",
+                "type": "page",
+                "url": "about:blank#puffer-cef-slot=__cef_prewarm_1__"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(target.target_id, "page-1");
+        assert_eq!(target.page_ws, "ws://127.0.0.1:9333/devtools/page/page-1");
+        assert!(!target.close_on_release);
+        assert_eq!(
+            target.native_cef_session_id.as_deref(),
+            Some("__cef_prewarm_1__")
+        );
+    }
+
+    #[test]
+    fn target_info_preserves_ipv6_browser_websocket_origin() {
+        let target = parse_target_info(
+            "ws://[::1]:9333/devtools/browser/browser-1",
+            &json!({
+                "targetId": "page-1",
+                "type": "page",
+                "url": "about:blank#puffer-cef-slot=__cef_prewarm_1__"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(target.page_ws, "ws://[::1]:9333/devtools/page/page-1");
+    }
+
+    #[test]
+    fn remote_devtools_probe_prefers_ipv6_loopback() {
+        assert_eq!(
+            remote_devtools_version_endpoints(9333),
+            vec![
+                "http://[::1]:9333/json/version".to_string(),
+                "http://127.0.0.1:9333/json/version".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn devtools_http_base_preserves_ipv6_brackets() {
+        assert_eq!(
+            devtools_http_base("ws://[::1]:9333/devtools/browser/root").unwrap(),
+            "http://[::1]:9333"
+        );
+    }
+
+    #[test]
+    fn reusable_target_info_ignores_visible_pages() {
+        assert!(is_reusable_target_info(&json!({
+            "targetId": "page-1",
+            "type": "page",
+            "url": "about:blank"
+        })));
+        assert!(is_reusable_target_info(&json!({
+            "targetId": "page-2",
+            "type": "page",
+            "url": "about:blank#puffer-cef-slot=__cef_prewarm_2__"
+        })));
+        assert!(!is_reusable_target_info(&json!({
+            "targetId": "page-3",
+            "type": "page",
+            "url": "https://example.com"
         })));
     }
 

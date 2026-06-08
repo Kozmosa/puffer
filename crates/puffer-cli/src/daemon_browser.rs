@@ -217,7 +217,10 @@ impl BrowserRegistry {
             height,
             foreground,
         )?;
-        session.navigate(normalized_url.as_deref().unwrap_or(DEFAULT_URL).to_string())?;
+        let requested_url = normalized_url.as_deref().unwrap_or(DEFAULT_URL);
+        if session.native_cef_session_id().is_none() || requested_url != DEFAULT_URL {
+            session.navigate(requested_url.to_string())?;
+        }
         let browser_state = session.state();
         let native_cef_session_id = session.native_cef_session_id();
         self.sessions

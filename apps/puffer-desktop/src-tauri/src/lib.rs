@@ -12,8 +12,8 @@ mod fs_watch;
 mod local_model;
 mod lsp;
 mod mini_window;
-mod qwen35;
 mod pty;
+mod qwen35;
 mod remote_client;
 mod repo_actions;
 mod websocket;
@@ -464,7 +464,7 @@ pub fn run() {
                 let prewarm_targets = std::env::var("PUFFER_CEF_PREWARM_TARGETS")
                     .ok()
                     .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(3);
+                    .unwrap_or(8);
                 if smoke_url.is_some() || prewarm_targets > 0 {
                     let app_handle = app.handle().clone();
                     std::thread::spawn(move || {
