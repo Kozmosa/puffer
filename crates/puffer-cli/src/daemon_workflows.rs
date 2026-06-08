@@ -295,6 +295,7 @@ fn workflow_binding_json(paths: &ConfigPaths, binding: WorkflowBindingSpec) -> V
     let filter_pattern = workflow_filter_pattern(binding.filter.as_ref());
     let ignore_filters =
         serde_json::to_value(&binding.ignore_filters).unwrap_or_else(|_| Value::Array(Vec::new()));
+    let contact_ids = binding.contact_ids.clone();
     let monitor = binding.slug.starts_with("monitor-")
         || (matches!(binding.action, ActionSpec::TriageAgent { .. })
             && binding.description.to_ascii_lowercase().contains("monitor"));
@@ -320,6 +321,7 @@ fn workflow_binding_json(paths: &ConfigPaths, binding: WorkflowBindingSpec) -> V
         "model": model,
         "filter_pattern": filter_pattern,
         "ignore_filters": ignore_filters,
+        "contact_ids": contact_ids,
         "monitor": monitor,
         "monitor_memory_path": monitor_memory_path,
         "created_at_ms": binding.created_at_ms,
@@ -502,6 +504,7 @@ fn file_append_binding_from_params(
             })
         }),
         ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
         classify_prompt: None,
         classify_model: None,
         action,
@@ -849,6 +852,7 @@ mod tests {
             status: WorkflowBindingStatus::Paused,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: ActionSpec::TriageAgent {

@@ -848,6 +848,91 @@
   gap: 10px;
 }
 
+.pf-task-contact-scope {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pf-task-contact-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pf-task-contact-all,
+.pf-task-contact-option {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.pf-task-contact-all {
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.pf-task-contact-all input,
+.pf-task-contact-option input {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  accent-color: var(--puffer-accent);
+}
+
+.pf-task-contact-options {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--background) 98%, var(--muted));
+}
+
+.pf-task-contact-option {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pf-task-contact-option:last-child {
+  border-bottom: 0;
+}
+
+.pf-task-contact-option[data-saved="true"] {
+  background: color-mix(in oklab, var(--puffer-accent) 5%, transparent);
+}
+
+.pf-task-contact-option span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pf-task-contact-option strong,
+.pf-task-contact-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-task-contact-option strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pf-task-contact-option small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
 .pf-task-config-row label,
 .pf-task-config-memory-select {
   min-width: 0;

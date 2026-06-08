@@ -23,6 +23,8 @@ mod command_match;
 mod connection;
 mod connector_process;
 mod connector_stream;
+mod contact_history;
+mod contacts;
 mod history;
 mod manager;
 mod protocol;
@@ -50,6 +52,14 @@ pub use catalog_store::{ConnectorCatalogStore, ConnectorCatalogStoreError};
 pub use classify::{Classifier, ClassifyDecision, NullClassifier, RemoteClassifier};
 pub use connection::{
     ConnectionRecord, ConnectionSlug, ConnectionState, ConnectionStore, ConnectionStoreError,
+};
+pub use contacts::{
+    connector_contacts_for_connector, connector_slug_accepts_contact_id,
+    connector_slugs_for_contact_id, contact_filter_matches, contact_id_prefix,
+    contact_ids_for_connector, contact_ids_from_payload, normalize_contact_id,
+    normalize_contact_ids, ConnectorContact, ContactContext, ContactProposal, SavedContact,
+    DISCORD_CONTACT_PREFIX, GOOGLE_CONTACT_PREFIX, LARK_CONTACT_PREFIX, MATRIX_CONTACT_PREFIX,
+    SLACK_CONTACT_PREFIX, TELEGRAM_CONTACT_PREFIX,
 };
 pub use history::{
     now_ms, WorkflowActionLog, WorkflowBindingRun, WorkflowBindingRunStatus, WorkflowHistoryStore,

@@ -283,6 +283,7 @@ mod tests {
             status: WorkflowBindingStatus::Enabled,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: if monitor {

@@ -466,6 +466,7 @@ mod tests {
             status: WorkflowBindingStatus::Enabled,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: ActionSpec::RunWorkflow {
@@ -582,9 +583,15 @@ mod tests {
             "running run is in-flight"
         );
         // Complete it successfully
-        let result = ActionResult { success: true, summary: "ok".into(), usage: None };
+        let result = ActionResult {
+            success: true,
+            summary: "ok".into(),
+            usage: None,
+        };
         // idx 1 is the running run
-        store.complete_action_result(1, &triage(), &result, 10, 30).unwrap();
+        store
+            .complete_action_result(1, &triage(), &result, 10, 30)
+            .unwrap();
         assert_eq!(
             store.dedup_decision("demo", "d", MAX_FAILED_ATTEMPTS),
             DedupDecision::DuplicateOrInflight,

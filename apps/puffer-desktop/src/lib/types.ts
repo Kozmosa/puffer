@@ -740,9 +740,45 @@ export type WorkflowBinding = {
   model?: string | null;
   filter_pattern?: string | null;
   ignore_filters?: WorkflowFilterRule[];
+  contact_ids?: string[];
   monitor?: boolean;
   monitor_memory_path?: string | null;
   created_at_ms?: number | null;
+};
+
+export type ContactContextItem = {
+  kind: string;
+  text: string;
+  timestamp_ms?: number | null;
+  payload?: Record<string, unknown> | null;
+};
+
+export type ConnectorContact = {
+  id: string;
+  avatar?: string | null;
+  name?: string | null;
+  context?: ContactContextItem[];
+  score?: number;
+};
+
+export type SavedContact = {
+  id: string;
+  name: string;
+  description: string;
+  avatar?: string | null;
+  contact_ids: string[];
+};
+
+export type ContactProposal = {
+  name: string;
+  description: string;
+  avatar?: string | null;
+  contact_ids: string[];
+};
+
+export type ContactsSnapshot = {
+  contacts: SavedContact[];
+  candidates: ConnectorContact[];
 };
 
 export type WorkflowBindingCreateRequest = {

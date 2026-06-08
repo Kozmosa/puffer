@@ -1007,6 +1007,36 @@ async fn dispatch_request(
         "save_proxy_settings" => respond!(detached!(|s, p| handle_save_proxy_settings(&s, &p))),
         "save_secret" => respond!(detached!(|s, p| handle_save_secret(&s, &p))),
         "delete_secret" => respond!(detached!(|s, p| handle_delete_secret(&s, &p))),
+        "contacts_list" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_list(s.config_paths(), &p)
+            }))
+        }
+        "contacts_search" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_search(s.config_paths(), &p)
+            }))
+        }
+        "contacts_context" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_context(s.config_paths(), &p)
+            }))
+        }
+        "contacts_save" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_save(s.config_paths(), &p)
+            }))
+        }
+        "contacts_delete" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_delete(s.config_paths(), &p)
+            }))
+        }
+        "contacts_infer" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_infer(s.config_paths(), &p)
+            }))
+        }
         "telegram_rank_relationships" => {
             respond!(detached!(|s, p| handle_telegram_rank_relationships(&s, &p)))
         }
@@ -1644,8 +1674,7 @@ fn handle_telegram_rank_relationships(state: &DaemonState, params: &Value) -> Re
         crate::daemon_telegram_ranking::ModelBackend::local()
     } else {
         let auth_path = state.config_paths().user_config_dir.join("auth.json");
-        let auth_store =
-            AuthStore::load(&auth_path).context("load auth store for cloud model")?;
+        let auth_store = AuthStore::load(&auth_path).context("load auth store for cloud model")?;
         let key = match auth_store.providers.get("openai") {
             Some(StoredCredential::ApiKey { key }) => key.clone(),
             _ => anyhow::bail!(
@@ -1655,7 +1684,13 @@ fn handle_telegram_rank_relationships(state: &DaemonState, params: &Value) -> Re
         crate::daemon_telegram_ranking::ModelBackend::cloud(key)
     };
 
-    crate::daemon_telegram_ranking::run(&diagnostics, &state.event_sender(), &slug, &backend, now_ms)
+    crate::daemon_telegram_ranking::run(
+        &diagnostics,
+        &state.event_sender(),
+        &slug,
+        &backend,
+        now_ms,
+    )
 }
 
 /// Picks a default Telegram account: the first sub-directory of

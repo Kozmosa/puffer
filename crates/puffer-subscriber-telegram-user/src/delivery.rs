@@ -202,14 +202,16 @@ fn append_message_diagnostic(
     let now_ms = now_unix_millis();
     let chat = message.chat();
     let (chat_kind, chat_title, chat_username) = describe_chat(&chat);
+    let chat_is_bot = telegram_chat_is_bot(&chat);
     let date_ms = i128::from(message.date().timestamp_millis());
-    let (sender_id, sender_username, sender_name) = match message.sender() {
+    let (sender_id, sender_username, sender_name, sender_is_bot) = match message.sender() {
         Some(sender) => (
             Some(sender.id()),
             sender.username().map(|value| value.to_string()),
             Some(sender.name().to_string()),
+            telegram_chat_is_bot(&sender),
         ),
-        None => (None, None, None),
+        None => (None, None, None, false),
     };
     let record = json!({
         "at_ms": now_ms,
@@ -219,9 +221,11 @@ fn append_message_diagnostic(
         "chat_kind": chat_kind,
         "chat_title": chat_title,
         "chat_username": chat_username,
+        "chat_is_bot": chat_is_bot,
         "sender_id": sender_id,
         "sender_username": sender_username,
         "sender_name": sender_name,
+        "sender_is_bot": sender_is_bot,
         "message_id": message.id(),
         "date_ms": date_ms,
         "source_received_at_ms": source_received_at_ms,
@@ -254,6 +258,10 @@ fn describe_chat(chat: &Chat) -> (&'static str, Option<String>, Option<String>) 
             chat.username().map(|value| value.to_string()),
         ),
     }
+}
+
+fn telegram_chat_is_bot(chat: &Chat) -> bool {
+    matches!(chat, Chat::User(user) if user.raw.bot)
 }
 
 fn truncate_text(value: &str, max_chars: usize) -> String {

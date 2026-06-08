@@ -398,6 +398,7 @@ fn workflow_binding(
         status,
         filter: None,
         ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
         classify_prompt: None,
         classify_model: None,
         action: ActionSpec::RunWorkflow {

@@ -210,6 +210,7 @@ fn sync_subscription_trigger(paths: &ConfigPaths, definition: &WorkflowDefinitio
         },
         filter,
         ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
         classify_prompt,
         classify_model: None,
         action: ActionSpec::RunWorkflow {

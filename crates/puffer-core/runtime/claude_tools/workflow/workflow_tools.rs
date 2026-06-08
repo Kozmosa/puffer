@@ -151,6 +151,7 @@ pub fn execute_workflow_create(_state: &mut AppState, cwd: &Path, input: Value) 
         status: workflow_status(parsed.enabled.unwrap_or(true)),
         filter,
         ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
         classify_prompt: parsed.classify_prompt,
         classify_model: parsed.classify_model,
         action,

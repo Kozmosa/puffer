@@ -1,8 +1,13 @@
 use super::*;
+use crate::action::ActionResult;
+use crate::catalog::ConnectorTemplate;
 use crate::connection::ConnectionRecord;
 use crate::spec::{ActionSpec, WorkflowBindingSpec, WorkflowBindingStatus};
-use puffer_subscriber_runtime::SubscriberCommand;
+use puffer_subscriber_runtime::{Event, EventEnvelope, SubscriberCommand};
+use serde_json::json;
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 #[test]
@@ -151,6 +156,7 @@ fn auth_refresh_does_not_degrade_connections_without_checker() {
             status: WorkflowBindingStatus::Enabled,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: ActionSpec::RunWorkflow {
@@ -167,6 +173,153 @@ fn auth_refresh_does_not_degrade_connections_without_checker() {
     assert!(notices.is_empty());
     assert_eq!(connection.state, ConnectionState::Active);
     assert!(!connection.auth_failure_notified);
+
+    manager.shutdown();
+}
+
+#[test]
+fn connector_stream_restarts_when_contact_scope_changes() {
+    let temp = tempdir().unwrap();
+    let (script, log) = write_stream_logger(temp.path());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let manager = SubscriptionManagerBuilder::new(temp.path().join("subscriptions.json"))
+        .build(runtime.handle().clone())
+        .unwrap();
+    manager
+        .connector_store()
+        .upsert(stream_connector_template(&script, &log))
+        .unwrap();
+    manager
+        .connection_store()
+        .create(ConnectionRecord::authenticated(
+            "chat",
+            "telegram-login",
+            "test chat",
+        ))
+        .unwrap();
+
+    manager
+        .store()
+        .upsert(test_binding(
+            "chat-monitor",
+            "chat",
+            vec!["google@alice@example.com".into(), "telegram@alice".into()],
+        ))
+        .unwrap();
+    manager.refresh_connection_consumers().unwrap();
+    let commands = wait_for_subscribe_commands(&log, 1);
+    assert_eq!(commands[0]["contact_ids"], json!(["telegram@alice"]));
+
+    manager
+        .store()
+        .upsert(test_binding(
+            "chat-monitor",
+            "chat",
+            vec!["telegram@bob".into()],
+        ))
+        .unwrap();
+    manager.refresh_connection_consumers().unwrap();
+    let commands = wait_for_subscribe_commands(&log, 2);
+    assert_eq!(commands[1]["contact_ids"], json!(["telegram@bob"]));
+
+    manager
+        .store()
+        .upsert(test_binding("chat-all", "chat", Vec::new()))
+        .unwrap();
+    manager.refresh_connection_consumers().unwrap();
+    let commands = wait_for_subscribe_commands(&log, 3);
+    assert!(commands[2].get("contact_ids").is_none());
+
+    manager.shutdown();
+}
+
+#[test]
+fn no_command_connector_contacts_fall_back_to_history() {
+    let temp = tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let manager = SubscriptionManagerBuilder::new(temp.path().join("subscriptions.json"))
+        .build(runtime.handle().clone())
+        .unwrap();
+    manager
+        .connection_store()
+        .create(ConnectionRecord::authenticated(
+            "work-gmail",
+            "gmail-browser",
+            "Work Gmail",
+        ))
+        .unwrap();
+    let binding = WorkflowBindingSpec {
+        slug: "gmail-monitor".into(),
+        description: "gmail monitor".into(),
+        connection_slug: "work-gmail".into(),
+        connector_slug: Some("gmail-browser".into()),
+        status: WorkflowBindingStatus::Enabled,
+        filter: None,
+        ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
+        classify_prompt: None,
+        classify_model: None,
+        action: ActionSpec::RunWorkflow {
+            slug: "demo".into(),
+        },
+        created_at_ms: 0,
+    };
+    let envelope = EventEnvelope {
+        envelope_id: "env-1".into(),
+        subscriber_id: "work-gmail".into(),
+        received_at_ms: 1_700_000_000_000,
+        event: Event {
+            topic: "work-gmail".into(),
+            kind: "message".into(),
+            control: false,
+            dedup_key: None,
+            text: "Alice sent the quarterly launch checklist".into(),
+            payload: json!({
+                "from": "Alice <Alice@Example.COM>",
+                "subject": "Quarterly launch checklist"
+            }),
+        },
+    };
+    manager
+        .history_store()
+        .append_action_result(
+            &binding,
+            &envelope,
+            &binding.action,
+            &ActionResult::success("ok"),
+            1_700_000_000_000,
+            1_700_000_000_100,
+        )
+        .unwrap();
+
+    let contacts = manager
+        .list_connector_contacts("work-gmail", None, Some(10))
+        .unwrap()
+        .unwrap();
+    assert_eq!(contacts[0].id, "google@alice@example.com");
+    let searched = manager
+        .search_connector_contacts("work-gmail", "checklist".into(), Some(10))
+        .unwrap()
+        .unwrap();
+    assert_eq!(searched[0].id, "google@alice@example.com");
+    let (ids, context) = manager
+        .connector_contact_context(
+            "work-gmail",
+            vec!["telegram@alice".into(), "google@alice@example.com".into()],
+            Some(5),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ids, vec!["google@alice@example.com"]);
+    assert_eq!(context[0].text, "Alice sent the quarterly launch checklist");
 
     manager.shutdown();
 }
@@ -346,4 +499,89 @@ printf '%s\n' '{"topic":"restart-topic","kind":"done","text":"retried"}'
     assert_eq!(envelope.event.text, "retried");
 
     manager.shutdown();
+}
+
+fn write_stream_logger(dir: &Path) -> (PathBuf, PathBuf) {
+    let script = dir.join("stream.sh");
+    let log = dir.join("subscribes.ndjson");
+    std::fs::write(
+        &script,
+        r#"log="$1"
+IFS= read -r line || exit 0
+printf '%s\n' "$line" >> "$log"
+while IFS= read -r _line; do
+  :
+done
+"#,
+    )
+    .unwrap();
+    (script, log)
+}
+
+fn stream_connector_template(script: &Path, log: &Path) -> ConnectorTemplate {
+    ConnectorTemplate {
+        slug: "telegram-login".into(),
+        description: "Test stream connector".into(),
+        skill: "test-stream".into(),
+        binary: "sh".into(),
+        command: vec![
+            "sh".into(),
+            script.display().to_string(),
+            log.display().to_string(),
+        ],
+        requires_auth: false,
+        can_subscribe: true,
+        can_proxy_agent: false,
+        subscriber: None,
+        output_schema: Value::Null,
+        actions: BTreeMap::new(),
+    }
+}
+
+fn test_binding(
+    slug: &str,
+    connection_slug: &str,
+    contact_ids: Vec<String>,
+) -> WorkflowBindingSpec {
+    WorkflowBindingSpec {
+        slug: slug.into(),
+        description: "test binding".into(),
+        connection_slug: connection_slug.into(),
+        connector_slug: Some("telegram-login".into()),
+        status: WorkflowBindingStatus::Enabled,
+        filter: None,
+        ignore_filters: Vec::new(),
+        contact_ids,
+        classify_prompt: None,
+        classify_model: None,
+        action: ActionSpec::RunWorkflow {
+            slug: "demo".into(),
+        },
+        created_at_ms: 0,
+    }
+}
+
+fn wait_for_subscribe_commands(path: &Path, expected: usize) -> Vec<Value> {
+    for _ in 0..200 {
+        let commands = read_subscribe_commands(path);
+        if commands.len() >= expected {
+            return commands;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let commands = read_subscribe_commands(path);
+    panic!(
+        "timed out waiting for {expected} subscribe commands, got {}: {:?}",
+        commands.len(),
+        commands
+    );
+}
+
+fn read_subscribe_commands(path: &Path) -> Vec<Value> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    raw.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect()
 }

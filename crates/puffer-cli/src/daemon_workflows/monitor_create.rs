@@ -16,6 +16,8 @@ struct MonitorCreateParams {
     connection_slug: String,
     #[serde(default, deserialize_with = "deserialize_model_update")]
     model: Option<Option<String>>,
+    #[serde(default)]
+    contact_ids: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,13 +26,20 @@ enum MonitorModelUpdate {
     Set(Option<String>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MonitorContactUpdate {
+    Preserve,
+    Set(Vec<String>),
+}
+
 /// Creates or resumes a monitor workflow binding and returns the refreshed snapshot.
 pub(crate) fn handle_monitor_create(paths: &ConfigPaths, params: &Value) -> Result<Value> {
     let params: MonitorCreateParams =
         serde_json::from_value(params.clone()).context("invalid monitor create params")?;
     let connection_slug = normalized_connection_slug(&params.connection_slug)?;
     let model_update = normalized_model_update(params.model);
-    create_or_resume_monitor(paths, &connection_slug, model_update)?;
+    let contact_update = normalized_contact_update(params.contact_ids);
+    create_or_resume_monitor(paths, &connection_slug, model_update, contact_update)?;
     super::handle_workflow_list(paths)
 }
 
@@ -38,6 +47,7 @@ fn create_or_resume_monitor(
     paths: &ConfigPaths,
     connection_slug: &str,
     model_update: MonitorModelUpdate,
+    contact_update: MonitorContactUpdate,
 ) -> Result<()> {
     let manager = subscription_manager()?;
     manager.refresh_connection_auth()?;
@@ -82,6 +92,7 @@ fn create_or_resume_monitor(
                 &template.description,
                 &memory_path,
                 &model_update,
+                &contact_update,
             )?;
             binding
         }
@@ -91,6 +102,7 @@ fn create_or_resume_monitor(
             &template.description,
             &memory_path,
             model_update.model(None).as_deref(),
+            contact_update.ids(None),
         )?,
     };
     manager.store().upsert(binding)?;
@@ -148,6 +160,7 @@ fn monitor_binding(
     connector_description: &str,
     memory_path: &Path,
     model: Option<&str>,
+    contact_ids: Vec<String>,
 ) -> Result<WorkflowBindingSpec> {
     Ok(WorkflowBindingSpec {
         slug: monitor_slug(connection_slug),
@@ -157,6 +170,7 @@ fn monitor_binding(
         status: super::workflow_status(true),
         filter: None,
         ignore_filters: Vec::new(),
+        contact_ids: contact_ids.clone(),
         classify_prompt: None,
         classify_model: None,
         action: monitor_action(
@@ -165,6 +179,7 @@ fn monitor_binding(
             connector_description,
             memory_path,
             model,
+            &contact_ids,
         )?,
         created_at_ms: puffer_subscriptions::now_ms(),
     })
@@ -177,17 +192,21 @@ fn refresh_monitor_binding(
     connector_description: &str,
     memory_path: &Path,
     model_update: &MonitorModelUpdate,
+    contact_update: &MonitorContactUpdate,
 ) -> Result<()> {
     let model = model_update.model(monitor_action_model(&binding.action));
+    let contact_ids = contact_update.ids(Some(binding.contact_ids.clone()));
     binding.description = format!("Monitor {connection_slug} for actionable tasks");
     binding.connection_slug = connection_slug.to_string();
     binding.connector_slug = Some(connector_slug.to_string());
+    binding.contact_ids = contact_ids.clone();
     binding.action = monitor_action(
         connection_slug,
         connector_slug,
         connector_description,
         memory_path,
         model.as_deref(),
+        &contact_ids,
     )?;
     Ok(())
 }
@@ -198,12 +217,14 @@ fn monitor_action(
     connector_description: &str,
     memory_path: &Path,
     model: Option<&str>,
+    contact_ids: &[String],
 ) -> Result<ActionSpec> {
     let action_prompt = monitor_triage_prompt(
         connection_slug,
         connector_slug,
         connector_description,
         memory_path,
+        contact_ids,
     );
     Ok(ActionSpec::TriageAgent {
         prompt: action_prompt,
@@ -230,6 +251,13 @@ fn normalized_model_update(value: Option<Option<String>>) -> MonitorModelUpdate 
     }
 }
 
+fn normalized_contact_update(value: Option<Vec<String>>) -> MonitorContactUpdate {
+    match value {
+        None => MonitorContactUpdate::Preserve,
+        Some(ids) => MonitorContactUpdate::Set(puffer_subscriptions::normalize_contact_ids(ids)),
+    }
+}
+
 fn deserialize_model_update<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<Option<String>>, D::Error>
@@ -244,6 +272,15 @@ impl MonitorModelUpdate {
         match self {
             Self::Preserve => current,
             Self::Set(model) => model.clone(),
+        }
+    }
+}
+
+impl MonitorContactUpdate {
+    fn ids(&self, current: Option<Vec<String>>) -> Vec<String> {
+        match self {
+            Self::Preserve => current.unwrap_or_default(),
+            Self::Set(ids) => ids.clone(),
         }
     }
 }
@@ -292,11 +329,18 @@ fn monitor_triage_prompt(
     connector_slug: &str,
     connector_description: &str,
     memory_path: &Path,
+    contact_ids: &[String],
 ) -> String {
+    let contact_scope = if contact_ids.is_empty() {
+        "all contacts".to_string()
+    } else {
+        contact_ids.join(", ")
+    };
     format!(
-        "You are the background monitor triage agent for connection `{connection_slug}` ({connector_slug}). Connector description: {connector_description}\n\nFor every new connector event:\n1. Read `{}` if it exists and use it only as task-creation guidance.\n2. If the event matches ignore memory, do not create a task; briefly report that it was ignored. Do not edit memory or subscription filters.\n3. Muted or silent notification events are filtered before this agent runs. If an event payload still says `notification_muted` or `notification_silent`, do not create a task.\n4. Otherwise decide whether the event represents an ongoing actionable task based on the connector description, event text, and structured payload.\n5. Use TaskList first to avoid duplicates. Use TaskCreate for new tasks and TaskUpdate for materially changed existing monitor tasks.\n6. Every monitor TaskCreate MUST include `receivedAt` from the workflow trigger's RFC3339 `receivedAt` field and an RFC3339 `expiresAt` chosen from the event urgency. If no better deadline is evident, set `expiresAt` 24 hours after `receivedAt`.\n7. Every monitor TaskCreate MUST include metadata with `_monitor: true`, `monitor_connection: \"{connection_slug}\"`, `monitor_connector: \"{connector_slug}\"`, and `monitor_memory_path: \"{}\"`, and `monitor_envelope_id` copied from the workflow trigger's `envelope_id`.\n8. If the structured event payload contains stable scalar source identity fields, copy those exact key/value pairs into top-level task metadata using the original payload key names. Stable identity means durable scope fields such as `chat_id`, `channel_id`, `room_id`, `conversation_id`, `thread_id`, `mailbox_id`, or `project_id`, paired with durable actor/source fields such as `sender_id`, `sender_username`, `from_email`, `author_id`, `author_handle`, or `account_id`.\n9. Never infer source identity from unstructured text. Do not use per-event fields such as `message_id`, `event_id`, `dedup_key`, timestamps, message text, body, subject, content, or title as ignore identity metadata.\n10. Do not add any metadata field named `monitor_ignore_filter`, `event_ignore_filter`, or `ignore_filter`; ignore filter installation is daemon-owned.\n11. Every monitor TaskCreate SHOULD include `actions`: an array of objects with `actionName` and `actionPrompt`, and `possibleIgnoreReasons`: a short array of suggested ignore reasons.\n12. Keep action prompts ready to send to the current coding agent. Include enough source context from the connector event for the agent to act without rereading the whole stream.\n\nDo not send connector replies unless a selected action later asks for it.",
+        "You are the background monitor triage agent for connection `{connection_slug}` ({connector_slug}). Connector description: {connector_description}. Contact scope: {contact_scope}\n\nFor every new connector event:\n1. Read `{}` if it exists and use it only as task-creation guidance.\n2. If the event matches ignore memory, do not create a task; briefly report that it was ignored. Do not edit memory or subscription filters.\n3. Muted or silent notification events are filtered before this agent runs. If an event payload still says `notification_muted` or `notification_silent`, do not create a task.\n4. Otherwise decide whether the event represents an ongoing actionable task based on the connector description, event text, and structured payload.\n5. Use TaskList first to avoid duplicates. Use TaskCreate for new tasks and TaskUpdate for materially changed existing monitor tasks.\n6. Every monitor TaskCreate MUST include `receivedAt` from the workflow trigger's RFC3339 `receivedAt` field and an RFC3339 `expiresAt` chosen from the event urgency. If no better deadline is evident, set `expiresAt` 24 hours after `receivedAt`.\n7. Every monitor TaskCreate MUST include metadata with `_monitor: true`, `monitor_connection: \"{connection_slug}\"`, `monitor_connector: \"{connector_slug}\"`, `monitor_memory_path: \"{}\"`, `monitor_contact_ids: {:?}`, and `monitor_envelope_id` copied from the workflow trigger's `envelope_id`.\n8. If the structured event payload contains stable scalar source identity fields, copy those exact key/value pairs into top-level task metadata using the original payload key names. Stable identity means durable scope fields such as `chat_id`, `channel_id`, `room_id`, `conversation_id`, `thread_id`, `mailbox_id`, or `project_id`, paired with durable actor/source fields such as `sender_id`, `sender_username`, `from_email`, `author_id`, `author_handle`, or `account_id`.\n9. Never infer source identity from unstructured text. Do not use per-event fields such as `message_id`, `event_id`, `dedup_key`, timestamps, message text, body, subject, content, or title as ignore identity metadata.\n10. Do not add any metadata field named `monitor_ignore_filter`, `event_ignore_filter`, or `ignore_filter`; ignore filter installation is daemon-owned.\n11. Every monitor TaskCreate SHOULD include `actions`: an array of objects with `actionName` and `actionPrompt`, and `possibleIgnoreReasons`: a short array of suggested ignore reasons.\n12. Keep action prompts ready to send to the current coding agent. Include enough source context from the connector event for the agent to act without rereading the whole stream.\n\nDo not send connector replies unless a selected action later asks for it.",
         memory_path.display(),
-        memory_path.display()
+        memory_path.display(),
+        contact_ids
     )
 }
 
@@ -376,11 +420,14 @@ mod tests {
             "telegram-login",
             "Personal Telegram",
             &memory_path,
+            &["telegram@alice".to_string()],
         );
 
         assert!(prompt.contains("TaskCreate MUST include metadata"));
         assert!(prompt.contains("monitor_connection: \"telegram-user\""));
         assert!(prompt.contains("monitor_connector: \"telegram-login\""));
+        assert!(prompt.contains("monitor_contact_ids"));
+        assert!(prompt.contains("telegram@alice"));
         assert!(prompt.contains("monitor_envelope_id"));
         assert!(prompt.contains("Never infer source identity"));
         assert!(prompt.contains("Do not add any metadata field named"));
@@ -398,6 +445,7 @@ mod tests {
             "old feed",
             &old_path,
             Some("openai/gpt-5.4"),
+            vec!["google@alerts@example.com".to_string()],
         )
         .unwrap();
         binding
@@ -414,10 +462,12 @@ mod tests {
             "updated feed",
             &new_path,
             &MonitorModelUpdate::Preserve,
+            &MonitorContactUpdate::Preserve,
         )
         .unwrap();
 
         assert_eq!(binding.ignore_filters.len(), 1);
+        assert_eq!(binding.contact_ids, vec!["google@alerts@example.com"]);
         match binding.action {
             ActionSpec::TriageAgent { prompt, model } => {
                 assert!(prompt.contains("updated feed"));
@@ -440,6 +490,7 @@ mod tests {
             "old feed",
             &path,
             Some("openai/gpt-5.4"),
+            Vec::new(),
         )
         .unwrap();
 
@@ -450,6 +501,7 @@ mod tests {
             "updated feed",
             &path,
             &MonitorModelUpdate::Set(Some("anthropic/claude-sonnet-4-5".to_string())),
+            &MonitorContactUpdate::Set(vec!["telegram@alice".to_string()]),
         )
         .unwrap();
 
@@ -457,6 +509,7 @@ mod tests {
             monitor_action_model(&binding.action).as_deref(),
             Some("anthropic/claude-sonnet-4-5")
         );
+        assert_eq!(binding.contact_ids, vec!["telegram@alice"]);
 
         refresh_monitor_binding(
             &mut binding,
@@ -465,9 +518,11 @@ mod tests {
             "updated feed",
             &path,
             &MonitorModelUpdate::Set(None),
+            &MonitorContactUpdate::Set(Vec::new()),
         )
         .unwrap();
 
         assert_eq!(monitor_action_model(&binding.action), None);
+        assert!(binding.contact_ids.is_empty());
     }
 }

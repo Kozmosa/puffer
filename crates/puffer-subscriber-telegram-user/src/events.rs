@@ -60,6 +60,7 @@ pub fn build_message_event(
 ) -> Event {
     let chat = message.chat();
     let (chat_kind, chat_title, chat_username) = describe_chat(&chat);
+    let chat_is_bot = telegram_chat_is_bot(&chat);
     let chat_id = chat.id();
     let message_id = message.id();
     let date_ms = message.date().timestamp_millis();
@@ -67,13 +68,14 @@ pub fn build_message_event(
     let is_outgoing = message.outgoing();
     let emit_at_ms = now_unix_millis();
 
-    let (sender_id, sender_username, sender_name) = match message.sender() {
+    let (sender_id, sender_username, sender_name, sender_is_bot) = match message.sender() {
         Some(s) => (
             Some(s.id()),
             s.username().map(|u| u.to_string()),
             Some(s.name().to_string()),
+            telegram_chat_is_bot(&s),
         ),
-        None => (None, None, None),
+        None => (None, None, None, false),
     };
 
     let kind = if matches!(chat, Chat::Channel(_)) {
@@ -91,6 +93,7 @@ pub fn build_message_event(
     if let Some(username) = chat_username {
         payload.insert("chat_username".to_string(), json!(username));
     }
+    payload.insert("chat_is_bot".to_string(), json!(chat_is_bot));
     if let Some(id) = sender_id {
         payload.insert("sender_id".to_string(), json!(id));
     }
@@ -100,6 +103,7 @@ pub fn build_message_event(
     if let Some(name) = sender_name {
         payload.insert("sender_name".to_string(), json!(name));
     }
+    payload.insert("sender_is_bot".to_string(), json!(sender_is_bot));
     payload.insert("message_id".to_string(), json!(message_id));
     payload.insert("date".to_string(), json!(date));
     payload.insert("date_ms".to_string(), json!(date_ms));
@@ -177,4 +181,8 @@ fn describe_chat(chat: &Chat) -> (&'static str, Option<String>, Option<String>) 
             chat.username().map(|u| u.to_string()),
         ),
     }
+}
+
+fn telegram_chat_is_bot(chat: &Chat) -> bool {
+    matches!(chat, Chat::User(user) if user.raw.bot)
 }

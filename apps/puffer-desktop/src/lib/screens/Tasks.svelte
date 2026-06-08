@@ -7,6 +7,7 @@
     deleteMonitor,
     ignoreMonitorTask,
     listProviderModels,
+    loadContacts,
     loadMonitorHistory,
     loadSettingsSnapshot,
     loadWorkflowSnapshot,
@@ -16,6 +17,8 @@
   import Icon from "../design/Icon.svelte";
   import { providerIsAvailableForAgent, providerIdsEquivalent } from "../providerIds";
   import type {
+    ContactsSnapshot,
+    ConnectorContact,
     ProviderSummary,
     SettingsSnapshot,
     WorkflowActionUsage,
@@ -40,6 +43,13 @@
   type TaskModelOption = {
     selector: string;
     label: string;
+  };
+  type ContactChoice = {
+    key: string;
+    label: string;
+    description: string;
+    ids: string[];
+    saved: boolean;
   };
 
   let { onRunTaskCommand }: Props = $props();
@@ -83,6 +93,10 @@
   let taskModelOptions = $state<TaskModelOption[]>([]);
   let taskModelLoading = $state(false);
   let taskModelLoadError = $state<string | null>(null);
+  let contactSnapshot = $state<ContactsSnapshot>({ contacts: [], candidates: [] });
+  let contactsLoading = $state(false);
+  let selectedMonitorContactIds = $state<string[]>([]);
+  let contactScopeBindingKey = "";
   let refreshGeneration = 0;
   let taskModelGeneration = 0;
 
@@ -137,6 +151,7 @@
   let selectedHistoryIgnoreTasks = $derived(
     selectedHistoryMessage ? ignoreTasksForHistory(selectedHistoryMessage) : []
   );
+  let contactChoices = $derived(contactScopeChoices());
 
   onMount(() => {
     void refresh();
@@ -159,6 +174,14 @@
   $effect(() => {
     if (!showTaskConfig) return;
     selectedMonitorModel = selectedMonitorBinding?.model ?? "";
+  });
+
+  $effect(() => {
+    if (!showTaskConfig) return;
+    const nextKey = selectedMonitorBinding?.slug ?? `connection:${selectedMonitorConnection}`;
+    if (contactScopeBindingKey === nextKey) return;
+    contactScopeBindingKey = nextKey;
+    selectedMonitorContactIds = selectedMonitorBinding?.contact_ids ?? [];
   });
 
   $effect(() => {
@@ -448,6 +471,19 @@
     return binding.model?.trim() || "default";
   }
 
+  async function loadContactScopeOptions() {
+    if (contactsLoading) return;
+    contactsLoading = true;
+    try {
+      contactSnapshot = await loadContacts(80);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      notice = `Could not load contacts: ${message}`;
+    } finally {
+      contactsLoading = false;
+    }
+  }
+
   async function createSelectedMonitor(event?: SubmitEvent) {
     event?.preventDefault();
     if (!selectedMonitorConnection || selectedMonitorNeedsRepair || creatingMonitor) return;
@@ -456,12 +492,16 @@
     const selectedModel = selectedMonitorModel.trim();
     creatingMonitor = true;
     try {
-      const next = await createMonitor(selectedMonitorConnection, selectedModel || null);
+      const next = await createMonitor(
+        selectedMonitorConnection,
+        selectedModel || null,
+        normalizedContactIds(selectedMonitorContactIds)
+      );
       applySnapshot(next);
       showTaskConfig = false;
       const action = wasUpdate ? "updated" : "created";
       const model = selectedModel || "default model";
-      notice = `Monitor ${action} for ${connection?.slug ?? selectedMonitorConnection} using ${model}.`;
+      notice = `Monitor ${action} for ${connection?.slug ?? selectedMonitorConnection} using ${model} and ${monitorContactScopeLabel(selectedMonitorContactIds)}.`;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       notice = `Could not configure monitor: ${message}`;
@@ -637,7 +677,7 @@
 
   function bindingFilterLabel(binding: WorkflowBinding): string {
     const status = binding.enabled ? "active" : "paused";
-    return `${binding.connection_slug} - ${bindingFilterSummary(binding)} (${status})`;
+    return `${binding.connection_slug} - ${bindingFilterSummary(binding)} - ${monitorContactScopeLabel(binding.contact_ids ?? [])} (${status})`;
   }
 
   function monitorCountLabel(count: number): string {
@@ -647,7 +687,79 @@
   function monitorRowSummary(binding: WorkflowBinding): string {
     const connector = binding.connector_slug?.trim() || "connector";
     const status = binding.enabled ? "active" : "paused";
-    return `${connector} - ${monitorModelLabel(binding)} - ${bindingFilterSummary(binding)} - ${status}`;
+    return `${connector} - ${monitorModelLabel(binding)} - ${bindingFilterSummary(binding)} - ${monitorContactScopeLabel(binding.contact_ids ?? [])} - ${status}`;
+  }
+
+  function contactScopeChoices(): ContactChoice[] {
+    const usedIds = new Set<string>();
+    const choices: ContactChoice[] = [];
+    for (const contact of contactSnapshot.contacts) {
+      const ids = normalizedContactIds(contact.contact_ids);
+      if (ids.length === 0) continue;
+      ids.forEach((id) => usedIds.add(id));
+      choices.push({
+        key: `saved:${contact.id}`,
+        label: contact.name,
+        description: contact.description || ids.join(", "),
+        ids,
+        saved: true
+      });
+    }
+    for (const candidate of contactSnapshot.candidates.slice(0, 40)) {
+      const ids = normalizedContactIds([candidate.id]);
+      if (ids.length === 0 || usedIds.has(ids[0])) continue;
+      choices.push({
+        key: `candidate:${candidate.id}`,
+        label: contactCandidateLabel(candidate),
+        description: candidate.context?.[0]?.text?.trim() || candidate.id,
+        ids,
+        saved: false
+      });
+    }
+    return choices;
+  }
+
+  function contactCandidateLabel(candidate: ConnectorContact): string {
+    return candidate.name?.trim() || candidate.id;
+  }
+
+  function normalizedContactIds(ids: string[]): string[] {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const id of ids) {
+      const trimmed = id.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      normalized.push(trimmed);
+    }
+    return normalized;
+  }
+
+  function monitorContactScopeLabel(ids: string[]): string {
+    const count = normalizedContactIds(ids).length;
+    if (count === 0) return "all contacts";
+    return count === 1 ? "1 contact id" : `${count} contact ids`;
+  }
+
+  function contactChoiceSelected(choice: ContactChoice): boolean {
+    const selected = new Set(selectedMonitorContactIds);
+    return choice.ids.length > 0 && choice.ids.every((id) => selected.has(id));
+  }
+
+  function toggleContactChoice(choice: ContactChoice, checked: boolean) {
+    const next = new Set(selectedMonitorContactIds);
+    for (const id of choice.ids) {
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+    }
+    selectedMonitorContactIds = normalizedContactIds(Array.from(next)).sort();
+  }
+
+  function clearContactScope() {
+    selectedMonitorContactIds = [];
   }
 
   function scalarRuleEntries(rule: WorkflowFilterRule): string[] {
@@ -678,8 +790,12 @@
   function openTaskConfig() {
     showTaskConfig = true;
     confirmDeleteMonitorSlug = null;
+    contactScopeBindingKey = "";
     if (taskModelOptions.length === 0) {
       void loadTaskModelOptions();
+    }
+    if (contactSnapshot.contacts.length === 0 && contactSnapshot.candidates.length === 0) {
+      void loadContactScopeOptions();
     }
     if (!configMemoryPath && monitorMemories.length > 0) {
       chooseConfigMemory(monitorMemories[0].path);
@@ -1326,6 +1442,55 @@
           {#if taskModelLoadError}
             <p>{taskModelLoadError}</p>
           {/if}
+          <div class="pf-task-contact-scope">
+            <div class="pf-task-config-section-head">
+              <strong>Contacts</strong>
+              <span>{monitorContactScopeLabel(selectedMonitorContactIds)}</span>
+            </div>
+            <div class="pf-task-contact-actions">
+              <label class="pf-task-contact-all">
+                <input
+                  type="checkbox"
+                  checked={selectedMonitorContactIds.length === 0}
+                  onchange={(event) => {
+                    if ((event.currentTarget as HTMLInputElement).checked) clearContactScope();
+                  }}
+                />
+                <span>All contacts</span>
+              </label>
+              <button
+                type="button"
+                class="sc-btn"
+                data-variant="ghost"
+                data-size="sm"
+                disabled={contactsLoading}
+                onclick={() => void loadContactScopeOptions()}
+              >
+                <Icon name="refresh" size={12} />{contactsLoading ? "Loading" : "Reload"}
+              </button>
+            </div>
+            {#if contactsLoading && contactChoices.length === 0}
+              <p>Loading contacts...</p>
+            {:else if contactChoices.length === 0}
+              <p>No saved contacts or connector candidates are available.</p>
+            {:else}
+              <div class="pf-task-contact-options">
+                {#each contactChoices as choice (choice.key)}
+                  <label class="pf-task-contact-option" data-saved={choice.saved}>
+                    <input
+                      type="checkbox"
+                      checked={contactChoiceSelected(choice)}
+                      onchange={(event) => toggleContactChoice(choice, (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <span>
+                      <strong>{choice.label}</strong>
+                      <small>{choice.description}</small>
+                    </span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+          </div>
         </form>
 
         <section class="pf-task-config-section">
@@ -1406,6 +1571,10 @@
               <div class="pf-task-filter-rule">
                 <span>Model</span>
                 <code>{monitorModelLabel(selectedFilterBinding)}</code>
+              </div>
+              <div class="pf-task-filter-rule">
+                <span>Contacts</span>
+                <code>{monitorContactScopeLabel(selectedFilterBinding.contact_ids ?? [])}</code>
               </div>
               {#if selectedFilterBinding.filter_pattern}
                 <div class="pf-task-filter-rule">

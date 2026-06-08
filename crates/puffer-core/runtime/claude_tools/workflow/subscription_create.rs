@@ -58,6 +58,7 @@ pub fn execute_subscription_create(
         status: SubscriptionStatus::Enabled,
         filter: parsed.filter,
         ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
         classify_prompt: parsed.classify_prompt,
         classify_model: parsed.classify_model,
         action: parsed.action,

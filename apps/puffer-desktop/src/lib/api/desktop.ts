@@ -7,6 +7,9 @@ import type {
   AskUserQuestionItem,
   BrowserRenderer,
   DesktopPinState,
+  ContactContextItem,
+  ContactProposal,
+  ContactsSnapshot,
   DiffSnapshot,
   DraftProxyEndpoint,
   ExternalCredential,
@@ -925,6 +928,57 @@ export async function deleteSecret(id: string): Promise<SettingsSnapshot> {
   });
 }
 
+export async function loadContacts(limit = 60, query?: string): Promise<ContactsSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ContactsSnapshot>("contacts_list", {
+    limit,
+    query: query?.trim() || undefined
+  });
+}
+
+export async function searchContacts(query: string, limit = 30): Promise<ContactsSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ContactsSnapshot>("contacts_search", {
+    query,
+    limit
+  });
+}
+
+export async function saveContact(input: {
+  id?: string;
+  name: string;
+  description: string;
+  avatar?: string | null;
+  contact_ids: string[];
+}): Promise<ContactsSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ContactsSnapshot>("contacts_save", input);
+}
+
+export async function deleteContact(id: string): Promise<ContactsSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ContactsSnapshot>("contacts_delete", { id });
+}
+
+export async function inferContacts(limit = 30): Promise<{
+  proposals: ContactProposal[];
+  candidates: ContactsSnapshot["candidates"];
+}> {
+  const client = await ensureLocalDaemonClient();
+  return client.request("contacts_infer", { limit });
+}
+
+export async function loadContactContext(contactIds: string[], limit = 100): Promise<{
+  contact_ids: string[];
+  context: ContactContextItem[];
+}> {
+  const client = await ensureLocalDaemonClient();
+  return client.request("contacts_context", {
+    contact_ids: contactIds,
+    limit
+  });
+}
+
 export async function importChromeSecrets(): Promise<ChromeSecretsImportResult> {
   if (canReachDaemon()) {
     const client = await ensureLocalDaemonClient();
@@ -1393,14 +1447,18 @@ export async function createWorkflowBinding(binding: WorkflowBindingCreateReques
 /** Create or resume a connector monitor and return the refreshed workflow snapshot. */
 export async function createMonitor(
   connectionSlug: string,
-  model?: string | null
+  model?: string | null,
+  contactIds?: string[]
 ): Promise<WorkflowSnapshot> {
   const client = await ensureLocalDaemonClient();
-  const params: { connection_slug: string; model?: string | null } = {
+  const params: { connection_slug: string; model?: string | null; contact_ids?: string[] } = {
     connection_slug: connectionSlug
   };
   if (model !== undefined) {
     params.model = model?.trim() || null;
+  }
+  if (contactIds !== undefined) {
+    params.contact_ids = contactIds;
   }
   return client.request<WorkflowSnapshot>("task_monitor_create", params);
 }

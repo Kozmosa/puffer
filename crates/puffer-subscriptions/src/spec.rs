@@ -47,6 +47,10 @@ pub struct WorkflowBindingSpec {
     /// action starts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignore_filters: Vec<FilterSpec>,
+    /// Optional normalized contact ids. Empty means the binding receives all
+    /// events on the connection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contact_ids: Vec<String>,
     /// Optional LLM classify step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classify_prompt: Option<String>,
@@ -223,6 +227,7 @@ pub fn validate_workflow_binding(spec: &WorkflowBindingSpec) -> Result<(), Strin
     for filter in &spec.ignore_filters {
         validate_filter(filter)?;
     }
+    validate_contact_ids(&spec.contact_ids)?;
     validate_action(&spec.action)
 }
 
@@ -264,6 +269,15 @@ fn validate_filter(filter: &FilterSpec) -> Result<(), String> {
             if !shape.is_object() {
                 return Err("json filter must be an object shape".into());
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_contact_ids(contact_ids: &[String]) -> Result<(), String> {
+    for contact_id in contact_ids {
+        if crate::contacts::normalize_contact_id(contact_id).is_none() {
+            return Err(format!("contact id `{contact_id}` is invalid"));
         }
     }
     Ok(())
@@ -643,6 +657,7 @@ mod tests {
                 case_insensitive: true,
             })),
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: ActionSpec::SqliteInsert {
@@ -683,6 +698,7 @@ mod tests {
             status: WorkflowBindingStatus::Enabled,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: ActionSpec::SqliteInsert {
@@ -704,6 +720,7 @@ mod tests {
             status: WorkflowBindingStatus::Enabled,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: ActionSpec::FileAppend {

@@ -42,6 +42,7 @@ pub(crate) struct ModelBackend {
 }
 
 impl ModelBackend {
+    /// Returns the local qwen backend used for private relationship analysis.
     pub fn local() -> Self {
         Self {
             endpoint: "http://127.0.0.1:8088/v1/chat/completions".into(),
@@ -51,6 +52,7 @@ impl ModelBackend {
         }
     }
 
+    /// Returns the OpenAI cloud backend using the provided API key.
     pub fn cloud(api_key: String) -> Self {
         Self {
             endpoint: "https://api.openai.com/v1/chat/completions".into(),
@@ -98,7 +100,12 @@ pub(crate) struct RelationshipReport {
 
 /// Reads + ranks the top-N contacts from a diagnostics ndjson file. Pure (takes
 /// `now_ms` explicitly) so it is unit-testable without a clock or network.
-fn rank_contacts(path: &Path, now_ms: i64, window_days: i64, top_n: usize) -> Result<Vec<ContactRank>> {
+fn rank_contacts(
+    path: &Path,
+    now_ms: i64,
+    window_days: i64,
+    top_n: usize,
+) -> Result<Vec<ContactRank>> {
     let file = File::open(path)
         .with_context(|| format!("open telegram diagnostics {}", path.display()))?;
     let cutoff = now_ms - window_days * 24 * 60 * 60 * 1000;
@@ -128,7 +135,10 @@ fn rank_contacts(path: &Path, now_ms: i64, window_days: i64, top_n: usize) -> Re
         let Some(chat_id) = rec.get("chat_id").and_then(Value::as_i64) else {
             continue;
         };
-        let is_outgoing = rec.get("is_outgoing").and_then(Value::as_bool).unwrap_or(false);
+        let is_outgoing = rec
+            .get("is_outgoing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         // For a 1-on-1 chat the contact's display name is the chat title; fall back
         // to the sender name for incoming messages.
         let name = rec
@@ -209,11 +219,17 @@ fn transcript(contact: &ContactRank) -> String {
     let mut lines: Vec<String> = deduped[start..]
         .iter()
         .map(|m| {
-            let who = if m.is_outgoing { "用户" } else { contact.name.as_str() };
+            let who = if m.is_outgoing {
+                "用户"
+            } else {
+                contact.name.as_str()
+            };
             format!("{who}: {}", m.text)
         })
         .collect();
-    while lines.len() > 1 && lines.iter().map(|l| l.chars().count() + 1).sum::<usize>() > MAX_TRANSCRIPT_CHARS {
+    while lines.len() > 1
+        && lines.iter().map(|l| l.chars().count() + 1).sum::<usize>() > MAX_TRANSCRIPT_CHARS
+    {
         lines.remove(0);
     }
     lines.join("\n")
@@ -267,10 +283,14 @@ fn analyze_contact(
         chat_id: contact.chat_id,
         name: contact.name.clone(),
         message_count: contact.message_count,
-        relationship: parsed
+        relationship: parsed.as_ref().and_then(|p| {
+            p.get("relationship")
+                .and_then(Value::as_str)
+                .map(String::from)
+        }),
+        closeness: parsed
             .as_ref()
-            .and_then(|p| p.get("relationship").and_then(Value::as_str).map(String::from)),
-        closeness: parsed.as_ref().and_then(|p| p.get("closeness").and_then(Value::as_i64)),
+            .and_then(|p| p.get("closeness").and_then(Value::as_i64)),
         tone: parsed
             .as_ref()
             .and_then(|p| p.get("tone").and_then(Value::as_str).map(String::from)),
@@ -312,7 +332,10 @@ pub(crate) fn run(
         });
     };
 
-    emit("ranking", json!({ "windowDays": WINDOW_DAYS, "model": backend.model }));
+    emit(
+        "ranking",
+        json!({ "windowDays": WINDOW_DAYS, "model": backend.model }),
+    );
     let ranked = rank_contacts(diagnostics_path, now_ms, WINDOW_DAYS, TOP_N)?;
     emit(
         "ranked",
@@ -335,7 +358,10 @@ pub(crate) fn run(
             json!({ "index": idx + 1, "total": ranked.len(), "name": contact.name }),
         );
         let report = analyze_contact(&client, backend, contact);
-        emit("analyzed", serde_json::to_value(&report).unwrap_or(Value::Null));
+        emit(
+            "analyzed",
+            serde_json::to_value(&report).unwrap_or(Value::Null),
+        );
         reports.push(report);
     }
 
@@ -361,7 +387,14 @@ mod tests {
         f
     }
 
-    fn msg(chat_id: i64, kind: &str, stage: &str, title: &str, outgoing: bool, date_ms: i64) -> Value {
+    fn msg(
+        chat_id: i64,
+        kind: &str,
+        stage: &str,
+        title: &str,
+        outgoing: bool,
+        date_ms: i64,
+    ) -> Value {
         json!({
             "stage": stage, "chat_kind": kind, "chat_id": chat_id, "chat_title": title,
             "is_outgoing": outgoing, "date_ms": date_ms, "text_prefix": "hi"
@@ -382,23 +415,32 @@ mod tests {
         let now = 1_000 * DAY;
         let lines = vec![
             msg_text(1, "hi", now - 1 * DAY),
-            msg_text(1, "", now - 1 * DAY),     // photo, no caption
-            msg_text(1, "   ", now - 1 * DAY),  // whitespace only
+            msg_text(1, "", now - 1 * DAY),    // photo, no caption
+            msg_text(1, "   ", now - 1 * DAY), // whitespace only
         ];
         let f = write_diag(&lines);
         let ranked = rank_contacts(f.path(), now, 90, 5).unwrap();
-        assert_eq!(ranked[0].message_count, 1, "media/empty-text messages are ignored");
+        assert_eq!(
+            ranked[0].message_count, 1,
+            "media/empty-text messages are ignored"
+        );
     }
 
     #[test]
     fn transcript_dedups_flooder_spam() {
         let now = 1_000 * DAY;
-        let mut lines: Vec<Value> = (0..30).map(|i| msg_text(1, "在吗", now - 30 * DAY + i)).collect();
+        let mut lines: Vec<Value> = (0..30)
+            .map(|i| msg_text(1, "在吗", now - 30 * DAY + i))
+            .collect();
         lines.push(msg_text(1, "周末一起吃饭吧", now));
         let f = write_diag(&lines);
         let ranked = rank_contacts(f.path(), now, 90, 5).unwrap();
         let t = transcript(&ranked[0]);
-        assert_eq!(t.matches("在吗").count(), 1, "repeated spam collapsed to one line");
+        assert_eq!(
+            t.matches("在吗").count(),
+            1,
+            "repeated spam collapsed to one line"
+        );
         assert!(t.contains("周末一起吃饭吧"), "unique message kept");
     }
 
@@ -438,7 +480,10 @@ mod tests {
         let f = write_diag(&lines);
         let ranked = rank_contacts(f.path(), now, 90, 5).unwrap();
         assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].message_count, 1, "only the in-window emitted message counts");
+        assert_eq!(
+            ranked[0].message_count, 1,
+            "only the in-window emitted message counts"
+        );
     }
 
     #[test]
@@ -447,7 +492,14 @@ mod tests {
         let mut lines = Vec::new();
         for chat in 1..=8 {
             for _ in 0..chat {
-                lines.push(msg(chat, "user", "emitted", &format!("c{chat}"), false, now - 1 * DAY));
+                lines.push(msg(
+                    chat,
+                    "user",
+                    "emitted",
+                    &format!("c{chat}"),
+                    false,
+                    now - 1 * DAY,
+                ));
             }
         }
         let f = write_diag(&lines);
@@ -458,7 +510,8 @@ mod tests {
 
     #[test]
     fn extract_json_object_strips_thinking_and_fences() {
-        let v = extract_json_object("blah</think>\n```json\n{\"relationship\":\"朋友\"}\n```").unwrap();
+        let v =
+            extract_json_object("blah</think>\n```json\n{\"relationship\":\"朋友\"}\n```").unwrap();
         assert_eq!(v.get("relationship").unwrap(), "朋友");
     }
 }

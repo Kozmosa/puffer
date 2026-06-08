@@ -1,3 +1,4 @@
+use crate::contacts::{ConnectorContact, ContactContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,6 +13,9 @@ pub enum ConnectorSubscribeCommand {
         /// Last acknowledged cursor, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
+        /// Optional normalized contact ids to allow at the source.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        contact_ids: Vec<String>,
     },
     /// Acknowledge that the host has durably handled one event.
     Ack {
@@ -19,6 +23,37 @@ pub enum ConnectorSubscribeCommand {
         cursor: String,
         /// Connector event id being acknowledged.
         event_id: String,
+    },
+    /// Ask a connector stream process for ranked contacts.
+    ListContacts {
+        /// Authorized connection slug.
+        connection: String,
+        /// Optional case-insensitive search query.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// Maximum contacts to return.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    /// Ask a connector stream process for contact-id completions.
+    SearchContacts {
+        /// Authorized connection slug.
+        connection: String,
+        /// Case-insensitive query matched against ids and names.
+        query: String,
+        /// Maximum contacts to return.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    /// Ask a connector stream process for recent context for contact ids.
+    ContactContext {
+        /// Authorized connection slug.
+        connection: String,
+        /// Normalized contact ids.
+        contact_ids: Vec<String>,
+        /// Maximum context items per connector-owned identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
     },
 }
 
@@ -47,6 +82,18 @@ pub enum ConnectorSubscribeFrame {
         /// Optional detail safe for logs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+    },
+    /// Response to a contact list or search command.
+    Contacts {
+        /// Ranked connector contacts.
+        contacts: Vec<ConnectorContact>,
+    },
+    /// Response to a contact context command.
+    ContactContext {
+        /// Contact ids included in the context response.
+        contact_ids: Vec<String>,
+        /// Recent context messages or events.
+        context: Vec<ContactContext>,
     },
 }
 
@@ -106,11 +153,30 @@ mod tests {
         let command = ConnectorSubscribeCommand::Subscribe {
             connection: "my-telegram".into(),
             cursor: Some("42".into()),
+            contact_ids: Vec::new(),
         };
 
         assert_eq!(
             serde_json::to_value(command).unwrap(),
             json!({"op":"subscribe","connection":"my-telegram","cursor":"42"})
+        );
+    }
+
+    #[test]
+    fn subscribe_command_can_filter_contacts() {
+        let command = ConnectorSubscribeCommand::Subscribe {
+            connection: "my-telegram".into(),
+            cursor: None,
+            contact_ids: vec!["telegram@alice".into(), "telegram@bob".into()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(command).unwrap(),
+            json!({
+                "op":"subscribe",
+                "connection":"my-telegram",
+                "contact_ids":["telegram@alice","telegram@bob"]
+            })
         );
     }
 }

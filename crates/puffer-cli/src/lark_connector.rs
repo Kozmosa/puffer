@@ -1,12 +1,14 @@
 //! `puffer __connector lark-user|lark-bot` protocol bridge over the official
-//! `lark-cli`: `auth-ok`/`act`/`subscribe`. The id picks the default `--as`
+//! `lark-cli`: `auth-ok`/`act`/`subscribe`/`contacts`. The id picks the default `--as`
 //! identity (user/bot) for `act`/`auth-ok`. `subscribe` always consumes as the
 //! bot (`lark-cli event consume` is bot-only). `LARK_CLI_BIN` overrides the
 //! binary; `LARK_CLI_AS` overrides the subscribe identity; `act` uses the
 //! per-call `as` field or the connector default.
 
 use anyhow::{anyhow, bail, Context, Result};
-use puffer_subscriptions::{ConnectorSubscribeCommand, ConnectorSubscribeFrame};
+use puffer_subscriptions::{
+    contact_ids_for_connector, ConnectorSubscribeCommand, ConnectorSubscribeFrame,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -44,7 +46,8 @@ pub(crate) async fn run(identity: &str, args: &[String]) -> Result<()> {
             run_act(identity, action).await
         }
         "subscribe" => run_subscribe().await,
-        other => bail!("unknown connector op `{other}`; expected auth-ok|act|subscribe"),
+        "contacts" => run_contacts(identity).await,
+        other => bail!("unknown connector op `{other}`; expected auth-ok|act|subscribe|contacts"),
     }
 }
 
@@ -89,6 +92,41 @@ async fn run_auth_ok(identity: &str) -> Result<()> {
         }
     };
     println!("{}", json!({ "ok": ok }));
+    Ok(())
+}
+
+async fn run_contacts(identity: &str) -> Result<()> {
+    let connector_slug = if identity == "bot" {
+        "lark-bot"
+    } else {
+        "lark-login"
+    };
+    let mut input = String::new();
+    tokio::io::stdin()
+        .read_to_string(&mut input)
+        .await
+        .context("read lark contacts command")?;
+    let command = if input.trim().is_empty() {
+        None
+    } else {
+        serde_json::from_str::<ConnectorSubscribeCommand>(input.trim()).ok()
+    };
+    let frame = match command {
+        Some(ConnectorSubscribeCommand::ContactContext { contact_ids, .. }) => {
+            ConnectorSubscribeFrame::ContactContext {
+                contact_ids: contact_ids_for_connector(connector_slug, &contact_ids),
+                context: Vec::new(),
+            }
+        }
+        _ => ConnectorSubscribeFrame::Contacts {
+            contacts: Vec::new(),
+        },
+    };
+    let mut stdout = tokio::io::stdout();
+    let mut line = serde_json::to_string(&frame)?;
+    line.push('\n');
+    stdout.write_all(line.as_bytes()).await?;
+    stdout.flush().await?;
     Ok(())
 }
 

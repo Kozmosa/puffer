@@ -3,6 +3,7 @@
 
 use crate::action::{ActionDispatcher, BuiltinActionDispatcher};
 use crate::classify::{Classifier, ClassifyDecision, NullClassifier};
+use crate::contacts::contact_filter_matches;
 use crate::history::{
     now_ms, DedupDecision, WorkflowActionLog, WorkflowBindingRunStatus, WorkflowHistoryStore,
     MAX_FAILED_ATTEMPTS,
@@ -307,6 +308,17 @@ pub fn process_envelope_result(
                 envelope,
                 "monitor_ignore_filter",
                 "Matched an installed monitor ignore filter before triage.",
+            );
+            continue;
+        }
+        if !contact_filter_matches(&spec.contact_ids, &envelope.event.payload) {
+            log_router_skip(&spec, envelope, "monitor_contact_filter_skip");
+            record_monitor_router_outcome(
+                history_store,
+                &spec,
+                envelope,
+                "monitor_contact_filter_skip",
+                "Did not match the monitor contact filter.",
             );
             continue;
         }

@@ -90,6 +90,7 @@ mod tests {
             status: SubscriptionStatus::Enabled,
             filter: None,
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: Some(prompt.into()),
             classify_model: Some("anthropic/claude-haiku-4-5".into()),
             action: ActionSpec::SqliteInsert {

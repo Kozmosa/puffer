@@ -48,6 +48,7 @@ pub trait ConnectorEventProcessor: Send + Sync {
 pub struct ConnectorStreamHandle {
     /// Connection slug owned by this stream.
     pub connection_slug: String,
+    contact_ids: Vec<String>,
     shutdown_tx: watch::Sender<bool>,
     join: Option<JoinHandle<()>>,
 }
@@ -58,6 +59,7 @@ impl ConnectorStreamHandle {
         template: ConnectorTemplate,
         connection_slug: String,
         cursor: Option<String>,
+        contact_ids: Vec<String>,
         bus: EventBus,
         connection_store: Arc<ConnectionStore>,
         processor: Option<Arc<dyn ConnectorEventProcessor>>,
@@ -97,6 +99,7 @@ impl ConnectorStreamHandle {
             &ConnectorSubscribeCommand::Subscribe {
                 connection: connection_slug.clone(),
                 cursor,
+                contact_ids: contact_ids.clone(),
             },
         )
         .await?;
@@ -116,9 +119,15 @@ impl ConnectorStreamHandle {
         ));
         Ok(Some(Self {
             connection_slug,
+            contact_ids,
             shutdown_tx,
             join: Some(join),
         }))
+    }
+
+    /// Returns the normalized contact filter used when this stream started.
+    pub(crate) fn contact_ids(&self) -> &[String] {
+        &self.contact_ids
     }
 
     /// Stops the connector stream by signalling shutdown and awaiting exit.
@@ -383,6 +392,26 @@ async fn handle_frame(
                 );
             }
         }
+        ConnectorSubscribeFrame::Contacts { contacts } => {
+            tracing::debug!(
+                connector = %connector_slug,
+                connection = %connection_slug,
+                count = contacts.len(),
+                "connector stream emitted unsolicited contacts frame"
+            );
+        }
+        ConnectorSubscribeFrame::ContactContext {
+            contact_ids,
+            context,
+        } => {
+            tracing::debug!(
+                connector = %connector_slug,
+                connection = %connection_slug,
+                contact_count = contact_ids.len(),
+                context_count = context.len(),
+                "connector stream emitted unsolicited contact context frame"
+            );
+        }
     }
 }
 
@@ -537,6 +566,7 @@ IFS= read -r _ack
             template(&script),
             "conn".into(),
             None,
+            Vec::new(),
             bus,
             store.clone(),
             None,
@@ -600,6 +630,7 @@ printf '%s\n' "$ack" > '{}'
             template(&script),
             "conn".into(),
             None,
+            Vec::new(),
             EventBus::new(),
             store.clone(),
             Some(processor.clone()),
@@ -695,6 +726,7 @@ printf '%s\n%s\n%s\n' "$ack1" "$ack2" "$ack3" > '{}'
             template(&script),
             "conn".into(),
             None,
+            Vec::new(),
             EventBus::new(),
             store.clone(),
             Some(processor.clone()),

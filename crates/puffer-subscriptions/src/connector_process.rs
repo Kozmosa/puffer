@@ -1,7 +1,11 @@
 //! Subprocess bridge for connector templates that expose the typed protocol.
 
 use crate::catalog::ConnectorTemplate;
-use crate::protocol::{ConnectorActionRequest, ConnectorActionResponse};
+use crate::contacts::{ConnectorContact, ContactContext};
+use crate::protocol::{
+    ConnectorActionRequest, ConnectorActionResponse, ConnectorSubscribeCommand,
+    ConnectorSubscribeFrame,
+};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::process::Stdio;
@@ -58,6 +62,87 @@ pub async fn run_action(
         )
     })?;
     parse_action_response(&output, &request.action).map(Some)
+}
+
+/// Runs a connector template's `contacts` list operation.
+pub async fn run_list_contacts(
+    template: &ConnectorTemplate,
+    connection_slug: &str,
+    query: Option<String>,
+    limit: Option<usize>,
+    timeout: Duration,
+) -> Result<Option<Vec<ConnectorContact>>> {
+    run_contacts_frame(
+        template,
+        ConnectorSubscribeCommand::ListContacts {
+            connection: connection_slug.to_string(),
+            query,
+            limit,
+        },
+        timeout,
+    )
+    .await?
+    .map(parse_contacts_frame)
+    .transpose()
+}
+
+/// Runs a connector template's `contacts` search operation.
+pub async fn run_search_contacts(
+    template: &ConnectorTemplate,
+    connection_slug: &str,
+    query: String,
+    limit: Option<usize>,
+    timeout: Duration,
+) -> Result<Option<Vec<ConnectorContact>>> {
+    run_contacts_frame(
+        template,
+        ConnectorSubscribeCommand::SearchContacts {
+            connection: connection_slug.to_string(),
+            query,
+            limit,
+        },
+        timeout,
+    )
+    .await?
+    .map(parse_contacts_frame)
+    .transpose()
+}
+
+/// Runs a connector template's `contacts` context operation.
+pub async fn run_contact_context(
+    template: &ConnectorTemplate,
+    connection_slug: &str,
+    contact_ids: Vec<String>,
+    limit: Option<usize>,
+    timeout: Duration,
+) -> Result<Option<(Vec<String>, Vec<ContactContext>)>> {
+    run_contacts_frame(
+        template,
+        ConnectorSubscribeCommand::ContactContext {
+            connection: connection_slug.to_string(),
+            contact_ids,
+            limit,
+        },
+        timeout,
+    )
+    .await?
+    .map(parse_contact_context_frame)
+    .transpose()
+}
+
+async fn run_contacts_frame(
+    template: &ConnectorTemplate,
+    command: ConnectorSubscribeCommand,
+    timeout: Duration,
+) -> Result<Option<ConnectorSubscribeFrame>> {
+    let Some(argv) = template.command_argv() else {
+        return Ok(None);
+    };
+    let input = serde_json::to_vec(&command)?;
+    let output = run_connector_command(argv, ["contacts"].into_iter(), Some(input), timeout)
+        .await
+        .with_context(|| format!("run connector `{}` contacts operation", template.slug))?;
+    parse_contacts_output(&output).map(Some)
 }
 
 async fn run_connector_command<'a, I>(
@@ -167,6 +252,44 @@ fn parse_action_response(stdout: &str, action: &str) -> Result<ConnectorActionRe
     })
 }
 
+fn parse_contacts_output(stdout: &str) -> Result<ConnectorSubscribeFrame> {
+    for line in stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(frame) = serde_json::from_str::<ConnectorSubscribeFrame>(line) else {
+            continue;
+        };
+        match frame {
+            ConnectorSubscribeFrame::Contacts { .. }
+            | ConnectorSubscribeFrame::ContactContext { .. } => return Ok(frame),
+            _ => continue,
+        }
+    }
+    anyhow::bail!("contacts operation must return contacts or contact_context frame")
+}
+
+fn parse_contacts_frame(frame: ConnectorSubscribeFrame) -> Result<Vec<ConnectorContact>> {
+    match frame {
+        ConnectorSubscribeFrame::Contacts { contacts } => Ok(contacts),
+        _ => anyhow::bail!("expected contacts frame"),
+    }
+}
+
+fn parse_contact_context_frame(
+    frame: ConnectorSubscribeFrame,
+) -> Result<(Vec<String>, Vec<ContactContext>)> {
+    match frame {
+        ConnectorSubscribeFrame::ContactContext {
+            contact_ids,
+            context,
+        } => Ok((contact_ids, context)),
+        _ => anyhow::bail!("expected contact context frame"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +366,75 @@ esac
         assert_eq!(response.summary, "sent");
     }
 
+    #[tokio::test]
+    async fn runs_contact_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("connector.sh");
+        let log = temp.path().join("contacts.ndjson");
+        std::fs::write(
+            &script,
+            format!(
+                r#"case "$1" in
+  contacts)
+    line="$(cat)"
+    printf '%s\n' "$line" >> '{}'
+    case "$line" in
+      *'"op":"contact_context"'*) printf '{{"type":"contact_context","contact_ids":["telegram@alice"],"context":[{{"kind":"message","text":"hi","payload":{{}}}}]}}\n' ;;
+      *) printf '{{"type":"contacts","contacts":[{{"id":"telegram@alice","name":"Alice","score":3.5}}]}}\n' ;;
+    esac
+    ;;
+  *) exit 2 ;;
+esac
+"#,
+                log.display()
+            ),
+        )
+        .unwrap();
+        let template = template(&script);
+
+        let contacts = run_list_contacts(
+            &template,
+            "conn",
+            Some("alice".into()),
+            Some(1),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(contacts[0].id, "telegram@alice");
+
+        let searched = run_search_contacts(
+            &template,
+            "conn",
+            "ali".into(),
+            Some(1),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(searched[0].name.as_deref(), Some("Alice"));
+
+        let (ids, context) = run_contact_context(
+            &template,
+            "conn",
+            vec!["telegram@alice".into()],
+            Some(10),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(ids, vec!["telegram@alice"]);
+        assert_eq!(context[0].text, "hi");
+
+        let logged = std::fs::read_to_string(log).unwrap();
+        assert!(logged.contains(r#""op":"list_contacts""#));
+        assert!(logged.contains(r#""op":"search_contacts""#));
+        assert!(logged.contains(r#""op":"contact_context""#));
+    }
+
     #[test]
     fn action_response_preserves_failure_without_summary() {
         let response = parse_action_response(
@@ -255,5 +447,15 @@ esac
         assert_eq!(response.summary, "permission denied");
         assert!(response.retryable);
         assert_eq!(response.output, Value::Null);
+    }
+
+    #[test]
+    fn contacts_output_accepts_jsonl_terminal_frame() {
+        let frame = parse_contacts_output(
+            "starting contacts\n{\"type\":\"health\",\"status\":\"ok\"}\n{\"type\":\"contacts\",\"contacts\":[{\"id\":\"telegram@alice\"}]}\n",
+        )
+        .unwrap();
+
+        assert!(matches!(frame, ConnectorSubscribeFrame::Contacts { .. }));
     }
 }

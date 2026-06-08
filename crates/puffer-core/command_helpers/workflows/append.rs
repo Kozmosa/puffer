@@ -272,6 +272,7 @@ fn binding_from_request(
             })
         }),
         ignore_filters: Vec::new(),
+        contact_ids: Vec::new(),
         classify_prompt: None,
         classify_model: None,
         action,

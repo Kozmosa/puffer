@@ -41,6 +41,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::RunWorkflow {
@@ -105,6 +106,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::ForwardMessage {
@@ -176,6 +178,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::TriageAgent {
@@ -250,6 +253,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::TriageAgent {
@@ -299,6 +303,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::FileAppend {
@@ -352,6 +357,7 @@ mod tests {
                     "chat_id": 2041550535_i64,
                     "sender_username": "FuzzlandInternalBot"
                 }))],
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::TriageAgent {
@@ -412,6 +418,77 @@ mod tests {
     }
 
     #[test]
+    fn contact_filters_suppress_unlisted_contacts() {
+        struct OkDispatcher;
+
+        impl ActionDispatcher for OkDispatcher {
+            fn dispatch(&self, _action: &ActionSpec, _envelope: &EventEnvelope) -> ActionResult {
+                ActionResult::success("ok")
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let store = WorkflowBindingStore::load(dir.path().join("bindings.json")).unwrap();
+        store
+            .create(WorkflowBindingSpec {
+                slug: "monitor-telegram-user".into(),
+                description: "Monitor selected Telegram contacts".into(),
+                connection_slug: "telegram-user".into(),
+                connector_slug: Some("telegram-login".into()),
+                status: WorkflowBindingStatus::Enabled,
+                filter: None,
+                ignore_filters: Vec::new(),
+                contact_ids: vec!["telegram@alice".into()],
+                classify_prompt: None,
+                classify_model: None,
+                action: ActionSpec::RunWorkflow {
+                    slug: "downstream".into(),
+                },
+                created_at_ms: 0,
+            })
+            .unwrap();
+        let dispatcher: Arc<dyn ActionDispatcher> = Arc::new(OkDispatcher);
+        let classifier: Arc<dyn Classifier> = Arc::new(NullClassifier);
+        let unrelated = EventEnvelope {
+            envelope_id: "env-bob".into(),
+            subscriber_id: "telegram-user".into(),
+            received_at_ms: 0,
+            event: Event {
+                topic: "telegram-user".into(),
+                kind: "message".into(),
+                control: false,
+                dedup_key: None,
+                text: "hello".into(),
+                payload: serde_json::json!({
+                    "chat_kind": "user",
+                    "chat_username": "bob"
+                }),
+            },
+        };
+        let related = EventEnvelope {
+            envelope_id: "env-alice".into(),
+            event: Event {
+                payload: serde_json::json!({
+                    "chat_kind": "user",
+                    "chat_username": "alice"
+                }),
+                ..unrelated.event.clone()
+            },
+            ..unrelated.clone()
+        };
+
+        let skipped =
+            process_envelope_result(&unrelated, &store, None, &dispatcher, &classifier, None);
+        let passed =
+            process_envelope_result(&related, &store, None, &dispatcher, &classifier, None);
+
+        assert!(!skipped.matched);
+        assert_eq!(skipped.acted, 0);
+        assert!(passed.matched);
+        assert_eq!(passed.acted, 1);
+    }
+
+    #[test]
     fn dedup_key_suppresses_replayed_events_for_same_binding() {
         let dir = tempdir().unwrap();
         let store = WorkflowBindingStore::load(dir.path().join("bindings.json")).unwrap();
@@ -424,6 +501,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::ForwardMessage {
@@ -507,6 +585,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::TriageAgent {
@@ -599,6 +678,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::FileAppend {
@@ -667,6 +747,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::ForwardMessage {
@@ -740,6 +821,7 @@ mod tests {
                 status: WorkflowBindingStatus::Enabled,
                 filter: None,
                 ignore_filters: Vec::new(),
+                contact_ids: Vec::new(),
                 classify_prompt: None,
                 classify_model: None,
                 action: ActionSpec::TriageAgent {

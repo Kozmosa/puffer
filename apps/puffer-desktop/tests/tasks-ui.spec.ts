@@ -150,3 +150,22 @@ test("tasks history shows monitor messages while triage is still processing", as
   await expect(dialog.getByLabel("Agent history")).toContainText("processing · tokens n/a");
   await expect(dialog.getByLabel("Agent history")).toContainText("triage agent is processing this message.");
 });
+
+test("task monitor configuration scopes subscriptions to selected contacts", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openTasks(page);
+  await page.getByRole("button", { name: "Configure" }).click();
+  await daemon.waitForRequest("contacts_list");
+
+  const dialog = page.getByRole("dialog", { name: "Task configuration" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("checkbox", { name: /Alice/ }).check();
+  await dialog.getByRole("button", { name: /^Update$/ }).click();
+
+  const request = await daemon.waitForRequest("task_monitor_create");
+  expect(request.params.contact_ids).toEqual(["google@alice@example.com", "telegram@alice"]);
+  await expect(page.locator(".pf-tasks-title")).toContainText("2 contact ids", { timeout: 5_000 });
+});

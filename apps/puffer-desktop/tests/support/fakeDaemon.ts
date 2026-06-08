@@ -68,6 +68,11 @@ type MonitorHistoryFixture = {
   messages: JsonRecord[];
 };
 
+type ContactsSnapshotFixture = {
+  contacts: JsonRecord[];
+  candidates: JsonRecord[];
+};
+
 type ConnectorSetupQuestionFixture = {
   type: "input" | "choice";
   header: string;
@@ -605,6 +610,7 @@ export class FakeDaemon {
         action_type: "triage_agent",
         monitor: true,
         monitor_memory_path: "/tmp/telegram-user.md",
+        contact_ids: [],
         created_at_ms: now - 45_000
       }
     ],
@@ -679,6 +685,47 @@ export class FakeDaemon {
         status: "completed",
         started_at_ms: now - 15_500,
         ended_at_ms: now - 15_000
+      }
+    ]
+  };
+  private contactsSnapshot: ContactsSnapshotFixture = {
+    contacts: [
+      {
+        id: "contact-alice",
+        name: "Alice",
+        description: "Alice sends actionable deployment and support questions.",
+        avatar: null,
+        contact_ids: ["telegram@alice", "google@alice@example.com"]
+      }
+    ],
+    candidates: [
+      {
+        id: "telegram@alice",
+        name: "Alice",
+        avatar: null,
+        score: 42.5,
+        context: [
+          {
+            kind: "telegram_message",
+            text: "Alice asked whether the deployment is finished.",
+            timestamp_ms: now - 15_000,
+            payload: { sender_username: "alice" }
+          }
+        ]
+      },
+      {
+        id: "google@bob@example.com",
+        name: "bob@example.com",
+        avatar: null,
+        score: 12.1,
+        context: [
+          {
+            kind: "email",
+            text: "Can we review the launch checklist?",
+            timestamp_ms: now - 120_000,
+            payload: { from: "bob@example.com" }
+          }
+        ]
       }
     ]
   };
@@ -855,6 +902,13 @@ export class FakeDaemon {
   setMonitorHistory(history: MonitorHistoryFixture): void {
     this.monitorHistory = {
       messages: history.messages.map((message) => ({ ...message }))
+    };
+  }
+
+  setContactsSnapshot(snapshot: ContactsSnapshotFixture): void {
+    this.contactsSnapshot = {
+      contacts: snapshot.contacts.map((contact) => ({ ...contact })),
+      candidates: snapshot.candidates.map((candidate) => ({ ...candidate }))
     };
   }
 
@@ -1259,8 +1313,21 @@ export class FakeDaemon {
         return this.createWorkflowBinding(request.params);
       case "workflow_binding_delete":
         return this.deleteWorkflowBinding(request.params);
+      case "task_monitor_create":
+        return this.createMonitor(request.params);
       case "workflow_toggle":
         return this.toggleWorkflow(request.params);
+      case "contacts_list":
+      case "contacts_search":
+        return this.contactsList(request.params);
+      case "contacts_save":
+        return this.saveContact(request.params);
+      case "contacts_delete":
+        return this.deleteContact(request.params);
+      case "contacts_infer":
+        return this.inferContacts(request.params);
+      case "contacts_context":
+        return this.contactContext(request.params);
       case "list_dir":
         return this.listDir(request.params);
       case "load_file_tabs":
@@ -1418,6 +1485,7 @@ export class FakeDaemon {
       action_path: path,
       action_format: "text",
       filter_pattern: pattern,
+      contact_ids: [],
       monitor: false,
       monitor_memory_path: null,
       created_at_ms: Date.now()
@@ -1438,6 +1506,117 @@ export class FakeDaemon {
       })
     };
     return this.workflowListResponse();
+  }
+
+  private createMonitor(params: JsonRecord): JsonRecord {
+    const connectionSlug = String(params.connection_slug ?? "");
+    if (!connectionSlug) throw new Error("missing monitor connection slug");
+    const connection = this.workflowSnapshot.connections?.find((item) => item.slug === connectionSlug);
+    const connectorSlug = String(connection?.connector_slug ?? "connector");
+    const slug = `monitor-${connectionSlug}`;
+    const model = typeof params.model === "string" && params.model.trim() ? params.model.trim() : null;
+    const contactIds = Array.isArray(params.contact_ids)
+      ? params.contact_ids.map((id) => String(id).trim()).filter(Boolean)
+      : [];
+    const binding = {
+      slug,
+      description: `Monitor ${connectionSlug} for actionable tasks`,
+      connection_slug: connectionSlug,
+      connector_slug: connectorSlug,
+      status: "enabled",
+      enabled: true,
+      action_type: "triage_agent",
+      action_format: "json",
+      model,
+      contact_ids: Array.from(new Set(contactIds)).sort(),
+      monitor: true,
+      monitor_memory_path: `/tmp/${connectionSlug}.md`,
+      created_at_ms: Date.now()
+    };
+    this.workflowSnapshot = {
+      ...this.workflowSnapshot,
+      workflow_bindings: [
+        ...(this.workflowSnapshot.workflow_bindings ?? []).filter((candidate) => candidate.slug !== slug),
+        binding
+      ].sort((a, b) => String(a.slug ?? "").localeCompare(String(b.slug ?? ""))),
+      connections: this.workflowSnapshot.connections?.map((item) => {
+        if (item.slug !== connectionSlug) return item;
+        return {
+          ...item,
+          has_consumer: true,
+          state: item.state === "authenticated" ? "active" : item.state
+        };
+      })
+    };
+    return this.workflowListResponse();
+  }
+
+  private contactsList(params: JsonRecord): JsonRecord {
+    const query = String(params.query ?? "").trim().toLowerCase();
+    const limit = Math.max(1, Number(params.limit ?? 60) || 60);
+    const matches = (record: JsonRecord) => !query || JSON.stringify(record).toLowerCase().includes(query);
+    return {
+      contacts: this.contactsSnapshot.contacts.filter(matches).slice(0, limit).map((contact) => ({ ...contact })),
+      candidates: this.contactsSnapshot.candidates.filter(matches).slice(0, limit).map((candidate) => ({ ...candidate }))
+    };
+  }
+
+  private saveContact(params: JsonRecord): JsonRecord {
+    const name = String(params.name ?? "").trim();
+    if (!name) throw new Error("missing contact name");
+    const id = String(params.id ?? `contact-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom"}`);
+    const contactIds = Array.isArray(params.contact_ids)
+      ? Array.from(new Set(params.contact_ids.map((item) => String(item).trim()).filter(Boolean))).sort()
+      : [];
+    if (contactIds.length === 0) throw new Error("missing contact ids");
+    const contact = {
+      id,
+      name,
+      description: String(params.description ?? ""),
+      avatar: params.avatar ?? null,
+      contact_ids: contactIds
+    };
+    this.contactsSnapshot = {
+      ...this.contactsSnapshot,
+      contacts: [
+        ...this.contactsSnapshot.contacts.filter((candidate) => candidate.id !== id),
+        contact
+      ].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))
+    };
+    return this.contactsList({});
+  }
+
+  private deleteContact(params: JsonRecord): JsonRecord {
+    const id = String(params.id ?? "");
+    this.contactsSnapshot = {
+      ...this.contactsSnapshot,
+      contacts: this.contactsSnapshot.contacts.filter((contact) => contact.id !== id)
+    };
+    return this.contactsList({});
+  }
+
+  private inferContacts(params: JsonRecord): JsonRecord {
+    const limit = Math.max(1, Number(params.limit ?? 30) || 30);
+    return {
+      proposals: this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({
+        name: String(candidate.name ?? candidate.id ?? "Contact"),
+        description: `Messages from ${String(candidate.id ?? "this contact")} are frequent and have task-like context. They are retained because the candidate has recent conversation content rather than isolated bulk traffic.`,
+        avatar: candidate.avatar ?? null,
+        contact_ids: [String(candidate.id ?? "")]
+      })).filter((proposal) => proposal.contact_ids[0]),
+      candidates: this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({ ...candidate }))
+    };
+  }
+
+  private contactContext(params: JsonRecord): JsonRecord {
+    const ids = Array.isArray(params.contact_ids)
+      ? params.contact_ids.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+    const context = this.contactsSnapshot.candidates
+      .filter((candidate) => ids.includes(String(candidate.id ?? "")))
+      .flatMap((candidate) => Array.isArray(candidate.context) ? candidate.context : [])
+      .map((item) => ({ ...(item as JsonRecord) }));
+    return { contact_ids: ids, context };
   }
 
   private deleteWorkflowBinding(params: JsonRecord): JsonRecord {

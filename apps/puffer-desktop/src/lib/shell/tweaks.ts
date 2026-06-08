@@ -3,7 +3,7 @@ export type ScreenId =
   | "workflows"
   | "tasks"
   | "settings"
-  | "telegram-relationships";
+  | "contacts";
 export type AgentState = "idle" | "thinking" | "running" | "awaiting" | "review";
 export type AccentKey = "violet" | "cyan" | "amber" | "rose" | "lime" | "mono";
 export type DensityKey = "compact" | "comfortable" | "airy";
@@ -60,11 +60,12 @@ export function loadTweaks(): Tweaks {
 
 function normalizeScreen(value: unknown): ScreenId {
   if (value === "pipelines") return "workflows";
+  if (value === "telegram-relationships") return "contacts";
   return value === "workspace" ||
     value === "workflows" ||
     value === "tasks" ||
     value === "settings" ||
-    value === "telegram-relationships"
+    value === "contacts"
     ? value
     : defaultTweaks.screen;
 }

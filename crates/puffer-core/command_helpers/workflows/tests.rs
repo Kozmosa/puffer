@@ -260,6 +260,7 @@ mod tests {
                 case_insensitive: true,
             })),
             ignore_filters: Vec::new(),
+            contact_ids: Vec::new(),
             classify_prompt: None,
             classify_model: None,
             action: serde_json::from_value(json!({
