@@ -17,9 +17,14 @@
   let actionSavedPath = $state<string | null>(null);
   let titleId = $derived(attachment ? `attachment-overlay-title-${attachment.id}` : "attachment-overlay-title");
   let canPreviewImage = $derived(Boolean(attachment?.kind === "image" && attachment.previewUrl));
+  let canPreviewVideo = $derived(Boolean(attachment?.kind === "video" && attachment.previewUrl));
   let overlayAction = $derived(imageOverlayAction(attachment));
   let overlayActionLabel = $derived(
-    overlayAction?.kind === "download" ? "Download image" : "Open image folder"
+    overlayAction?.kind === "download"
+      ? "Download image"
+      : attachment?.kind === "video"
+        ? "Open video folder"
+        : "Open image folder"
   );
   let overlayActionIcon = $derived<IconName>(
     overlayAction?.kind === "download" ? "download" : "folderOpen"
@@ -157,6 +162,10 @@
         <div class="pf-attachment-image-frame">
           <img src={attachment.previewUrl} alt={attachment.name} draggable="false" />
         </div>
+      {:else if canPreviewVideo && attachment.previewUrl}
+        <div class="pf-attachment-video-frame">
+          <video src={attachment.previewUrl} controls autoplay playsinline></video>
+        </div>
       {:else}
         <div class="pf-attachment-unavailable">
           <span class="pf-attachment-unavailable-icon">
@@ -269,6 +278,18 @@
     max-height: 72vh;
     display: block;
     object-fit: contain;
+  }
+  .pf-attachment-video-frame {
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    background: black;
+  }
+  .pf-attachment-video-frame video {
+    width: 100%;
+    max-height: calc(90vh - 82px);
+    display: block;
+    background: black;
   }
   .pf-attachment-unavailable {
     min-height: 240px;

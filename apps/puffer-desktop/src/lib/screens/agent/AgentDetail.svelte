@@ -21,7 +21,11 @@
     UserQuestionTimelineItem
   } from "../../types";
   import type { AgentState } from "../../shell/tweaks";
-  import { readChatAttachmentPreview, type AgentTurnSubmitOptions } from "../../api/desktop";
+  import {
+    createGeneratedVideoAccess,
+    readChatAttachmentPreview,
+    type AgentTurnSubmitOptions
+  } from "../../api/desktop";
   type SubmitMessageResult = boolean | void | Promise<boolean | void>;
 
   type Props = {
@@ -280,6 +284,27 @@
   async function openAttachmentIntent(attachment: MessageAttachment) {
     if (previewReadObjectUrl) URL.revokeObjectURL(previewReadObjectUrl);
     previewReadObjectUrl = null;
+    if (
+      attachment.kind === "video" &&
+      attachment.source.kind === "generated_media" &&
+      !attachment.previewUrl
+    ) {
+      const sessionId = session?.id ?? null;
+      if (!sessionId) {
+        openAttachment = attachment;
+        return;
+      }
+      const access = await createGeneratedVideoAccess(
+        sessionId,
+        attachment.source.artifactId
+      ).catch(() => ({
+        state: "missing" as const
+      }));
+      if ((session?.id ?? null) !== sessionId) return;
+      openAttachment =
+        access.state === "available" ? { ...attachment, previewUrl: access.url } : attachment;
+      return;
+    }
     if (attachment.kind !== "image" || attachment.previewUrl) {
       openAttachment = attachment;
       return;

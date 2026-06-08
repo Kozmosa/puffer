@@ -57,6 +57,30 @@ test("returns open folder for generated media with a local path", () => {
   });
 });
 
+test("returns open folder for generated video with a local path", () => {
+  expect(
+    imageOverlayAction({
+      id: "generated-video:artifact-1",
+      name: "Generated video",
+      mimeType: "video/mp4",
+      size: 9,
+      extension: "MP4",
+      kind: "video",
+      state: "available",
+      source: {
+        kind: "generated_media",
+        jobId: "job-1",
+        artifactId: "artifact-1",
+        index: 0,
+        localPath: "/tmp/puffer/.puffer/media/artifacts/artifact-1/generated.mp4"
+      }
+    })
+  ).toEqual({
+    kind: "open_folder",
+    path: "/tmp/puffer/.puffer/media/artifacts/artifact-1/generated.mp4"
+  });
+});
+
 test("returns null for generated media without a local path even when it has a preview URL", () => {
   expect(
     imageOverlayAction(

@@ -1306,6 +1306,14 @@ test("generated video attachment renders a playable card", async ({ page }) => {
   await expect(card.locator("video")).toHaveAttribute("preload", "metadata");
   await expect(card.locator('[data-testid="video-play-indicator"]')).toBeVisible();
   await expect(page.locator(".pf-msg").filter({ has: card })).not.toContainText("/tmp/puffer");
+
+  await card.click();
+  const dialog = page.getByRole("dialog", { name: "Generated video" });
+  await expect(dialog).toBeVisible();
+  const video = dialog.locator("video");
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute("controls", "");
+  await expect(video).toHaveAttribute("autoplay", "");
 });
 
 test("shows two generated image attachments from one image generation result", async ({ page }) => {
