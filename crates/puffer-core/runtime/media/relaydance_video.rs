@@ -158,32 +158,26 @@ pub(crate) struct RelaydanceVideoTask {
 }
 
 impl RelaydanceVideoTask {
-    pub(crate) fn from_value(value: Value) -> Result<Self> {
-        let id = value
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .context("video task response missing `id`")?
-            .to_string();
-        let status = value
-            .get("status")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .context("video task response missing `status`")?
-            .to_string();
-        let video_url = value
-            .get("metadata")
-            .and_then(|metadata| metadata.get("url"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let error = value.get("error").and_then(|error| {
-            error
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
+    pub(crate) fn from_value(value: Value, phase: &str) -> Result<Self> {
+        let body = value.get("data").unwrap_or(&value);
+        let id = string_field(body, &["id", "task_id"])
+            .or_else(|| string_field(&value, &["id", "task_id"]))
+            .ok_or_else(|| {
+                anyhow!(
+                    "{phase} response missing task id: {}",
+                    relaydance_response_shape_summary(&value)
+                )
+            })?;
+        let status = string_field(body, &["status"])
+            .or_else(|| string_field(&value, &["status"]))
+            .ok_or_else(|| {
+                anyhow!(
+                    "{phase} response missing status: {}",
+                    relaydance_response_shape_summary(&value)
+                )
+            })?;
+        let video_url = relaydance_video_url(body).or_else(|| relaydance_video_url(&value));
+        let error = relaydance_error_message(body).or_else(|| relaydance_error_message(&value));
         Ok(Self {
             id,
             status,
@@ -203,6 +197,81 @@ impl RelaydanceVideoTask {
             other => bail!("unknown video task status `{other}`"),
         }
     }
+}
+
+fn relaydance_response_shape_summary(value: &serde_json::Value) -> String {
+    let keys = value
+        .as_object()
+        .map(|object| {
+            let mut keys = object.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            keys.join(",")
+        })
+        .unwrap_or_else(|| value_type_name(value).to_string());
+    format!("keys=[{keys}]")
+}
+
+fn value_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn relaydance_error_message(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .or_else(|| value.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+}
+
+fn relaydance_task_error_context(
+    provider_id: &str,
+    task_id: Option<&str>,
+    error: &anyhow::Error,
+) -> String {
+    format!(
+        "{error:#}: provider={provider_id} adapter={RELAYDANCE_VIDEO_ADAPTER} task={}",
+        task_id.unwrap_or("unknown")
+    )
+}
+
+fn string_field(value: &Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        value
+            .get(*name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn relaydance_video_url(value: &Value) -> Option<String> {
+    value
+        .get("metadata")
+        .and_then(|metadata| metadata.get("url"))
+        .or_else(|| value.get("url"))
+        .or_else(|| value.get("video_url"))
+        .or_else(|| value.get("result_url"))
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|data| data.get("content"))
+                .and_then(|content| content.get("video_url"))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 use super::{MediaArtifact, MediaGenerationService, MediaJob, MediaKind};
@@ -293,7 +362,13 @@ where
             &self.api_token,
             &request.request_body(),
         )?;
-        let task = RelaydanceVideoTask::from_value(response)?;
+        let task =
+            RelaydanceVideoTask::from_value(response, "submit video task").with_context(|| {
+                format!(
+                    "provider={} adapter={RELAYDANCE_VIDEO_ADAPTER} task=unknown",
+                    self.provider_id
+                )
+            })?;
         let mut job = MediaJob::new(
             Uuid::new_v4().to_string(),
             MediaKind::Video,
@@ -339,7 +414,21 @@ where
         }
         let url = self.poll_url(&job)?;
         let response = self.transport.poll_task(&url, &self.api_token)?;
-        let task = RelaydanceVideoTask::from_value(response)?;
+        let task = match RelaydanceVideoTask::from_value(response, "poll video task") {
+            Ok(task) => task,
+            Err(error) => {
+                let mut failed = job;
+                let diagnostic = relaydance_task_error_context(
+                    &self.provider_id,
+                    failed.provider_job_id.as_deref(),
+                    &error,
+                );
+                failed.error = Some(diagnostic.clone());
+                failed.transition(MediaJobStatus::Failed, now_ms)?;
+                service.save_job(&failed)?;
+                return Err(anyhow!(diagnostic));
+            }
+        };
         self.apply_task(service, job, task, now_ms)
     }
 
@@ -519,6 +608,61 @@ mod tests {
         assert!(error.contains("prompt is required"));
     }
 
+    fn relaydance_poll_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!("fixtures/relaydance_poll_task.json")).expect("fixture")
+    }
+
+    #[test]
+    fn parses_relaydance_poll_fixture() {
+        let task = RelaydanceVideoTask::from_value(relaydance_poll_fixture(), "poll video task")
+            .expect("task");
+        assert!(!task.id.trim().is_empty());
+        assert!(!task.status.trim().is_empty());
+    }
+
+    #[test]
+    fn relaydance_shape_summary_lists_top_level_keys() {
+        let summary = relaydance_response_shape_summary(&relaydance_poll_fixture());
+        assert!(summary.contains("keys=["));
+    }
+
+    #[test]
+    fn parses_relaydance_completed_task_with_task_id_and_url() {
+        let task = RelaydanceVideoTask::from_value(
+            json!({
+                "task_id": "task-1",
+                "status": "succeeded",
+                "url": "https://example.com/video.mp4"
+            }),
+            "poll video task",
+        )
+        .expect("task");
+
+        assert_eq!(task.id, "task-1");
+        assert_eq!(task.status, "succeeded");
+        assert_eq!(
+            task.video_url.as_deref(),
+            Some("https://example.com/video.mp4")
+        );
+    }
+
+    #[test]
+    fn relaydance_missing_task_id_reports_phase_and_keys() {
+        let error = RelaydanceVideoTask::from_value(
+            json!({
+                "code": "ok",
+                "message": "accepted",
+                "data": { "status": "running" }
+            }),
+            "poll video task",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("poll video task response missing task id"));
+        assert!(error.contains("keys=[code,data,message]"));
+    }
+
     #[test]
     fn parses_completed_task_with_metadata_url() {
         let value = json!({
@@ -526,7 +670,7 @@ mod tests {
             "status": "completed",
             "metadata": { "url": "https://cdn.example.com/v.mp4" }
         });
-        let task = RelaydanceVideoTask::from_value(value).expect("task");
+        let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
         assert_eq!(task.id, "vid-1");
         assert_eq!(task.media_status().unwrap(), MediaJobStatus::Succeeded);
         assert_eq!(
@@ -542,7 +686,7 @@ mod tests {
             "status": "failed",
             "error": { "code": "x", "message": "content blocked" }
         });
-        let task = RelaydanceVideoTask::from_value(value).expect("task");
+        let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
         assert_eq!(task.media_status().unwrap(), MediaJobStatus::Failed);
         assert_eq!(task.error.as_deref(), Some("content blocked"));
     }
@@ -550,7 +694,7 @@ mod tests {
     #[test]
     fn rejects_unknown_status() {
         let value = json!({ "id": "v", "status": "weird" });
-        let task = RelaydanceVideoTask::from_value(value).expect("task");
+        let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
         assert!(task
             .media_status()
             .unwrap_err()
@@ -674,5 +818,53 @@ mod tests {
             .submit(&service, request, selected.clone(), 1)
             .expect("submit");
         assert_eq!(job.parameters, selected);
+    }
+
+    #[test]
+    fn poll_parser_failure_marks_job_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = MediaGenerationService::new(dir.path());
+        let adapter = RelaydanceVideoAdapter::with_transport(
+            "token",
+            "https://relaydance.com/v1/video/generations",
+            "relaydance",
+            ScriptedTransport {
+                submit: json!({ "id": "task-1", "status": "queued" }),
+                polls: RefCell::new(vec![json!({ "data": { "status": "running" } })]),
+            },
+        );
+        let request = RelaydanceVideoRequest {
+            model: "m".into(),
+            prompt: "a cat".into(),
+            params: vec![],
+        };
+        let job = adapter
+            .submit(&service, request, BTreeMap::new(), 1)
+            .expect("submit");
+
+        let error = adapter
+            .poll(&service, job.clone(), 2)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("poll video task response missing task id"));
+
+        let saved = service.load_job(&job.id).expect("saved job");
+        assert_eq!(saved.status, MediaJobStatus::Failed);
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| { value.contains("poll video task response missing task id") }));
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("provider=relaydance")));
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("adapter=relaydance_video")));
+        assert!(saved
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("task=task-1")));
     }
 }
