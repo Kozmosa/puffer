@@ -5742,6 +5742,77 @@ models: []
         .expect("write replicate override");
     }
 
+    fn write_relaydance_video_resource_override(paths: &ConfigPaths) {
+        let providers_dir = paths.workspace_config_dir.join("resources/providers");
+        std::fs::create_dir_all(&providers_dir).expect("provider resources dir");
+        std::fs::write(
+            providers_dir.join("relaydance.yaml"),
+            r#"id: relaydance
+display_name: Relaydance
+base_url: https://relaydance.com
+default_api: openai-completions
+auth_modes:
+  - api_key
+media:
+  video:
+    discovery:
+      adapter: static
+    execution:
+      adapter: openai_video
+      path: /v1/video/generations
+    models:
+      - id: doubao-seedance-2-0-720p
+        display_name: Seedance 2.0 (720p)
+        operations:
+          - generate
+        parameters:
+          - name: duration
+            label: Duration
+            values: ["5", "10"]
+            default: "5"
+            request_field: seconds
+          - name: resolution
+            label: Resolution
+            values: ["720p", "1080p"]
+            default: "720p"
+            request_field: metadata.resolution
+          - name: ratio
+            label: Aspect ratio
+            values: ["16:9", "9:16", "1:1"]
+            default: "16:9"
+            request_field: metadata.ratio
+models: []
+"#,
+        )
+        .expect("write relaydance override");
+    }
+
+    fn daemon_state_with_relaydance_video_capability() -> (
+        PufferHomeEnvGuard,
+        tempfile::TempDir,
+        DaemonState,
+    ) {
+        let home_guard = PufferHomeEnvGuard::set();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let paths = ConfigPaths {
+            workspace_root: workspace_root.clone(),
+            workspace_config_dir: workspace_root.join(".puffer"),
+            user_config_dir: temp.path().join("home").join(".puffer"),
+            builtin_resources_dir: workspace_root.join("resources"),
+        };
+        ensure_workspace_dirs(&paths).expect("workspace dirs");
+        write_relaydance_video_resource_override(&paths);
+        let mut auth_store = AuthStore::default();
+        auth_store.set_api_key("relaydance", "sk-test");
+        auth_store
+            .save(&paths.user_config_dir.join("auth.json"))
+            .expect("save auth");
+        let state = DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
+            .expect("daemon state");
+        (home_guard, temp, state)
+    }
+
     fn daemon_state_with_replicate_video_capability() -> (
         PufferHomeEnvGuard,
         tempfile::TempDir,
@@ -5996,6 +6067,19 @@ models: []
 
         assert_eq!(capabilities.len(), 1);
         assert_eq!(capabilities[0]["adapter"], "replicate_video");
+    }
+
+    #[test]
+    fn daemon_list_media_capabilities_returns_relaydance_video_capability() {
+        let (_home_guard, _temp, state) = daemon_state_with_relaydance_video_capability();
+
+        let response =
+            handle_list_media_capabilities(&state, &json!({"kind": "video"})).expect("response");
+        let capabilities = response["capabilities"].as_array().expect("capabilities");
+
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities[0]["adapter"], "openai_video");
+        assert_eq!(capabilities[0]["providerId"], "relaydance");
     }
 
     #[test]
