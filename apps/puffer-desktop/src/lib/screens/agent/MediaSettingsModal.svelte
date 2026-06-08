@@ -5,13 +5,12 @@
   import Icon from "../../design/Icon.svelte";
   import { focusTrap } from "../../focusTrap";
   import type {
-    ImageMediaSettings,
     MediaCapabilityInfo,
     MediaCapabilityParameterInfo,
+    MediaGenerationSettings,
     MediaKind,
     MediaSettings,
-    SettingsSnapshot,
-    VideoMediaSettings
+    SettingsSnapshot
   } from "../../types";
 
   type Props = {
@@ -25,29 +24,28 @@
 
   let { kind, sessionCwd, settings, settingsReady = true, onSaved, onClose }: Props = $props();
   const IMAGE_OUTPUT_DIR_RELATIVE = ".puffer/media/images";
+  const VIDEO_ASPECT_RATIO_PARAMETER_NAMES = ["aspect_ratio", "aspectRatio"];
+  const VIDEO_DURATION_PARAMETER_NAMES = ["duration", "duration_seconds", "durationSeconds"];
   const initialSaved = untrack(() => mediaSettingsForKind(kind, settings));
-  const initialImage = untrack(() => settings.image);
-  const initialVideo = untrack(() => settings.video);
+  const initialParameters = untrack(() => initialSaved?.parameters ?? {});
 
   const title = $derived(mediaSettingsTitle(kind));
-  const saveLabel = $derived(kind === "image" ? "Save" : `Save ${title.toLowerCase()}`);
+  const saveLabel = "Save";
   const closeLabel = $derived(`Close ${title.toLowerCase()}`);
   const saved = $derived(mediaSettingsForKind(kind, settings));
   const imageDir = $derived(imageDirForSessionCwd(sessionCwd));
-  const aspectRatioOptions = ["16:9"];
-  const durationOptions = [8];
 
   let capabilities = $state<MediaCapabilityInfo[]>([]);
   let loading = $state(true);
   let saving = $state(false);
   let error = $state<string | null>(null);
   let openError = $state<string | null>(null);
-  let providerId = $state(initialSaved.providerId ?? "");
-  let modelId = $state(initialSaved.modelId ?? "");
-  let adapter = $state(initialImage.adapter ?? "");
-  let parameters = $state<Record<string, string>>({ ...initialImage.parameters });
-  let aspectRatio = $state(initialVideo.aspectRatio);
-  let durationSeconds = $state(initialVideo.durationSeconds);
+  let providerId = $state(initialSaved?.providerId ?? "");
+  let modelId = $state(initialSaved?.modelId ?? "");
+  let adapter = $state(initialSaved?.adapter ?? "");
+  let parameters = $state<Record<string, string>>({ ...initialParameters });
+  let aspectRatio = $state(videoAspectRatioFromParameters(initialParameters));
+  let durationSeconds = $state(videoDurationFromParameters(initialParameters));
   let appliedSettingsKey = $state(untrack(() => mediaSettingsKey(kind, settings)));
 
   let availableCapabilities = $derived(
@@ -70,6 +68,16 @@
     availableCapabilities.filter((capability) => capability.providerId === providerId)
   );
   let selectedCapability = $derived(currentMatchingCapability());
+  let aspectRatioParameter = $derived(
+    findCapabilityParameter(selectedCapability, VIDEO_ASPECT_RATIO_PARAMETER_NAMES)
+  );
+  let durationParameter = $derived(
+    findCapabilityParameter(selectedCapability, VIDEO_DURATION_PARAMETER_NAMES)
+  );
+  let aspectRatioOptions = $derived(videoStringOptions(aspectRatioParameter, aspectRatio));
+  let durationOptions = $derived(videoDurationOptions(durationParameter, durationSeconds));
+  let aspectRatioLabel = $derived(aspectRatioParameter?.label ?? "Aspect ratio");
+  let durationFieldLabel = $derived(durationParameter?.label ?? "Duration");
   let hasAvailableCapabilities = $derived(availableCapabilities.length > 0);
   let savedSelectionMissing = $derived(
     !loading &&
@@ -91,25 +99,25 @@
     const video = mediaSettings.video;
     return [
       mediaKind,
-      image.providerId ?? "",
-      image.modelId ?? "",
-      image.adapter ?? "",
-      serializeParameters(image.parameters),
-      video.providerId ?? "",
-      video.modelId ?? "",
-      video.aspectRatio,
-      String(video.durationSeconds)
+      image?.providerId ?? "",
+      image?.modelId ?? "",
+      image?.adapter ?? "",
+      serializeParameters(image?.parameters ?? {}),
+      video?.providerId ?? "",
+      video?.modelId ?? "",
+      video?.adapter ?? "",
+      serializeParameters(video?.parameters ?? {})
     ].join("\u0000");
   }
 
   function applySettings(mediaSettings: MediaSettings) {
     const current = mediaSettingsForKind(kind, mediaSettings);
-    providerId = current.providerId ?? "";
-    modelId = current.modelId ?? "";
-    adapter = mediaSettings.image.adapter ?? "";
-    parameters = { ...mediaSettings.image.parameters };
-    aspectRatio = mediaSettings.video.aspectRatio;
-    durationSeconds = mediaSettings.video.durationSeconds;
+    providerId = current?.providerId ?? "";
+    modelId = current?.modelId ?? "";
+    adapter = current?.adapter ?? "";
+    parameters = { ...(current?.parameters ?? {}) };
+    aspectRatio = videoAspectRatioFromParameters(current?.parameters ?? {});
+    durationSeconds = videoDurationFromParameters(current?.parameters ?? {});
   }
 
   function chooseDefaultCapability() {
@@ -142,7 +150,13 @@
     providerId = capability.providerId;
     modelId = capability.modelId;
     adapter = capability.adapter;
-    parameters = { ...capability.defaults };
+    if (capability.kind === "image") {
+      parameters = { ...capability.defaults };
+    } else {
+      parameters = { ...capability.defaults };
+      aspectRatio = defaultVideoAspectRatio(capability, aspectRatio);
+      durationSeconds = defaultVideoDurationSeconds(capability, durationSeconds);
+    }
   }
 
   function capabilityKey(capability: MediaCapabilityInfo): string {
@@ -172,7 +186,7 @@
     if (capability.providerId !== selectedProviderId || capability.modelId !== selectedModelId) {
       return false;
     }
-    return mediaKind !== "image" || capability.adapter === selectedAdapter;
+    return capability.adapter === selectedAdapter;
   }
 
   function providerSelectionIsUnavailable(): boolean {
@@ -221,7 +235,7 @@
     return durationOptions.length !== 1;
   }
 
-  function durationLabel(value: number): string {
+  function formatDurationLabel(value: number): string {
     return `${value}s`;
   }
 
@@ -248,6 +262,113 @@
 
   function setParameterValue(name: string, value: string) {
     parameters = { ...parameters, [name]: value };
+  }
+
+  function findCapabilityParameter(
+    capability: MediaCapabilityInfo | null,
+    names: string[]
+  ): MediaCapabilityParameterInfo | null {
+    if (!capability || capability.kind !== "video") return null;
+    const normalizedNames = new Set(names.map(normalizeParameterName));
+    return (
+      capability.parameters.find((parameter) => {
+        const name = normalizeParameterName(parameter.name);
+        const requestField = parameter.requestField
+          ? normalizeParameterName(parameter.requestField)
+          : "";
+        return normalizedNames.has(name) || normalizedNames.has(requestField);
+      }) ?? null
+    );
+  }
+
+  function normalizeParameterName(value: string): string {
+    return value.replace(/[-_\s]/g, "").toLowerCase();
+  }
+
+  function videoStringOptions(
+    parameter: MediaCapabilityParameterInfo | null,
+    currentValue: string
+  ): string[] {
+    const values =
+      parameter?.values.filter((value) => value.trim().length > 0) ??
+      [];
+    if (values.length > 0) return uniqueStrings(values);
+    if (parameter?.default) return [parameter.default];
+    return currentValue ? [currentValue] : [];
+  }
+
+  function videoDurationOptions(
+    parameter: MediaCapabilityParameterInfo | null,
+    currentValue: number
+  ): number[] {
+    const rawValues =
+      parameter && parameter.values.length > 0
+        ? parameter.values
+        : parameter?.default
+          ? [parameter.default]
+          : [];
+    const values = rawValues
+      .map(parseDurationSeconds)
+      .filter((value): value is number => value !== null);
+    if (values.length > 0) return uniqueNumbers(values);
+    return Number.isFinite(currentValue) ? [currentValue] : [];
+  }
+
+  function uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+    return out;
+  }
+
+  function uniqueNumbers(values: number[]): number[] {
+    const seen = new Set<number>();
+    const out: number[] = [];
+    for (const value of values) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+    return out;
+  }
+
+  function parseDurationSeconds(value: string): number | null {
+    const numeric = Number(value.trim().replace(/s$/i, ""));
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  }
+
+  function defaultVideoAspectRatio(
+    capability: MediaCapabilityInfo,
+    currentValue: string
+  ): string {
+    const parameter = findCapabilityParameter(capability, VIDEO_ASPECT_RATIO_PARAMETER_NAMES);
+    const options = videoStringOptions(parameter, currentValue);
+    const defaultValue = parameter?.default ?? "";
+    if (defaultValue && options.includes(defaultValue)) return defaultValue;
+    return options[0] ?? currentValue;
+  }
+
+  function defaultVideoDurationSeconds(
+    capability: MediaCapabilityInfo,
+    currentValue: number
+  ): number {
+    const parameter = findCapabilityParameter(capability, VIDEO_DURATION_PARAMETER_NAMES);
+    const options = videoDurationOptions(parameter, currentValue);
+    const defaultValue = parameter?.default ? parseDurationSeconds(parameter.default) : null;
+    if (defaultValue !== null && options.includes(defaultValue)) return defaultValue;
+    return options[0] ?? currentValue;
+  }
+
+  function normalizeVideoAspectRatio(value: string): string {
+    return aspectRatioOptions.includes(value) ? value : aspectRatioOptions[0] ?? value;
+  }
+
+  function normalizeVideoDurationSeconds(value: number): number {
+    return durationOptions.includes(value) ? value : durationOptions[0] ?? value;
   }
 
   function normalizeParameters(
@@ -280,10 +401,10 @@
   function savedSelectionIsConfigured(mediaKind: MediaKind, mediaSettings: MediaSettings): boolean {
     if (mediaKind === "image") {
       const image = mediaSettings.image;
-      return Boolean(image.providerId || image.modelId || image.adapter);
+      return Boolean(image);
     }
     const video = mediaSettings.video;
-    return Boolean(video.providerId || video.modelId);
+    return Boolean(video);
   }
 
   function savedSelectionIsAvailable(
@@ -293,6 +414,7 @@
   ): boolean {
     if (mediaKind === "image") {
       const image = mediaSettings.image;
+      if (!image) return false;
       return available.some((capability) =>
         capabilityMatchesIdentity(
           capability,
@@ -304,36 +426,49 @@
       );
     }
     const video = mediaSettings.video;
+    if (!video) return false;
     return available.some((capability) =>
       capabilityMatchesIdentity(
         capability,
         mediaKind,
         video.providerId,
         video.modelId,
-        null
+        video.adapter
       )
     );
   }
 
-  function withCurrentImage(): ImageMediaSettings {
+  function withCurrentSelection(): MediaGenerationSettings {
+    const currentParameters =
+      kind === "video" ? videoParametersFromCurrent() : { ...parameters };
     const normalizedParameters = selectedCapability
-      ? normalizeParameters(selectedCapability, parameters)
-      : { ...parameters };
+      ? normalizeParameters(selectedCapability, currentParameters)
+      : currentParameters;
     return {
-      providerId: providerId || null,
-      modelId: modelId || null,
-      adapter: adapter || null,
+      providerId,
+      modelId,
+      operation: "generate",
+      adapter,
       parameters: normalizedParameters
     };
   }
 
-  function withCurrentVideo(): VideoMediaSettings {
-    return {
-      providerId: providerId || null,
-      modelId: modelId || null,
-      aspectRatio,
-      durationSeconds
-    };
+  function videoParametersFromCurrent(): Record<string, string> {
+    const next = { ...parameters };
+    const aspectName = aspectRatioParameter?.name ?? "aspect_ratio";
+    const durationName = durationParameter?.name ?? "duration";
+    next[aspectName] = normalizeVideoAspectRatio(aspectRatio);
+    next[durationName] = String(normalizeVideoDurationSeconds(durationSeconds));
+    return next;
+  }
+
+  function videoAspectRatioFromParameters(value: Record<string, string>): string {
+    return value.aspect_ratio ?? value.aspectRatio ?? "16:9";
+  }
+
+  function videoDurationFromParameters(value: Record<string, string>): number {
+    const duration = value.duration ?? value.duration_seconds ?? value.durationSeconds ?? "8";
+    return parseDurationSeconds(duration) ?? 8;
   }
 
   async function save() {
@@ -343,8 +478,8 @@
     try {
       const media: MediaSettings =
         kind === "image"
-          ? { image: withCurrentImage(), video: { ...settings.video } }
-          : { image: { ...settings.image }, video: withCurrentVideo() };
+          ? { image: withCurrentSelection(), video: settings.video }
+          : { image: settings.image, video: withCurrentSelection() };
       const snapshot = await updateConfig({ media });
       onSaved(snapshot);
       close();
@@ -409,6 +544,18 @@
       parameters = next;
     }
   });
+
+  $effect(() => {
+    if (kind !== "video" || !selectedCapability) return;
+    const nextAspectRatio = normalizeVideoAspectRatio(aspectRatio);
+    const nextDurationSeconds = normalizeVideoDurationSeconds(durationSeconds);
+    if (nextAspectRatio !== aspectRatio) {
+      aspectRatio = nextAspectRatio;
+    }
+    if (nextDurationSeconds !== durationSeconds) {
+      durationSeconds = nextDurationSeconds;
+    }
+  });
 </script>
 
 {#snippet loadingBlock(primary: string, secondary: string)}
@@ -463,10 +610,7 @@
 
     <div class="pf-modal-body pf-media-modal-body">
       {#if !settingsReady}
-        {@render loadingBlock(
-          "Loading generation settings...",
-          "Waiting for media defaults from the daemon."
-        )}
+        {@render loadingBlock(mediaCapabilitiesLoadingPrimary(kind), mediaCapabilitiesLoadingSecondary(kind))}
       {:else if loading}
         {@render loadingBlock(mediaCapabilitiesLoadingPrimary(kind), mediaCapabilitiesLoadingSecondary(kind))}
       {:else if error}
@@ -570,7 +714,7 @@
           {:else}
             {#if shouldRenderAspectRatioSelect()}
               <label class="pf-media-field">
-                <span class="pf-field-label">Aspect ratio</span>
+                <span class="pf-field-label">{aspectRatioLabel}</span>
                 <select
                   class="sc-input"
                   value={aspectRatio}
@@ -582,23 +726,26 @@
                 </select>
               </label>
             {:else}
-              {@render readOnlyField("Aspect ratio", aspectRatio)}
+              {@render readOnlyField(aspectRatioLabel, aspectRatio)}
             {/if}
             {#if shouldRenderDurationSelect()}
               <label class="pf-media-field">
-                <span class="pf-field-label">Duration</span>
+                <span class="pf-field-label">{durationFieldLabel}</span>
                 <select
                   class="sc-input"
                   value={String(durationSeconds)}
-                  onchange={(event) => (durationSeconds = Number(event.currentTarget.value))}
+                  onchange={(event) => {
+                    const next = parseDurationSeconds(event.currentTarget.value);
+                    if (next !== null) durationSeconds = next;
+                  }}
                 >
                   {#each durationOptions as option}
-                    <option value={String(option)}>{durationLabel(option)}</option>
+                    <option value={String(option)}>{formatDurationLabel(option)}</option>
                   {/each}
                 </select>
               </label>
             {:else}
-              {@render readOnlyField("Duration", durationLabel(durationSeconds))}
+              {@render readOnlyField(durationFieldLabel, formatDurationLabel(durationSeconds))}
             {/if}
           {/if}
         </div>

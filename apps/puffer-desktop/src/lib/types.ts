@@ -332,22 +332,16 @@ export type SettingsConfig = {
 };
 
 export type MediaSettings = {
-  image: ImageMediaSettings;
-  video: VideoMediaSettings;
+  image: MediaGenerationSettings | null;
+  video: MediaGenerationSettings | null;
 };
 
-export type ImageMediaSettings = {
-  providerId: string | null;
-  modelId: string | null;
-  adapter: string | null;
+export type MediaGenerationSettings = {
+  providerId: string;
+  modelId: string;
+  operation: "generate";
+  adapter: string;
   parameters: Record<string, string>;
-};
-
-export type VideoMediaSettings = {
-  providerId: string | null;
-  modelId: string | null;
-  aspectRatio: string;
-  durationSeconds: number;
 };
 
 export type MediaKind = "image" | "video";

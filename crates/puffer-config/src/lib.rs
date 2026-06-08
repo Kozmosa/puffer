@@ -137,69 +137,26 @@ pub struct StatusLineConfig {
 }
 
 /// Configures media generation defaults shared by UI and runtime tools.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct MediaConfig {
     #[serde(default)]
-    pub image: ImageMediaConfig,
+    pub image: Option<MediaGenerationConfig>,
     #[serde(default)]
-    pub video: VideoMediaConfig,
+    pub video: Option<MediaGenerationConfig>,
 }
 
-impl Default for MediaConfig {
-    fn default() -> Self {
-        Self {
-            image: ImageMediaConfig::default(),
-            video: VideoMediaConfig::default(),
-        }
-    }
-}
-
-/// Configures default provider, model, and output options for image generation.
+/// Configures one default media generation selection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ImageMediaConfig {
-    #[serde(default, alias = "providerId")]
-    pub provider_id: Option<String>,
-    #[serde(default, alias = "modelId")]
-    pub model_id: Option<String>,
-    #[serde(default)]
-    pub adapter: Option<String>,
+pub struct MediaGenerationConfig {
+    #[serde(alias = "providerId")]
+    pub provider_id: String,
+    #[serde(alias = "modelId")]
+    pub model_id: String,
+    #[serde(default = "default_media_operation")]
+    pub operation: String,
+    pub adapter: String,
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
-}
-
-impl Default for ImageMediaConfig {
-    fn default() -> Self {
-        Self {
-            provider_id: None,
-            model_id: None,
-            adapter: None,
-            parameters: BTreeMap::new(),
-        }
-    }
-}
-
-/// Configures default provider, model, and output options for video generation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VideoMediaConfig {
-    #[serde(default, alias = "providerId")]
-    pub provider_id: Option<String>,
-    #[serde(default, alias = "modelId")]
-    pub model_id: Option<String>,
-    #[serde(default = "default_video_aspect_ratio", alias = "aspectRatio")]
-    pub aspect_ratio: String,
-    #[serde(default = "default_video_duration_seconds", alias = "durationSeconds")]
-    pub duration_seconds: u32,
-}
-
-impl Default for VideoMediaConfig {
-    fn default() -> Self {
-        Self {
-            provider_id: None,
-            model_id: None,
-            aspect_ratio: default_video_aspect_ratio(),
-            duration_seconds: default_video_duration_seconds(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -327,12 +284,8 @@ fn default_remote_runner_wait_for_ready() -> bool {
     true
 }
 
-fn default_video_aspect_ratio() -> String {
-    "16:9".to_string()
-}
-
-fn default_video_duration_seconds() -> u32 {
-    8
+fn default_media_operation() -> String {
+    "generate".to_string()
 }
 
 fn default_memory_enabled() -> bool {
@@ -672,6 +625,44 @@ mod tests {
     }
 
     #[test]
+    fn media_config_parses_unified_image_and_video_selections() {
+        let toml = r#"
+app_name = "Puffer"
+theme = "system"
+mascot = { id = "none", display_name = "None", enabled = false }
+ui = { no_alt_screen = false, tmux_golden_mode = false }
+
+[media.image]
+provider_id = "openai"
+model_id = "gpt-image-1"
+operation = "generate"
+adapter = "images_json"
+parameters = { size = "1024x1024", quality = "auto", output_format = "png" }
+
+[media.video]
+provider_id = "replicate"
+model_id = "owner/video-version"
+operation = "generate"
+adapter = "replicate_video"
+parameters = { aspect_ratio = "16:9", duration = "5" }
+"#;
+
+        let parsed: PufferConfig = toml::from_str(toml).expect("config parses");
+        assert_eq!(parsed.media.image.as_ref().unwrap().adapter, "images_json");
+        assert_eq!(
+            parsed.media.video.as_ref().unwrap().parameters.get("duration"),
+            Some(&"5".to_string())
+        );
+    }
+
+    #[test]
+    fn media_config_defaults_to_unconfigured_selections() {
+        let config = MediaConfig::default();
+        assert!(config.image.is_none());
+        assert!(config.video.is_none());
+    }
+
+    #[test]
     fn load_config_preserves_user_provider_selection_over_workspace_defaults() {
         let _guard = lock_puffer_home();
         let tempdir = tempdir().expect("tempdir");
@@ -694,11 +685,13 @@ mod tests {
         user.editor_mode = "vim".to_string();
         user.fast_mode = true;
         user.effort_level = Some("high".to_string());
-        user.media.image.provider_id = Some("user-image-provider".to_string());
-        user.media.image.model_id = Some("user-image-model".to_string());
-        user.media.image.adapter = Some("user-adapter".to_string());
-        user.media.image.parameters =
-            BTreeMap::from([("size".to_string(), "1024x1024".to_string())]);
+        user.media.image = Some(MediaGenerationConfig {
+            provider_id: "user-image-provider".to_string(),
+            model_id: "user-image-model".to_string(),
+            operation: "generate".to_string(),
+            adapter: "user-adapter".to_string(),
+            parameters: BTreeMap::from([("size".to_string(), "1024x1024".to_string())]),
+        });
         save_user_config(&paths, &user).expect("user config");
 
         let mut workspace = PufferConfig::default();
@@ -709,9 +702,13 @@ mod tests {
         workspace.openai_query_params =
             BTreeMap::from([("workspace_param".to_string(), "2".to_string())]);
         workspace.theme = "harbor".to_string();
-        workspace.media.image.provider_id = Some("workspace-image-provider".to_string());
-        workspace.media.image.model_id = Some("workspace-image-model".to_string());
-        workspace.media.image.adapter = Some("workspace-adapter".to_string());
+        workspace.media.image = Some(MediaGenerationConfig {
+            provider_id: "workspace-image-provider".to_string(),
+            model_id: "workspace-image-model".to_string(),
+            operation: "generate".to_string(),
+            adapter: "workspace-adapter".to_string(),
+            parameters: BTreeMap::new(),
+        });
         save_workspace_config(&paths, &workspace).expect("workspace config");
 
         let loaded = load_config(&paths).expect("load");
@@ -902,8 +899,13 @@ tmux_golden_mode = false
             command: "printf puffer-status".to_string(),
             padding: 2,
         });
-        workspace_config.media.image.provider_id = Some("workspace-image-provider".to_string());
-        workspace_config.media.image.model_id = Some("workspace-image-model".to_string());
+        workspace_config.media.image = Some(MediaGenerationConfig {
+            provider_id: "workspace-image-provider".to_string(),
+            model_id: "workspace-image-model".to_string(),
+            operation: "generate".to_string(),
+            adapter: "workspace-adapter".to_string(),
+            parameters: BTreeMap::new(),
+        });
         save_workspace_config(&paths, &workspace_config).expect("workspace config");
 
         let loaded = load_config(&paths).expect("load");

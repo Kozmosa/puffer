@@ -102,19 +102,17 @@ type SessionDetailOverrides = {
   divergence: JsonRecord;
 };
 
+type FakeMediaSelection = {
+  providerId: string;
+  modelId: string;
+  operation: "generate";
+  adapter: string;
+  parameters: Record<string, string>;
+};
+
 type FakeMediaSettings = {
-  image: {
-    providerId: string | null;
-    modelId: string | null;
-    adapter: string | null;
-    parameters: Record<string, string>;
-  };
-  video: {
-    providerId: string | null;
-    modelId: string | null;
-    aspectRatio: string;
-    durationSeconds: number;
-  };
+  image: FakeMediaSelection | null;
+  video: FakeMediaSelection | null;
 };
 
 type FakeSettingsConfig = {
@@ -180,25 +178,15 @@ const now = Date.now();
 
 function defaultMediaSettings(): FakeMediaSettings {
   return {
-    image: {
-      providerId: null,
-      modelId: null,
-      adapter: null,
-      parameters: {}
-    },
-    video: {
-      providerId: null,
-      modelId: null,
-      aspectRatio: "16:9",
-      durationSeconds: 8
-    }
+    image: null,
+    video: null
   };
 }
 
 function cloneMediaSettings(media: FakeMediaSettings): FakeMediaSettings {
   return {
-    image: { ...media.image, parameters: { ...media.image.parameters } },
-    video: { ...media.video }
+    image: cloneMediaSelection(media.image),
+    video: cloneMediaSelection(media.video)
   };
 }
 
@@ -206,33 +194,42 @@ function normalizeMediaSettings(value: unknown): FakeMediaSettings {
   const defaults = defaultMediaSettings();
   if (!value || typeof value !== "object") return defaults;
   const record = value as JsonRecord;
-  const image = record.image && typeof record.image === "object" ? (record.image as JsonRecord) : {};
-  const video = record.video && typeof record.video === "object" ? (record.video as JsonRecord) : {};
   return {
-    image: {
-      providerId: typeof image.providerId === "string" ? image.providerId : null,
-      modelId: typeof image.modelId === "string" ? image.modelId : null,
-      adapter: typeof image.adapter === "string" ? image.adapter : null,
-      parameters:
-        image.parameters && typeof image.parameters === "object"
-          ? Object.fromEntries(
-              Object.entries(image.parameters as JsonRecord)
-                .filter(([, value]) => typeof value === "string")
-                .map(([key, value]) => [key, value as string])
-            )
-          : { ...defaults.image.parameters }
-    },
-    video: {
-      providerId: typeof video.providerId === "string" ? video.providerId : null,
-      modelId: typeof video.modelId === "string" ? video.modelId : null,
-      aspectRatio:
-        typeof video.aspectRatio === "string" ? video.aspectRatio : defaults.video.aspectRatio,
-      durationSeconds:
-        typeof video.durationSeconds === "number"
-          ? video.durationSeconds
-          : defaults.video.durationSeconds
-    }
+    image: normalizeMediaSelection(record.image),
+    video: normalizeMediaSelection(record.video)
   };
+}
+
+function cloneMediaSelection(selection: FakeMediaSelection | null): FakeMediaSelection | null {
+  return selection ? { ...selection, parameters: { ...selection.parameters } } : null;
+}
+
+function normalizeMediaSelection(value: unknown): FakeMediaSelection | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as JsonRecord;
+  if (
+    typeof record.providerId !== "string" ||
+    typeof record.modelId !== "string" ||
+    typeof record.adapter !== "string"
+  ) {
+    return null;
+  }
+  return {
+    providerId: record.providerId,
+    modelId: record.modelId,
+    operation: "generate",
+    adapter: record.adapter,
+    parameters: normalizeStringRecord(record.parameters)
+  };
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value as JsonRecord)
+      .filter(([, entry]) => typeof entry === "string")
+      .map(([key, entry]) => [key, entry as string])
+  );
 }
 
 export function defaultFakeMediaCapabilities(): FakeMediaCapability[] {
@@ -1950,18 +1947,14 @@ export class FakeDaemon {
       throw new Error(`No ${kind} capabilities available.`);
     }
     const settings = this.settingsConfig.media[kind];
-    if (!settings.providerId || !settings.modelId) {
+    if (!settings) {
       throw new Error(`${kind} media provider/model is not configured.`);
-    }
-    const imageAdapter = kind === "image" ? this.settingsConfig.media.image.adapter : null;
-    if (kind === "image" && !imageAdapter) {
-      throw new Error("image media provider/model/adapter is not configured.");
     }
     const capability = capabilities.find(
       (item) =>
         item.providerId === settings.providerId &&
         item.modelId === settings.modelId &&
-        (kind !== "image" || item.adapter === imageAdapter)
+        item.adapter === settings.adapter
     );
     if (!capability) {
       throw new Error(`${kind} media capability unavailable for ${settings.providerId}/${settings.modelId}.`);

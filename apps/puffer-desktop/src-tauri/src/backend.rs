@@ -3,10 +3,10 @@ use crate::dtos::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
     BrowserCaptchaSettingsDto, BrowserCaptchaSolverDto, BrowserSettingsDto, ChatAttachmentDto,
     ChatAttachmentSourceDto, DiffSummaryDto, DivergenceReportDto, ExternalCredentialDto,
-    FolderGroupDto, ImageMediaSettingsDto, MediaCapabilityInfoDto, MediaSettingsDto,
+    FolderGroupDto, MediaCapabilityInfoDto, MediaGenerationSettingsDto, MediaSettingsDto,
     ProviderSummaryDto, ResourceCountsDto, SecretSummaryDto, SecretsSettingsDto, SessionDetailDto,
     SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto,
-    TimelineItemDto, VideoMediaSettingsDto,
+    TimelineItemDto,
 };
 use crate::events::EventEmitter;
 use crate::repo_actions;
@@ -828,36 +828,16 @@ impl BackendState {
 
     fn generate_image_media_job(&self, prompt: String, count: u8) -> Result<GenerateMediaResult> {
         let config = self.load_config()?;
-        let provider_id = config
+        let image_config = config
             .media
             .image
-            .provider_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let model_id = config
-            .media
-            .image
-            .model_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let adapter = config
-            .media
-            .image
-            .adapter
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let (provider_id, model_id, adapter) = match (provider_id, model_id, adapter) {
-            (Some(provider_id), Some(model_id), Some(adapter)) => (
-                provider_id.to_string(),
-                model_id.to_string(),
-                adapter.to_string(),
-            ),
-            _ => bail!("image media provider/model/adapter is not configured"),
-        };
-        let image_config = config.media.image;
+            .ok_or_else(|| anyhow!("image media provider/model/adapter is not configured"))?;
+        let provider_id = non_empty_media_field(&image_config.provider_id, "provider_id")
+            .context("image media provider/model/adapter is not configured")?;
+        let model_id = non_empty_media_field(&image_config.model_id, "model_id")
+            .context("image media provider/model/adapter is not configured")?;
+        let adapter = non_empty_media_field(&image_config.adapter, "adapter")
+            .context("image media provider/model/adapter is not configured")?;
         let (providers, auth_store) = self.media_runtime_inputs()?;
         let discovery_cache = self.exact_media_discovery_cache(&providers, &auth_store);
         let generation = generate_exact_image_with_cache(
@@ -907,28 +887,19 @@ impl BackendState {
             bail!("No video capabilities available");
         }
         let config = self.load_config()?;
-        let provider_id = config
+        let video_config = config
             .media
             .video
-            .provider_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let model_id = config
-            .media
-            .video
-            .model_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let (provider_id, model_id) = match (provider_id, model_id) {
-            (Some(provider_id), Some(model_id)) => (provider_id.to_string(), model_id.to_string()),
-            _ => bail!("video media provider/model is not configured"),
-        };
+            .ok_or_else(|| anyhow!("video media provider/model is not configured"))?;
+        let provider_id = non_empty_media_field(&video_config.provider_id, "provider_id")
+            .context("video media provider/model is not configured")?;
+        let model_id = non_empty_media_field(&video_config.model_id, "model_id")
+            .context("video media provider/model is not configured")?;
         let selected_available = capabilities.iter().any(|capability| {
             capability.kind == "video"
                 && capability.provider_id == provider_id
                 && capability.model_id == model_id
+                && capability.adapter == video_config.adapter
                 && capability.status == "available"
         });
         if !selected_available {
@@ -2608,6 +2579,7 @@ mod tests {
                     "image": {
                         "providerId": "openai",
                         "modelId": "gpt-image-1",
+                        "operation": "generate",
                         "adapter": "images_json",
                         "parameters": {
                             "size": "1024x1024",
@@ -2615,12 +2587,7 @@ mod tests {
                             "output_format": "png"
                         }
                     },
-                    "video": {
-                        "providerId": null,
-                        "modelId": null,
-                        "aspectRatio": "16:9",
-                        "durationSeconds": 8
-                    }
+                    "video": null
                 }
             }))
             .unwrap();
@@ -2634,6 +2601,7 @@ mod tests {
                 "image": {
                     "providerId": "openai",
                     "modelId": "gpt-image-1",
+                    "operation": "generate",
                     "adapter": "images_json",
                     "parameters": {
                         "size": "1024x1024",
@@ -2641,12 +2609,7 @@ mod tests {
                         "output_format": "png"
                     }
                 },
-                "video": {
-                    "providerId": null,
-                    "modelId": null,
-                    "aspectRatio": "16:9",
-                    "durationSeconds": 8
-                }
+                "video": null
             })
         );
     }
@@ -2766,12 +2729,8 @@ mod tests {
         backend
             .save_config(&StoredConfig {
                 media: StoredMediaConfig {
-                    image: StoredImageMediaConfig {
-                        provider_id: Some("openai".to_string()),
-                        model_id: None,
-                        ..StoredImageMediaConfig::default()
-                    },
-                    video: StoredVideoMediaConfig::default(),
+                    image: None,
+                    video: None,
                 },
                 ..StoredConfig::default()
             })
@@ -2804,13 +2763,14 @@ mod tests {
         backend
             .save_config(&StoredConfig {
                 media: StoredMediaConfig {
-                    image: StoredImageMediaConfig {
-                        provider_id: Some("openai".to_string()),
-                        model_id: Some("missing-image-model".to_string()),
-                        adapter: Some("images_json".to_string()),
-                        ..StoredImageMediaConfig::default()
-                    },
-                    video: StoredVideoMediaConfig::default(),
+                    image: Some(StoredMediaGenerationConfig {
+                        provider_id: "openai".to_string(),
+                        model_id: "missing-image-model".to_string(),
+                        operation: "generate".to_string(),
+                        adapter: "images_json".to_string(),
+                        parameters: BTreeMap::new(),
+                    }),
+                    video: None,
                 },
                 ..StoredConfig::default()
             })
@@ -3831,21 +3791,33 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn non_empty_media_field(value: &str, field: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("media selection `{field}` is empty");
+    }
+    Ok(trimmed.to_string())
+}
+
 fn media_settings_dto(config: &StoredMediaConfig) -> MediaSettingsDto {
     MediaSettingsDto {
-        image: ImageMediaSettingsDto {
-            provider_id: config.image.provider_id.clone(),
-            model_id: config.image.model_id.clone(),
-            adapter: config.image.adapter.clone(),
-            parameters: config.image.parameters.clone(),
-        },
-        video: VideoMediaSettingsDto {
-            provider_id: config.video.provider_id.clone(),
-            model_id: config.video.model_id.clone(),
-            aspect_ratio: config.video.aspect_ratio.clone(),
-            duration_seconds: config.video.duration_seconds,
-        },
+        image: media_selection_dto(&config.image),
+        video: media_selection_dto(&config.video),
     }
+}
+
+fn media_selection_dto(
+    selection: &Option<StoredMediaGenerationConfig>,
+) -> Option<MediaGenerationSettingsDto> {
+    selection
+        .as_ref()
+        .map(|selection| MediaGenerationSettingsDto {
+            provider_id: selection.provider_id.clone(),
+            model_id: selection.model_id.clone(),
+            operation: selection.operation.clone(),
+            adapter: selection.adapter.clone(),
+            parameters: selection.parameters.clone(),
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3875,58 +3847,34 @@ impl Default for StoredConfig {
 #[serde(rename_all = "camelCase")]
 struct StoredMediaConfig {
     #[serde(default)]
-    image: StoredImageMediaConfig,
+    image: Option<StoredMediaGenerationConfig>,
     #[serde(default)]
-    video: StoredVideoMediaConfig,
+    video: Option<StoredMediaGenerationConfig>,
 }
 
 impl Default for StoredMediaConfig {
     fn default() -> Self {
         Self {
-            image: StoredImageMediaConfig::default(),
-            video: StoredVideoMediaConfig::default(),
+            image: None,
+            video: None,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredImageMediaConfig {
-    provider_id: Option<String>,
-    model_id: Option<String>,
-    adapter: Option<String>,
+struct StoredMediaGenerationConfig {
+    provider_id: String,
+    model_id: String,
+    #[serde(default = "default_media_operation")]
+    operation: String,
+    adapter: String,
+    #[serde(default)]
     parameters: BTreeMap<String, String>,
 }
 
-impl Default for StoredImageMediaConfig {
-    fn default() -> Self {
-        Self {
-            provider_id: None,
-            model_id: None,
-            adapter: None,
-            parameters: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StoredVideoMediaConfig {
-    provider_id: Option<String>,
-    model_id: Option<String>,
-    aspect_ratio: String,
-    duration_seconds: u32,
-}
-
-impl Default for StoredVideoMediaConfig {
-    fn default() -> Self {
-        Self {
-            provider_id: None,
-            model_id: None,
-            aspect_ratio: "16:9".to_string(),
-            duration_seconds: 8,
-        }
-    }
+fn default_media_operation() -> String {
+    "generate".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

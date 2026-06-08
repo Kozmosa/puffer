@@ -653,22 +653,8 @@ export const mockSettingsSnapshot: SettingsSnapshot = {
     openaiBaseUrl: null,
     theme: "puffer",
     media: {
-      image: {
-        providerId: "openai",
-        modelId: "gpt-image-1",
-        adapter: "images_json",
-        parameters: {
-          size: "1024x1024",
-          quality: "auto",
-          output_format: "png"
-        }
-      },
-      video: {
-        providerId: null,
-        modelId: null,
-        aspectRatio: "16:9",
-        durationSeconds: 8
-      }
+      image: null,
+      video: null
     },
     mascotId: "clawd",
     mascotDisplayName: "Clawd",

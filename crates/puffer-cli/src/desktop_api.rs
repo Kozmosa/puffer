@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use puffer_config::{load_config, save_user_config, ConfigPaths, PufferConfig};
+use puffer_config::{
+    load_config, save_user_config, ConfigPaths, MediaGenerationConfig, PufferConfig,
+};
 use puffer_core::generated_media_attachment_metadata_with_fallback;
 use puffer_provider_registry::{
     detect_import_candidates, AuthMode, AuthStore, ExternalImportCandidate, ExternalImportFamily,
@@ -23,12 +25,11 @@ use crate::desktop_api_types::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto,
     BrowserCaptchaSettingsDto, BrowserCaptchaSolverDto, BrowserExtensionDto, BrowserSettingsDto,
     ChatAttachmentDto, ChatAttachmentSourceDto, DiffSummaryDto, DivergenceReportDto,
-    ExternalCredentialDto, FolderGroupDto, ImageMediaSettingsDto, MediaSettingsDto,
+    ExternalCredentialDto, FolderGroupDto, MediaGenerationSettingsDto, MediaSettingsDto,
     NetworkProxySettingsDto, ProviderSummaryDto, RepoActionResultDto, RepoPullRequestDto,
     RepoStatusDto, ResourceCountsDto, SanitizedProxyEndpointDto, SecretSummaryDto,
     SecretsSettingsDto, SessionDetailDto, SessionGroupsPageDto, SessionListItemDto,
     SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
-    VideoMediaSettingsDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.
@@ -437,19 +438,23 @@ pub(crate) fn load_settings_snapshot(
 
 fn media_settings_dto(config: &PufferConfig) -> MediaSettingsDto {
     MediaSettingsDto {
-        image: ImageMediaSettingsDto {
-            provider_id: config.media.image.provider_id.clone(),
-            model_id: config.media.image.model_id.clone(),
-            adapter: config.media.image.adapter.clone(),
-            parameters: config.media.image.parameters.clone(),
-        },
-        video: VideoMediaSettingsDto {
-            provider_id: config.media.video.provider_id.clone(),
-            model_id: config.media.video.model_id.clone(),
-            aspect_ratio: config.media.video.aspect_ratio.clone(),
-            duration_seconds: config.media.video.duration_seconds,
-        },
+        image: media_selection_dto(&config.media.image),
+        video: media_selection_dto(&config.media.video),
     }
+}
+
+fn media_selection_dto(
+    selection: &Option<MediaGenerationConfig>,
+) -> Option<MediaGenerationSettingsDto> {
+    selection
+        .as_ref()
+        .map(|selection| MediaGenerationSettingsDto {
+            provider_id: selection.provider_id.clone(),
+            model_id: selection.model_id.clone(),
+            operation: selection.operation.clone(),
+            adapter: selection.adapter.clone(),
+            parameters: selection.parameters.clone(),
+        })
 }
 
 fn browser_settings_dto(paths: &ConfigPaths, config: &PufferConfig) -> BrowserSettingsDto {

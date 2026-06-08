@@ -523,29 +523,21 @@ pub(crate) struct SettingsConfigDto {
     pub(crate) ui_tmux_golden_mode: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaSettingsDto {
-    pub(crate) image: ImageMediaSettingsDto,
-    pub(crate) video: VideoMediaSettingsDto,
+    pub(crate) image: Option<MediaGenerationSettingsDto>,
+    pub(crate) video: Option<MediaGenerationSettingsDto>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ImageMediaSettingsDto {
-    pub(crate) provider_id: Option<String>,
-    pub(crate) model_id: Option<String>,
-    pub(crate) adapter: Option<String>,
+pub(crate) struct MediaGenerationSettingsDto {
+    pub(crate) provider_id: String,
+    pub(crate) model_id: String,
+    pub(crate) operation: String,
+    pub(crate) adapter: String,
     pub(crate) parameters: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct VideoMediaSettingsDto {
-    pub(crate) provider_id: Option<String>,
-    pub(crate) model_id: Option<String>,
-    pub(crate) aspect_ratio: String,
-    pub(crate) duration_seconds: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

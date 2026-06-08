@@ -5,7 +5,7 @@ use crate::{
     ExactImageGenerationRequest, ExactMediaDiscoveryCache,
 };
 use anyhow::{bail, Context, Result};
-use puffer_config::ImageMediaConfig;
+use puffer_config::MediaGenerationConfig;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -81,7 +81,13 @@ pub fn execute_image_generation(
 ) -> Result<String> {
     let parsed: ImageGenerationInput =
         serde_json::from_value(input).context("invalid ImageGeneration input")?;
-    let mut request = build_image_request(cwd, parsed, &state.config.media.image)?;
+    let settings = state
+        .config
+        .media
+        .image
+        .as_ref()
+        .context("image media provider/model/adapter is not configured")?;
+    let mut request = build_image_request(cwd, parsed, settings)?;
     let media_context = media_context.context("ImageGeneration media runtime is not configured")?;
     request.parameters = resolved_exact_image_parameters_with_cache(
         media_context.providers,
@@ -138,7 +144,7 @@ pub fn execute_image_generation(
 fn build_image_request(
     cwd: &Path,
     input: ImageGenerationInput,
-    settings: &ImageMediaConfig,
+    settings: &MediaGenerationConfig,
 ) -> Result<ImageRequest> {
     validate_image_generation_count(input.count)?;
     let prompt = prompt_text(cwd, &input.prompt, input.prompt_reference.as_deref())?;
@@ -158,29 +164,15 @@ fn build_image_request(
 }
 
 fn required_provider_model_adapter(
-    settings: &ImageMediaConfig,
+    settings: &MediaGenerationConfig,
 ) -> Result<(String, String, String)> {
-    let provider = settings
-        .provider_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let model = settings
-        .model_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let adapter = settings
-        .adapter
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    match (provider, model, adapter) {
-        (Some(provider), Some(model), Some(adapter)) => {
-            Ok((provider.to_string(), model.to_string(), adapter.to_string()))
-        }
-        _ => bail!("image media provider/model/adapter is not configured"),
+    let provider = settings.provider_id.trim();
+    let model = settings.model_id.trim();
+    let adapter = settings.adapter.trim();
+    if provider.is_empty() || model.is_empty() || adapter.is_empty() {
+        bail!("image media provider/model/adapter is not configured");
     }
+    Ok((provider.to_string(), model.to_string(), adapter.to_string()))
 }
 
 fn image_generation_output(result: &ImageGenerationResult) -> Result<String> {
@@ -328,11 +320,12 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    fn image_settings() -> ImageMediaConfig {
-        ImageMediaConfig {
-            provider_id: Some("openai".to_string()),
-            model_id: Some("gpt-image-1".to_string()),
-            adapter: Some("images_json".to_string()),
+    fn image_settings() -> MediaGenerationConfig {
+        MediaGenerationConfig {
+            provider_id: "openai".to_string(),
+            model_id: "gpt-image-1".to_string(),
+            operation: "generate".to_string(),
+            adapter: "images_json".to_string(),
             parameters: BTreeMap::from([
                 ("size".to_string(), "1024x1024".to_string()),
                 ("quality".to_string(), "auto".to_string()),
@@ -341,9 +334,9 @@ mod tests {
         }
     }
 
-    fn test_state(settings: ImageMediaConfig, cwd: &Path) -> AppState {
+    fn test_state(settings: MediaGenerationConfig, cwd: &Path) -> AppState {
         let mut config = puffer_config::PufferConfig::default();
-        config.media.image = settings;
+        config.media.image = Some(settings);
         AppState::new(
             config,
             cwd.to_path_buf(),
@@ -692,10 +685,11 @@ mod tests {
     #[test]
     fn builds_request_maps_aspect_to_aspect_ratio_parameter() {
         let dir = tempdir().unwrap();
-        let settings = puffer_config::ImageMediaConfig {
-            provider_id: Some("minimax".to_string()),
-            model_id: Some("image-01".to_string()),
-            adapter: Some("minimax_image".to_string()),
+        let settings = MediaGenerationConfig {
+            provider_id: "minimax".to_string(),
+            model_id: "image-01".to_string(),
+            operation: "generate".to_string(),
+            adapter: "minimax_image".to_string(),
             parameters: BTreeMap::from([
                 ("aspect_ratio".to_string(), "1:1".to_string()),
                 ("response_format".to_string(), "base64".to_string()),
@@ -723,10 +717,11 @@ mod tests {
     #[test]
     fn builds_request_preserves_model_specific_size_tokens_for_aspect() {
         let dir = tempdir().unwrap();
-        let settings = puffer_config::ImageMediaConfig {
-            provider_id: Some("byteplus".to_string()),
-            model_id: Some("seedream-4-5-251128".to_string()),
-            adapter: Some("images_json".to_string()),
+        let settings = MediaGenerationConfig {
+            provider_id: "byteplus".to_string(),
+            model_id: "seedream-4-5-251128".to_string(),
+            operation: "generate".to_string(),
+            adapter: "images_json".to_string(),
             parameters: BTreeMap::from([
                 ("size".to_string(), "2K".to_string()),
                 ("output_format".to_string(), "png".to_string()),
@@ -753,10 +748,11 @@ mod tests {
     #[test]
     fn builds_request_rejects_aspect_when_selected_model_has_no_aspect_parameter() {
         let dir = tempdir().unwrap();
-        let settings = puffer_config::ImageMediaConfig {
-            provider_id: Some("openrouter".to_string()),
-            model_id: Some("image-chat".to_string()),
-            adapter: Some("chat_image_output".to_string()),
+        let settings = MediaGenerationConfig {
+            provider_id: "openrouter".to_string(),
+            model_id: "image-chat".to_string(),
+            operation: "generate".to_string(),
+            adapter: "chat_image_output".to_string(),
             parameters: BTreeMap::new(),
         };
 
@@ -784,10 +780,11 @@ mod tests {
     fn builds_request_from_media_settings_instead_of_env_model() {
         let dir = tempdir().unwrap();
         std::env::set_var("PUFFER_IMAGE_MODEL", "legacy-env-model");
-        let settings = puffer_config::ImageMediaConfig {
-            provider_id: Some("openai".to_string()),
-            model_id: Some("configured-image-model".to_string()),
-            adapter: Some("images_json".to_string()),
+        let settings = MediaGenerationConfig {
+            provider_id: "openai".to_string(),
+            model_id: "configured-image-model".to_string(),
+            operation: "generate".to_string(),
+            adapter: "images_json".to_string(),
             parameters: BTreeMap::from([
                 ("size".to_string(), "1024x1024".to_string()),
                 ("quality".to_string(), "high".to_string()),
@@ -818,10 +815,11 @@ mod tests {
     #[test]
     fn builds_request_for_non_openai_exact_provider() {
         let dir = tempdir().unwrap();
-        let settings = puffer_config::ImageMediaConfig {
-            provider_id: Some("exact-provider".to_string()),
-            model_id: Some("exact-image-model".to_string()),
-            adapter: Some("images_json".to_string()),
+        let settings = MediaGenerationConfig {
+            provider_id: "exact-provider".to_string(),
+            model_id: "exact-image-model".to_string(),
+            operation: "generate".to_string(),
+            adapter: "images_json".to_string(),
             parameters: BTreeMap::from([
                 ("size".to_string(), "1024x1024".to_string()),
                 ("quality".to_string(), "auto".to_string()),
@@ -853,7 +851,24 @@ mod tests {
         let registry = registry_with_provider("http://127.0.0.1:9".to_string());
         let auth_store = auth_store();
         let discovery_cache = ExactMediaDiscoveryCache::empty();
-        let mut state = test_state(ImageMediaConfig::default(), dir.path());
+        let mut config = puffer_config::PufferConfig::default();
+        config.media.image = None;
+        let mut state = AppState::new(
+            config,
+            dir.path().to_path_buf(),
+            SessionMetadata {
+                id: Uuid::new_v4(),
+                display_name: None,
+                generated_title: None,
+                cwd: dir.path().to_path_buf(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                parent_session_id: None,
+                slug: None,
+                tags: Vec::new(),
+                note: None,
+            },
+        );
 
         let error = execute_image_generation(
             &mut state,
@@ -880,10 +895,11 @@ mod tests {
         let auth_store = auth_store();
         let discovery_cache = ExactMediaDiscoveryCache::empty();
         let mut state = test_state(
-            ImageMediaConfig {
-                provider_id: Some("exact-provider".to_string()),
-                model_id: Some("stale-image-model".to_string()),
-                adapter: Some("images_json".to_string()),
+            MediaGenerationConfig {
+                provider_id: "exact-provider".to_string(),
+                model_id: "stale-image-model".to_string(),
+                operation: "generate".to_string(),
+                adapter: "images_json".to_string(),
                 parameters: BTreeMap::from([
                     ("size".to_string(), "1024x1024".to_string()),
                     ("quality".to_string(), "auto".to_string()),
@@ -919,10 +935,11 @@ mod tests {
         let auth_store = auth_store();
         let discovery_cache = ExactMediaDiscoveryCache::empty();
         let mut state = test_state(
-            ImageMediaConfig {
-                provider_id: Some("exact-provider".to_string()),
-                model_id: Some("exact-image-model".to_string()),
-                adapter: Some("images_json".to_string()),
+            MediaGenerationConfig {
+                provider_id: "exact-provider".to_string(),
+                model_id: "exact-image-model".to_string(),
+                operation: "generate".to_string(),
+                adapter: "images_json".to_string(),
                 parameters: BTreeMap::from([
                     ("size".to_string(), "1024x1024".to_string()),
                     ("quality".to_string(), "auto".to_string()),

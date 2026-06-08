@@ -2248,37 +2248,17 @@ fn handle_generate_media(state: &DaemonState, params: &Value) -> Result<Value> {
 
 fn generate_image_media_job(state: &DaemonState, prompt: String, count: u8) -> Result<Value> {
     let config = state.config_snapshot();
-    let provider_id = config
+    let image_config = config
         .media
         .image
-        .provider_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let model_id = config
-        .media
-        .image
-        .model_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let adapter = config
-        .media
-        .image
-        .adapter
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let (provider_id, model_id, adapter) = match (provider_id, model_id, adapter) {
-        (Some(provider_id), Some(model_id), Some(adapter)) => (
-            provider_id.to_string(),
-            model_id.to_string(),
-            adapter.to_string(),
-        ),
-        _ => anyhow::bail!("image media provider/model/adapter is not configured"),
-    };
+        .ok_or_else(|| anyhow::anyhow!("image media provider/model/adapter is not configured"))?;
+    let provider_id = non_empty_media_field(&image_config.provider_id, "provider_id")
+        .context("image media provider/model/adapter is not configured")?;
+    let model_id = non_empty_media_field(&image_config.model_id, "model_id")
+        .context("image media provider/model/adapter is not configured")?;
+    let adapter = non_empty_media_field(&image_config.adapter, "adapter")
+        .context("image media provider/model/adapter is not configured")?;
     let inputs = state.build_runtime_inputs_without_discovery()?;
-    let image_config = config.media.image;
     let discovery_cache = state.exact_media_discovery_cache(&inputs);
     let generation = generate_exact_image_with_cache(
         &inputs.providers,
@@ -2333,7 +2313,40 @@ fn generate_video_media_job(state: &DaemonState, _prompt: String) -> Result<Valu
     if !available {
         anyhow::bail!("No video capabilities available");
     }
+    let config = state.config_snapshot();
+    let Some(video_config) = config.media.video else {
+        anyhow::bail!("video media provider/model is not configured");
+    };
+    let provider_id = non_empty_media_field(&video_config.provider_id, "provider_id")
+        .context("video media provider/model is not configured")?;
+    let model_id = non_empty_media_field(&video_config.model_id, "model_id")
+        .context("video media provider/model is not configured")?;
+    let selected_available = list_media_capabilities(
+        &inputs.providers,
+        &inputs.auth_store,
+        Some("video"),
+        &discovery_cache,
+    )
+    .into_iter()
+    .any(|capability| {
+        capability.kind == "video"
+            && capability.provider_id == provider_id
+            && capability.model_id == model_id
+            && capability.adapter == video_config.adapter
+            && capability.status == "available"
+    });
+    if !selected_available {
+        anyhow::bail!("video media capability unavailable for {provider_id}/{model_id}");
+    }
     anyhow::bail!("Video generation is not supported yet")
+}
+
+fn non_empty_media_field(value: &str, field: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("media selection `{field}` is empty");
+    }
+    Ok(trimmed.to_string())
 }
 
 fn handle_read_generated_media_preview(state: &DaemonState, params: &Value) -> Result<Value> {
@@ -5344,8 +5357,8 @@ mod tests {
     };
     use indexmap::IndexMap;
     use puffer_config::{
-        ensure_workspace_dirs, load_config, ConfigPaths, ProxyConfig, ProxyEndpoint, ProxyScheme,
-        PufferConfig,
+        ensure_workspace_dirs, load_config, ConfigPaths, MediaGenerationConfig, ProxyConfig,
+        ProxyEndpoint, ProxyScheme, PufferConfig,
     };
     use puffer_core::{AppState, ModelPreferenceFamily, ToolCallRequest, ToolInvocation};
     use puffer_provider_registry::{
@@ -5353,6 +5366,7 @@ mod tests {
     };
     use puffer_session_store::{SessionMetadata, SessionStore, TranscriptEvent};
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicBool;
@@ -5959,9 +5973,13 @@ models:
         {
             let mut config = state.config.lock().unwrap();
             config.openai_base_url = Some("http://127.0.0.1:9".to_string());
-            config.media.image.provider_id = Some("openai".to_string());
-            config.media.image.model_id = Some("stale-image".to_string());
-            config.media.image.adapter = Some("images_json".to_string());
+            config.media.image = Some(MediaGenerationConfig {
+                provider_id: "openai".to_string(),
+                model_id: "stale-image".to_string(),
+                operation: "generate".to_string(),
+                adapter: "images_json".to_string(),
+                parameters: BTreeMap::new(),
+            });
         }
 
         let error =
@@ -6004,14 +6022,17 @@ models:
         {
             let mut config = state.config.lock().unwrap();
             config.openai_base_url = Some(base_url);
-            config.media.image.provider_id = Some("openai".to_string());
-            config.media.image.model_id = Some("gpt-image-1".to_string());
-            config.media.image.adapter = Some("images_json".to_string());
-            config.media.image.parameters = std::collections::BTreeMap::from([
-                ("size".to_string(), "1024x1024".to_string()),
-                ("quality".to_string(), "auto".to_string()),
-                ("output_format".to_string(), "png".to_string()),
-            ]);
+            config.media.image = Some(MediaGenerationConfig {
+                provider_id: "openai".to_string(),
+                model_id: "gpt-image-1".to_string(),
+                operation: "generate".to_string(),
+                adapter: "images_json".to_string(),
+                parameters: BTreeMap::from([
+                    ("size".to_string(), "1024x1024".to_string()),
+                    ("quality".to_string(), "auto".to_string()),
+                    ("output_format".to_string(), "png".to_string()),
+                ]),
+            });
         }
 
         let response =
@@ -6172,10 +6193,13 @@ models:
         .expect("daemon state");
         {
             let mut config = state.config.lock().unwrap();
-            config.media.image.provider_id = Some("openrouter".to_string());
-            config.media.image.model_id = Some("openrouter/image-chat".to_string());
-            config.media.image.adapter = Some("chat_image_output".to_string());
-            config.media.image.parameters = std::collections::BTreeMap::new();
+            config.media.image = Some(MediaGenerationConfig {
+                provider_id: "openrouter".to_string(),
+                model_id: "openrouter/image-chat".to_string(),
+                operation: "generate".to_string(),
+                adapter: "chat_image_output".to_string(),
+                parameters: BTreeMap::new(),
+            });
         }
         let listed =
             handle_list_media_capabilities(&state, &json!({"kind": "image"})).expect("list");
@@ -6232,6 +6256,7 @@ models:
                     "image": {
                         "providerId": "openai",
                         "modelId": "gpt-image-1",
+                        "operation": "generate",
                         "adapter": "images_json",
                         "parameters": {
                             "size": "1536x1024",
@@ -6239,12 +6264,7 @@ models:
                             "output_format": "webp"
                         }
                     },
-                    "video": {
-                        "providerId": null,
-                        "modelId": null,
-                        "aspectRatio": "16:9",
-                        "durationSeconds": 8
-                    }
+                    "video": null
                 }
             }),
         )
@@ -6256,6 +6276,7 @@ models:
                 "image": {
                     "providerId": "openai",
                     "modelId": "gpt-image-1",
+                    "operation": "generate",
                     "adapter": "images_json",
                     "parameters": {
                         "size": "1536x1024",
@@ -6263,12 +6284,7 @@ models:
                         "output_format": "webp"
                     }
                 },
-                "video": {
-                    "providerId": null,
-                    "modelId": null,
-                    "aspectRatio": "16:9",
-                    "durationSeconds": 8
-                }
+                "video": null
             })
         );
 
@@ -6278,18 +6294,8 @@ models:
         assert_eq!(
             response["config"]["media"],
             json!({
-                "image": {
-                    "providerId": null,
-                    "modelId": null,
-                    "adapter": null,
-                    "parameters": {}
-                },
-                "video": {
-                    "providerId": null,
-                    "modelId": null,
-                    "aspectRatio": "16:9",
-                    "durationSeconds": 8
-                }
+                "image": null,
+                "video": null
             })
         );
     }

@@ -58,18 +58,8 @@
   const COMPOSER_MAX_HEIGHT_PX = 200;
   const THREAD_BOTTOM_THRESHOLD_PX = 100;
   const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
-    image: {
-      providerId: null,
-      modelId: null,
-      adapter: null,
-      parameters: {}
-    },
-    video: {
-      providerId: null,
-      modelId: null,
-      aspectRatio: "16:9",
-      durationSeconds: 8
-    }
+    image: null,
+    video: null
   };
   const MEDIA_SETTINGS_LABELS: Record<MediaKind, string> = {
     image: "Image generation settings",

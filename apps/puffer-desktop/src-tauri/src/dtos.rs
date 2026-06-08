@@ -404,28 +404,19 @@ pub(crate) struct SettingsConfigDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaSettingsDto {
-    pub image: ImageMediaSettingsDto,
-    pub video: VideoMediaSettingsDto,
+    pub image: Option<MediaGenerationSettingsDto>,
+    pub video: Option<MediaGenerationSettingsDto>,
 }
 
-/// Describes persisted image generation defaults.
+/// Describes one persisted media generation default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ImageMediaSettingsDto {
-    pub provider_id: Option<String>,
-    pub model_id: Option<String>,
-    pub adapter: Option<String>,
+pub(crate) struct MediaGenerationSettingsDto {
+    pub provider_id: String,
+    pub model_id: String,
+    pub operation: String,
+    pub adapter: String,
     pub parameters: BTreeMap<String, String>,
-}
-
-/// Describes persisted video generation defaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct VideoMediaSettingsDto {
-    pub provider_id: Option<String>,
-    pub model_id: Option<String>,
-    pub aspect_ratio: String,
-    pub duration_seconds: u32,
 }
 
 /// Describes one verified media generation capability.
