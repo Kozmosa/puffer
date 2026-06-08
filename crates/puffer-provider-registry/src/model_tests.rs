@@ -454,6 +454,12 @@ fn media_execution_kind_parses_relaydance_video() {
 }
 
 #[test]
+fn media_execution_kind_parses_byteplus_video() {
+    let kind: MediaExecutionKind = serde_yaml::from_str("byteplus_video").expect("parse");
+    assert_eq!(kind, MediaExecutionKind::BytePlusVideo);
+}
+
+#[test]
 fn media_execution_kind_rejects_openai_video() {
     let error = serde_yaml::from_str::<MediaExecutionKind>("openai_video").unwrap_err();
     assert!(error.to_string().contains("unknown variant"));

@@ -370,6 +370,7 @@ fn execution_adapter_is_available_for_kind(kind: MediaKind, adapter: MediaExecut
             | (MediaKind::Image, MediaExecutionKind::MinimaxImage)
             | (MediaKind::Video, MediaExecutionKind::ReplicateVideo)
             | (MediaKind::Video, MediaExecutionKind::RelaydanceVideo)
+            | (MediaKind::Video, MediaExecutionKind::BytePlusVideo)
     )
 }
 
@@ -448,6 +449,7 @@ pub(crate) fn adapter_id(adapter: MediaExecutionKind) -> &'static str {
         MediaExecutionKind::MinimaxImage => "minimax_image",
         MediaExecutionKind::ReplicateVideo => "replicate_video",
         MediaExecutionKind::RelaydanceVideo => "relaydance_video",
+        MediaExecutionKind::BytePlusVideo => "byteplus_video",
     }
 }
 

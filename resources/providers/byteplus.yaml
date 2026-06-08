@@ -13,6 +13,17 @@ discovery:
   max_output_tokens: 16384
   supports_reasoning: true
 media:
+  video:
+    discovery:
+      adapter: static
+    execution:
+      adapter: byteplus_video
+      path: /contents/generations/tasks
+    models:
+      - id: dreamina-seedance-2-0-260128
+        display_name: Dreamina Seedance 2.0
+        operations:
+          - generate
   image:
     discovery:
       adapter: static

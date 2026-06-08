@@ -421,6 +421,8 @@ pub enum MediaExecutionKind {
     MinimaxImage,
     ReplicateVideo,
     RelaydanceVideo,
+    #[serde(rename = "byteplus_video")]
+    BytePlusVideo,
 }
 
 /// Describes image media operations.

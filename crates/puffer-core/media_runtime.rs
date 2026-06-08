@@ -1,6 +1,9 @@
 use crate::runtime::media::chat_image_output::{
     ChatImageOutputAdapter, ChatImageOutputGenerationRequest,
 };
+use crate::runtime::media::byteplus_video::{
+    byteplus_video_request_from_parameters, BytePlusVideoAdapter, BytePlusVideoPollingConfig,
+};
 use crate::runtime::media::discovery::TrustedImageDiscoveryClient;
 use crate::runtime::media::http_support::{
     bearer_token, provider_error_secrets, provider_execution_url, redact_secrets,
@@ -654,95 +657,48 @@ fn generate_exact_image_from_media_request(
     })
 }
 
-fn generate_exact_video_from_media_request(
-    registry: &ProviderRegistry,
-    auth_store: &AuthStore,
-    workspace_root: &Path,
-    request: ExactMediaGenerationRequest,
-    discovery_cache: &ExactMediaDiscoveryCache,
-) -> Result<ExactMediaGenerationResult> {
+fn generate_exact_video_from_media_request(registry: &ProviderRegistry, auth_store: &AuthStore, workspace_root: &Path, request: ExactMediaGenerationRequest, discovery_cache: &ExactMediaDiscoveryCache) -> Result<ExactMediaGenerationResult> {
     let operation = parse_media_operation(&request.operation)?;
-    let capability = validate_media_generate_selection(
-        registry,
-        auth_store,
-        &MediaGenerationSelection {
-            kind: MediaKind::Video,
-            provider_id: &request.provider_id,
-            model_id: &request.model_id,
-            operation,
-            adapter: &request.adapter,
-            parameters: &request.parameters,
-        },
-        now_ms(),
-        &discovery_cache.inner,
-    )?;
+    let selection = MediaGenerationSelection { kind: MediaKind::Video, provider_id: &request.provider_id, model_id: &request.model_id, operation, adapter: &request.adapter, parameters: &request.parameters };
+    let capability = validate_media_generate_selection(registry, auth_store, &selection, now_ms(), &discovery_cache.inner)?;
     validate_video_count(request.count)?;
     let parameters = selected_parameters_with_defaults(&capability, &request.parameters);
     match request.adapter.as_str() {
         "replicate_video" => {
-            let provider = registry.provider(&request.provider_id).with_context(|| {
-                format!(
-                    "selected video model unavailable: {}/{} via {}",
-                    request.provider_id, request.model_id, request.adapter
-                )
-            })?;
+            let provider = registry.provider(&request.provider_id).with_context(|| format!("selected video model unavailable: {}/{} via {}", request.provider_id, request.model_id, request.adapter))?;
             let api_key = bearer_token(provider, auth_store, CredentialAliasMode::Strict)?
                 .context("Replicate API token is required")?;
             let service = MediaGenerationService::new(workspace_root);
             let adapter = ReplicateVideoAdapter::new(api_key)?;
-            let job = adapter.submit(
-                &service,
-                replicate_video_request_from_parameters(
-                    request.model_id,
-                    request.prompt,
-                    parameters,
-                )?,
-                now_ms(),
-            )?;
-            let job =
-                adapter.poll_until_terminal(&service, job, ReplicatePollingConfig::default())?;
+            let job = adapter.submit(&service, replicate_video_request_from_parameters(request.model_id, request.prompt, parameters)?, now_ms())?;
+            let job = adapter.poll_until_terminal(&service, job, ReplicatePollingConfig::default())?;
             let artifacts = load_media_job_artifacts(&service, &job)?;
             Ok(exact_media_generation_result(job, artifacts))
         }
         "relaydance_video" => {
-            let (provider, execution) = resolve_video_execution_descriptor(
-                registry,
-                &request.provider_id,
-                &request.model_id,
-                &request.adapter,
-            )?;
+            let (provider, execution) = resolve_video_execution_descriptor(registry, &request.provider_id, &request.model_id, &request.adapter)?;
             let api_key = bearer_token(provider, auth_store, CredentialAliasMode::Strict)?
                 .context("Relaydance API key is required")?;
             let secrets = provider_error_secrets(provider, auth_store, CredentialAliasMode::Strict);
             let submit_url = provider_execution_url(provider, &execution, "video task")?;
             let service = MediaGenerationService::new(workspace_root);
-            let adapter = RelaydanceVideoAdapter::new(
-                api_key,
-                submit_url.to_string(),
-                request.provider_id.clone(),
-            )?;
-            let job = adapter
-                .submit(
-                    &service,
-                    relaydance_video_request_from_parameters(
-                        request.model_id.clone(),
-                        request.prompt.clone(),
-                        &capability.parameters,
-                        &parameters,
-                    )?,
-                    parameters.clone(),
-                    now_ms(),
-                )
-                .map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
-            let job = adapter
-                .poll_until_terminal(
-                    &service,
-                    job,
-                    RelaydanceVideoPollingConfig::default(),
-                    std::thread::sleep,
-                    now_ms,
-                )
-                .map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
+            let adapter = RelaydanceVideoAdapter::new(api_key, submit_url.to_string(), request.provider_id.clone())?;
+            let video_request = relaydance_video_request_from_parameters(request.model_id.clone(), request.prompt.clone(), &capability.parameters, &parameters)?;
+            let job = adapter.submit(&service, video_request, parameters.clone(), now_ms()).map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
+            let job = adapter.poll_until_terminal(&service, job, RelaydanceVideoPollingConfig::default(), std::thread::sleep, now_ms).map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
+            let artifacts = load_media_job_artifacts(&service, &job)?;
+            Ok(exact_media_generation_result(job, artifacts))
+        }
+        "byteplus_video" => {
+            let (provider, execution) = resolve_video_execution_descriptor(registry, &request.provider_id, &request.model_id, &request.adapter)?;
+            let api_key = bearer_token(provider, auth_store, CredentialAliasMode::Strict)?
+                .context("BytePlus API key is required")?;
+            let secrets = provider_error_secrets(provider, auth_store, CredentialAliasMode::Strict);
+            let service = MediaGenerationService::new(workspace_root);
+            let adapter = BytePlusVideoAdapter::new(api_key, provider_execution_url(provider, &execution, "video task")?.to_string(), request.provider_id.clone())?;
+            let video_request = byteplus_video_request_from_parameters(request.model_id.clone(), request.prompt.clone(), &capability.parameters, &parameters)?;
+            let job = adapter.submit(&service, video_request, parameters.clone(), now_ms()).map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
+            let job = adapter.poll_until_terminal(&service, job, BytePlusVideoPollingConfig::default(), std::thread::sleep, now_ms).map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
             let artifacts = load_media_job_artifacts(&service, &job)?;
             Ok(exact_media_generation_result(job, artifacts))
         }

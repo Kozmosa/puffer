@@ -1,4 +1,5 @@
 pub(crate) mod artifacts;
+pub(crate) mod byteplus_video;
 pub(crate) mod capabilities;
 pub(crate) mod chat_image_output;
 pub(crate) mod discovery;
