@@ -251,8 +251,8 @@ mod tests {
             operation: "generate".to_string(),
             adapter: "relaydance_video".to_string(),
             parameters: BTreeMap::from([
-                ("duration".to_string(), "5".to_string()),
-                ("ratio".to_string(), "16:9".to_string()),
+                ("duration_seconds".to_string(), "5".to_string()),
+                ("aspect_ratio".to_string(), "16:9".to_string()),
                 ("resolution".to_string(), "720p".to_string()),
             ]),
         }
@@ -308,7 +308,7 @@ mod tests {
                         operations: vec![MediaOperation::Generate],
                         parameters: vec![
                             MediaParameterSpec {
-                                name: "duration".to_string(),
+                                name: "duration_seconds".to_string(),
                                 label: "Duration".to_string(),
                                 values: vec![
                                     "4".to_string(),
@@ -341,7 +341,7 @@ mod tests {
                                 wire_type: MediaParameterWireType::String,
                             },
                             MediaParameterSpec {
-                                name: "ratio".to_string(),
+                                name: "aspect_ratio".to_string(),
                                 label: "Aspect ratio".to_string(),
                                 values: vec![
                                     "16:9".to_string(),
@@ -557,15 +557,15 @@ mod tests {
         let input = serde_json::from_value::<VideoGenerationInput>(json!({
             "prompt": "make a ship launch video",
             "parameters": {
-                "duration": 5,
-                "ratio": "16:9",
+                "duration_seconds": 5,
+                "aspect_ratio": "16:9",
                 "camera_fixed": false
             }
         }))
         .unwrap();
 
-        assert_eq!(input.parameters["duration"], "5");
-        assert_eq!(input.parameters["ratio"], "16:9");
+        assert_eq!(input.parameters["duration_seconds"], "5");
+        assert_eq!(input.parameters["aspect_ratio"], "16:9");
         assert_eq!(input.parameters["camera_fixed"], "false");
     }
 
@@ -574,12 +574,12 @@ mod tests {
         let error = serde_json::from_value::<VideoGenerationInput>(json!({
             "prompt": "make a ship launch video",
             "parameters": {
-                "duration": { "seconds": 5 }
+                "duration_seconds": { "seconds": 5 }
             }
         }))
         .unwrap_err();
 
-        assert!(error.to_string().contains("parameters.duration"));
+        assert!(error.to_string().contains("parameters.duration_seconds"));
     }
 
     #[test]
@@ -591,7 +591,7 @@ mod tests {
             VideoGenerationInput {
                 prompt: "make a ship launch video".to_string(),
                 parameters: BTreeMap::from([
-                    ("ratio".to_string(), "9:16".to_string()),
+                    ("aspect_ratio".to_string(), "9:16".to_string()),
                     ("resolution".to_string(), "1080p".to_string()),
                 ]),
                 purpose: Some("short launch clip".to_string()),
@@ -603,8 +603,8 @@ mod tests {
         assert_eq!(request.provider, "relaydance");
         assert_eq!(request.model, "doubao-seedance-2-0-720p");
         assert_eq!(request.adapter, "relaydance_video");
-        assert_eq!(request.parameters["duration"], "5");
-        assert_eq!(request.parameters["ratio"], "9:16");
+        assert_eq!(request.parameters["duration_seconds"], "5");
+        assert_eq!(request.parameters["aspect_ratio"], "9:16");
         assert_eq!(request.parameters["resolution"], "1080p");
         assert_eq!(request.purpose.as_deref(), Some("short launch clip"));
     }
@@ -623,7 +623,7 @@ mod tests {
             dir.path(),
             json!({
                 "prompt": "make a ship launch video",
-                "parameters": { "ratio": "9:16" },
+                "parameters": { "aspect_ratio": "9:16" },
                 "purpose": "short launch clip"
             }),
             Some(VideoGenerationMediaContext {
@@ -650,9 +650,9 @@ mod tests {
         assert_eq!(parsed["model"], "doubao-seedance-2-0-720p");
         assert_eq!(parsed["status"], "succeeded");
         assert_eq!(parsed["purpose"], "short launch clip");
-        assert_eq!(parsed["parameters"]["duration"], "5");
+        assert_eq!(parsed["parameters"]["duration_seconds"], "5");
         assert_eq!(parsed["parameters"]["resolution"], "720p");
-        assert_eq!(parsed["parameters"]["ratio"], "9:16");
+        assert_eq!(parsed["parameters"]["aspect_ratio"], "9:16");
         let artifacts = parsed["artifacts"].as_array().unwrap();
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0]["index"], 0);
@@ -683,7 +683,7 @@ mod tests {
             &allow_all_filesystem_policy(dir.path()),
             json!({
                 "prompt": "make a routed launch video",
-                "parameters": { "ratio": "1:1" }
+                "parameters": { "aspect_ratio": "1:1" }
             }),
             ProviderToolContext::None,
         )

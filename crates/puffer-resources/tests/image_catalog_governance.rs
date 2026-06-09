@@ -425,14 +425,13 @@ fn relaydance_declares_executable_video_descriptor() {
             .unwrap_or_else(|| panic!("relaydance should include {model_id}"));
         assert_eq!(model.display_name.as_deref(), Some(display_name));
         assert_eq!(model.operations, vec![MediaOperation::Generate]);
-        assert_select_parameter_with_wire_type(
+        assert_select_parameter(
             model,
             "duration_seconds",
             "Duration",
             durations,
             "5",
             "seconds",
-            MediaParameterWireType::String,
         );
         assert_select_parameter(
             model,
@@ -539,14 +538,13 @@ fn byteplus_declares_executable_video_descriptor() {
             "duration",
             MediaParameterWireType::Number,
         );
-        assert_select_parameter_with_wire_type(
+        assert_select_parameter(
             model,
             "aspect_ratio",
             "Aspect ratio",
             SEEDANCE_VIDEO_RATIOS,
             "adaptive",
             "ratio",
-            MediaParameterWireType::String,
         );
         assert_select_parameter(
             model,

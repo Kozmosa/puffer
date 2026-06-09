@@ -148,6 +148,7 @@ export type FakeMediaCapability = {
     values: string[];
     default: string;
     requestField: string | null;
+    wireType: "string" | "number";
   }>;
   defaults: Record<string, string>;
   status: string;
@@ -265,21 +266,24 @@ export function defaultFakeMediaCapabilities(): FakeMediaCapability[] {
           label: "Size",
           values: ["1024x1024", "1024x1536", "1536x1024"],
           default: "1024x1024",
-          requestField: "size"
+          requestField: "size",
+          wireType: "string"
         },
         {
           name: "quality",
           label: "Quality",
           values: ["auto", "low", "medium", "high"],
           default: "auto",
-          requestField: "quality"
+          requestField: "quality",
+          wireType: "string"
         },
         {
           name: "output_format",
           label: "Output format",
           values: ["png", "jpeg", "webp"],
           default: "png",
-          requestField: "output_format"
+          requestField: "output_format",
+          wireType: "string"
         }
       ],
       defaults: {

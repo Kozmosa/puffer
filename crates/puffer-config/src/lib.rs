@@ -644,7 +644,7 @@ provider_id = "replicate"
 model_id = "owner/video-version"
 operation = "generate"
 adapter = "replicate_video"
-parameters = { aspect_ratio = "16:9", duration = "5" }
+parameters = { aspect_ratio = "16:9", duration_seconds = "5" }
 "#;
 
         let parsed: PufferConfig = toml::from_str(toml).expect("config parses");
@@ -656,7 +656,7 @@ parameters = { aspect_ratio = "16:9", duration = "5" }
                 .as_ref()
                 .unwrap()
                 .parameters
-                .get("duration"),
+                .get("duration_seconds"),
             Some(&"5".to_string())
         );
     }

@@ -31,9 +31,7 @@ const configuredImageMedia: MediaSettings = {
   video: null
 };
 
-type FakeMediaCapabilityParameter = FakeMediaCapability["parameters"][number] & {
-  wireType?: "string" | "number";
-};
+type FakeMediaCapabilityParameter = FakeMediaCapability["parameters"][number];
 
 function mediaParameter(input: {
   name: string;
@@ -49,7 +47,7 @@ function mediaParameter(input: {
     values: input.values,
     default: input.defaultValue,
     requestField: input.requestField === undefined ? input.name : input.requestField,
-    ...(input.wireType ? { wireType: input.wireType } : {})
+    wireType: input.wireType ?? "string"
   };
 }
 
@@ -136,16 +134,14 @@ function singleOptionVideoCapability(): FakeMediaCapability {
       label: "Aspect ratio",
       values: ["16:9"],
       defaultValue: "16:9",
-      requestField: "metadata.ratio",
-      wireType: "string"
+      requestField: "metadata.ratio"
     }),
     mediaParameter({
       name: "duration_seconds",
       label: "Duration",
       values: ["8"],
       defaultValue: "8",
-      requestField: "seconds",
-      wireType: "string"
+      requestField: "seconds"
     })
   ];
   return videoCapability({
@@ -165,16 +161,14 @@ function configurableVideoCapability(): FakeMediaCapability {
       label: "Aspect ratio",
       values: ["16:9", "9:16"],
       defaultValue: "16:9",
-      requestField: "metadata.ratio",
-      wireType: "string"
+      requestField: "metadata.ratio"
     }),
     mediaParameter({
       name: "duration_seconds",
       label: "Duration",
       values: ["5", "8", "12"],
       defaultValue: "8",
-      requestField: "seconds",
-      wireType: "string"
+      requestField: "seconds"
     })
   ];
   return videoCapability({
@@ -194,24 +188,22 @@ function configurableVideoCapabilityWithProviderOptions(): FakeMediaCapability {
       label: "Aspect ratio",
       values: ["16:9", "9:16", "1:1"],
       defaultValue: "16:9",
-      requestField: "metadata.ratio",
-      wireType: "string"
+      requestField: "ratio"
     }),
     mediaParameter({
       name: "duration_seconds",
       label: "Duration",
       values: ["5", "8", "12"],
       defaultValue: "5",
-      requestField: "seconds",
-      wireType: "string"
+      requestField: "duration",
+      wireType: "number"
     }),
     mediaParameter({
       name: "resolution",
       label: "Resolution",
       values: ["480p", "720p", "1080p"],
       defaultValue: "720p",
-      requestField: "metadata.resolution",
-      wireType: "string"
+      requestField: "resolution"
     })
   ];
   return videoCapability({
@@ -235,24 +227,21 @@ function relaydanceVideoCapability(input: {
       label: "Duration",
       values: ["5", "8"],
       defaultValue: "5",
-      requestField: "seconds",
-      wireType: "string"
+      requestField: "seconds"
     }),
     mediaParameter({
       name: "resolution",
       label: "Resolution",
       values: [input.resolution],
       defaultValue: input.resolution,
-      requestField: "metadata.resolution",
-      wireType: "string"
+      requestField: "metadata.resolution"
     }),
     mediaParameter({
       name: "aspect_ratio",
       label: "Aspect ratio",
       values: ["16:9", "9:16"],
       defaultValue: "16:9",
-      requestField: "metadata.ratio",
-      wireType: "string"
+      requestField: "metadata.ratio"
     })
   ];
   return videoCapability({
@@ -1369,8 +1358,8 @@ test("composer video generation settings normalizes stale provider options", asy
         operation: "generate",
         adapter: "byteplus_video",
         parameters: {
-          ratio: "9:16",
-          seconds: "8",
+          aspect_ratio: "2:1",
+          duration_seconds: "30",
           resolution: "4k",
           stale_video_option: "remove-me"
         }

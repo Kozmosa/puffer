@@ -332,8 +332,8 @@ where
 
     /// Submits a task and persists the queued job (task id in `provider_job_id`).
     ///
-    /// `selected_parameters` are the user-facing name->value pairs (display
-    /// parity with `replicate_video`, so duration/resolution/ratio show in UI).
+    /// `selected_parameters` are canonical user-facing name/value pairs such
+    /// as `duration_seconds`, `resolution`, and `aspect_ratio`.
     pub(crate) fn submit(
         &self,
         service: &MediaGenerationService,
@@ -491,9 +491,9 @@ mod tests {
     #[test]
     fn splits_top_level_and_metadata_params() {
         let params = vec![
-            parameter("duration", "seconds", "5"),
+            parameter("duration_seconds", "seconds", "5"),
             parameter("resolution", "metadata.resolution", "720p"),
-            parameter("ratio", "metadata.ratio", "16:9"),
+            parameter("aspect_ratio", "metadata.ratio", "16:9"),
         ];
         let mut selected = BTreeMap::new();
         selected.insert("resolution".to_string(), "1080p".to_string());
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn omits_metadata_when_no_metadata_params() {
-        let params = vec![parameter("duration", "seconds", "5")];
+        let params = vec![parameter("duration_seconds", "seconds", "5")];
         let request = relaydance_video_request_from_parameters(
             "m".to_string(),
             "a cat".to_string(),
@@ -767,7 +767,7 @@ mod tests {
             params: vec![],
         };
         let selected = BTreeMap::from([
-            ("duration".to_string(), "5".to_string()),
+            ("duration_seconds".to_string(), "5".to_string()),
             ("resolution".to_string(), "1080p".to_string()),
         ]);
         let job = adapter

@@ -579,7 +579,7 @@ mod tests {
                             wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
-                            name: "duration".to_string(),
+                            name: "duration_seconds".to_string(),
                             label: "Duration".to_string(),
                             values: vec!["5".to_string(), "8".to_string()],
                             default: "5".to_string(),
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(capabilities.len(), 1);
         assert_eq!(capabilities[0].adapter, "replicate_video");
         assert_eq!(
-            capabilities[0].defaults.get("duration"),
+            capabilities[0].defaults.get("duration_seconds"),
             Some(&"5".to_string())
         );
     }
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(capabilities[0].adapter, "relaydance_video");
         assert_eq!(capabilities[0].status, "unavailable");
         assert_eq!(capabilities[0].reason.as_deref(), Some("missing_auth"));
-        assert_eq!(capabilities[0].defaults["duration"], "5");
+        assert_eq!(capabilities[0].defaults["duration_seconds"], "5");
     }
 
     #[test]

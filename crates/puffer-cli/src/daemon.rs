@@ -5945,7 +5945,7 @@ media:
             values: ["16:9", "9:16"]
             default: "16:9"
             request_field: aspect_ratio
-          - name: duration
+          - name: duration_seconds
             label: Duration
             values: ["5", "8"]
             default: "5"
@@ -5980,7 +5980,7 @@ media:
         operations:
           - generate
         parameters:
-          - name: duration
+          - name: duration_seconds
             label: Duration
             values: ["4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]
             default: "5"
@@ -5990,7 +5990,7 @@ media:
             values: ["480p", "720p", "1080p"]
             default: "720p"
             request_field: metadata.resolution
-          - name: ratio
+          - name: aspect_ratio
             label: Aspect ratio
             values: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]
             default: "16:9"
@@ -6307,7 +6307,7 @@ models: []
                 adapter: "images_json".to_string(),
                 parameters: BTreeMap::from([
                     ("aspect_ratio".to_string(), "16:9".to_string()),
-                    ("duration".to_string(), "5".to_string()),
+                    ("duration_seconds".to_string(), "5".to_string()),
                 ]),
             });
         }

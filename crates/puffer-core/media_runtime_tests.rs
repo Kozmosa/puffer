@@ -185,7 +185,7 @@ fn replicate_video_registry() -> ProviderRegistry {
                             wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
-                            name: "duration".to_string(),
+                            name: "duration_seconds".to_string(),
                             label: "Duration".to_string(),
                             values: vec!["5".to_string(), "8".to_string()],
                             default: "5".to_string(),
@@ -649,7 +649,7 @@ fn exact_media_generation_rejects_unsupported_video_parameter() {
         prompt: "animate a logo".to_string(),
         parameters: BTreeMap::from([
             ("aspect_ratio".to_string(), "1:1".to_string()),
-            ("duration".to_string(), "5".to_string()),
+            ("duration_seconds".to_string(), "5".to_string()),
         ]),
         count: 1,
     };
@@ -673,7 +673,7 @@ fn exact_media_generation_rejects_unsupported_adapter_before_http() {
         prompt: "animate a logo".to_string(),
         parameters: BTreeMap::from([
             ("aspect_ratio".to_string(), "16:9".to_string()),
-            ("duration".to_string(), "5".to_string()),
+            ("duration_seconds".to_string(), "5".to_string()),
         ]),
         count: 1,
     };
