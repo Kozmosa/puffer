@@ -356,10 +356,10 @@ mod tests {
     use crate::runtime::media::MediaGenerationService;
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode,
-        MediaExecutionDescriptor, MediaExecutionKind, MediaModelDescriptor, MediaOperation,
-        MediaKindDescriptor, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
-        ProviderMediaDescriptor, ProviderRegistry,
+        AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode, MediaExecutionDescriptor,
+        MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
+        MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
+        ProviderRegistry,
     };
     use serde_json::json;
     use std::collections::BTreeMap;

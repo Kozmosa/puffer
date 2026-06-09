@@ -664,7 +664,9 @@ mod tests {
         assert_eq!(completed.artifact_ids.len(), 1);
         let artifact = service.load_artifact(&completed.artifact_ids[0]).unwrap();
         assert_eq!(artifact.mime_type, "video/mp4");
-        assert!(artifact.path.starts_with(temp.path().join(".puffer/media/videos")));
+        assert!(artifact
+            .path
+            .starts_with(temp.path().join(".puffer/media/videos")));
         assert_eq!(std::fs::read(&artifact.path).unwrap(), b"mp4-bytes");
     }
 
@@ -697,7 +699,9 @@ mod tests {
         assert_eq!(completed.artifact_ids.len(), 1);
         let artifact = service.load_artifact(&completed.artifact_ids[0]).unwrap();
         assert_eq!(artifact.mime_type, "video/mp4");
-        assert!(artifact.path.starts_with(temp.path().join(".puffer/media/videos")));
+        assert!(artifact
+            .path
+            .starts_with(temp.path().join(".puffer/media/videos")));
         assert_eq!(std::fs::read(&artifact.path).unwrap(), b"mp4-bytes");
     }
 

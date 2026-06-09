@@ -237,7 +237,10 @@ mod tests {
         assert_eq!(preview.mime_type.as_deref(), Some("image/jpeg"));
         assert_eq!(preview.byte_count, Some(4));
         let expected_poster_path = service.poster_artifact_file_path(&artifact.id).unwrap();
-        assert_eq!(preview.path.as_deref(), Some(expected_poster_path.as_path()));
+        assert_eq!(
+            preview.path.as_deref(),
+            Some(expected_poster_path.as_path())
+        );
     }
 
     #[test]

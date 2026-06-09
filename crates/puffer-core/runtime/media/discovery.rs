@@ -273,8 +273,8 @@ mod tests {
     use indexmap::IndexMap;
     use puffer_provider_registry::{
         AuthMode, AuthStore, MediaDiscoveryDescriptor, MediaDiscoveryKind,
-        MediaExecutionDescriptor, MediaExecutionKind, ModelDescriptor, ProviderDescriptor,
-        MediaKindDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor, ModelDescriptor,
+        ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
     use serde_json::json;
     use std::collections::BTreeMap;

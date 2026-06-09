@@ -306,7 +306,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let service = MediaGenerationService::new(temp.path());
 
-        let path = service.poster_artifact_file_path("artifact-video-1").unwrap();
+        let path = service
+            .poster_artifact_file_path("artifact-video-1")
+            .unwrap();
 
         assert_eq!(
             path,

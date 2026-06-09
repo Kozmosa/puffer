@@ -82,9 +82,7 @@ impl VideoPosterCommand {
 }
 
 /// Extracts a poster image using the production ffmpeg runner.
-pub(crate) fn extract_video_poster(
-    request: VideoPosterExtractionRequest,
-) -> VideoPosterExtraction {
+pub(crate) fn extract_video_poster(request: VideoPosterExtractionRequest) -> VideoPosterExtraction {
     extract_video_poster_with_runner(request, run_ffmpeg_poster_command)
 }
 
@@ -161,9 +159,7 @@ fn run_ffmpeg_poster_command(command: &VideoPosterCommand) -> VideoPosterCommand
                 return VideoPosterCommandResult::Succeeded;
             }
             Ok(Some(status)) => {
-                return VideoPosterCommandResult::Failed(format!(
-                    "ffmpeg exited with {status}"
-                ));
+                return VideoPosterCommandResult::Failed(format!("ffmpeg exited with {status}"));
             }
             Ok(None) => {}
             Err(error) => {

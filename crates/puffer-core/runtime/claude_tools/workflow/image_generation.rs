@@ -366,8 +366,8 @@ mod tests {
             headers: IndexMap::new(),
             query_params: IndexMap::new(),
             chat_completions_path: None,
-        discovery: None,
-        media: Some(ProviderMediaDescriptor {
+            discovery: None,
+            media: Some(ProviderMediaDescriptor {
                 image: Some(MediaKindDescriptor {
                     discovery: None,
                     execution: Some(MediaExecutionDescriptor {
@@ -404,10 +404,10 @@ mod tests {
                                 request_field: Some("output_format".to_string()),
                             },
                         ],
-                }],
+                    }],
+                }),
+                video: None,
             }),
-            video: None,
-        }),
             models: Vec::<ModelDescriptor>::new(),
         });
         registry
@@ -424,8 +424,8 @@ mod tests {
             headers: IndexMap::new(),
             query_params: IndexMap::new(),
             chat_completions_path: None,
-        discovery: None,
-        media: Some(ProviderMediaDescriptor {
+            discovery: None,
+            media: Some(ProviderMediaDescriptor {
                 image: Some(MediaKindDescriptor {
                     discovery: None,
                     execution: Some(MediaExecutionDescriptor {
@@ -434,10 +434,10 @@ mod tests {
                         path: "/chat/completions".to_string(),
                         batch: puffer_provider_registry::MediaBatchDescriptor::default(),
                     }),
-                models: Vec::new(),
+                    models: Vec::new(),
+                }),
+                video: None,
             }),
-            video: None,
-        }),
             models: Vec::<ModelDescriptor>::new(),
         });
         registry

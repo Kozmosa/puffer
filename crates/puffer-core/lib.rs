@@ -63,8 +63,8 @@ pub use media_runtime::{
     resolved_exact_image_parameters_with_cache, ExactGeneratedArtifact,
     ExactImageGenerationRequest, ExactImageGenerationResult, ExactMediaDiscoveryCache,
     ExactMediaGenerationRequest, ExactMediaGenerationResult, GeneratedMediaAttachmentMetadata,
-    GeneratedMediaPreviewResult, GeneratedVideoAccessMetadata,
-    GeneratedVideoAccessMetadataResult, MediaCapabilityView, MEDIA_DISCOVERY_TTL_MS,
+    GeneratedMediaPreviewResult, GeneratedVideoAccessMetadata, GeneratedVideoAccessMetadataResult,
+    MediaCapabilityView, MEDIA_DISCOVERY_TTL_MS,
 };
 pub use memory::{
     activate_project_memory, flush_project_memory, project_memory_turn_completed,

@@ -822,22 +822,18 @@ fn execute_workflow_tool_with_media_context(
         "create_goal" => workflow::goal::execute_create_goal(state, cwd, input),
         "update_goal" => workflow::goal::execute_update_goal(state, cwd, input),
         "HttpRequest" => workflow::http_request::execute_http_request(state, cwd, input),
-        "ImageGeneration" => {
-            workflow::image_generation::execute_image_generation(
-                state,
-                cwd,
-                input,
-                image_media_context,
-            )
-        }
-        "VideoGeneration" => {
-            workflow::video_generation::execute_video_generation(
-                state,
-                cwd,
-                input,
-                video_media_context,
-            )
-        }
+        "ImageGeneration" => workflow::image_generation::execute_image_generation(
+            state,
+            cwd,
+            input,
+            image_media_context,
+        ),
+        "VideoGeneration" => workflow::video_generation::execute_video_generation(
+            state,
+            cwd,
+            input,
+            video_media_context,
+        ),
         "DebugpyAction" => workflow::debugpy_action::execute_debugpy_action(state, cwd, input),
         "DiscordAction" => workflow::discord_action::execute_discord_action(state, cwd, input),
         "LSP" => workflow::lsp::execute_lsp(state, resources, cwd, input),

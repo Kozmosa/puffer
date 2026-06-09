@@ -251,7 +251,10 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
-        .route("/media/generated-video/:ticket", get(generated_video_handler))
+        .route(
+            "/media/generated-video/:ticket",
+            get(generated_video_handler),
+        )
         .with_state(state.clone());
 
     let addr: SocketAddr = bind.parse().context("bind address")?;
@@ -901,7 +904,10 @@ async fn generated_video_handler(
             return StatusCode::NOT_FOUND.into_response();
         }
         let length = end - start + 1;
-        (Body::from_stream(ReaderStream::new(file.take(length))), length)
+        (
+            Body::from_stream(ReaderStream::new(file.take(length))),
+            length,
+        )
     } else {
         builder = builder.status(StatusCode::OK);
         (Body::from_stream(ReaderStream::new(file)), size)
@@ -5512,8 +5518,8 @@ mod tests {
     use super::{
         apply_daemon_yolo_mode, apply_turn_model_override, apply_turn_request_options,
         browser_permission_payload_json, connector_setup_connect_args, connector_setup_id,
-        daemon_now_ms, desktop_latency_ms, handle_create_generated_video_access,
-        generated_video_handler, handle_create_openai_realtime_client_secret,
+        daemon_now_ms, desktop_latency_ms, generated_video_handler,
+        handle_create_generated_video_access, handle_create_openai_realtime_client_secret,
         handle_create_session, handle_generate_media, handle_import_external_credential,
         handle_list_lambda_skill_libraries, handle_list_media_capabilities,
         handle_list_permissions, handle_list_provider_models, handle_local_model_status,
@@ -5995,11 +6001,8 @@ models: []
         .expect("write relaydance override");
     }
 
-    fn daemon_state_with_relaydance_video_capability() -> (
-        PufferHomeEnvGuard,
-        tempfile::TempDir,
-        DaemonState,
-    ) {
+    fn daemon_state_with_relaydance_video_capability(
+    ) -> (PufferHomeEnvGuard, tempfile::TempDir, DaemonState) {
         let home_guard = PufferHomeEnvGuard::set();
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
@@ -6021,11 +6024,8 @@ models: []
         (home_guard, temp, state)
     }
 
-    fn daemon_state_with_replicate_video_capability() -> (
-        PufferHomeEnvGuard,
-        tempfile::TempDir,
-        DaemonState,
-    ) {
+    fn daemon_state_with_replicate_video_capability(
+    ) -> (PufferHomeEnvGuard, tempfile::TempDir, DaemonState) {
         let home_guard = PufferHomeEnvGuard::set();
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
@@ -6632,9 +6632,18 @@ models: []
 
     #[test]
     fn generated_video_range_parser_supports_closed_open_and_suffix_ranges() {
-        assert_eq!(parse_single_byte_range("bytes=2-5", 10).unwrap(), Some((2, 5)));
-        assert_eq!(parse_single_byte_range("bytes=4-", 10).unwrap(), Some((4, 9)));
-        assert_eq!(parse_single_byte_range("bytes=-3", 10).unwrap(), Some((7, 9)));
+        assert_eq!(
+            parse_single_byte_range("bytes=2-5", 10).unwrap(),
+            Some((2, 5))
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=4-", 10).unwrap(),
+            Some((4, 9))
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=-3", 10).unwrap(),
+            Some((7, 9))
+        );
         assert_eq!(parse_single_byte_range("", 10).unwrap(), None);
     }
 
@@ -6693,8 +6702,13 @@ models: []
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "video/mp4");
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "video/mp4"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         assert_eq!(&body[..], b"0123456789");
     }
 
@@ -6716,20 +6730,19 @@ models: []
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=2-5"));
 
-        let response = generated_video_handler(
-            State(state),
-            AxumPath("ticket-1".to_string()),
-            headers,
-        )
-        .await
-        .into_response();
+        let response =
+            generated_video_handler(State(state), AxumPath("ticket-1".to_string()), headers)
+                .await
+                .into_response();
 
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(
             response.headers().get(header::CONTENT_RANGE).unwrap(),
             "bytes 2-5/10"
         );
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         assert_eq!(&body[..], b"2345");
     }
 

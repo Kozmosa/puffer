@@ -650,7 +650,13 @@ parameters = { aspect_ratio = "16:9", duration = "5" }
         let parsed: PufferConfig = toml::from_str(toml).expect("config parses");
         assert_eq!(parsed.media.image.as_ref().unwrap().adapter, "images_json");
         assert_eq!(
-            parsed.media.video.as_ref().unwrap().parameters.get("duration"),
+            parsed
+                .media
+                .video
+                .as_ref()
+                .unwrap()
+                .parameters
+                .get("duration"),
             Some(&"5".to_string())
         );
     }

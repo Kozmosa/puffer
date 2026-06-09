@@ -364,15 +364,18 @@ fn generated_media_preview_by_artifact_rejects_video_poster_bad_mime() {
             mime_type: "video/mp4".to_string(),
             byte_count: 9,
             metadata: serde_json::json!({}),
-            preview: Some(crate::runtime::media::artifacts::MediaArtifactPreview::Poster(
-                crate::runtime::media::artifacts::MediaPosterPreview {
-                    state: crate::runtime::media::artifacts::MediaArtifactPreviewState::Available,
-                    path: Some(poster_path),
-                    mime_type: Some("image/png".to_string()),
-                    byte_count: Some(4),
-                    reason: None,
-                },
-            )),
+            preview: Some(
+                crate::runtime::media::artifacts::MediaArtifactPreview::Poster(
+                    crate::runtime::media::artifacts::MediaPosterPreview {
+                        state:
+                            crate::runtime::media::artifacts::MediaArtifactPreviewState::Available,
+                        path: Some(poster_path),
+                        mime_type: Some("image/png".to_string()),
+                        byte_count: Some(4),
+                        reason: None,
+                    },
+                ),
+            ),
             created_at_ms: 1,
         })
         .unwrap();
@@ -519,8 +522,7 @@ fn generated_video_access_metadata_accepts_video_under_video_root() {
         })
         .unwrap();
 
-    let result =
-        generated_video_access_metadata_by_artifact(workspace.path(), "artifact-video-1");
+    let result = generated_video_access_metadata_by_artifact(workspace.path(), "artifact-video-1");
 
     let GeneratedVideoAccessMetadataResult::Available(metadata) = result else {
         panic!("expected available video metadata");
@@ -551,8 +553,7 @@ fn generated_video_access_metadata_accepts_legacy_video_under_artifact_root() {
         })
         .unwrap();
 
-    let result =
-        generated_video_access_metadata_by_artifact(workspace.path(), "artifact-video-1");
+    let result = generated_video_access_metadata_by_artifact(workspace.path(), "artifact-video-1");
 
     let GeneratedVideoAccessMetadataResult::Available(metadata) = result else {
         panic!("expected available video metadata");
@@ -595,7 +596,9 @@ fn generated_video_access_metadata_rejects_symlink_escape() {
     let outside = tempdir().unwrap();
     let outside_video = outside.path().join("generated.mp4");
     std::fs::write(&outside_video, b"mp4-bytes").unwrap();
-    let link_dir = workspace.path().join(".puffer/media/videos/artifact-video-1");
+    let link_dir = workspace
+        .path()
+        .join(".puffer/media/videos/artifact-video-1");
     std::fs::create_dir_all(&link_dir).unwrap();
     let link = link_dir.join("generated.mp4");
     #[cfg(unix)]
