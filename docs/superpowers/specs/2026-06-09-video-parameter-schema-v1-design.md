@@ -56,7 +56,7 @@ Each video parameter descriptor should carry the following information:
 - `values`: the supported option list, still select-only
 - `default`: one of the declared values
 - `request_field`: the provider request field
-- `wire_type`: either `string` or `number`
+- `wire_type`: either `string` or `number`, defaulting to `string`
 
 This keeps the existing static capability model and avoids runtime provider
 discovery. It also keeps provider adapters responsible for request-body shape,
@@ -68,7 +68,7 @@ BytePlus should express Seedance 2.0 parameters as:
 
 | Puffer name | Request field | Wire type | Notes |
 | --- | --- | --- | --- |
-| `duration_seconds` | `duration` | `number` | Supports documented second values. May include provider-specific smart duration if exposed. |
+| `duration_seconds` | `duration` | `number` | Supports documented second values from `4` through `15`. |
 | `aspect_ratio` | `ratio` | `string` | Includes `adaptive` where supported. |
 | `resolution` | `resolution` | `string` | Standard supports `480p`, `720p`, `1080p`; fast omits `1080p`. |
 
@@ -76,7 +76,7 @@ Relaydance should express its video parameters as:
 
 | Puffer name | Request field | Wire type | Notes |
 | --- | --- | --- | --- |
-| `duration_seconds` | `seconds` | `number` | Adapter places it at the top level. |
+| `duration_seconds` | `seconds` | `string` | Adapter places it at the top level and keeps the current wire behavior until a provider contract requires numeric seconds. |
 | `aspect_ratio` | `metadata.ratio` | `string` | Adapter nests it under `metadata`. |
 | `resolution` | `metadata.resolution` | `string` | Model-specific value sets remain static. |
 
@@ -95,9 +95,10 @@ matches. It should render first-class controls from canonical names:
 This keeps the UI deterministic and removes the need for aliases such as
 `ratio`, `aspect_ratio`, `size`, `duration`, and `seconds`.
 
-Duration values should still be presented as seconds. If a provider exposes a
-non-positive sentinel such as BytePlus smart duration, the label should be
-provider-friendly rather than formatted as a plain second count.
+Duration values should still be presented as seconds for positive integer
+values. v1 should not expose provider-specific non-positive sentinel values
+such as smart duration because doing that well requires option-level labels,
+which are out of scope for this focused schema.
 
 ## Runtime Behavior
 
@@ -110,9 +111,9 @@ Runtime validation should reject:
 - empty `request_field` for parameters used by executable adapters
 
 Runtime request builders should emit selected values in descriptor order and use
-`wire_type` for scalar encoding. `number` values must parse before the request is
-submitted; parse failures should be local validation errors, not provider HTTP
-errors.
+`wire_type` for scalar encoding. Omitted `wire_type` means `string`. `number`
+values must parse before the request is submitted; parse failures should be
+local validation errors, not provider HTTP errors.
 
 ## Catalog Governance
 
@@ -138,6 +139,8 @@ This design intentionally does not add:
 - free-form numeric input
 - nested object parameters
 - parameter dependency expressions
+- option-level display labels
+- provider-specific smart-duration sentinels
 - image-parameter migration
 - automatic conversion of old saved settings
 
@@ -159,7 +162,9 @@ settings surface being optimized.
 - Desktop video settings no longer rely on parameter-name heuristics.
 - BytePlus and Relaydance use the same semantic parameter names.
 - Provider-specific request fields remain explicit in provider resources.
-- BytePlus duration and Relaydance seconds are encoded as numbers without
-  adapter-specific field-name checks.
+- BytePlus duration is encoded as a number through descriptor metadata, not an
+  adapter-specific field-name check.
+- Relaydance request serialization is unchanged unless provider evidence later
+  requires numeric `seconds`.
 - Capability resolution remains static and does not add network calls.
 - Catalog tests catch invalid model-specific option drift before runtime.
