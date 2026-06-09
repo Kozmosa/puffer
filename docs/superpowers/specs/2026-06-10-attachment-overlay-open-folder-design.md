@@ -135,9 +135,14 @@ Rename `openImageContainingFolder` -> `openContainingFolder`, invoking
 
 ### 5. `lib.rs`
 
-Update the command name in two places:
-- the command-name allowlist (currently line 56),
-- the `generate_handler!`/`invoke_handler` registration (currently line 525).
+Update the command name in **both** places — they must change together:
+- the `REGISTERED_TAURI_COMMANDS: &[&str]` allowlist string literal
+  (currently line 56). This is a runtime gate; if the handler is renamed but
+  this string is not, the command silently fails the gate.
+- the `invoke_handler` registration `image_actions::open_image_containing_folder`
+  (currently line 525).
+
+Do **not** touch `open_image_dir` (lib.rs:431) — see Out of scope.
 
 ## Tests (TDD — written or updated before implementation)
 
@@ -159,6 +164,26 @@ Update the command name in two places:
 
 - No generic file download for non-image attachments.
 - No new Rust module split.
-- No Tauri permission/capability changes (the opener capability already covers
-  this command).
+- No Tauri permission/capability changes. There are no
+  `capabilities/`/`permissions/` entries for this command; the allowlist in
+  `lib.rs` is the only gate.
 - No change to the thumbnail-click -> overlay flow or the attachment data model.
+- **Leave `open_image_dir` untouched.** It is a separate command (lib.rs:431,
+  called from `MediaSettingsModal.svelte`) that opens the configured media output
+  directory for a session `cwd` — unrelated to the per-attachment overlay despite
+  the similar name. Renaming it is scope creep.
+
+## Affected reference sites (rename checklist)
+
+Verified the complete set of identifier references to update:
+
+- `imageOverlayAction` / `ImageOverlayAction`: `imageOverlayAction.ts` (def),
+  `AttachmentOverlay.svelte` (import + `overlayAction` + `overlayActionKey`
+  signature), `imageOverlayAction.test.ts`.
+- `openImageContainingFolder` -> `openContainingFolder`: `desktop.ts` (def),
+  `AttachmentOverlay.svelte` (import + call).
+- `open_image_containing_folder` -> `open_containing_folder`: `desktop.ts`
+  invoke string, `lib.rs:56` (allowlist), `lib.rs:525` (handler),
+  `image_actions.rs` (def).
+- `resolve_image_containing_folder` -> `resolve_containing_folder`:
+  `image_actions.rs` (def + 4 test references).
