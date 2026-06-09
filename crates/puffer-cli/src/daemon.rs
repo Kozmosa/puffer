@@ -5970,23 +5970,23 @@ media:
       path: /v1/video/generations
     models:
       - id: doubao-seedance-2-0-720p
-        display_name: Seedance 2.0 (720p)
+        display_name: Seedance 2.0
         operations:
           - generate
         parameters:
           - name: duration
             label: Duration
-            values: ["5", "10"]
+            values: ["4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]
             default: "5"
             request_field: seconds
           - name: resolution
             label: Resolution
-            values: ["720p", "1080p"]
+            values: ["480p", "720p", "1080p"]
             default: "720p"
             request_field: metadata.resolution
           - name: ratio
             label: Aspect ratio
-            values: ["16:9", "9:16", "1:1"]
+            values: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]
             default: "16:9"
             request_field: metadata.ratio
 models: []
@@ -6273,8 +6273,11 @@ models: []
             handle_list_media_capabilities(&state, &json!({"kind": "video"})).expect("response");
         let capabilities = response["capabilities"].as_array().expect("capabilities");
 
-        assert_eq!(capabilities.len(), 1);
-        assert_eq!(capabilities[0]["adapter"], "replicate_video");
+        assert!(capabilities.iter().any(|capability| {
+            capability["providerId"] == "replicate"
+                && capability["adapter"] == "replicate_video"
+                && capability["status"] == "available"
+        }));
     }
 
     #[test]
@@ -6285,9 +6288,11 @@ models: []
             handle_list_media_capabilities(&state, &json!({"kind": "video"})).expect("response");
         let capabilities = response["capabilities"].as_array().expect("capabilities");
 
-        assert_eq!(capabilities.len(), 1);
-        assert_eq!(capabilities[0]["adapter"], "relaydance_video");
-        assert_eq!(capabilities[0]["providerId"], "relaydance");
+        assert!(capabilities.iter().any(|capability| {
+            capability["providerId"] == "relaydance"
+                && capability["adapter"] == "relaydance_video"
+                && capability["status"] == "available"
+        }));
     }
 
     #[test]

@@ -29,8 +29,16 @@
   let { kind, sessionCwd, settings, settingsReady = true, onSaved, onClose }: Props = $props();
   const IMAGE_OUTPUT_DIR_RELATIVE = ".puffer/media/images";
   const VIDEO_OUTPUT_DIR_RELATIVE = ".puffer/media/videos";
-  const VIDEO_ASPECT_RATIO_PARAMETER_NAMES = ["aspect_ratio"];
-  const VIDEO_DURATION_PARAMETER_NAMES = ["duration"];
+  const VIDEO_ASPECT_RATIO_PARAMETER_NAMES = ["aspect_ratio", "ratio", "size"];
+  const VIDEO_DURATION_PARAMETER_NAMES = ["duration", "seconds"];
+  const VIDEO_ASPECT_RATIO_PARAMETER_KEYS = normalizedParameterNameSet(
+    VIDEO_ASPECT_RATIO_PARAMETER_NAMES
+  );
+  const VIDEO_DURATION_PARAMETER_KEYS = normalizedParameterNameSet(VIDEO_DURATION_PARAMETER_NAMES);
+  const VIDEO_PRIMARY_PARAMETER_KEYS = normalizedParameterNameSet([
+    ...VIDEO_ASPECT_RATIO_PARAMETER_NAMES,
+    ...VIDEO_DURATION_PARAMETER_NAMES
+  ]);
   const initialSaved = untrack(() => mediaSettingsForKind(kind, settings));
   const initialParameters = untrack(() => initialSaved?.parameters ?? {});
 
@@ -74,13 +82,18 @@
   );
   let selectedCapability = $derived(currentMatchingCapability());
   let aspectRatioParameter = $derived(
-    findCapabilityParameter(selectedCapability, VIDEO_ASPECT_RATIO_PARAMETER_NAMES)
+    findCapabilityParameter(selectedCapability, VIDEO_ASPECT_RATIO_PARAMETER_KEYS)
   );
   let durationParameter = $derived(
-    findCapabilityParameter(selectedCapability, VIDEO_DURATION_PARAMETER_NAMES)
+    findCapabilityParameter(selectedCapability, VIDEO_DURATION_PARAMETER_KEYS)
   );
   let aspectRatioOptions = $derived(videoStringOptions(aspectRatioParameter, aspectRatio));
   let durationOptions = $derived(videoDurationOptions(durationParameter, durationSeconds));
+  let extraVideoParameters = $derived(
+    kind === "video" && selectedCapability
+      ? selectedCapability.parameters.filter((parameter) => !isPrimaryVideoParameter(parameter))
+      : []
+  );
   let aspectRatioLabel = $derived(aspectRatioParameter?.label ?? "Aspect ratio");
   let durationFieldLabel = $derived(durationParameter?.label ?? "Duration");
   let mediaContentReady = $derived(settingsReady && !loading);
@@ -129,7 +142,10 @@
   function chooseDefaultCapability() {
     if (availableCapabilities.length === 0) return;
     const savedCapability = currentMatchingCapability();
-    if (savedCapability) return;
+    if (savedCapability) {
+      applyVideoParameterState(savedCapability, parameters);
+      return;
+    }
     if (savedSelectionIsConfigured(kind, settings)) return;
     const first = availableCapabilities[0];
     selectCapability(first);
@@ -159,9 +175,13 @@
     if (capability.kind === "image") {
       parameters = { ...capability.defaults };
     } else {
-      parameters = { ...capability.defaults };
-      aspectRatio = defaultVideoAspectRatio(capability, aspectRatio);
-      durationSeconds = defaultVideoDurationSeconds(capability, durationSeconds);
+      parameters = normalizeAuxiliaryVideoParameters(capability, capability.defaults);
+      aspectRatio = videoAspectRatioForCapability(capability, capability.defaults, aspectRatio);
+      durationSeconds = videoDurationForCapability(
+        capability,
+        capability.defaults,
+        durationSeconds
+      );
     }
   }
 
@@ -263,7 +283,7 @@
   }
 
   function parameterValue(parameter: MediaCapabilityParameterInfo): string {
-    return parameters[parameter.name] ?? parameter.default;
+    return parameterValueFromParameter(parameters, parameter) ?? parameter.default;
   }
 
   function setParameterValue(name: string, value: string) {
@@ -272,23 +292,69 @@
 
   function findCapabilityParameter(
     capability: MediaCapabilityInfo | null,
-    names: string[]
+    normalizedNames: ReadonlySet<string>
   ): MediaCapabilityParameterInfo | null {
     if (!capability || capability.kind !== "video") return null;
-    const normalizedNames = new Set(names.map(normalizeParameterName));
     return (
-      capability.parameters.find((parameter) => {
-        const name = normalizeParameterName(parameter.name);
-        const requestField = parameter.requestField
-          ? normalizeParameterName(parameter.requestField)
-          : "";
-        return normalizedNames.has(name) || normalizedNames.has(requestField);
-      }) ?? null
+      capability.parameters.find((parameter) => parameterMatchesNames(parameter, normalizedNames)) ??
+      null
     );
   }
 
+  function isPrimaryVideoParameter(parameter: MediaCapabilityParameterInfo): boolean {
+    return parameterMatchesNames(parameter, VIDEO_PRIMARY_PARAMETER_KEYS);
+  }
+
+  function parameterMatchesNames(
+    parameter: MediaCapabilityParameterInfo,
+    normalizedNames: ReadonlySet<string>
+  ): boolean {
+    for (const candidate of parameterNameCandidates(parameter)) {
+      if (normalizedNames.has(candidate)) return true;
+    }
+    return false;
+  }
+
+  function parameterNameCandidates(parameter: MediaCapabilityParameterInfo): string[] {
+    const candidates = normalizedNameCandidates(parameter.name);
+    if (parameter.requestField) {
+      candidates.push(...normalizedNameCandidates(parameter.requestField));
+    }
+    return candidates;
+  }
+
+  function parameterValueFromParameter(
+    value: Record<string, string>,
+    parameter: MediaCapabilityParameterInfo
+  ): string | null {
+    const direct = value[parameter.name];
+    if (direct !== undefined) return direct;
+    const parameterCandidates = new Set(parameterNameCandidates(parameter));
+    for (const [key, candidate] of Object.entries(value)) {
+      if (
+        normalizedNameCandidates(key).some((normalizedKey) =>
+          parameterCandidates.has(normalizedKey)
+        )
+      ) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  function normalizedParameterNameSet(values: string[]): ReadonlySet<string> {
+    return new Set(values.flatMap(normalizedNameCandidates));
+  }
+
+  function normalizedNameCandidates(value: string): string[] {
+    const normalized = normalizeParameterName(value);
+    const tail = value.split(".").at(-1) ?? value;
+    const normalizedTail = normalizeParameterName(tail);
+    return normalized === normalizedTail ? [normalized] : [normalized, normalizedTail];
+  }
+
   function normalizeParameterName(value: string): string {
-    return value.replace(/[-_\s]/g, "").toLowerCase();
+    return value.replace(/[-_\s.]/g, "").toLowerCase();
   }
 
   function videoStringOptions(
@@ -347,23 +413,34 @@
     return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
   }
 
-  function defaultVideoAspectRatio(
+  function videoAspectRatioForCapability(
     capability: MediaCapabilityInfo,
+    current: Record<string, string>,
     currentValue: string
   ): string {
-    const parameter = findCapabilityParameter(capability, VIDEO_ASPECT_RATIO_PARAMETER_NAMES);
+    const parameter = findCapabilityParameter(capability, VIDEO_ASPECT_RATIO_PARAMETER_KEYS);
+    const selectedValue = parameter
+      ? parameterValueFromParameter(current, parameter)
+      : parameterValueFromNames(current, VIDEO_ASPECT_RATIO_PARAMETER_KEYS);
     const options = videoStringOptions(parameter, currentValue);
+    if (selectedValue && options.includes(selectedValue)) return selectedValue;
     const defaultValue = parameter?.default ?? "";
     if (defaultValue && options.includes(defaultValue)) return defaultValue;
     return options[0] ?? currentValue;
   }
 
-  function defaultVideoDurationSeconds(
+  function videoDurationForCapability(
     capability: MediaCapabilityInfo,
+    current: Record<string, string>,
     currentValue: number
   ): number {
-    const parameter = findCapabilityParameter(capability, VIDEO_DURATION_PARAMETER_NAMES);
+    const parameter = findCapabilityParameter(capability, VIDEO_DURATION_PARAMETER_KEYS);
+    const selectedValue = parameter
+      ? parameterValueFromParameter(current, parameter)
+      : parameterValueFromNames(current, VIDEO_DURATION_PARAMETER_KEYS);
     const options = videoDurationOptions(parameter, currentValue);
+    const selectedDuration = selectedValue ? parseDurationSeconds(selectedValue) : null;
+    if (selectedDuration !== null && options.includes(selectedDuration)) return selectedDuration;
     const defaultValue = parameter?.default ? parseDurationSeconds(parameter.default) : null;
     if (defaultValue !== null && options.includes(defaultValue)) return defaultValue;
     return options[0] ?? currentValue;
@@ -387,6 +464,22 @@
       next[parameter.name] = parameter.values.includes(currentValue)
         ? currentValue
         : parameter.default;
+    }
+    return next;
+  }
+
+  function normalizeAuxiliaryVideoParameters(
+    capability: MediaCapabilityInfo,
+    current: Record<string, string>
+  ): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const parameter of capability.parameters) {
+      if (isPrimaryVideoParameter(parameter)) continue;
+      const currentValue = parameterValueFromParameter(current, parameter);
+      next[parameter.name] =
+        currentValue !== null && parameter.values.includes(currentValue)
+          ? currentValue
+          : parameter.default;
     }
     return next;
   }
@@ -475,12 +568,36 @@
   }
 
   function videoAspectRatioFromParameters(value: Record<string, string>): string {
-    return value.aspect_ratio ?? "16:9";
+    return parameterValueFromNames(value, VIDEO_ASPECT_RATIO_PARAMETER_KEYS) ?? "16:9";
   }
 
   function videoDurationFromParameters(value: Record<string, string>): number {
-    const duration = value.duration ?? "8";
+    const duration = parameterValueFromNames(value, VIDEO_DURATION_PARAMETER_KEYS) ?? "8";
     return parseDurationSeconds(duration) ?? 8;
+  }
+
+  function parameterValueFromNames(
+    value: Record<string, string>,
+    normalizedNames: ReadonlySet<string>
+  ): string | null {
+    for (const [key, candidate] of Object.entries(value)) {
+      if (
+        normalizedNameCandidates(key).some((normalizedKey) => normalizedNames.has(normalizedKey))
+      ) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  function applyVideoParameterState(
+    capability: MediaCapabilityInfo,
+    current: Record<string, string>
+  ) {
+    if (kind !== "video" || capability.kind !== "video") return;
+    parameters = normalizeAuxiliaryVideoParameters(capability, current);
+    aspectRatio = videoAspectRatioForCapability(capability, current, aspectRatio);
+    durationSeconds = videoDurationForCapability(capability, current, durationSeconds);
   }
 
   async function save() {
@@ -570,11 +687,15 @@
     if (kind !== "video" || !selectedCapability) return;
     const nextAspectRatio = normalizeVideoAspectRatio(aspectRatio);
     const nextDurationSeconds = normalizeVideoDurationSeconds(durationSeconds);
+    const nextParameters = normalizeAuxiliaryVideoParameters(selectedCapability, parameters);
     if (nextAspectRatio !== aspectRatio) {
       aspectRatio = nextAspectRatio;
     }
     if (nextDurationSeconds !== durationSeconds) {
       durationSeconds = nextDurationSeconds;
+    }
+    if (serializeParameters(nextParameters) !== serializeParameters(parameters)) {
+      parameters = nextParameters;
     }
   });
 </script>
@@ -768,6 +889,24 @@
             {:else}
               {@render readOnlyField(durationFieldLabel, formatDurationLabel(durationSeconds))}
             {/if}
+            {#each extraVideoParameters as parameter (parameter.name)}
+              {#if shouldRenderParameterSelect(parameter)}
+                <label class="pf-media-field">
+                  <span class="pf-field-label">{parameter.label}</span>
+                  <select
+                    class="sc-input"
+                    value={parameterValue(parameter)}
+                    onchange={(event) => setParameterValue(parameter.name, event.currentTarget.value)}
+                  >
+                    {#each parameter.values as option}
+                      <option value={option}>{option}</option>
+                    {/each}
+                  </select>
+                </label>
+              {:else}
+                {@render readOnlyField(parameter.label, parameterValue(parameter))}
+              {/if}
+            {/each}
             {#if videoDir}
               <div class="pf-media-field">
                 <span id="pf-video-folder-label" class="pf-field-label">Video folder</span>

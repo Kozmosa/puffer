@@ -119,6 +119,13 @@ const ALL_PROVIDER_YAMLS: &[(&str, &str)] = &[
     ),
 ];
 
+const SEEDANCE_VIDEO_DURATIONS: &[&str] = &[
+    "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+];
+const SEEDANCE_VIDEO_RATIOS: &[&str] =
+    &["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"];
+const SEEDANCE_VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p"];
+
 fn provider_descriptor(provider_id: &str, yaml: &str) -> ProviderDescriptor {
     let pack: ProviderPack = serde_yaml::from_str(yaml)
         .unwrap_or_else(|err| panic!("{provider_id}.yaml should parse: {err}"));
@@ -311,36 +318,98 @@ fn relaydance_declares_executable_video_descriptor() {
         .models
         .iter()
         .find(|model| model.id == "doubao-seedance-2-0-720p")
-        .expect("relaydance should include Seedance 2.0 720p");
-    assert_eq!(model.display_name.as_deref(), Some("Seedance 2.0 (720p)"));
+        .expect("relaydance should include Seedance 2.0");
+    assert_eq!(model.display_name.as_deref(), Some("Seedance 2.0"));
     assert_eq!(model.operations, vec![MediaOperation::Generate]);
 
-    let parameters = model
-        .parameters
-        .iter()
-        .map(|parameter| {
-            (
-                parameter.name.as_str(),
-                (
-                    parameter.default.as_str(),
-                    parameter.request_field.as_deref(),
-                ),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(parameters.get("duration"), Some(&("5", Some("seconds"))));
-    assert_eq!(
-        parameters.get("resolution"),
-        Some(&("720p", Some("metadata.resolution")))
+    assert_select_parameter(
+        model,
+        "duration",
+        "Duration",
+        SEEDANCE_VIDEO_DURATIONS,
+        "5",
+        "seconds",
     );
-    assert_eq!(
-        parameters.get("ratio"),
-        Some(&("16:9", Some("metadata.ratio")))
+    assert_select_parameter(
+        model,
+        "resolution",
+        "Resolution",
+        SEEDANCE_VIDEO_RESOLUTIONS,
+        "720p",
+        "metadata.resolution",
+    );
+    assert_select_parameter(
+        model,
+        "ratio",
+        "Aspect ratio",
+        SEEDANCE_VIDEO_RATIOS,
+        "16:9",
+        "metadata.ratio",
     );
 }
 
 #[test]
-fn only_relaydance_declares_first_pass_video_media() {
+fn byteplus_declares_executable_video_descriptor() {
+    let descriptor = provider_descriptor(
+        "byteplus",
+        include_str!("../../../resources/providers/byteplus.yaml"),
+    );
+    descriptor
+        .validate_media_descriptors()
+        .expect("byteplus media descriptor validates");
+    let video = descriptor
+        .media
+        .as_ref()
+        .and_then(|media| media.video.as_ref())
+        .expect("byteplus video media descriptor");
+    let execution = video
+        .execution
+        .as_ref()
+        .expect("byteplus video execution descriptor");
+
+    assert_eq!(execution.adapter, MediaExecutionKind::BytePlusVideo);
+    assert_eq!(execution.path, "/contents/generations/tasks");
+
+    let model = video
+        .models
+        .iter()
+        .find(|model| model.id == "dreamina-seedance-2-0-260128")
+        .expect("byteplus should include Dreamina Seedance 2.0");
+    assert_eq!(
+        model.display_name.as_deref(),
+        Some("Dreamina Seedance 2.0")
+    );
+    assert_eq!(model.operations, vec![MediaOperation::Generate]);
+
+    assert_select_parameter(
+        model,
+        "duration",
+        "Duration",
+        SEEDANCE_VIDEO_DURATIONS,
+        "5",
+        "duration",
+    );
+    assert_select_parameter(
+        model,
+        "ratio",
+        "Aspect ratio",
+        SEEDANCE_VIDEO_RATIOS,
+        "16:9",
+        "ratio",
+    );
+    assert_select_parameter(
+        model,
+        "resolution",
+        "Resolution",
+        SEEDANCE_VIDEO_RESOLUTIONS,
+        "720p",
+        "resolution",
+    );
+}
+
+#[test]
+fn only_executable_video_providers_declare_video_media() {
+    let expected = BTreeSet::from(["byteplus", "relaydance"]);
     for (provider_id, yaml) in ALL_PROVIDER_YAMLS {
         let descriptor = provider_descriptor(provider_id, yaml);
         let has_video = descriptor
@@ -350,7 +419,7 @@ fn only_relaydance_declares_first_pass_video_media() {
             .is_some();
         assert_eq!(
             has_video,
-            *provider_id == "relaydance",
+            expected.contains(provider_id),
             "{provider_id} must not declare media.video until a Puffer video adapter exists"
         );
     }

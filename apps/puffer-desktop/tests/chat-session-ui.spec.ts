@@ -165,6 +165,49 @@ function configurableVideoCapability(): FakeMediaCapability {
   };
 }
 
+function configurableVideoCapabilityWithProviderOptions(): FakeMediaCapability {
+  const parameters = [
+    mediaParameter({
+      name: "video_shape",
+      label: "Aspect ratio",
+      values: ["16:9", "9:16", "1:1"],
+      defaultValue: "16:9",
+      requestField: "metadata.ratio"
+    }),
+    mediaParameter({
+      name: "clip_seconds",
+      label: "Duration",
+      values: ["5", "8", "12"],
+      defaultValue: "5",
+      requestField: "seconds"
+    }),
+    mediaParameter({
+      name: "resolution",
+      label: "Resolution",
+      values: ["480p", "720p", "1080p"],
+      defaultValue: "720p",
+      requestField: "metadata.resolution"
+    })
+  ];
+  return {
+    providerId: "byteplus",
+    providerDisplayName: "BytePlus",
+    modelId: "dreamina-seedance-2-0-260128",
+    modelDisplayName: "Dreamina Seedance 2.0",
+    kind: "video",
+    operation: "generate",
+    adapter: "byteplus_video",
+    parameters,
+    defaults: Object.fromEntries(
+      parameters.map((parameter) => [parameter.name, parameter.default])
+    ),
+    status: "available",
+    source: "fake-daemon",
+    reason: null,
+    checkedAtMs: baseTime
+  };
+}
+
 function generatedAttachment(jobId: string, artifactId: string, index: number): MessageAttachment {
   return {
     id: `generated-image:${artifactId}`,
@@ -1083,6 +1126,153 @@ test("composer video generation settings saves configurable video defaults", asy
         parameters: {
           aspect_ratio: "9:16",
           duration: "12"
+        }
+      }
+    }
+  });
+});
+
+test("composer video generation settings saves additional provider options", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [configurableVideoCapabilityWithProviderOptions()],
+    sessions: [
+      {
+        sessionId: "session-video-settings-resolution",
+        displayName: "Video settings resolution",
+        title: "Video settings resolution",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-resolution-seed",
+            text: "Open video settings with resolution.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Video settings resolution/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Video generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video generation settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
+  await expect(dialog.getByLabel("Resolution")).toHaveValue("720p");
+
+  await dialog.getByLabel("Aspect ratio").selectOption("1:1");
+  await dialog.getByLabel("Duration").selectOption("12");
+  await dialog.getByLabel("Resolution").selectOption("1080p");
+
+  await dialog.getByRole("button", { name: "Save" }).click();
+  const update = await daemon.waitForRequest(
+    "update_config",
+    (request) => "media" in request.params
+  );
+  expect(update.params).toEqual({
+    media: {
+      image: null,
+      video: {
+        providerId: "byteplus",
+        modelId: "dreamina-seedance-2-0-260128",
+        operation: "generate",
+        adapter: "byteplus_video",
+        parameters: {
+          video_shape: "1:1",
+          clip_seconds: "12",
+          resolution: "1080p"
+        }
+      }
+    }
+  });
+});
+
+test("composer video generation settings normalizes stale provider options", async ({ page }) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [configurableVideoCapabilityWithProviderOptions()],
+    sessions: [
+      {
+        sessionId: "session-video-settings-stale-provider-options",
+        displayName: "Video settings stale provider options",
+        title: "Video settings stale provider options",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-stale-provider-options-seed",
+            text: "Open video settings with stale provider options.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  daemon.setSettingsConfig({
+    media: {
+      image: null,
+      video: {
+        providerId: "byteplus",
+        modelId: "dreamina-seedance-2-0-260128",
+        operation: "generate",
+        adapter: "byteplus_video",
+        parameters: {
+          video_shape: "9:16",
+          clip_seconds: "8",
+          resolution: "4k",
+          stale_video_option: "remove-me"
+        }
+      }
+    }
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Video settings stale provider options/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Video generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video generation settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
+  await expect(dialog.getByLabel("Aspect ratio")).toHaveValue("9:16");
+  await expect(dialog.getByLabel("Duration")).toHaveValue("8");
+  await expect(dialog.getByLabel("Resolution")).toHaveValue("720p");
+
+  await dialog.getByRole("button", { name: "Save" }).click();
+  const update = await daemon.waitForRequest(
+    "update_config",
+    (request) => "media" in request.params
+  );
+  expect(update.params).toEqual({
+    media: {
+      image: null,
+      video: {
+        providerId: "byteplus",
+        modelId: "dreamina-seedance-2-0-260128",
+        operation: "generate",
+        adapter: "byteplus_video",
+        parameters: {
+          video_shape: "9:16",
+          clip_seconds: "8",
+          resolution: "720p"
         }
       }
     }
