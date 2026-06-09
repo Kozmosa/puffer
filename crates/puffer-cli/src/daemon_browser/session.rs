@@ -207,7 +207,16 @@ impl BrowserRootSession {
             (inner.browser_ws.clone(), inner.owns_targets)
         };
         if !owns_targets && !target.close_on_release {
-            super::chrome::reset_reusable_page_target(target)?;
+            // Reset is best-effort: a wedged/unresponsive page (issue #585) may
+            // never answer the CDP reset, but we MUST still return the slot to the
+            // pool. Dropping it here would permanently shrink the fixed native-CEF
+            // prewarm pool, so one hung page could poison the whole browser tree.
+            if let Err(error) = super::chrome::reset_reusable_page_target(target) {
+                log_browser_backend(format!(
+                    "reusable native CEF slot {} reset failed ({error}); returning it to the pool anyway",
+                    target.target_id
+                ));
+            }
             let mut inner = self.inner.lock().unwrap();
             inner.last_active = Instant::now();
             inner.reusable_targets.push(target.clone());
@@ -244,6 +253,14 @@ impl BrowserRootSession {
 
     pub(super) fn idle_for(&self) -> Duration {
         self.inner.lock().unwrap().last_active.elapsed()
+    }
+
+    /// Reports whether this root hands out a FIXED pool of prewarmed page targets
+    /// (native CEF, `owns_targets == false`) that cannot be grown on demand. When
+    /// true, an exhausted pool must be replenished by reclaiming an existing page
+    /// worker's slot rather than creating a new target.
+    pub(super) fn reuses_fixed_target_pool(&self) -> bool {
+        !self.inner.lock().unwrap().owns_targets
     }
 
     pub(super) fn is_alive(&self) -> bool {
@@ -481,6 +498,12 @@ impl BrowserSession {
 
     pub(super) fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// Time since this page worker last serviced an action. Used to pick the
+    /// least-recently-active worker when reclaiming a native-CEF prewarm slot.
+    pub(super) fn idle_for(&self) -> Duration {
+        self.last_active.lock().unwrap().elapsed()
     }
 
     fn send(&self, command: BrowserCommand) -> Result<()> {
