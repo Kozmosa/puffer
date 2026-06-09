@@ -106,6 +106,19 @@ fn daemon_persists_staged_attachment_ids_on_user_turn() {
     assert_eq!(user["attachments"][0]["name"], "pixel.png");
     assert_eq!(user["attachments"][0]["state"], "available");
 
+    // UI/transcript shows the ORIGINAL placeholder text, unchanged.
+    // The DTO field is `text` (see TimelineItemDto::UserMessage in
+    // desktop_api_types.rs:180-186).
+    assert_eq!(user["text"], "[Image: pixel.png]");
+
+    // The model received the materialized temp path (path bridge), not the
+    // bare basename — this is what stops the filesystem-guessing crash.
+    let model_body = mock.last_responses_body();
+    assert!(
+        model_body.contains("/tmp/puffer-attachments/"),
+        "provider request body should carry the attachment temp path: {model_body}"
+    );
+
     daemon.stop();
 }
 

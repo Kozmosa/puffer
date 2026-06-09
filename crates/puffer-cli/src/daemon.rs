@@ -4367,9 +4367,22 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                 .append_event(session_uuid, app_state.snapshot_event());
         }
 
+        // Materialize uploaded attachments to agent-readable temp paths and
+        // build the model-facing message that references them. The persisted
+        // transcript event below keeps the original text so the UI is
+        // unchanged; `model_input` must be used at BOTH push_message and the
+        // turn call so `transcript_to_items` dedups to a single user message.
+        let materialized = crate::attachment_bridge::materialize_attachments(
+            &inputs.session_store,
+            session_uuid,
+            &staged_attachments_for_thread,
+        );
+        let model_input =
+            crate::attachment_bridge::build_model_input(&message_for_thread, &materialized);
+
         // Persist the user message before the turn starts so a crash
         // doesn't silently drop it.
-        app_state.push_message(MessageRole::User, message_for_thread.clone());
+        app_state.push_message(MessageRole::User, model_input.clone());
         if !user_prompt_persisted_thread.swap(true, Ordering::SeqCst) {
             let _ = inputs.session_store.append_event(
                 session_uuid,
@@ -4611,7 +4624,7 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                 &inputs.resources,
                 &inputs.providers,
                 &mut auth_store,
-                &message_for_thread,
+                &model_input,
                 None,
                 &cancel,
                 on_event,
