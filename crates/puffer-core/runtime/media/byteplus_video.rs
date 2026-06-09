@@ -4,7 +4,7 @@ use super::video_jobs::{
     CompletedVideoTask, VideoPollingConfig,
 };
 use super::{MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use puffer_provider_registry::MediaParameterWireType;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use uuid::Uuid;
 
-const BYTEPLUS_VIDEO_ADAPTER: &str = "byteplus_video";
+pub(crate) const BYTEPLUS_VIDEO_ADAPTER: &str = "byteplus_video";
 
 #[derive(Debug)]
 pub(crate) struct BytePlusVideoRequest {
@@ -174,17 +174,6 @@ fn byteplus_error_message(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn byteplus_task_error_context(
-    provider_id: &str,
-    task_id: Option<&str>,
-    error: &anyhow::Error,
-) -> String {
-    format!(
-        "{error:#}: provider={provider_id} adapter={BYTEPLUS_VIDEO_ADAPTER} task={}",
-        task_id.unwrap_or("unknown")
-    )
-}
-
 pub(crate) trait BytePlusVideoTransport {
     /// Submits a BytePlus video task and returns its JSON response.
     fn submit_task(&self, url: &str, api_token: &str, body: &Value) -> Result<Value>;
@@ -324,7 +313,20 @@ where
         self.apply_task(service, job, task, now_ms)
     }
 
+    /// Fetches and parses the current remote task state for a job. Any failure
+    /// (transport or parse) surfaces as an `Err` for the caller to treat as
+    /// transient.
+    fn fetch_task(&self, job: &MediaJob) -> Result<BytePlusVideoTask> {
+        let url = video_poll_url(&self.submit_url, job)?;
+        let response = self.transport.poll_task(&url, &self.api_token)?;
+        BytePlusVideoTask::from_poll_value(response)
+    }
+
     /// Polls a non-terminal BytePlus job once and persists the resulting state.
+    ///
+    /// URL, transport, and parse failures are treated as transient: the error
+    /// is recorded on the job but its status stays non-terminal, so the polling
+    /// loop retries within its attempt budget instead of aborting the job.
     pub(crate) fn poll(
         &self,
         service: &MediaGenerationService,
@@ -334,21 +336,17 @@ where
         if job.status.is_terminal() {
             return Ok(job);
         }
-        let url = video_poll_url(&self.submit_url, &job)?;
-        let response = self.transport.poll_task(&url, &self.api_token)?;
-        let task = match BytePlusVideoTask::from_poll_value(response) {
-            Ok(task) => task,
+        match self.fetch_task(&job) {
+            Ok(task) => self.apply_task(service, job, task, now_ms),
             Err(error) => {
-                let diagnostic = byteplus_task_error_context(
-                    &self.provider_id,
-                    job.provider_job_id.as_deref(),
-                    &error,
-                );
-                persist_failed_video_job(service, job, diagnostic.clone(), now_ms)?;
-                return Err(anyhow!(diagnostic));
+                let diagnostic = error.context(format!(
+                    "provider={} adapter={BYTEPLUS_VIDEO_ADAPTER} task={}",
+                    self.provider_id,
+                    job.provider_job_id.as_deref().unwrap_or("unknown")
+                ));
+                super::video_jobs::record_transient_poll_error(service, job, diagnostic, now_ms)
             }
-        };
-        self.apply_task(service, job, task, now_ms)
+        }
     }
 
     /// Polls until a BytePlus job reaches a terminal status.
@@ -373,6 +371,7 @@ where
         now_ms: u64,
     ) -> Result<MediaJob> {
         let status = task.media_status();
+        job.remote_status = Some(task.status.clone());
         match status {
             MediaJobStatus::Queued | MediaJobStatus::Running => {
                 job.transition(status, now_ms)?;
@@ -565,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_parser_failure_marks_job_failed() {
+    fn poll_parser_failure_is_transient_and_keeps_polling() {
         let dir = tempfile::tempdir().unwrap();
         let service = MediaGenerationService::new(dir.path());
         let adapter = BytePlusVideoAdapter::with_transport(
@@ -574,6 +573,8 @@ mod tests {
             "byteplus",
             ScriptedTransport {
                 submit: json!({ "id": "task-1" }),
+                // Malformed poll response missing the task id = transient error;
+                // must not terminate or mark the job failed.
                 polls: RefCell::new(vec![json!({ "status": "running" })]),
             },
         );
@@ -586,18 +587,17 @@ mod tests {
             .submit(&service, request, BTreeMap::new(), 1)
             .expect("submit");
 
-        let error = adapter
+        let polled = adapter
             .poll(&service, job.clone(), 2)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("poll video task response missing task id"));
+            .expect("poll returns Ok (transient)");
 
+        assert_eq!(polled.status, MediaJobStatus::Queued); // still non-terminal
         let saved = service.load_job(&job.id).expect("saved job");
-        assert_eq!(saved.status, MediaJobStatus::Failed);
+        assert_eq!(saved.status, MediaJobStatus::Queued); // not marked Failed
         assert!(saved
             .error
             .as_deref()
-            .is_some_and(|value| value.contains("poll video task response missing task id")));
+            .is_some_and(|value| value.contains("missing task id")));
         assert!(saved
             .error
             .as_deref()
@@ -606,9 +606,6 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|value| value.contains("adapter=byteplus_video")));
-        assert!(saved
-            .error
-            .as_deref()
-            .is_some_and(|value| value.contains("task=task-1")));
+        assert!(saved.updated_at_ms >= saved.created_at_ms);
     }
 }
