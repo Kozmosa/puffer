@@ -1,9 +1,9 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { downloadImageFromUrl, openImageContainingFolder } from "../../api/desktop";
+  import { downloadImageFromUrl, openContainingFolder } from "../../api/desktop";
   import Icon, { type IconName } from "../../design/Icon.svelte";
   import type { MessageAttachment } from "../../types";
-  import { imageOverlayAction, type ImageOverlayAction } from "./imageOverlayAction";
+  import { attachmentOverlayAction, type AttachmentOverlayAction } from "./attachmentOverlayAction";
 
   type Props = {
     attachment: MessageAttachment | null;
@@ -18,13 +18,9 @@
   let titleId = $derived(attachment ? `attachment-overlay-title-${attachment.id}` : "attachment-overlay-title");
   let canPreviewImage = $derived(Boolean(attachment?.kind === "image" && attachment.previewUrl));
   let canPreviewVideo = $derived(Boolean(attachment?.kind === "video" && attachment.previewUrl));
-  let overlayAction = $derived(imageOverlayAction(attachment));
+  let overlayAction = $derived(attachmentOverlayAction(attachment));
   let overlayActionLabel = $derived(
-    overlayAction?.kind === "download"
-      ? "Download image"
-      : attachment?.kind === "video"
-        ? "Open video folder"
-        : "Open image folder"
+    overlayAction?.kind === "download" ? "Download image" : "Open containing folder"
   );
   let overlayActionIcon = $derived<IconName>(
     overlayAction?.kind === "download" ? "download" : "folderOpen"
@@ -50,7 +46,7 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  function overlayActionKey(action: ImageOverlayAction | null): string {
+  function overlayActionKey(action: AttachmentOverlayAction | null): string {
     if (!action) return "none";
     return action.kind === "download"
       ? `download:${action.url}:${action.suggestedName}`
@@ -66,7 +62,7 @@
     actionSavedPath = null;
     try {
       if (action.kind === "open_folder") {
-        await openImageContainingFolder(action.path);
+        await openContainingFolder(action.path);
       } else {
         const result = await downloadImageFromUrl(action.url, action.suggestedName);
         actionSavedPath = result.path;

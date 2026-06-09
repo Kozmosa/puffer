@@ -2541,11 +2541,11 @@ export type DownloadImageFromUrlResult = {
   path: string;
 };
 
-export async function openImageContainingFolder(path: string): Promise<void> {
+export async function openContainingFolder(path: string): Promise<void> {
   if (!canInvokeTauri()) {
-    throw new Error("Opening an image folder requires the Tauri desktop shell.");
+    throw new Error("Opening a folder requires the Tauri desktop shell.");
   }
-  await invoke("open_image_containing_folder", { path });
+  await invoke("open_containing_folder", { path });
 }
 
 export async function downloadImageFromUrl(
