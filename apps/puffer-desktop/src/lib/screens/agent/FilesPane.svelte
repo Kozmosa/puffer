@@ -7,9 +7,11 @@
     buildFilePreview,
     hasRichFilePreview,
     hasRichFilePreviewPath,
+    isPlayableMediaPath,
     type FilePreview
   } from "./filePreview";
   import {
+    createFileMediaAccess,
     fsUnwatch,
     fsWatch,
     isDaemonReachable,
@@ -326,6 +328,10 @@
   async function reloadActiveFile() {
     const target = activePath;
     if (!target) return;
+    if (isPlayableMediaPath(target)) {
+      await activateFile(target, activeSize);
+      return;
+    }
     const wasDirty = isTabDirty(target);
     const expectedRoot = root;
     const expectedSessionId = sessionId;
@@ -754,6 +760,38 @@
     clearActivePreview();
     viewerMode = "preview";
     clearLspState();
+
+    if (isPlayableMediaPath(path)) {
+      activeFile = null;
+      draftContent = "";
+      activeLoading = false;
+      activePreviewLoading = true;
+      try {
+        const access = await createFileMediaAccess(path);
+        if (!isCurrentRead()) return;
+        if (access.state !== "available") {
+          activePreviewError =
+            access.state === "unsupported"
+              ? "This video format can't be previewed."
+              : "Video is unavailable.";
+          return;
+        }
+        activeSize = access.size;
+        activePreview = {
+          kind: "video",
+          src: access.url,
+          mimeType: access.mimeType,
+          name: fileName(path)
+        };
+      } catch (err) {
+        if (isCurrentRead()) {
+          activePreviewError = err instanceof Error ? err.message : String(err);
+        }
+      } finally {
+        if (isCurrentRead()) activePreviewLoading = false;
+      }
+      return;
+    }
 
     const cached = fileCache.get(path);
     if (cached) {
@@ -1508,6 +1546,16 @@
           <div class="file-preview image-preview" aria-label="Image preview">
             <img src={activePreview.src} alt={activePreview.alt} />
           </div>
+        {:else if activePreview && activePreview.kind === "video"}
+          <div class="file-preview video-preview" aria-label="Video preview">
+            <video
+              src={activePreview.src}
+              controls
+              playsinline
+              preload="metadata"
+              aria-label={activePreview.name}
+            ></video>
+          </div>
         {:else if activePreview && activePreview.kind === "docx"}
           <article class="file-preview office-preview" aria-label="DOCX preview">
             {#each activePreview.paragraphs as paragraph}
@@ -2058,6 +2106,22 @@
     background: color-mix(in oklab, var(--background) 96%, var(--muted));
   }
   .image-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  .video-preview {
+    height: 100%;
+    min-height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: #000;
+  }
+  .video-preview video {
     display: block;
     max-width: 100%;
     max-height: 100%;
