@@ -12,6 +12,7 @@ use crate::runtime::media::http_support::{
 };
 use crate::runtime::media::relaydance_video::{
     relaydance_video_request_from_parameters, RelaydanceVideoAdapter, RelaydanceVideoPollingConfig,
+    RELAYDANCE_VIDEO_ADAPTER,
 };
 use crate::runtime::media::replicate_video::{
     ReplicatePollingConfig, ReplicateVideoAdapter, ReplicateVideoRequest,
@@ -139,7 +140,7 @@ fn reclaim_relaydance_video_jobs(
     };
     for job in jobs {
         if job.status.is_terminal()
-            || job.adapter.as_deref() != Some("relaydance_video")
+            || job.adapter.as_deref() != Some(RELAYDANCE_VIDEO_ADAPTER)
             || job.provider_job_id.is_none()
         {
             continue;
@@ -149,7 +150,7 @@ fn reclaim_relaydance_video_jobs(
             auth_store,
             &job.provider_id,
             &job.model_id,
-            "relaydance_video",
+            RELAYDANCE_VIDEO_ADAPTER,
         ) else {
             continue;
         };

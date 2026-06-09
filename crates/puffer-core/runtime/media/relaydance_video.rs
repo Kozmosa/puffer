@@ -262,7 +262,7 @@ fn relaydance_video_url(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-const RELAYDANCE_VIDEO_ADAPTER: &str = "relaydance_video";
+pub(crate) const RELAYDANCE_VIDEO_ADAPTER: &str = "relaydance_video";
 
 pub(crate) type RelaydanceVideoPollingConfig = VideoPollingConfig;
 
@@ -356,7 +356,20 @@ where
         video_poll_url(&self.submit_url, job)
     }
 
+    /// Fetches and parses the current remote task state for a job. Any failure
+    /// (URL build, transport, or parse) surfaces as an `Err` for the caller to
+    /// treat as transient.
+    fn fetch_task(&self, job: &MediaJob) -> Result<RelaydanceVideoTask> {
+        let url = self.poll_url(job)?;
+        let response = self.transport.poll_task(&url, &self.api_token)?;
+        RelaydanceVideoTask::from_value(response, "poll video task")
+    }
+
     /// Polls a non-terminal job once and persists the resulting state.
+    ///
+    /// URL, transport, and parse failures are treated as transient: the error
+    /// is recorded on the job but its status stays non-terminal, so the polling
+    /// loop retries within its attempt budget instead of aborting the job.
     pub(crate) fn poll(
         &self,
         service: &MediaGenerationService,
@@ -366,48 +379,17 @@ where
         if job.status.is_terminal() {
             return Ok(job);
         }
-        let task_id = job.provider_job_id.clone();
-        let diagnose = |error: anyhow::Error| {
-            error.context(format!(
-                "provider={} adapter={RELAYDANCE_VIDEO_ADAPTER} task={}",
-                self.provider_id,
-                task_id.as_deref().unwrap_or("unknown")
-            ))
-        };
-        let url = match self.poll_url(&job) {
-            Ok(url) => url,
+        match self.fetch_task(&job) {
+            Ok(task) => self.apply_task(service, job, task, now_ms),
             Err(error) => {
-                return super::video_jobs::record_transient_poll_error(
-                    service,
-                    job,
-                    diagnose(error),
-                    now_ms,
-                )
+                let diagnostic = error.context(format!(
+                    "provider={} adapter={RELAYDANCE_VIDEO_ADAPTER} task={}",
+                    self.provider_id,
+                    job.provider_job_id.as_deref().unwrap_or("unknown")
+                ));
+                super::video_jobs::record_transient_poll_error(service, job, diagnostic, now_ms)
             }
-        };
-        let response = match self.transport.poll_task(&url, &self.api_token) {
-            Ok(response) => response,
-            Err(error) => {
-                return super::video_jobs::record_transient_poll_error(
-                    service,
-                    job,
-                    diagnose(error),
-                    now_ms,
-                )
-            }
-        };
-        let task = match RelaydanceVideoTask::from_value(response, "poll video task") {
-            Ok(task) => task,
-            Err(error) => {
-                return super::video_jobs::record_transient_poll_error(
-                    service,
-                    job,
-                    diagnose(error),
-                    now_ms,
-                )
-            }
-        };
-        self.apply_task(service, job, task, now_ms)
+        }
     }
 
     /// Polls until the job reaches a terminal status.
