@@ -5,6 +5,7 @@ use super::video_jobs::{
 };
 use super::{MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
 use anyhow::{anyhow, bail, Context, Result};
+use puffer_provider_registry::MediaParameterWireType;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -13,10 +14,11 @@ use uuid::Uuid;
 
 const BYTEPLUS_VIDEO_ADAPTER: &str = "byteplus_video";
 
+#[derive(Debug)]
 pub(crate) struct BytePlusVideoRequest {
     pub(crate) model: String,
     pub(crate) prompt: String,
-    pub(crate) params: Vec<(String, String)>,
+    pub(crate) params: Vec<(String, Value)>,
 }
 
 impl BytePlusVideoRequest {
@@ -34,10 +36,7 @@ impl BytePlusVideoRequest {
             ]),
         );
         for (field, value) in &self.params {
-            body.insert(
-                field.trim().to_string(),
-                byteplus_request_value(field, value),
-            );
+            body.insert(field.trim().to_string(), value.clone());
         }
         Value::Object(body)
     }
@@ -53,14 +52,18 @@ impl BytePlusVideoRequest {
     }
 }
 
-fn byteplus_request_value(field: &str, value: &str) -> Value {
+fn byteplus_request_value(parameter: &MediaCapabilityParameter, value: &str) -> Result<Value> {
     let value = value.trim();
-    match field.trim() {
-        "duration" => value
-            .parse::<u32>()
-            .map(Value::from)
-            .unwrap_or_else(|_| json!(value)),
-        _ => json!(value),
+    match parameter.wire_type {
+        MediaParameterWireType::String => Ok(json!(value)),
+        MediaParameterWireType::Number => {
+            value.parse::<u64>().map(Value::from).with_context(|| {
+                format!(
+                    "video generation parameter {}={} must be a number",
+                    parameter.name, value
+                )
+            })
+        }
     }
 }
 
@@ -80,7 +83,7 @@ pub(crate) fn byteplus_video_request_from_parameters(
             .get(&parameter.name)
             .cloned()
             .unwrap_or_else(|| parameter.default.clone());
-        params.push((field, value));
+        params.push((field, byteplus_request_value(parameter, &value)?));
     }
     let request = BytePlusVideoRequest {
         model: model_id,
@@ -421,6 +424,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puffer_provider_registry::MediaParameterWireType;
     use serde_json::json;
     use std::cell::RefCell;
 
@@ -482,14 +486,58 @@ mod tests {
             model: "dreamina-seedance-2-0-fast-260128".to_string(),
             prompt: "a cat".to_string(),
             params: vec![
-                ("duration".to_string(), "5".to_string()),
-                ("ratio".to_string(), "16:9".to_string()),
+                ("duration".to_string(), json!(5)),
+                ("ratio".to_string(), json!("16:9")),
             ],
         };
         let body = request.request_body();
 
         assert_eq!(body["duration"], json!(5));
         assert_eq!(body["ratio"], json!("16:9"));
+    }
+
+    #[test]
+    fn byteplus_request_body_uses_parameter_wire_type_for_numbers() {
+        let request = byteplus_video_request_from_parameters(
+            "dreamina-seedance-2-0-260128".to_string(),
+            "animate a calm lake".to_string(),
+            &[MediaCapabilityParameter {
+                name: "duration_seconds".to_string(),
+                label: "Duration".to_string(),
+                values: vec!["4".to_string(), "5".to_string()],
+                default: "5".to_string(),
+                request_field: Some("duration".to_string()),
+                wire_type: MediaParameterWireType::Number,
+            }],
+            &BTreeMap::from([("duration_seconds".to_string(), "5".to_string())]),
+        )
+        .expect("request");
+
+        let body = request.request_body();
+
+        assert_eq!(body["duration"], json!(5));
+    }
+
+    #[test]
+    fn byteplus_rejects_invalid_number_wire_value_before_http() {
+        let error = byteplus_video_request_from_parameters(
+            "dreamina-seedance-2-0-260128".to_string(),
+            "animate a calm lake".to_string(),
+            &[MediaCapabilityParameter {
+                name: "duration_seconds".to_string(),
+                label: "Duration".to_string(),
+                values: vec!["fast".to_string()],
+                default: "fast".to_string(),
+                request_field: Some("duration".to_string()),
+                wire_type: MediaParameterWireType::Number,
+            }],
+            &BTreeMap::new(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("duration_seconds"));
+        assert!(error.contains("number"));
     }
 
     #[test]

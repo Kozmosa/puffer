@@ -397,6 +397,7 @@ fn parameter_from_descriptor(parameter: &MediaParameterSpec) -> MediaCapabilityP
         values: parameter.values.clone(),
         default: parameter.default.clone(),
         request_field: parameter.request_field.clone(),
+        wire_type: parameter.wire_type,
     }
 }
 
@@ -631,6 +632,7 @@ mod tests {
                 values: vec!["1024x1024".to_string()],
                 default: "1024x1024".to_string(),
                 request_field: Some("size".to_string()),
+                wire_type: MediaParameterWireType::String,
             }
         );
     }

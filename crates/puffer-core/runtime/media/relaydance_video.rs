@@ -474,6 +474,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puffer_provider_registry::MediaParameterWireType;
     use std::time::Duration;
 
     fn parameter(name: &str, request_field: &str, default: &str) -> MediaCapabilityParameter {
@@ -483,6 +484,7 @@ mod tests {
             values: vec![default.to_string()],
             default: default.to_string(),
             request_field: Some(request_field.to_string()),
+            wire_type: MediaParameterWireType::String,
         }
     }
 

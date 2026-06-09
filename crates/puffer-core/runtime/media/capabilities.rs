@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use puffer_provider_registry::MediaParameterWireType;
+
 /// Identifies the broad media asset type a capability or job handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,4 +39,5 @@ pub(crate) struct MediaCapabilityParameter {
     pub(crate) values: Vec<String>,
     pub(crate) default: String,
     pub(crate) request_field: Option<String>,
+    pub(crate) wire_type: MediaParameterWireType,
 }
