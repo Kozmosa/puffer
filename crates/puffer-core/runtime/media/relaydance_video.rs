@@ -481,6 +481,40 @@ where
 }
 
 #[cfg(test)]
+pub(crate) mod tests_support {
+    use super::RelaydanceVideoTransport;
+    use anyhow::Result;
+    use serde_json::Value;
+    use std::cell::RefCell;
+
+    /// Scripted transport returning canned submit/poll responses in tests.
+    pub(crate) struct ScriptedTransport {
+        pub(crate) submit: Value,
+        pub(crate) polls: RefCell<Vec<Value>>,
+    }
+
+    impl RelaydanceVideoTransport for ScriptedTransport {
+        fn submit_task(&self, _url: &str, _token: &str, _body: &Value) -> Result<Value> {
+            Ok(self.submit.clone())
+        }
+        fn poll_task(&self, _url: &str, _token: &str) -> Result<Value> {
+            Ok(self.polls.borrow_mut().remove(0))
+        }
+        fn download_bytes(&self, _url: &str) -> Result<Vec<u8>> {
+            Ok(b"MP4BYTES".to_vec())
+        }
+    }
+
+    /// Builds a scripted transport from a submit response and ordered polls.
+    pub(crate) fn scripted(submit: Value, polls: Vec<Value>) -> ScriptedTransport {
+        ScriptedTransport {
+            submit,
+            polls: RefCell::new(polls),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use puffer_provider_registry::MediaParameterWireType;
@@ -671,24 +705,8 @@ mod tests {
     }
 
     use super::super::MediaGenerationService;
+    use super::tests_support::ScriptedTransport;
     use std::cell::RefCell;
-
-    struct ScriptedTransport {
-        submit: Value,
-        polls: RefCell<Vec<Value>>,
-    }
-
-    impl RelaydanceVideoTransport for ScriptedTransport {
-        fn submit_task(&self, _url: &str, _token: &str, _body: &Value) -> Result<Value> {
-            Ok(self.submit.clone())
-        }
-        fn poll_task(&self, _url: &str, _token: &str) -> Result<Value> {
-            Ok(self.polls.borrow_mut().remove(0))
-        }
-        fn download_bytes(&self, _url: &str) -> Result<Vec<u8>> {
-            Ok(b"MP4BYTES".to_vec())
-        }
-    }
 
     #[test]
     fn submit_then_poll_downloads_video_artifact() {
