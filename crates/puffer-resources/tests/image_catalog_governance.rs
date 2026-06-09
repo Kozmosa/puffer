@@ -1,5 +1,6 @@
 use puffer_provider_registry::{
-    MediaBatchMode, MediaExecutionKind, MediaModelDescriptor, MediaOperation, ProviderDescriptor,
+    MediaBatchMode, MediaDiscoveryKind, MediaExecutionKind, MediaModelDescriptor, MediaOperation,
+    ProviderDescriptor,
 };
 use puffer_resources::ProviderPack;
 use std::{
@@ -125,6 +126,7 @@ const SEEDANCE_VIDEO_DURATIONS: &[&str] = &[
 const SEEDANCE_VIDEO_RATIOS: &[&str] =
     &["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"];
 const SEEDANCE_VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p"];
+const SEEDANCE_FAST_VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p"];
 
 fn provider_descriptor(provider_id: &str, yaml: &str) -> ProviderDescriptor {
     let pack: ProviderPack = serde_yaml::from_str(yaml)
@@ -311,41 +313,75 @@ fn relaydance_declares_executable_video_descriptor() {
         .as_ref()
         .expect("relaydance video execution descriptor");
 
+    assert_eq!(
+        video.discovery.as_ref().map(|discovery| discovery.adapter),
+        Some(MediaDiscoveryKind::Static)
+    );
     assert_eq!(execution.adapter, MediaExecutionKind::RelaydanceVideo);
     assert_eq!(execution.path, "/v1/video/generations");
 
-    let model = video
+    let models_by_id = video
         .models
         .iter()
-        .find(|model| model.id == "doubao-seedance-2-0-720p")
-        .expect("relaydance should include Seedance 2.0");
-    assert_eq!(model.display_name.as_deref(), Some("Seedance 2.0"));
-    assert_eq!(model.operations, vec![MediaOperation::Generate]);
+        .map(|model| (model.id.as_str(), model))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        models_by_id.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "doubao-seedance-2-0-720p",
+            "doubao-seedance-2-0-1080p",
+            "doubao-seedance-2-0-fast-260128",
+        ])
+    );
 
-    assert_select_parameter(
-        model,
-        "duration",
-        "Duration",
-        SEEDANCE_VIDEO_DURATIONS,
-        "5",
-        "seconds",
-    );
-    assert_select_parameter(
-        model,
-        "resolution",
-        "Resolution",
-        SEEDANCE_VIDEO_RESOLUTIONS,
-        "720p",
-        "metadata.resolution",
-    );
-    assert_select_parameter(
-        model,
-        "ratio",
-        "Aspect ratio",
-        SEEDANCE_VIDEO_RATIOS,
-        "16:9",
-        "metadata.ratio",
-    );
+    let expected = [
+        (
+            "doubao-seedance-2-0-720p",
+            "Seedance 2.0 720p",
+            &["720p"][..],
+        ),
+        (
+            "doubao-seedance-2-0-1080p",
+            "Seedance 2.0 1080p",
+            &["1080p"][..],
+        ),
+        (
+            "doubao-seedance-2-0-fast-260128",
+            "Seedance 2.0 Fast",
+            SEEDANCE_FAST_VIDEO_RESOLUTIONS,
+        ),
+    ];
+    for (model_id, display_name, resolutions) in expected {
+        let model = models_by_id
+            .get(model_id)
+            .unwrap_or_else(|| panic!("relaydance should include {model_id}"));
+        assert_eq!(model.display_name.as_deref(), Some(display_name));
+        assert_eq!(model.operations, vec![MediaOperation::Generate]);
+        assert_select_parameter(
+            model,
+            "duration",
+            "Duration",
+            SEEDANCE_VIDEO_DURATIONS,
+            "5",
+            "seconds",
+        );
+        assert_select_parameter(
+            model,
+            "resolution",
+            "Resolution",
+            resolutions,
+            resolutions.last().expect("resolution default"),
+            "metadata.resolution",
+        );
+        assert_select_parameter(
+            model,
+            "ratio",
+            "Aspect ratio",
+            SEEDANCE_VIDEO_RATIOS,
+            "16:9",
+            "metadata.ratio",
+        );
+    }
 }
 
 #[test]
@@ -367,44 +403,69 @@ fn byteplus_declares_executable_video_descriptor() {
         .as_ref()
         .expect("byteplus video execution descriptor");
 
+    assert_eq!(
+        video.discovery.as_ref().map(|discovery| discovery.adapter),
+        Some(MediaDiscoveryKind::Static)
+    );
     assert_eq!(execution.adapter, MediaExecutionKind::BytePlusVideo);
     assert_eq!(execution.path, "/contents/generations/tasks");
 
-    let model = video
+    let models_by_id = video
         .models
         .iter()
-        .find(|model| model.id == "dreamina-seedance-2-0-260128")
-        .expect("byteplus should include Dreamina Seedance 2.0");
+        .map(|model| (model.id.as_str(), model))
+        .collect::<BTreeMap<_, _>>();
     assert_eq!(
-        model.display_name.as_deref(),
-        Some("Dreamina Seedance 2.0")
+        models_by_id.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "dreamina-seedance-2-0-260128",
+            "dreamina-seedance-2-0-fast-260128",
+        ])
     );
-    assert_eq!(model.operations, vec![MediaOperation::Generate]);
 
-    assert_select_parameter(
-        model,
-        "duration",
-        "Duration",
-        SEEDANCE_VIDEO_DURATIONS,
-        "5",
-        "duration",
-    );
-    assert_select_parameter(
-        model,
-        "ratio",
-        "Aspect ratio",
-        SEEDANCE_VIDEO_RATIOS,
-        "16:9",
-        "ratio",
-    );
-    assert_select_parameter(
-        model,
-        "resolution",
-        "Resolution",
-        SEEDANCE_VIDEO_RESOLUTIONS,
-        "720p",
-        "resolution",
-    );
+    let expected = [
+        (
+            "dreamina-seedance-2-0-260128",
+            "Dreamina Seedance 2.0",
+            SEEDANCE_VIDEO_RESOLUTIONS,
+        ),
+        (
+            "dreamina-seedance-2-0-fast-260128",
+            "Dreamina Seedance 2.0 Fast",
+            SEEDANCE_FAST_VIDEO_RESOLUTIONS,
+        ),
+    ];
+    for (model_id, display_name, resolutions) in expected {
+        let model = models_by_id
+            .get(model_id)
+            .unwrap_or_else(|| panic!("byteplus should include {model_id}"));
+        assert_eq!(model.display_name.as_deref(), Some(display_name));
+        assert_eq!(model.operations, vec![MediaOperation::Generate]);
+        assert_select_parameter(
+            model,
+            "duration",
+            "Duration",
+            SEEDANCE_VIDEO_DURATIONS,
+            "5",
+            "duration",
+        );
+        assert_select_parameter(
+            model,
+            "ratio",
+            "Aspect ratio",
+            SEEDANCE_VIDEO_RATIOS,
+            "adaptive",
+            "ratio",
+        );
+        assert_select_parameter(
+            model,
+            "resolution",
+            "Resolution",
+            resolutions,
+            "720p",
+            "resolution",
+        );
+    }
 }
 
 #[test]

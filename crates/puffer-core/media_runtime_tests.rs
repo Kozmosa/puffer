@@ -5,6 +5,7 @@ use puffer_provider_registry::{
     MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
     ProviderMediaDescriptor, ProviderRegistry,
 };
+use puffer_resources::ProviderPack;
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -223,6 +224,12 @@ fn auth_store_for(provider_id: &str) -> AuthStore {
     let mut auth = AuthStore::default();
     auth.set_api_key(provider_id, "sk-test");
     auth
+}
+
+fn bundled_provider(provider_id: &str, yaml: &str) -> ProviderDescriptor {
+    let pack: ProviderPack = serde_yaml::from_str(yaml).expect("provider yaml parses");
+    assert_eq!(pack.id, provider_id);
+    pack.into_descriptor()
 }
 
 fn replicate_video_runtime_fixture() -> (
@@ -495,6 +502,77 @@ fn generate_exact_image_with_cache_rejects_discovered_model_missing_from_cache_b
         error.to_string(),
         "selected image model unavailable: openrouter/openrouter/image-chat via chat_image_output"
     );
+}
+
+#[test]
+fn list_video_capabilities_exposes_multiple_static_seedance_models() {
+    let mut registry = ProviderRegistry::new();
+    registry.register_many(vec![
+        bundled_provider(
+            "byteplus",
+            include_str!("../../resources/providers/byteplus.yaml"),
+        ),
+        bundled_provider(
+            "relaydance",
+            include_str!("../../resources/providers/relaydance.yaml"),
+        ),
+    ]);
+    let mut auth = AuthStore::default();
+    auth.set_api_key("byteplus", "sk-test");
+    auth.set_api_key("relaydance", "sk-test");
+
+    let capabilities = list_exact_media_capabilities_with_cache(
+        &registry,
+        &auth,
+        Some("video"),
+        &ExactMediaDiscoveryCache::empty(),
+    );
+    let ids = capabilities
+        .iter()
+        .map(|capability| capability.model_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        ids,
+        std::collections::BTreeSet::from([
+            "dreamina-seedance-2-0-260128",
+            "dreamina-seedance-2-0-fast-260128",
+            "doubao-seedance-2-0-720p",
+            "doubao-seedance-2-0-1080p",
+            "doubao-seedance-2-0-fast-260128",
+        ])
+    );
+    assert!(capabilities.iter().all(|capability| {
+        capability.kind == "video"
+            && capability.operation == "generate"
+            && capability.status == "available"
+            && capability.source == "static"
+    }));
+
+    let byteplus_fast = capabilities
+        .iter()
+        .find(|capability| capability.model_id == "dreamina-seedance-2-0-fast-260128")
+        .expect("byteplus fast model");
+    let fast_resolution = byteplus_fast
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name == "resolution")
+        .expect("fast resolution");
+    assert_eq!(
+        fast_resolution.values,
+        vec!["480p".to_string(), "720p".to_string()]
+    );
+
+    let relaydance_1080 = capabilities
+        .iter()
+        .find(|capability| capability.model_id == "doubao-seedance-2-0-1080p")
+        .expect("relaydance 1080p model");
+    let relaydance_resolution = relaydance_1080
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name == "resolution")
+        .expect("relaydance resolution");
+    assert_eq!(relaydance_resolution.values, vec!["1080p".to_string()]);
 }
 
 #[test]

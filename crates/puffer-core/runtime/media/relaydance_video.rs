@@ -497,7 +497,7 @@ mod tests {
         selected.insert("resolution".to_string(), "1080p".to_string());
 
         let request = relaydance_video_request_from_parameters(
-            "m".to_string(),
+            "doubao-seedance-2-0-1080p".to_string(),
             "a cat".to_string(),
             &params,
             &selected,
@@ -505,7 +505,7 @@ mod tests {
         .expect("request");
 
         let body = request.request_body();
-        assert_eq!(body["model"], json!("m"));
+        assert_eq!(body["model"], json!("doubao-seedance-2-0-1080p"));
         assert_eq!(body["prompt"], json!("a cat"));
         assert_eq!(body["n"], json!(1));
         assert_eq!(body["seconds"], json!("5"));

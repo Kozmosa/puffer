@@ -75,6 +75,33 @@ function imageCapability(input: {
   };
 }
 
+function videoCapability(input: {
+  providerId: string;
+  providerDisplayName: string;
+  modelId: string;
+  modelDisplayName: string;
+  adapter: string;
+  parameters: FakeMediaCapabilityParameter[];
+}): FakeMediaCapability {
+  return {
+    providerId: input.providerId,
+    providerDisplayName: input.providerDisplayName,
+    modelId: input.modelId,
+    modelDisplayName: input.modelDisplayName,
+    kind: "video",
+    operation: "generate",
+    adapter: input.adapter,
+    parameters: input.parameters,
+    defaults: Object.fromEntries(
+      input.parameters.map((parameter) => [parameter.name, parameter.default])
+    ),
+    status: "available",
+    source: "fake-daemon",
+    reason: null,
+    checkedAtMs: baseTime
+  };
+}
+
 function singleOptionImageCapability(): FakeMediaCapability {
   return imageCapability({
     providerId: "openai",
@@ -113,23 +140,14 @@ function singleOptionVideoCapability(): FakeMediaCapability {
       defaultValue: "8"
     })
   ];
-  return {
+  return videoCapability({
     providerId: "runway",
     providerDisplayName: "Runway",
     modelId: "gen-4",
     modelDisplayName: "Gen-4",
-    kind: "video",
-    operation: "generate",
     adapter: "replicate_video",
-    parameters,
-    defaults: Object.fromEntries(
-      parameters.map((parameter) => [parameter.name, parameter.default])
-    ),
-    status: "available",
-    source: "fake-daemon",
-    reason: null,
-    checkedAtMs: baseTime
-  };
+    parameters
+  });
 }
 
 function configurableVideoCapability(): FakeMediaCapability {
@@ -147,23 +165,14 @@ function configurableVideoCapability(): FakeMediaCapability {
       defaultValue: "8"
     })
   ];
-  return {
+  return videoCapability({
     providerId: "runway",
     providerDisplayName: "Runway",
     modelId: "gen-4",
     modelDisplayName: "Gen-4",
-    kind: "video",
-    operation: "generate",
     adapter: "replicate_video",
-    parameters,
-    defaults: Object.fromEntries(
-      parameters.map((parameter) => [parameter.name, parameter.default])
-    ),
-    status: "available",
-    source: "fake-daemon",
-    reason: null,
-    checkedAtMs: baseTime
-  };
+    parameters
+  });
 }
 
 function configurableVideoCapabilityWithProviderOptions(): FakeMediaCapability {
@@ -190,23 +199,52 @@ function configurableVideoCapabilityWithProviderOptions(): FakeMediaCapability {
       requestField: "metadata.resolution"
     })
   ];
-  return {
+  return videoCapability({
     providerId: "byteplus",
     providerDisplayName: "BytePlus",
     modelId: "dreamina-seedance-2-0-260128",
     modelDisplayName: "Dreamina Seedance 2.0",
-    kind: "video",
-    operation: "generate",
     adapter: "byteplus_video",
-    parameters,
-    defaults: Object.fromEntries(
-      parameters.map((parameter) => [parameter.name, parameter.default])
-    ),
-    status: "available",
-    source: "fake-daemon",
-    reason: null,
-    checkedAtMs: baseTime
-  };
+    parameters
+  });
+}
+
+function relaydanceVideoCapability(input: {
+  modelId: string;
+  modelDisplayName: string;
+  resolution: string;
+}): FakeMediaCapability {
+  const parameters = [
+    mediaParameter({
+      name: "duration",
+      label: "Duration",
+      values: ["5", "8"],
+      defaultValue: "5",
+      requestField: "seconds"
+    }),
+    mediaParameter({
+      name: "resolution",
+      label: "Resolution",
+      values: [input.resolution],
+      defaultValue: input.resolution,
+      requestField: "metadata.resolution"
+    }),
+    mediaParameter({
+      name: "ratio",
+      label: "Aspect ratio",
+      values: ["16:9", "9:16"],
+      defaultValue: "16:9",
+      requestField: "metadata.ratio"
+    })
+  ];
+  return videoCapability({
+    providerId: "relaydance",
+    providerDisplayName: "Relaydance",
+    modelId: input.modelId,
+    modelDisplayName: input.modelDisplayName,
+    adapter: "relaydance_video",
+    parameters
+  });
 }
 
 function generatedAttachment(jobId: string, artifactId: string, index: number): MessageAttachment {
@@ -1053,6 +1091,87 @@ test("composer video generation settings renders saved single choices as read-on
         parameters: {
           aspect_ratio: "16:9",
           duration: "8"
+        }
+      }
+    }
+  });
+});
+
+test("composer video generation settings shows multiple models for one provider", async ({
+  page
+}) => {
+  const daemon = new FakeDaemon({
+    mediaCapabilities: [
+      relaydanceVideoCapability({
+        modelId: "doubao-seedance-2-0-720p",
+        modelDisplayName: "Seedance 2.0 720p",
+        resolution: "720p"
+      }),
+      relaydanceVideoCapability({
+        modelId: "doubao-seedance-2-0-1080p",
+        modelDisplayName: "Seedance 2.0 1080p",
+        resolution: "1080p"
+      })
+    ],
+    sessions: [
+      {
+        sessionId: "session-video-settings-multi-model",
+        displayName: "Multi-model video settings",
+        title: "Multi-model video settings",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 1,
+        timeline: [
+          {
+            kind: "assistant_message",
+            id: "video-settings-multi-model-seed",
+            text: "Open video settings with multiple models.",
+            createdAtMs: baseTime - 30_000
+          }
+        ]
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+  await openSession(page, /Multi-model video settings/);
+
+  await page.getByRole("button", { name: "Add content" }).click();
+  await page.getByRole("menuitem", { name: "Video generation settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Video generation settings" });
+  await expect(dialog).toBeVisible();
+  await daemon.waitForRequest(
+    "list_media_capabilities",
+    (request) => request.params.kind === "video"
+  );
+  await expectReadOnlyField(dialog, "Provider", "Relaydance");
+  await expect(dialog.getByLabel("Model")).toBeVisible();
+  await expect(dialog.getByRole("combobox")).toHaveCount(3);
+  await expectReadOnlyField(dialog, "Resolution", "720p");
+
+  await dialog.getByLabel("Model").selectOption({ label: "Seedance 2.0 1080p" });
+  await expectReadOnlyField(dialog, "Resolution", "1080p");
+
+  await dialog.getByRole("button", { name: "Save" }).click();
+  const update = await daemon.waitForRequest(
+    "update_config",
+    (request) => "media" in request.params
+  );
+  expect(update.params).toEqual({
+    media: {
+      image: null,
+      video: {
+        providerId: "relaydance",
+        modelId: "doubao-seedance-2-0-1080p",
+        operation: "generate",
+        adapter: "relaydance_video",
+        parameters: {
+          duration: "5",
+          resolution: "1080p",
+          ratio: "16:9"
         }
       }
     }

@@ -452,12 +452,12 @@ mod tests {
     #[test]
     fn byteplus_request_body_contains_model_and_prompt() {
         let request = BytePlusVideoRequest {
-            model: "dreamina-seedance-2-0-260128".to_string(),
+            model: "dreamina-seedance-2-0-fast-260128".to_string(),
             prompt: "a cat".to_string(),
             params: vec![],
         };
         let body = request.request_body();
-        assert_eq!(body["model"], json!("dreamina-seedance-2-0-260128"));
+        assert_eq!(body["model"], json!("dreamina-seedance-2-0-fast-260128"));
         assert_eq!(body["content"][0]["type"], json!("text"));
         assert_eq!(body["content"][0]["text"], json!("a cat"));
     }
