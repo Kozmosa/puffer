@@ -34,7 +34,10 @@ impl BytePlusVideoRequest {
             ]),
         );
         for (field, value) in &self.params {
-            body.insert(field.trim().to_string(), json!(value.trim()));
+            body.insert(
+                field.trim().to_string(),
+                byteplus_request_value(field, value),
+            );
         }
         Value::Object(body)
     }
@@ -47,6 +50,17 @@ impl BytePlusVideoRequest {
             bail!("video prompt is required");
         }
         Ok(())
+    }
+}
+
+fn byteplus_request_value(field: &str, value: &str) -> Value {
+    let value = value.trim();
+    match field.trim() {
+        "duration" => value
+            .parse::<u32>()
+            .map(Value::from)
+            .unwrap_or_else(|_| json!(value)),
+        _ => json!(value),
     }
 }
 
@@ -460,6 +474,22 @@ mod tests {
         assert_eq!(body["model"], json!("dreamina-seedance-2-0-fast-260128"));
         assert_eq!(body["content"][0]["type"], json!("text"));
         assert_eq!(body["content"][0]["text"], json!("a cat"));
+    }
+
+    #[test]
+    fn byteplus_request_body_encodes_duration_as_number() {
+        let request = BytePlusVideoRequest {
+            model: "dreamina-seedance-2-0-fast-260128".to_string(),
+            prompt: "a cat".to_string(),
+            params: vec![
+                ("duration".to_string(), "5".to_string()),
+                ("ratio".to_string(), "16:9".to_string()),
+            ],
+        };
+        let body = request.request_body();
+
+        assert_eq!(body["duration"], json!(5));
+        assert_eq!(body["ratio"], json!("16:9"));
     }
 
     #[test]

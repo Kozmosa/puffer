@@ -24,7 +24,10 @@ input_schema:
       type: object
       description: Optional scalar video parameter overrides.
       additionalProperties:
-        type: string
+        oneOf:
+          - type: string
+          - type: number
+          - type: boolean
     purpose:
       type: string
       description: Optional caller purpose preserved in result metadata.

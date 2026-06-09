@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use puffer_config::MediaGenerationConfig;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,7 +26,7 @@ pub(crate) struct VideoGenerationMediaContext<'a> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VideoGenerationInput {
     prompt: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_scalar_parameters")]
     parameters: BTreeMap<String, String>,
     #[serde(default)]
     purpose: Option<String>,
@@ -88,6 +88,32 @@ fn build_video_request(
         parameters,
         purpose: input.purpose,
     })
+}
+
+fn deserialize_scalar_parameters<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = BTreeMap::<String, Value>::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|(key, value)| scalar_parameter_value(&key, value).map(|value| (key, value)))
+        .collect()
+}
+
+fn scalar_parameter_value<E>(key: &str, value: Value) -> std::result::Result<String, E>
+where
+    E: serde::de::Error,
+{
+    match value {
+        Value::String(value) => Ok(value),
+        Value::Number(value) => Ok(value.to_string()),
+        Value::Bool(value) => Ok(value.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => Err(E::custom(format!(
+            "VideoGeneration parameters.{key} must be a scalar string, number, or boolean"
+        ))),
+    }
 }
 
 fn exact_media_request(request: &VideoRequest) -> ExactMediaGenerationRequest {
@@ -511,6 +537,46 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("referenceImage"));
+    }
+
+    #[test]
+    fn defaults_missing_video_generation_parameters_to_empty_map() {
+        let input = serde_json::from_value::<VideoGenerationInput>(json!({
+            "prompt": "make a ship launch video"
+        }))
+        .unwrap();
+
+        assert!(input.parameters.is_empty());
+    }
+
+    #[test]
+    fn accepts_scalar_video_generation_parameter_values() {
+        let input = serde_json::from_value::<VideoGenerationInput>(json!({
+            "prompt": "make a ship launch video",
+            "parameters": {
+                "duration": 5,
+                "ratio": "16:9",
+                "camera_fixed": false
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(input.parameters["duration"], "5");
+        assert_eq!(input.parameters["ratio"], "16:9");
+        assert_eq!(input.parameters["camera_fixed"], "false");
+    }
+
+    #[test]
+    fn rejects_non_scalar_video_generation_parameter_values() {
+        let error = serde_json::from_value::<VideoGenerationInput>(json!({
+            "prompt": "make a ship launch video",
+            "parameters": {
+                "duration": { "seconds": 5 }
+            }
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("parameters.duration"));
     }
 
     #[test]
