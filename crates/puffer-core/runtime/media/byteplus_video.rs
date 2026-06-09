@@ -149,15 +149,8 @@ impl BytePlusVideoTask {
         })
     }
 
-    fn media_status(&self) -> Result<MediaJobStatus> {
-        match self.status.trim().to_ascii_lowercase().as_str() {
-            "queued" | "pending" => Ok(MediaJobStatus::Queued),
-            "in_progress" | "running" | "processing" => Ok(MediaJobStatus::Running),
-            "completed" | "succeeded" | "success" => Ok(MediaJobStatus::Succeeded),
-            "failed" | "error" | "expired" => Ok(MediaJobStatus::Failed),
-            "cancelled" | "canceled" => Ok(MediaJobStatus::Canceled),
-            other => bail!("unknown video task status `{other}`"),
-        }
+    fn media_status(&self) -> MediaJobStatus {
+        super::video_jobs::map_video_task_status(&self.status)
     }
 }
 
@@ -379,7 +372,7 @@ where
         task: BytePlusVideoTask,
         now_ms: u64,
     ) -> Result<MediaJob> {
-        let status = task.media_status()?;
+        let status = task.media_status();
         match status {
             MediaJobStatus::Queued | MediaJobStatus::Running => {
                 job.transition(status, now_ms)?;
