@@ -190,16 +190,10 @@ impl RelaydanceVideoTask {
         })
     }
 
-    /// Maps the Relaydance status string onto a media job status.
-    pub(crate) fn media_status(&self) -> Result<MediaJobStatus> {
-        match self.status.trim().to_ascii_lowercase().as_str() {
-            "queued" | "pending" => Ok(MediaJobStatus::Queued),
-            "in_progress" | "running" | "processing" => Ok(MediaJobStatus::Running),
-            "completed" | "succeeded" | "success" => Ok(MediaJobStatus::Succeeded),
-            "failed" | "error" | "expired" => Ok(MediaJobStatus::Failed),
-            "cancelled" | "canceled" => Ok(MediaJobStatus::Canceled),
-            other => bail!("unknown video task status `{other}`"),
-        }
+    /// Maps the Relaydance status string onto a media job status (infallible;
+    /// unknown statuses stay non-terminal — see `map_video_task_status`).
+    pub(crate) fn media_status(&self) -> MediaJobStatus {
+        super::video_jobs::map_video_task_status(&self.status)
     }
 }
 
@@ -230,6 +224,7 @@ fn relaydance_error_message(value: &serde_json::Value) -> Option<String> {
     value
         .get("error")
         .and_then(|error| error.get("message"))
+        .or_else(|| value.get("fail_reason"))
         .or_else(|| value.get("message"))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -423,7 +418,8 @@ where
         task: RelaydanceVideoTask,
         now_ms: u64,
     ) -> Result<MediaJob> {
-        let status = task.media_status()?;
+        let status = task.media_status();
+        job.remote_status = Some(task.status.clone());
         match status {
             MediaJobStatus::Queued | MediaJobStatus::Running => {
                 job.transition(status, now_ms)?;
@@ -624,7 +620,7 @@ mod tests {
         });
         let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
         assert_eq!(task.id, "vid-1");
-        assert_eq!(task.media_status().unwrap(), MediaJobStatus::Succeeded);
+        assert_eq!(task.media_status(), MediaJobStatus::Succeeded);
         assert_eq!(
             task.video_url.as_deref(),
             Some("https://cdn.example.com/v.mp4")
@@ -639,19 +635,26 @@ mod tests {
             "error": { "code": "x", "message": "content blocked" }
         });
         let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
-        assert_eq!(task.media_status().unwrap(), MediaJobStatus::Failed);
+        assert_eq!(task.media_status(), MediaJobStatus::Failed);
         assert_eq!(task.error.as_deref(), Some("content blocked"));
     }
 
     #[test]
-    fn rejects_unknown_status() {
+    fn unknown_status_maps_to_non_terminal() {
         let value = json!({ "id": "v", "status": "weird" });
         let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
-        assert!(task
-            .media_status()
-            .unwrap_err()
-            .to_string()
-            .contains("unknown video task status"));
+        assert_eq!(task.media_status(), MediaJobStatus::Running);
+        assert!(!task.media_status().is_terminal());
+    }
+
+    #[test]
+    fn parses_failure_status_with_fail_reason() {
+        let value = json!({
+            "data": { "id": "v", "status": "FAILURE", "fail_reason": "content blocked upstream" }
+        });
+        let task = RelaydanceVideoTask::from_value(value, "poll video task").expect("task");
+        assert_eq!(task.media_status(), MediaJobStatus::Failed);
+        assert_eq!(task.error.as_deref(), Some("content blocked upstream"));
     }
 
     use super::super::MediaGenerationService;
