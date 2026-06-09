@@ -358,8 +358,8 @@ mod tests {
     use puffer_provider_registry::{
         AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode, MediaExecutionDescriptor,
         MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
-        MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
-        ProviderRegistry,
+        MediaParameterSpec, MediaParameterWireType, ModelDescriptor, ProviderDescriptor,
+        ProviderMediaDescriptor, ProviderRegistry,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -408,6 +408,7 @@ mod tests {
                                 values: vec!["1:1".to_string(), "16:9".to_string()],
                                 default: "1:1".to_string(),
                                 request_field: Some("aspect_ratio".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                             MediaParameterSpec {
                                 name: "response_format".to_string(),
@@ -415,6 +416,7 @@ mod tests {
                                 values: vec!["url".to_string(), "base64".to_string()],
                                 default: "base64".to_string(),
                                 request_field: Some("response_format".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                         ],
                     }],

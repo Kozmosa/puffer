@@ -151,6 +151,79 @@ media:
 }
 
 #[test]
+fn media_parameter_wire_type_defaults_to_string() {
+    let yaml = provider_with_media_yaml(
+        r#"
+media:
+  video:
+    execution:
+      adapter: replicate_video
+      path: /v1/predictions
+    models:
+      - id: owner/model-version
+        operations: [generate]
+        parameters:
+          - name: duration_seconds
+            label: Duration
+            values: ["5", "8"]
+            default: "5"
+            request_field: duration
+"#,
+    );
+
+    let provider: ProviderDescriptor = serde_yaml::from_str(&yaml).expect("parse provider");
+    let parameter = &provider
+        .media
+        .as_ref()
+        .and_then(|media| media.video.as_ref())
+        .expect("video media")
+        .models[0]
+        .parameters[0];
+
+    assert_eq!(parameter.wire_type, MediaParameterWireType::String);
+    provider
+        .validate_media_descriptors()
+        .expect("default wire type validates");
+}
+
+#[test]
+fn media_parameter_wire_type_parses_number() {
+    let yaml = provider_with_media_yaml(
+        r#"
+media:
+  video:
+    execution:
+      adapter: byteplus_video
+      path: /contents/generations/tasks
+    models:
+      - id: dreamina-seedance-2-0-260128
+        operations: [generate]
+        parameters:
+          - name: duration_seconds
+            label: Duration
+            values: ["4", "5"]
+            default: "5"
+            request_field: duration
+            wire_type: number
+"#,
+    );
+
+    let provider: ProviderDescriptor = serde_yaml::from_str(&yaml).expect("parse provider");
+    let parameter = &provider
+        .media
+        .as_ref()
+        .and_then(|media| media.video.as_ref())
+        .expect("video media")
+        .models[0]
+        .parameters[0];
+
+    assert_eq!(parameter.wire_type, MediaParameterWireType::Number);
+    provider
+        .validate_media_descriptors()
+        .expect("number wire type validates");
+}
+
+#[test]
 fn provider_media_descriptor_rejects_invalid_video_parameter_default() {
     let yaml = r#"
 id: replicate

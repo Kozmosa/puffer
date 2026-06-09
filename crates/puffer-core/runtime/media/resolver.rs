@@ -468,8 +468,8 @@ mod tests {
     use crate::runtime::media::MediaKind;
     use puffer_provider_registry::{
         AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-        MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor,
-        ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        MediaModelDescriptor, MediaOperation, MediaParameterSpec, MediaParameterWireType,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
 
     fn registry_with(providers: Vec<ProviderDescriptor>) -> ProviderRegistry {
@@ -520,6 +520,7 @@ mod tests {
                             values: vec!["1024x1024".to_string()],
                             default: "1024x1024".to_string(),
                             request_field: Some("size".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
                             name: "quality".to_string(),
@@ -527,6 +528,7 @@ mod tests {
                             values: vec!["auto".to_string(), "high".to_string()],
                             default: "auto".to_string(),
                             request_field: Some("quality".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
                             name: "output_format".to_string(),
@@ -534,6 +536,7 @@ mod tests {
                             values: vec!["png".to_string()],
                             default: "png".to_string(),
                             request_field: Some("output_format".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                     ],
                 }],
@@ -572,6 +575,7 @@ mod tests {
                             values: vec!["16:9".to_string(), "9:16".to_string()],
                             default: "16:9".to_string(),
                             request_field: Some("aspect_ratio".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
                             name: "duration".to_string(),
@@ -579,6 +583,7 @@ mod tests {
                             values: vec!["5".to_string(), "8".to_string()],
                             default: "5".to_string(),
                             request_field: Some("duration".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                     ],
                 }],

@@ -392,6 +392,17 @@ pub struct MediaModelDescriptor {
     pub parameters: Vec<MediaParameterSpec>,
 }
 
+/// Describes how a media parameter value is encoded into provider JSON.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaParameterWireType {
+    /// Encode the selected value as a JSON string.
+    #[default]
+    String,
+    /// Parse the selected value and encode it as a JSON number.
+    Number,
+}
+
 /// Describes one select-only image generation parameter.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -402,6 +413,8 @@ pub struct MediaParameterSpec {
     pub default: String,
     #[serde(default)]
     pub request_field: Option<String>,
+    #[serde(default)]
+    pub wire_type: MediaParameterWireType,
 }
 
 /// Describes currently implemented media discovery adapters.

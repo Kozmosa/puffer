@@ -2,8 +2,8 @@ use super::*;
 use indexmap::IndexMap;
 use puffer_provider_registry::{
     AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-    MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor, ProviderDescriptor,
-    ProviderMediaDescriptor, ProviderRegistry,
+    MediaModelDescriptor, MediaOperation, MediaParameterSpec, MediaParameterWireType,
+    ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
 };
 use puffer_resources::ProviderPack;
 use serde_json::json;
@@ -45,6 +45,7 @@ fn minimax_registry(base_url: String) -> ProviderRegistry {
                             values: vec!["1:1".to_string(), "16:9".to_string()],
                             default: "1:1".to_string(),
                             request_field: Some("aspect_ratio".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
                             name: "response_format".to_string(),
@@ -52,6 +53,7 @@ fn minimax_registry(base_url: String) -> ProviderRegistry {
                             values: vec!["url".to_string(), "base64".to_string()],
                             default: "base64".to_string(),
                             request_field: Some("response_format".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                     ],
                 }],
@@ -126,6 +128,7 @@ fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
                             values: vec!["2K".to_string()],
                             default: "2K".to_string(),
                             request_field: Some("size".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
                             name: "response_format".to_string(),
@@ -133,6 +136,7 @@ fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
                             values: vec!["b64_json".to_string(), "url".to_string()],
                             default: "b64_json".to_string(),
                             request_field: Some("response_format".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                     ],
                 }],
@@ -178,6 +182,7 @@ fn replicate_video_registry() -> ProviderRegistry {
                             values: vec!["16:9".to_string(), "9:16".to_string()],
                             default: "16:9".to_string(),
                             request_field: Some("aspect_ratio".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                         MediaParameterSpec {
                             name: "duration".to_string(),
@@ -185,6 +190,7 @@ fn replicate_video_registry() -> ProviderRegistry {
                             values: vec!["5".to_string(), "8".to_string()],
                             default: "5".to_string(),
                             request_field: Some("duration".to_string()),
+                            wire_type: MediaParameterWireType::String,
                         },
                     ],
                 }],

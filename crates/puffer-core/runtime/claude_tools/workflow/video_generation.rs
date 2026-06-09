@@ -226,8 +226,8 @@ mod tests {
     use puffer_config::MediaGenerationConfig;
     use puffer_provider_registry::{
         AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-        MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor,
-        ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        MediaModelDescriptor, MediaOperation, MediaParameterSpec, MediaParameterWireType,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionMetadata;
@@ -326,6 +326,7 @@ mod tests {
                                 ],
                                 default: "5".to_string(),
                                 request_field: Some("seconds".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                             MediaParameterSpec {
                                 name: "resolution".to_string(),
@@ -337,6 +338,7 @@ mod tests {
                                 ],
                                 default: "720p".to_string(),
                                 request_field: Some("metadata.resolution".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                             MediaParameterSpec {
                                 name: "ratio".to_string(),
@@ -352,6 +354,7 @@ mod tests {
                                 ],
                                 default: "16:9".to_string(),
                                 request_field: Some("metadata.ratio".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                         ],
                     }],

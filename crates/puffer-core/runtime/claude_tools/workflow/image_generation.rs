@@ -305,8 +305,8 @@ mod tests {
     use indexmap::IndexMap;
     use puffer_provider_registry::{
         AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-        MediaModelDescriptor, MediaOperation, MediaParameterSpec, ModelDescriptor,
-        ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        MediaModelDescriptor, MediaOperation, MediaParameterSpec, MediaParameterWireType,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
     };
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionMetadata;
@@ -388,6 +388,7 @@ mod tests {
                                 values: vec!["1024x1024".to_string(), "1536x1024".to_string()],
                                 default: "1024x1024".to_string(),
                                 request_field: Some("size".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                             MediaParameterSpec {
                                 name: "quality".to_string(),
@@ -395,6 +396,7 @@ mod tests {
                                 values: vec!["auto".to_string(), "high".to_string()],
                                 default: "auto".to_string(),
                                 request_field: Some("quality".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                             MediaParameterSpec {
                                 name: "output_format".to_string(),
@@ -402,6 +404,7 @@ mod tests {
                                 values: vec!["png".to_string(), "webp".to_string()],
                                 default: "png".to_string(),
                                 request_field: Some("output_format".to_string()),
+                                wire_type: MediaParameterWireType::String,
                             },
                         ],
                     }],

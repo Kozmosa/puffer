@@ -4,8 +4,8 @@ use indexmap::IndexMap;
 use puffer_provider_registry::{
     AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode, MediaExecutionDescriptor,
     MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
-    MediaParameterSpec, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
-    ProviderRegistry,
+    MediaParameterSpec, MediaParameterWireType, ModelDescriptor, ProviderDescriptor,
+    ProviderMediaDescriptor, ProviderRegistry,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -83,6 +83,7 @@ fn image_parameters() -> Vec<MediaParameterSpec> {
             values: vec!["1024x1024".to_string()],
             default: "1024x1024".to_string(),
             request_field: Some("size".to_string()),
+            wire_type: MediaParameterWireType::String,
         },
         MediaParameterSpec {
             name: "quality".to_string(),
@@ -90,6 +91,7 @@ fn image_parameters() -> Vec<MediaParameterSpec> {
             values: vec!["auto".to_string()],
             default: "auto".to_string(),
             request_field: Some("quality".to_string()),
+            wire_type: MediaParameterWireType::String,
         },
         MediaParameterSpec {
             name: "output_format".to_string(),
@@ -97,6 +99,7 @@ fn image_parameters() -> Vec<MediaParameterSpec> {
             values: vec!["png".to_string(), "webp".to_string()],
             default: "png".to_string(),
             request_field: Some("output_format".to_string()),
+            wire_type: MediaParameterWireType::String,
         },
     ]
 }
@@ -122,6 +125,7 @@ fn sequential_generation_parameter() -> MediaParameterSpec {
         values: vec!["disabled".to_string(), "auto".to_string()],
         default: "disabled".to_string(),
         request_field: Some("sequential_image_generation".to_string()),
+        wire_type: MediaParameterWireType::String,
     }
 }
 
@@ -684,6 +688,7 @@ fn artifact_format_follows_response_bytes_when_output_format_undeclared() {
         values: vec!["2K".to_string()],
         default: "2K".to_string(),
         request_field: Some("size".to_string()),
+        wire_type: MediaParameterWireType::String,
     }];
     let registry = registry_with_provider_parameters(
         "exact-provider",
