@@ -9,7 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use puffer_session_store::{StoredAttachment, StoredAttachmentKind};
+use anyhow::{Context, Result};
+use puffer_session_store::{SessionStore, StoredAttachment, StoredAttachmentKind};
+use uuid::Uuid;
 
 /// A staged attachment plus the temp path it was materialized to (`None` if
 /// the source bytes were missing or the copy failed).
@@ -49,6 +51,65 @@ fn safe_filename(name: &str, extension: &str) -> String {
     } else {
         format!("{base}.{ext}")
     }
+}
+
+/// Base temp directory for an attachment, scoped by session and attachment id.
+/// `/tmp` is always in the agent's readable workspace roots (see
+/// `puffer-core/workspace_paths.rs`), so files here are readable in any sandbox
+/// mode without polluting the user's workspace.
+fn attachment_temp_dir(session_id: Uuid, attachment_id: &str) -> PathBuf {
+    PathBuf::from("/tmp/puffer-attachments")
+        .join(session_id.to_string())
+        .join(attachment_id)
+}
+
+/// Materializes every attachment to a temp path. Best-effort: an attachment
+/// whose source is missing or whose copy fails gets `path: None` rather than
+/// failing the whole turn.
+pub(crate) fn materialize_attachments(
+    store: &SessionStore,
+    session_id: Uuid,
+    attachments: &[StoredAttachment],
+) -> Vec<MaterializedAttachment> {
+    attachments
+        .iter()
+        .map(|attachment| MaterializedAttachment {
+            attachment: attachment.clone(),
+            path: materialize_one(store, session_id, attachment).ok(),
+        })
+        .collect()
+}
+
+fn materialize_one(
+    store: &SessionStore,
+    session_id: Uuid,
+    attachment: &StoredAttachment,
+) -> Result<PathBuf> {
+    let src = store.attachment_original_path(session_id, attachment);
+    if !src.is_file() {
+        anyhow::bail!("staged attachment original missing: {}", src.display());
+    }
+    let dir = attachment_temp_dir(session_id, &attachment.id);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("create attachment temp dir {}", dir.display()))?;
+    let dest = dir.join(safe_filename(&attachment.name, &attachment.extension));
+
+    // Idempotent: skip the copy if a same-size file is already there.
+    if let Ok(meta) = std::fs::metadata(&dest) {
+        if meta.len() == attachment.size {
+            return Ok(dest);
+        }
+    }
+    std::fs::copy(&src, &dest)
+        .with_context(|| format!("copy attachment to {}", dest.display()))?;
+    Ok(dest)
+}
+
+/// Removes the temp directory tree for a session's materialized attachments.
+/// Best-effort; errors are ignored. Call when a session is deleted.
+pub(crate) fn cleanup_session_attachments(session_id: Uuid) {
+    let dir = PathBuf::from("/tmp/puffer-attachments").join(session_id.to_string());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Builds the text the model receives: the original message plus a labeled
@@ -100,6 +161,79 @@ pub(crate) fn build_model_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puffer_session_store::StageAttachmentInput;
+
+    fn test_store(temp: &Path) -> (SessionStore, Uuid) {
+        let user_config = temp.join(".puffer");
+        std::fs::create_dir_all(&user_config).unwrap();
+        let paths = puffer_config::ConfigPaths {
+            workspace_root: temp.to_path_buf(),
+            workspace_config_dir: temp.join("ws.puffer"),
+            user_config_dir: user_config,
+            builtin_resources_dir: temp.join("resources"),
+        };
+        (SessionStore::from_paths(&paths).unwrap(), Uuid::new_v4())
+    }
+
+    fn stage(store: &SessionStore, session: Uuid, name: &str) -> StoredAttachment {
+        store
+            .stage_attachment(
+                session,
+                StageAttachmentInput {
+                    name: name.to_string(),
+                    mime_type: "image/png".to_string(),
+                    extension: "PNG".to_string(),
+                    kind: StoredAttachmentKind::Image,
+                    bytes: vec![1, 2, 3],
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn materialize_writes_temp_file_with_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, session) = test_store(temp.path());
+        let att = stage(&store, session, "shot.png");
+
+        let out = materialize_attachments(&store, session, std::slice::from_ref(&att));
+        let path = out[0].path.clone().expect("materialized path");
+
+        assert!(path.starts_with("/tmp/puffer-attachments"));
+        assert_eq!(path.file_name().unwrap(), "shot.png");
+        assert_eq!(std::fs::read(&path).unwrap(), vec![1, 2, 3]);
+        cleanup_session_attachments(session);
+    }
+
+    #[test]
+    fn materialize_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, session) = test_store(temp.path());
+        let att = stage(&store, session, "shot.png");
+
+        let first = materialize_attachments(&store, session, std::slice::from_ref(&att))[0]
+            .path
+            .clone()
+            .unwrap();
+        let second = materialize_attachments(&store, session, std::slice::from_ref(&att))[0]
+            .path
+            .clone()
+            .unwrap();
+        assert_eq!(first, second);
+        cleanup_session_attachments(session);
+    }
+
+    #[test]
+    fn materialize_missing_original_yields_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, session) = test_store(temp.path());
+        let mut att = stage(&store, session, "shot.png");
+        att.id = "11111111-1111-1111-1111-111111111111".to_string(); // never staged
+
+        let out = materialize_attachments(&store, session, std::slice::from_ref(&att));
+        assert!(out[0].path.is_none());
+        cleanup_session_attachments(session);
+    }
 
     fn attachment(name: &str, kind: StoredAttachmentKind) -> StoredAttachment {
         StoredAttachment {
