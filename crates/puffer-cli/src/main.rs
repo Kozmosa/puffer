@@ -1,3 +1,4 @@
+mod attachment_bridge;
 mod auth_credentials;
 mod auth_provider;
 mod authflow;
