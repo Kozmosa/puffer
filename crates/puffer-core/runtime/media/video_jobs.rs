@@ -53,6 +53,39 @@ pub(crate) fn video_poll_url(submit_url: &str, job: &MediaJob) -> Result<String>
     Ok(url.to_string())
 }
 
+/// Maps a provider/gateway task-status string onto a media job status.
+///
+/// Covers the New API gateway lifecycle (`NOT_START`/`SUBMITTED`/`QUEUED`/
+/// `IN_PROGRESS`/`SUCCESS`/`FAILURE`) and ModelArk native vocabulary. This is
+/// intentionally infallible: any unrecognized status (including `UNKNOWN` and
+/// future strings) maps to a non-terminal `Running` so polling keeps waiting
+/// instead of hard-failing the job.
+pub(crate) fn map_video_task_status(raw: &str) -> MediaJobStatus {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "not_start" | "submitted" | "queued" | "pending" => MediaJobStatus::Queued,
+        "in_progress" | "running" | "processing" => MediaJobStatus::Running,
+        "success" | "succeeded" | "completed" => MediaJobStatus::Succeeded,
+        "failure" | "failed" | "error" | "expired" => MediaJobStatus::Failed,
+        "cancelled" | "canceled" => MediaJobStatus::Canceled,
+        _ => MediaJobStatus::Running,
+    }
+}
+
+/// Records a transient poll error on the job without changing its status, then
+/// persists it. The polling loop sees a non-terminal job and retries within its
+/// attempt budget, so a single network/parse hiccup never aborts the whole job.
+pub(crate) fn record_transient_poll_error(
+    service: &MediaGenerationService,
+    mut job: MediaJob,
+    error: anyhow::Error,
+    now_ms: u64,
+) -> Result<MediaJob> {
+    job.error = Some(format!("{error:#}"));
+    job.updated_at_ms = now_ms;
+    service.save_job(&job)?;
+    Ok(job)
+}
+
 /// Polls a video job until it reaches a terminal state or exhausts attempts.
 pub(crate) fn poll_video_until_terminal(
     mut job: MediaJob,
@@ -190,6 +223,23 @@ mod tests {
         );
         job.transition(MediaJobStatus::Running, 2).unwrap();
         job
+    }
+
+    #[test]
+    fn map_video_task_status_covers_new_api_lifecycle() {
+        use super::map_video_task_status;
+        assert_eq!(map_video_task_status("NOT_START"), MediaJobStatus::Queued);
+        assert_eq!(map_video_task_status("submitted"), MediaJobStatus::Queued);
+        assert_eq!(map_video_task_status("IN_PROGRESS"), MediaJobStatus::Running);
+        assert_eq!(map_video_task_status("SUCCESS"), MediaJobStatus::Succeeded);
+        assert_eq!(map_video_task_status("FAILURE"), MediaJobStatus::Failed);
+        assert_eq!(map_video_task_status("canceled"), MediaJobStatus::Canceled);
+        // Unknown status -> non-terminal (keep polling), never errors.
+        assert_eq!(map_video_task_status("unknown"), MediaJobStatus::Running);
+        assert_eq!(
+            map_video_task_status("totally-new-status"),
+            MediaJobStatus::Running
+        );
     }
 
     fn completed_task<'a>() -> CompletedVideoTask<'a> {
