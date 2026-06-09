@@ -398,6 +398,7 @@ export type MediaCapabilityParameterInfo = {
   values: string[];
   default: string;
   requestField: string | null;
+  wireType?: "string" | "number";
 };
 
 export type ResourceCounts = {

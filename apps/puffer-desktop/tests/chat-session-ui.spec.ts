@@ -31,7 +31,9 @@ const configuredImageMedia: MediaSettings = {
   video: null
 };
 
-type FakeMediaCapabilityParameter = FakeMediaCapability["parameters"][number];
+type FakeMediaCapabilityParameter = FakeMediaCapability["parameters"][number] & {
+  wireType?: "string" | "number";
+};
 
 function mediaParameter(input: {
   name: string;
@@ -39,13 +41,15 @@ function mediaParameter(input: {
   values: string[];
   defaultValue: string;
   requestField?: string | null;
+  wireType?: "string" | "number";
 }): FakeMediaCapabilityParameter {
   return {
     name: input.name,
     label: input.label,
     values: input.values,
     default: input.defaultValue,
-    requestField: input.requestField === undefined ? input.name : input.requestField
+    requestField: input.requestField === undefined ? input.name : input.requestField,
+    ...(input.wireType ? { wireType: input.wireType } : {})
   };
 }
 
@@ -131,13 +135,17 @@ function singleOptionVideoCapability(): FakeMediaCapability {
       name: "aspect_ratio",
       label: "Aspect ratio",
       values: ["16:9"],
-      defaultValue: "16:9"
+      defaultValue: "16:9",
+      requestField: "metadata.ratio",
+      wireType: "string"
     }),
     mediaParameter({
-      name: "duration",
+      name: "duration_seconds",
       label: "Duration",
       values: ["8"],
-      defaultValue: "8"
+      defaultValue: "8",
+      requestField: "seconds",
+      wireType: "string"
     })
   ];
   return videoCapability({
@@ -156,13 +164,17 @@ function configurableVideoCapability(): FakeMediaCapability {
       name: "aspect_ratio",
       label: "Aspect ratio",
       values: ["16:9", "9:16"],
-      defaultValue: "16:9"
+      defaultValue: "16:9",
+      requestField: "metadata.ratio",
+      wireType: "string"
     }),
     mediaParameter({
-      name: "duration",
+      name: "duration_seconds",
       label: "Duration",
-      values: ["8", "12"],
-      defaultValue: "8"
+      values: ["5", "8", "12"],
+      defaultValue: "8",
+      requestField: "seconds",
+      wireType: "string"
     })
   ];
   return videoCapability({
@@ -178,25 +190,28 @@ function configurableVideoCapability(): FakeMediaCapability {
 function configurableVideoCapabilityWithProviderOptions(): FakeMediaCapability {
   const parameters = [
     mediaParameter({
-      name: "video_shape",
+      name: "aspect_ratio",
       label: "Aspect ratio",
       values: ["16:9", "9:16", "1:1"],
       defaultValue: "16:9",
-      requestField: "metadata.ratio"
+      requestField: "metadata.ratio",
+      wireType: "string"
     }),
     mediaParameter({
-      name: "clip_seconds",
+      name: "duration_seconds",
       label: "Duration",
       values: ["5", "8", "12"],
       defaultValue: "5",
-      requestField: "seconds"
+      requestField: "seconds",
+      wireType: "string"
     }),
     mediaParameter({
       name: "resolution",
       label: "Resolution",
       values: ["480p", "720p", "1080p"],
       defaultValue: "720p",
-      requestField: "metadata.resolution"
+      requestField: "metadata.resolution",
+      wireType: "string"
     })
   ];
   return videoCapability({
@@ -216,25 +231,28 @@ function relaydanceVideoCapability(input: {
 }): FakeMediaCapability {
   const parameters = [
     mediaParameter({
-      name: "duration",
+      name: "duration_seconds",
       label: "Duration",
       values: ["5", "8"],
       defaultValue: "5",
-      requestField: "seconds"
+      requestField: "seconds",
+      wireType: "string"
     }),
     mediaParameter({
       name: "resolution",
       label: "Resolution",
       values: [input.resolution],
       defaultValue: input.resolution,
-      requestField: "metadata.resolution"
+      requestField: "metadata.resolution",
+      wireType: "string"
     }),
     mediaParameter({
-      name: "ratio",
+      name: "aspect_ratio",
       label: "Aspect ratio",
       values: ["16:9", "9:16"],
       defaultValue: "16:9",
-      requestField: "metadata.ratio"
+      requestField: "metadata.ratio",
+      wireType: "string"
     })
   ];
   return videoCapability({
@@ -1050,7 +1068,7 @@ test("composer video generation settings renders saved single choices as read-on
         adapter: "replicate_video",
         parameters: {
           aspect_ratio: "16:9",
-          duration: "8"
+          duration_seconds: "8"
         }
       }
     }
@@ -1090,7 +1108,7 @@ test("composer video generation settings renders saved single choices as read-on
         adapter: "replicate_video",
         parameters: {
           aspect_ratio: "16:9",
-          duration: "8"
+          duration_seconds: "8"
         }
       }
     }
@@ -1169,9 +1187,9 @@ test("composer video generation settings shows multiple models for one provider"
         operation: "generate",
         adapter: "relaydance_video",
         parameters: {
-          duration: "5",
+          duration_seconds: "5",
           resolution: "1080p",
-          ratio: "16:9"
+          aspect_ratio: "16:9"
         }
       }
     }
@@ -1245,7 +1263,7 @@ test("composer video generation settings saves configurable video defaults", asy
         adapter: "replicate_video",
         parameters: {
           aspect_ratio: "9:16",
-          duration: "12"
+          duration_seconds: "12"
         }
       }
     }
@@ -1309,8 +1327,8 @@ test("composer video generation settings saves additional provider options", asy
         operation: "generate",
         adapter: "byteplus_video",
         parameters: {
-          video_shape: "1:1",
-          clip_seconds: "12",
+          aspect_ratio: "1:1",
+          duration_seconds: "12",
           resolution: "1080p"
         }
       }
@@ -1351,8 +1369,8 @@ test("composer video generation settings normalizes stale provider options", asy
         operation: "generate",
         adapter: "byteplus_video",
         parameters: {
-          video_shape: "9:16",
-          clip_seconds: "8",
+          ratio: "9:16",
+          seconds: "8",
           resolution: "4k",
           stale_video_option: "remove-me"
         }
@@ -1372,8 +1390,8 @@ test("composer video generation settings normalizes stale provider options", asy
     "list_media_capabilities",
     (request) => request.params.kind === "video"
   );
-  await expect(dialog.getByLabel("Aspect ratio")).toHaveValue("9:16");
-  await expect(dialog.getByLabel("Duration")).toHaveValue("8");
+  await expect(dialog.getByLabel("Aspect ratio")).toHaveValue("16:9");
+  await expect(dialog.getByLabel("Duration")).toHaveValue("5");
   await expect(dialog.getByLabel("Resolution")).toHaveValue("720p");
 
   await dialog.getByRole("button", { name: "Save" }).click();
@@ -1390,8 +1408,8 @@ test("composer video generation settings normalizes stale provider options", asy
         operation: "generate",
         adapter: "byteplus_video",
         parameters: {
-          video_shape: "9:16",
-          clip_seconds: "8",
+          aspect_ratio: "16:9",
+          duration_seconds: "5",
           resolution: "720p"
         }
       }
@@ -2279,7 +2297,7 @@ test("video slash success appends a generated video attachment", async ({ page }
         modelId: "gen-4",
         operation: "generate",
         adapter: "replicate_video",
-        parameters: { duration: "8", aspect_ratio: "16:9" }
+        parameters: { duration_seconds: "8", aspect_ratio: "16:9" }
       }
     }
   });
