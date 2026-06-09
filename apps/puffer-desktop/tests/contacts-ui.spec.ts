@@ -123,3 +123,43 @@ test("contacts infer modal reruns only from explicit action", async ({ page }) =
   await page.waitForTimeout(250);
   expect(daemon.requests.filter((request) => request.method === "contacts_infer")).toHaveLength(2);
 });
+
+test("contacts infer removes a proposal after it is saved", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setContactsSnapshot({
+    contacts: [],
+    candidates: [
+      {
+        id: "telegram@alice",
+        name: "Alice",
+        avatar: ALICE_AVATAR,
+        score: 42,
+        context: []
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  await page.getByRole("button", { name: "Infer" }).click();
+  const dialog = page.getByRole("dialog", { name: "Infer contacts" });
+  await dialog.getByRole("button", { name: "Rerun" }).click();
+  await daemon.waitForRequest("contacts_infer");
+  await expect(dialog).toContainText("Alice");
+
+  await dialog.getByRole("button", { name: "Use" }).click();
+  const createDialog = page.getByRole("dialog", { name: "Create contact" });
+  await expect(createDialog.getByLabel("Name")).toHaveValue("Alice");
+  await expect(createDialog.getByLabel("Contact IDs")).toHaveValue("telegram@alice");
+  await createDialog.getByRole("button", { name: /^Create$/ }).click();
+
+  const request = await daemon.waitForRequest("contacts_save");
+  expect(request.params.contact_ids).toEqual(["telegram@alice"]);
+  await page.getByRole("button", { name: "Infer" }).click();
+  const refreshedDialog = page.getByRole("dialog", { name: "Infer contacts" });
+  await expect(refreshedDialog.locator(".pf-contact-proposal")).toHaveCount(0);
+  await expect(refreshedDialog).toContainText("No inferred contacts yet.");
+});

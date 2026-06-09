@@ -122,6 +122,16 @@ const ONE_PIXEL_PNG =
 
 const now = Date.now();
 
+function normalizedContactIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean))).sort();
+}
+
+function overlapsContactIds(record: JsonRecord, contactIds: string[]): boolean {
+  const saved = new Set(contactIds);
+  return normalizedContactIds(record.contact_ids).some((id) => saved.has(id));
+}
+
 const session = {
   sessionId: "session-browser",
   displayName: "Browser regression",
@@ -1598,9 +1608,7 @@ export class FakeDaemon {
     const name = String(params.name ?? "").trim();
     if (!name) throw new Error("missing contact name");
     const id = String(params.id ?? `contact-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom"}`);
-    const contactIds = Array.isArray(params.contact_ids)
-      ? Array.from(new Set(params.contact_ids.map((item) => String(item).trim()).filter(Boolean))).sort()
-      : [];
+    const contactIds = normalizedContactIds(params.contact_ids);
     if (contactIds.length === 0) throw new Error("missing contact ids");
     const contact = {
       id,
@@ -1614,7 +1622,8 @@ export class FakeDaemon {
       contacts: [
         ...this.contactsSnapshot.contacts.filter((candidate) => candidate.id !== id),
         contact
-      ].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))
+      ].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""))),
+      proposals: this.contactsSnapshot.proposals.filter((proposal) => !overlapsContactIds(proposal, contactIds))
     };
     return this.contactsList({});
   }

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use puffer_config::ConfigPaths;
-use puffer_subscriptions::{ContactProposal, SavedContact};
+use puffer_subscriptions::{normalize_contact_ids, ContactProposal, SavedContact};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -47,6 +47,22 @@ pub(super) fn save_proposals(paths: &ConfigPaths, proposals: Vec<ContactProposal
     let mut store = load_store(paths)?;
     store.proposals = proposals;
     save_store(paths, &store)
+}
+
+/// Removes inferred proposals that overlap saved contact ids.
+pub(super) fn prune_proposals_for_contact_ids(
+    store: &mut ContactStoreFile,
+    contact_ids: &[String],
+) {
+    let saved_ids = normalize_contact_ids(contact_ids);
+    if saved_ids.is_empty() {
+        return;
+    }
+    store.proposals.retain(|proposal| {
+        normalize_contact_ids(&proposal.contact_ids)
+            .iter()
+            .all(|proposal_id| !saved_ids.contains(proposal_id))
+    });
 }
 
 fn contacts_path(paths: &ConfigPaths) -> PathBuf {
@@ -112,6 +128,33 @@ mod tests {
             store.proposals[0].contact_ids,
             vec!["telegram@bob".to_string()]
         );
+    }
+
+    #[test]
+    fn prune_proposals_for_contact_ids_removes_overlapping_proposals() {
+        let mut store = ContactStoreFile {
+            version: 1,
+            contacts: Vec::new(),
+            proposals: vec![
+                ContactProposal {
+                    name: "Alice".to_string(),
+                    description: "Frequent launch collaborator.".to_string(),
+                    avatar: None,
+                    contact_ids: vec!["Telegram@Alice".to_string()],
+                },
+                ContactProposal {
+                    name: "Bob".to_string(),
+                    description: "Separate support contact.".to_string(),
+                    avatar: None,
+                    contact_ids: vec!["telegram@bob".to_string()],
+                },
+            ],
+        };
+
+        prune_proposals_for_contact_ids(&mut store, &["telegram@alice".to_string()]);
+
+        assert_eq!(store.proposals.len(), 1);
+        assert_eq!(store.proposals[0].name, "Bob");
     }
 
     fn test_config_paths(root: &Path) -> ConfigPaths {

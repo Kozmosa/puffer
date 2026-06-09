@@ -24,7 +24,9 @@ mod daemon_contacts_telegram;
 #[path = "daemon_contacts_trace.rs"]
 mod daemon_contacts_trace;
 use daemon_contacts_infer::{candidate_trace_sample, contact_infer_system_prompt, infer_proposals};
-use daemon_contacts_store::{load_store, save_proposals, save_store};
+use daemon_contacts_store::{
+    load_store, prune_proposals_for_contact_ids, save_proposals, save_store,
+};
 use daemon_contacts_telegram::{
     collect_telegram_candidates, read_telegram_peer_avatars, read_telegram_peer_names,
 };
@@ -211,6 +213,7 @@ pub(crate) fn handle_contacts_save(paths: &ConfigPaths, params: &Value) -> Resul
     if contact_ids.is_empty() {
         anyhow::bail!("contact must contain at least one valid contact id");
     }
+    let saved_contact_ids = contact_ids.clone();
     let mut store = load_store(paths)?;
     let id = params
         .id
@@ -238,6 +241,7 @@ pub(crate) fn handle_contacts_save(paths: &ConfigPaths, params: &Value) -> Resul
             .to_ascii_lowercase()
             .cmp(&right.name.to_ascii_lowercase())
     });
+    prune_proposals_for_contact_ids(&mut store, &saved_contact_ids);
     save_store(paths, &store)?;
     handle_contacts_list(paths, &json!({ "limit": DEFAULT_LIMIT }))
 }
