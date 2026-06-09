@@ -30,10 +30,18 @@ export type ImagePreview = {
   alt: string;
 };
 
+export type VideoPreview = {
+  kind: "video";
+  src: string;
+  mimeType: string;
+  name: string;
+};
+
 export type FilePreview =
   | { kind: "markdown"; html: string }
   | CsvPreview
   | ImagePreview
+  | VideoPreview
   | PdfPreview
   | DocxPreview
   | { kind: "pptx"; slides: { title: string; lines: string[] }[] }
@@ -87,16 +95,19 @@ export async function buildFilePreview(file: ReadFileResult): Promise<FilePrevie
       return file.encoding === "base64" ? previewXlsx(file.content) : null;
     case "legacy-office":
       return legacyOfficePreview(file);
+    case "video":
+      return null;
     case "text":
       return null;
   }
 }
 
-function previewFormat(path: string):
+export function previewFormat(path: string):
   | "text"
   | "markdown"
   | "csv"
   | "image"
+  | "video"
   | "pdf"
   | "docx"
   | "pptx"
@@ -106,6 +117,7 @@ function previewFormat(path: string):
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
   if (lower.endsWith(".csv")) return "csv";
   if (imageMimeType(path)) return "image";
+  if (videoMimeType(path)) return "video";
   if (lower.endsWith(".pdf")) return "pdf";
   if (lower.endsWith(".docx")) return "docx";
   if (lower.endsWith(".pptx")) return "pptx";
@@ -129,6 +141,21 @@ function imageMimeType(path: string): string | null {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".gif")) return "image/gif";
   return null;
+}
+
+export function videoMimeType(path: string): string | null {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".ogv")) return "video/ogg";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  return null;
+}
+
+/** True when a path should be played inline via <video> rather than read as
+ *  bytes. Single source of truth shared with FilesPane. */
+export function isPlayableMediaPath(path: string): boolean {
+  return videoMimeType(path) !== null;
 }
 
 function previewImage(file: ReadFileResult): ImagePreview {
