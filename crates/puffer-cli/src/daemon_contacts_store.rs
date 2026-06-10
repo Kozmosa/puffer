@@ -28,7 +28,7 @@ pub(super) fn load_store(paths: &ConfigPaths) -> Result<ContactStoreFile> {
     }
     let mut store =
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
-    prune_proposals_for_saved_contacts(&mut store);
+    sanitize_store(&mut store);
     Ok(store)
 }
 
@@ -52,7 +52,7 @@ pub(super) fn save_proposals(
 ) -> Result<Vec<ContactProposal>> {
     let mut store = load_store(paths)?;
     store.proposals = proposals;
-    prune_proposals_for_saved_contacts(&mut store);
+    sanitize_store(&mut store);
     let stored = store.proposals.clone();
     save_store(paths, &store)?;
     Ok(stored)
@@ -82,6 +82,75 @@ pub(super) fn prune_proposals_for_saved_contacts(store: &mut ContactStoreFile) {
         .flat_map(|contact| contact.contact_ids.iter().cloned())
         .collect::<Vec<_>>();
     prune_proposals_for_contact_ids(store, &contact_ids);
+}
+
+fn sanitize_store(store: &mut ContactStoreFile) {
+    sanitize_contacts(&mut store.contacts);
+    sanitize_proposals(&mut store.proposals);
+    prune_proposals_for_saved_contacts(store);
+}
+
+fn sanitize_contacts(contacts: &mut Vec<SavedContact>) {
+    let mut sanitized: Vec<SavedContact> = Vec::new();
+    for mut contact in std::mem::take(contacts) {
+        contact.id = contact.id.trim().to_string();
+        contact.name = contact.name.trim().to_string();
+        contact.description = contact.description.trim().to_string();
+        contact.avatar = trimmed_optional(contact.avatar);
+        contact.contact_ids = normalize_contact_ids(&contact.contact_ids);
+        if let Some(existing) = sanitized
+            .iter_mut()
+            .find(|existing| contact_ids_overlap(&existing.contact_ids, &contact.contact_ids))
+        {
+            merge_saved_contact(existing, contact);
+        } else {
+            sanitized.push(contact);
+        }
+    }
+    *contacts = sanitized;
+}
+
+fn sanitize_proposals(proposals: &mut Vec<ContactProposal>) {
+    proposals.retain_mut(|proposal| {
+        proposal.name = proposal.name.trim().to_string();
+        proposal.description = proposal.description.trim().to_string();
+        proposal.avatar = trimmed_optional(proposal.avatar.take());
+        proposal.contact_ids = normalize_contact_ids(&proposal.contact_ids);
+        !proposal.name.is_empty() && !proposal.contact_ids.is_empty()
+    });
+}
+
+fn merge_saved_contact(existing: &mut SavedContact, contact: SavedContact) {
+    if existing.name.is_empty() {
+        existing.name = contact.name;
+    }
+    if existing.description.is_empty() {
+        existing.description = contact.description;
+    }
+    if existing.avatar.is_none() {
+        existing.avatar = contact.avatar;
+    }
+    existing.contact_ids = normalize_contact_ids(
+        existing
+            .contact_ids
+            .iter()
+            .chain(contact.contact_ids.iter())
+            .cloned(),
+    );
+}
+
+fn contact_ids_overlap(left: &[String], right: &[String]) -> bool {
+    let left = normalize_contact_ids(left);
+    let right = normalize_contact_ids(right);
+    left.iter().any(|id| right.contains(id))
+}
+
+fn trimmed_optional(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn contacts_path(paths: &ConfigPaths) -> PathBuf {
@@ -180,6 +249,180 @@ mod tests {
         let store = load_store(&paths).unwrap();
 
         assert!(store.proposals.is_empty());
+    }
+
+    #[test]
+    fn load_store_sanitizes_legacy_contacts_and_proposals() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_config_paths(temp.path());
+        let runtime_dir = paths.workspace_config_dir.join("runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(
+            runtime_dir.join("contacts.json"),
+            serde_json::to_vec_pretty(&ContactStoreFile {
+                version: 1,
+                contacts: vec![SavedContact {
+                    id: " contact-alice ".to_string(),
+                    name: " Alice ".to_string(),
+                    description: " Project collaborator. ".to_string(),
+                    avatar: Some("  ".to_string()),
+                    contact_ids: vec![
+                        " Telegram@@Alice ".to_string(),
+                        "telegram@12345".to_string(),
+                        "Google@Alice@Example.COM".to_string(),
+                    ],
+                }],
+                proposals: vec![
+                    ContactProposal {
+                        name: " Bob ".to_string(),
+                        description: " Unsaved collaborator. ".to_string(),
+                        avatar: Some(" data:image/jpeg;base64,ZmFrZQ== ".to_string()),
+                        contact_ids: vec![" Telegram@@Bob ".to_string()],
+                    },
+                    ContactProposal {
+                        name: " Invalid ".to_string(),
+                        description: "Invalid proposal.".to_string(),
+                        avatar: None,
+                        contact_ids: vec!["not-a-contact".to_string()],
+                    },
+                    ContactProposal {
+                        name: " Alice ".to_string(),
+                        description: "Already saved.".to_string(),
+                        avatar: None,
+                        contact_ids: vec!["telegram@alice".to_string()],
+                    },
+                ],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = load_store(&paths).unwrap();
+
+        assert_eq!(store.contacts.len(), 1);
+        assert_eq!(store.contacts[0].id, "contact-alice");
+        assert_eq!(store.contacts[0].name, "Alice");
+        assert_eq!(store.contacts[0].description, "Project collaborator.");
+        assert_eq!(store.contacts[0].avatar, None);
+        assert_eq!(
+            store.contacts[0].contact_ids,
+            vec![
+                "google@alice@example.com".to_string(),
+                "telegram@alice".to_string()
+            ]
+        );
+        assert_eq!(store.proposals.len(), 1);
+        assert_eq!(store.proposals[0].name, "Bob");
+        assert_eq!(
+            store.proposals[0].contact_ids,
+            vec!["telegram@bob".to_string()]
+        );
+        assert_eq!(
+            store.proposals[0].avatar.as_deref(),
+            Some("data:image/jpeg;base64,ZmFrZQ==")
+        );
+    }
+
+    #[test]
+    fn load_store_merges_legacy_overlapping_saved_contacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_config_paths(temp.path());
+        let runtime_dir = paths.workspace_config_dir.join("runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(
+            runtime_dir.join("contacts.json"),
+            serde_json::to_vec_pretty(&ContactStoreFile {
+                version: 1,
+                contacts: vec![
+                    SavedContact {
+                        id: "contact-alice".to_string(),
+                        name: "Alice".to_string(),
+                        description: "".to_string(),
+                        avatar: None,
+                        contact_ids: vec!["Telegram@@Alice".to_string()],
+                    },
+                    SavedContact {
+                        id: "contact-alice-email".to_string(),
+                        name: "Alice Email".to_string(),
+                        description: "Email identity.".to_string(),
+                        avatar: Some("data:image/jpeg;base64,ZmFrZQ==".to_string()),
+                        contact_ids: vec![
+                            "telegram@alice".to_string(),
+                            "google@alice@example.com".to_string(),
+                        ],
+                    },
+                ],
+                proposals: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = load_store(&paths).unwrap();
+
+        assert_eq!(store.contacts.len(), 1);
+        assert_eq!(store.contacts[0].id, "contact-alice");
+        assert_eq!(store.contacts[0].name, "Alice");
+        assert_eq!(store.contacts[0].description, "Email identity.");
+        assert_eq!(
+            store.contacts[0].avatar.as_deref(),
+            Some("data:image/jpeg;base64,ZmFrZQ==")
+        );
+        assert_eq!(
+            store.contacts[0].contact_ids,
+            vec![
+                "google@alice@example.com".to_string(),
+                "telegram@alice".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn save_proposals_sanitizes_returned_and_persisted_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_config_paths(temp.path());
+
+        let stored = save_proposals(
+            &paths,
+            vec![
+                ContactProposal {
+                    name: " Bob ".to_string(),
+                    description: " Frequent collaborator. ".to_string(),
+                    avatar: Some(" data:image/jpeg;base64,ZmFrZQ== ".to_string()),
+                    contact_ids: vec![
+                        " Telegram@@Bob ".to_string(),
+                        "telegram@12345".to_string(),
+                        "Google@Bob@Example.COM".to_string(),
+                    ],
+                },
+                ContactProposal {
+                    name: "Invalid".to_string(),
+                    description: "Invalid proposal.".to_string(),
+                    avatar: None,
+                    contact_ids: vec!["not-a-contact".to_string()],
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].name, "Bob");
+        assert_eq!(stored[0].description, "Frequent collaborator.");
+        assert_eq!(
+            stored[0].avatar.as_deref(),
+            Some("data:image/jpeg;base64,ZmFrZQ==")
+        );
+        assert_eq!(
+            stored[0].contact_ids,
+            vec![
+                "google@bob@example.com".to_string(),
+                "telegram@bob".to_string()
+            ]
+        );
+
+        let reloaded = load_store(&paths).unwrap();
+
+        assert_eq!(reloaded.proposals, stored);
     }
 
     #[test]
