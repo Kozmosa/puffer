@@ -454,6 +454,7 @@ fn is_replay_channel(event: &str) -> bool {
         || event.starts_with("workspace:")
         || event.starts_with("clone:")
         || event.starts_with("workflow:")
+        || event.starts_with("contacts:infer:")
         || event.starts_with("connector-setup:")
 }
 
@@ -462,7 +463,8 @@ impl DaemonState {
         self.build_runtime_inputs_with_discovery(true)
     }
 
-    fn build_runtime_inputs_without_discovery(&self) -> Result<RuntimeInputs> {
+    /// Builds runtime inputs from local cache without refreshing model discovery.
+    pub(crate) fn build_runtime_inputs_without_discovery(&self) -> Result<RuntimeInputs> {
         self.build_runtime_inputs_with_discovery(false)
     }
 
@@ -521,11 +523,12 @@ impl DaemonState {
     }
 }
 
-struct RuntimeInputs {
-    resources: LoadedResources,
-    providers: ProviderRegistry,
-    auth_store: AuthStore,
-    session_store: SessionStore,
+/// Runtime dependencies loaded from config, resources, auth, and session stores.
+pub(crate) struct RuntimeInputs {
+    pub(crate) resources: LoadedResources,
+    pub(crate) providers: ProviderRegistry,
+    pub(crate) auth_store: AuthStore,
+    pub(crate) session_store: SessionStore,
 }
 
 fn proxy_discovery_client(
@@ -1049,7 +1052,7 @@ async fn dispatch_request(
         }
         "contacts_infer" => {
             respond!(detached!(|s, p| {
-                crate::daemon_contacts::handle_contacts_infer(s.config_paths(), &p)
+                crate::daemon_contacts::handle_contacts_infer(&s, &p)
             }))
         }
         "telegram_rank_relationships" => {
@@ -5246,17 +5249,17 @@ fn apply_daemon_yolo_mode(app_state: &mut AppState) {
 mod tests {
     use super::{
         apply_daemon_yolo_mode, apply_turn_model_override, apply_turn_request_options,
-        cancel_all_active_turns, CancelToken, ConnectionGuard, TurnHandle,
-        browser_permission_payload_json, connector_setup_connect_args, connector_setup_id,
-        desktop_latency_ms, handle_create_openai_realtime_client_secret, handle_create_session,
-        handle_import_external_credential, handle_list_lambda_skill_libraries,
-        handle_list_permissions, handle_list_provider_models, handle_local_model_status,
-        handle_login_with_api_key, handle_logout_provider, handle_remove_lambda_skill_library,
-        handle_save_lambda_skill_library, handle_save_permissions, handle_save_proxy_settings,
-        handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled, model_descriptor_dto,
-        permission_review_payload_json, realtime_session_config_from_params, report_cancelled_turn,
-        requires_explicit_subscription, resolve_create_session_model_id, run_off_runtime,
-        start_connector_setup_turn, DaemonState, ServerEnvelope, TurnProgress, TurnRequestOptions,
+        browser_permission_payload_json, cancel_all_active_turns, connector_setup_connect_args,
+        connector_setup_id, desktop_latency_ms, handle_create_openai_realtime_client_secret,
+        handle_create_session, handle_import_external_credential,
+        handle_list_lambda_skill_libraries, handle_list_permissions, handle_list_provider_models,
+        handle_local_model_status, handle_login_with_api_key, handle_logout_provider,
+        handle_remove_lambda_skill_library, handle_save_lambda_skill_library,
+        handle_save_permissions, handle_save_proxy_settings, handle_set_lambda_skill_approval,
+        handle_set_lambda_skill_enabled, model_descriptor_dto, permission_review_payload_json,
+        realtime_session_config_from_params, report_cancelled_turn, requires_explicit_subscription,
+        resolve_create_session_model_id, run_off_runtime, start_connector_setup_turn, CancelToken,
+        ConnectionGuard, DaemonState, ServerEnvelope, TurnHandle, TurnProgress, TurnRequestOptions,
     };
     use indexmap::IndexMap;
     use puffer_config::{

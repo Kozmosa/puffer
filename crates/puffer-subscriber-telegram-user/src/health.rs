@@ -94,9 +94,15 @@ pub(crate) fn report_resume_failed(
     });
     append_ndjson(&connection_diagnostics_path(env), &record);
     if anomaly {
-        warn!(reason, "telegram session resume failed; falling back to login");
+        warn!(
+            reason,
+            "telegram session resume failed; falling back to login"
+        );
     } else {
-        info!(reason, "telegram session not resumable; fresh login required");
+        info!(
+            reason,
+            "telegram session not resumable; fresh login required"
+        );
     }
     let _ = emit_control(&env.topic, "resume_failed", record);
 }
@@ -114,7 +120,10 @@ pub(crate) fn report_update_loop_error(env: &SkillEnv, error: &str) {
         "error": error,
     });
     append_ndjson(&connection_diagnostics_path(env), &record);
-    warn!(class, error, "telegram live update loop terminated on stream error");
+    warn!(
+        class,
+        error, "telegram live update loop terminated on stream error"
+    );
     let _ = emit_control(&env.topic, "update_loop_error", record);
 }
 

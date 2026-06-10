@@ -29,6 +29,7 @@ mod logging;
 mod login;
 mod notifications;
 mod outbound;
+mod peer_cache;
 mod peers;
 mod polls;
 mod qr_login;

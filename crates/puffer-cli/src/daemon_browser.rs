@@ -550,9 +550,7 @@ impl BrowserRegistry {
                     && self.reclaim_idle_fixed_pool_slot(session_id) > 0
                 {
                     browser_debug("open.reclaim-retry", format!("session_id={session_id}"));
-                    self.try_spawn_page_session(
-                        events, session_id, root, width, height, foreground,
-                    )
+                    self.try_spawn_page_session(events, session_id, root, width, height, foreground)
                 } else {
                     Err(error)
                 }
@@ -591,9 +589,7 @@ impl BrowserRegistry {
             let sessions = self.sessions.lock().unwrap();
             sessions
                 .iter()
-                .filter(|(id, session)| {
-                    id.as_str() != exclude_session_id && session.is_alive()
-                })
+                .filter(|(id, session)| id.as_str() != exclude_session_id && session.is_alive())
                 .max_by_key(|(_, session)| session.idle_for())
                 .map(|(id, _)| id.clone())
         };
@@ -604,7 +600,10 @@ impl BrowserRegistry {
             return 0;
         };
         if let Some((root_session_id, tab_id)) = parse_backend_session_id(&victim) {
-            self.tabs.lock().unwrap().remove_backend(root_session_id, tab_id);
+            self.tabs
+                .lock()
+                .unwrap()
+                .remove_backend(root_session_id, tab_id);
         }
         // Drive the worker to exit, which resets and returns its slot to the pool,
         // then wait for the shutdown ack so the slot is available before we retry.
@@ -1063,7 +1062,9 @@ pub(crate) mod test_support {
                 .unwrap_or("/")
                 .to_string();
             let body = if path.starts_with("/json/version") {
-                format!(r#"{{"webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/browser/root"}}"#)
+                format!(
+                    r#"{{"webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/browser/root"}}"#
+                )
             } else if path.starts_with("/json/list") {
                 list_body
             } else {

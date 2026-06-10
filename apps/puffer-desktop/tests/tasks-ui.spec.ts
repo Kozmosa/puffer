@@ -25,6 +25,42 @@ test("tasks history shows received monitor messages and agent outcomes", async (
   await expect(dialog.getByLabel("Agent history")).toContainText("No ignored task or ignore analysis");
 });
 
+test("tasks list lazily renders large snapshots", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  const now = Date.now();
+  daemon.setWorkflowSnapshot({
+    workflows: [],
+    runs: [],
+    connections: [],
+    connectors: [],
+    workflow_bindings: [],
+    monitor_tasks: Array.from({ length: 65 }, (_, index) => ({
+      task_id: `monitor-lazy-${index}`,
+      subject: `Lazy task ${index}`,
+      description: `Task ${index} should not render until its batch is loaded.`,
+      status: "pending",
+      source: "monitor",
+      monitor_connection: "telegram-user",
+      monitor_connector: "telegram-login",
+      started_at_ms: now - index,
+      updated_at_ms: now - index
+    })),
+    monitor_task_error: null
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openTasks(page);
+  await daemon.waitForRequest("workflow_list");
+
+  const list = page.getByLabel("Task list");
+  await expect(list.locator(".pf-task-row")).toHaveCount(40);
+  await expect(list).not.toContainText("Lazy task 64");
+  await list.getByRole("button", { name: "Load 25 more tasks" }).click();
+  await expect(list.locator(".pf-task-row")).toHaveCount(65);
+  await expect(list).toContainText("Lazy task 64");
+});
+
 test("tasks history links ignored task analysis by monitor envelope", async ({ page }) => {
   const daemon = new FakeDaemon();
   const now = Date.now();

@@ -12,8 +12,8 @@ use super::screenshot::{
     BrowserScreenshotFormat,
 };
 use super::selection::parse_copy_selection_response;
-use super::upload::parse_upload_handle_response;
 use super::test_support::{cef_env_lock, FakeCefDevtools};
+use super::upload::parse_upload_handle_response;
 use super::*;
 use crate::daemon_browser::tabs::BrowserCurrentTabStatus;
 
@@ -378,16 +378,37 @@ fn native_cef_recovers_when_all_slots_held_by_wedged_pages() {
     let (events, _events_rx) = tokio::sync::broadcast::channel::<ServerEnvelope>(256);
 
     registry
-        .open(events.clone(), "sess-a:browser:t1".to_string(), None, 800, 600, false)
+        .open(
+            events.clone(),
+            "sess-a:browser:t1".to_string(),
+            None,
+            800,
+            600,
+            false,
+        )
         .expect("open A");
     std::thread::sleep(Duration::from_millis(40));
     registry
-        .open(events.clone(), "sess-b:browser:t1".to_string(), None, 800, 600, false)
+        .open(
+            events.clone(),
+            "sess-b:browser:t1".to_string(),
+            None,
+            800,
+            600,
+            false,
+        )
         .expect("open B");
     std::thread::sleep(Duration::from_millis(40));
 
     // Both wedged slots are in use; the new tab must recover by reclaiming one.
-    let third = registry.open(events.clone(), "sess-c:browser:t1".to_string(), None, 800, 600, false);
+    let third = registry.open(
+        events.clone(),
+        "sess-c:browser:t1".to_string(),
+        None,
+        800,
+        600,
+        false,
+    );
 
     match previous_port {
         Some(value) => std::env::set_var("PUFFER_CEF_REMOTE_DEBUGGING_PORT", value),

@@ -31,8 +31,7 @@ fn complete_marks_pending_task_completed_via_reply() {
         }),
     );
 
-    let snapshot =
-        handle_monitor_task_complete(&paths, &json!({"task_id": "monitor-1"})).unwrap();
+    let snapshot = handle_monitor_task_complete(&paths, &json!({"task_id": "monitor-1"})).unwrap();
     let tasks = snapshot["tasks"].as_array().unwrap();
     assert_eq!(tasks[0]["task_id"], "monitor-1");
     assert_eq!(tasks[0]["status"], "completed");
@@ -62,8 +61,11 @@ fn complete_accepts_task_id_alias_and_explicit_completed_via() {
         }),
     );
 
-    handle_monitor_task_complete(&paths, &json!({"taskId": "monitor-7", "completed_via": "manual"}))
-        .unwrap();
+    handle_monitor_task_complete(
+        &paths,
+        &json!({"taskId": "monitor-7", "completed_via": "manual"}),
+    )
+    .unwrap();
 
     let stored = read_store(&paths);
     assert_eq!(stored["tasks"][0]["status"], "completed");
@@ -99,7 +101,10 @@ fn complete_is_idempotent_no_op_on_already_terminal() {
     // updated_at_ms untouched.
     assert_eq!(stored["tasks"][0]["status"], "completed");
     assert_eq!(stored["tasks"][0]["metadata"]["ignored"], true);
-    assert_eq!(stored["tasks"][0]["metadata"]["ignore_reason"], "user ignored");
+    assert_eq!(
+        stored["tasks"][0]["metadata"]["ignore_reason"],
+        "user ignored"
+    );
     assert_eq!(stored["tasks"][0]["completed_via"], Value::Null);
     assert_eq!(stored["tasks"][0]["updated_at_ms"], 42);
 }

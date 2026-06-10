@@ -452,7 +452,13 @@ async fn try_resume_session(env: &SkillEnv) -> anyhow::Result<Option<Client>> {
         Err(err) => {
             let detail = err.to_string();
             let class = crate::health::classify_error(&detail);
-            crate::health::report_resume_failed(env, "probe_failed", true, class, json!({ "error": detail }));
+            crate::health::report_resume_failed(
+                env,
+                "probe_failed",
+                true,
+                class,
+                json!({ "error": detail }),
+            );
             Ok(None)
         }
     }

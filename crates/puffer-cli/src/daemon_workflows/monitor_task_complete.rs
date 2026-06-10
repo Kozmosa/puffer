@@ -63,10 +63,7 @@ pub(crate) fn handle_monitor_task_complete(paths: &ConfigPaths, params: &Value) 
 
     if !is_terminal(task_object) {
         task_object.insert("status".to_string(), Value::String("completed".to_string()));
-        task_object.insert(
-            "completed_via".to_string(),
-            Value::String(completed_via),
-        );
+        task_object.insert("completed_via".to_string(), Value::String(completed_via));
         task_object.insert("updated_at_ms".to_string(), Value::from(now_ms()));
         fs::write(&path, serde_json::to_string_pretty(&store)?)
             .with_context(|| format!("failed to write {}", path.display()))?;

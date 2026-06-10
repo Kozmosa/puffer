@@ -414,6 +414,16 @@
   gap: 6px;
 }
 
+.pf-task-lazy-sentinel {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
 .pf-task-ignore {
   color: var(--muted-foreground);
 }

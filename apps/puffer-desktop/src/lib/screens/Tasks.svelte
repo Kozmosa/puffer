@@ -53,6 +53,8 @@
   };
   type TaskConfigTab = "monitor" | "contacts" | "rules";
 
+  const TASK_PAGE_SIZE = 40;
+
   let { onRunTaskCommand }: Props = $props();
 
   let snapshot = $state<WorkflowSnapshot>({
@@ -95,9 +97,12 @@
   let taskModelOptions = $state<TaskModelOption[]>([]);
   let taskModelLoading = $state(false);
   let taskModelLoadError = $state<string | null>(null);
-  let contactSnapshot = $state<ContactsSnapshot>({ contacts: [], candidates: [] });
+  let contactSnapshot = $state<ContactsSnapshot>({ contacts: [], candidates: [], proposals: [] });
   let contactsLoading = $state(false);
   let selectedMonitorContactIds = $state<string[]>([]);
+  let visibleTaskCount = $state(TASK_PAGE_SIZE);
+  let taskListSentinel: HTMLDivElement | null = $state(null);
+  let taskWindowKey = "";
   let contactScopeBindingKey = "";
   let refreshGeneration = 0;
   let taskModelGeneration = 0;
@@ -115,6 +120,9 @@
     ).sort()
   ]);
   let visibleTasks = $derived(filteredTasks());
+  let renderedTasks = $derived(visibleTasks.slice(0, visibleTaskCount));
+  let hasMoreTasks = $derived(renderedTasks.length < visibleTasks.length);
+  let remainingTaskCount = $derived(Math.max(0, visibleTasks.length - renderedTasks.length));
   let selectedTask = $derived(selectedTaskValue());
   let nonIgnoredCount = $derived(tasks.filter((task) => !taskIgnored(task)).length);
   let agentCount = $derived(tasks.filter((task) => task.source === "agent" && !taskIgnored(task)).length);
@@ -208,6 +216,34 @@
     if (!statusOptions.includes(statusFilter)) {
       statusFilter = "all";
     }
+  });
+
+  $effect(() => {
+    const nextKey = taskRenderWindowKey(visibleTasks);
+    if (nextKey === taskWindowKey) return;
+    taskWindowKey = nextKey;
+    visibleTaskCount = initialTaskRenderCount();
+  });
+
+  $effect(() => {
+    const sentinel = taskListSentinel;
+    if (!sentinel || !hasMoreTasks || typeof IntersectionObserver === "undefined") return;
+    const root = sentinel.closest(".pf-tasks-list");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadMoreTasks();
+        }
+      },
+      { root, rootMargin: "360px 0px", threshold: 0.01 }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  });
+
+  $effect(() => {
+    if (visibleTaskCount <= visibleTasks.length) return;
+    visibleTaskCount = Math.max(TASK_PAGE_SIZE, visibleTasks.length);
   });
 
   $effect(() => {
@@ -339,6 +375,27 @@
         .toLowerCase();
       return searchTerms.every((term) => haystack.includes(term));
     });
+  }
+
+  function taskRenderWindowKey(rows: WorkflowTask[]): string {
+    return [
+      sourceFilter,
+      statusFilter,
+      searchTerms.join("\u0001"),
+      rows.map(taskKey).join("\u0001")
+    ].join("\u0002");
+  }
+
+  function initialTaskRenderCount(): number {
+    const selectedIndex = selectedTaskKey
+      ? visibleTasks.findIndex((task) => taskKey(task) === selectedTaskKey)
+      : -1;
+    const minimum = selectedIndex >= 0 ? selectedIndex + 1 : TASK_PAGE_SIZE;
+    return Math.min(Math.max(TASK_PAGE_SIZE, minimum), visibleTasks.length);
+  }
+
+  function loadMoreTasks() {
+    visibleTaskCount = Math.min(visibleTasks.length, visibleTaskCount + TASK_PAGE_SIZE);
   }
 
   function taskKey(task: WorkflowTask): string {
@@ -1042,7 +1099,7 @@
             {tasks.length === 0 ? "No agent or monitor tasks yet." : sourceFilter === "ignored" ? "No ignored tasks." : "No tasks match the current filters."}
           </div>
         {:else}
-          {#each visibleTasks as task (taskKey(task))}
+          {#each renderedTasks as task (taskKey(task))}
             <article
               class="pf-task-row"
               data-source={task.source}
@@ -1130,6 +1187,19 @@
               </div>
             </article>
           {/each}
+          {#if hasMoreTasks}
+            <div class="pf-task-lazy-sentinel" bind:this={taskListSentinel}>
+              <button
+                type="button"
+                class="sc-btn"
+                data-variant="outline"
+                data-size="sm"
+                onclick={loadMoreTasks}
+              >
+                Load {remainingTaskCount} more task{remainingTaskCount === 1 ? "" : "s"}
+              </button>
+            </div>
+          {/if}
         {/if}
       </div>
     </section>
