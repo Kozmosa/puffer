@@ -178,7 +178,7 @@ fn read_telegram_messages(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if chat_kind == "channel" {
+        if chat_kind != "user" {
             continue;
         }
         let Some(contact_id) = telegram_contact_id(&payload, &chat_kind) else {
@@ -587,27 +587,16 @@ pub(super) fn reply_index(
 
 /// Returns the normalized contact id for a Telegram diagnostic payload.
 pub(super) fn telegram_contact_id(payload: &Value, chat_kind: &str) -> Option<String> {
-    if chat_kind == "user" {
-        if payload.get("chat_is_bot").and_then(Value::as_bool) == Some(true)
-            || payload_username_looks_like_bot(payload, "chat_username")
-        {
-            return None;
-        }
-        if let Some(username) = payload.get("chat_username").and_then(Value::as_str) {
-            return normalize_contact_id(&format!("telegram@{username}"));
-        }
+    if chat_kind != "user"
+        || payload.get("chat_is_bot").and_then(Value::as_bool) == Some(true)
+        || payload_username_looks_like_bot(payload, "chat_username")
+    {
+        return None;
     }
-    if chat_kind == "group" {
-        if payload.get("sender_is_bot").and_then(Value::as_bool) == Some(true)
-            || payload_username_looks_like_bot(payload, "sender_username")
-        {
-            return None;
-        }
-        if let Some(username) = payload.get("sender_username").and_then(Value::as_str) {
-            return normalize_contact_id(&format!("telegram@{username}"));
-        }
-    }
-    None
+    payload
+        .get("chat_username")
+        .and_then(Value::as_str)
+        .and_then(|username| normalize_contact_id(&format!("telegram@{username}")))
 }
 
 /// Returns the best display name for a Telegram diagnostic payload.

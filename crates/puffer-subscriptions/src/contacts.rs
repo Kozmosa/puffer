@@ -117,7 +117,7 @@ pub fn normalize_contact_id(input: &str) -> Option<String> {
 /// Returns connector slugs that may own `contact_id`.
 pub fn connector_slugs_for_contact_id(contact_id: &str) -> Vec<&'static str> {
     match contact_id_prefix(contact_id) {
-        Some(TELEGRAM_CONTACT_PREFIX) => vec!["telegram-login", "telegram-bot"],
+        Some(TELEGRAM_CONTACT_PREFIX) => vec!["telegram-login"],
         Some(GOOGLE_CONTACT_PREFIX) => vec!["email", "gmail-browser", "gcal-browser"],
         Some(SLACK_CONTACT_PREFIX) => vec!["slack-login", "slack-app", "slack-bot"],
         Some(DISCORD_CONTACT_PREFIX) => vec!["discord-bot"],
@@ -281,15 +281,18 @@ fn normalize_contact_suffix(prefix: &str, suffix: &str) -> Option<String> {
     if suffix.is_empty() {
         return None;
     }
-    if prefix == TELEGRAM_CONTACT_PREFIX {
-        suffix = suffix.to_ascii_lowercase();
-        if suffix.chars().all(|ch| ch.is_ascii_digit())
-            || !suffix
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
-            return None;
+    match prefix {
+        TELEGRAM_CONTACT_PREFIX => {
+            suffix = suffix.to_ascii_lowercase();
+            if suffix.chars().all(|ch| ch.is_ascii_digit())
+                || !suffix
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                return None;
+            }
         }
+        _ => {}
     }
     if prefix == GOOGLE_CONTACT_PREFIX {
         suffix = suffix.to_ascii_lowercase();
@@ -319,31 +322,14 @@ fn collect_explicit_ids(payload: &Value, ids: &mut BTreeSet<String>) {
 fn collect_telegram_ids(payload: &Value, ids: &mut BTreeSet<String>) {
     let chat_kind = string_at(payload, &["chat_kind"]);
     let direct_user = chat_kind.as_deref() == Some("user");
-    if direct_user {
-        if payload.get("chat_is_bot").and_then(Value::as_bool) == Some(true) {
-            return;
-        }
-        if let Some(username) = string_at(payload, &["chat_username"]) {
-            if telegram_username_looks_like_bot(&username) {
-                return;
-            }
-            insert_prefixed(ids, TELEGRAM_CONTACT_PREFIX, &username);
-        }
+    if !direct_user || payload.get("chat_is_bot").and_then(Value::as_bool) == Some(true) {
+        return;
     }
-    let outgoing = payload
-        .get("is_outgoing")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if !direct_user && !outgoing {
-        if payload.get("sender_is_bot").and_then(Value::as_bool) == Some(true) {
+    if let Some(username) = string_at(payload, &["chat_username"]) {
+        if telegram_username_looks_like_bot(&username) {
             return;
         }
-        if let Some(username) = string_at(payload, &["sender_username"]) {
-            if telegram_username_looks_like_bot(&username) {
-                return;
-            }
-            insert_prefixed(ids, TELEGRAM_CONTACT_PREFIX, &username);
-        }
+        insert_prefixed(ids, TELEGRAM_CONTACT_PREFIX, &username);
     }
 }
 
@@ -536,6 +522,8 @@ mod tests {
             Some("telegram@alice".to_string())
         );
         assert_eq!(normalize_contact_id("telegram@12345"), None);
+        assert_eq!(normalize_contact_id(" telegram-user-id@5229190700 "), None);
+        assert_eq!(normalize_contact_id(" telegram-chat-id@-100123 "), None);
         assert_eq!(
             normalize_contact_id("google@Alice@Example.COM"),
             Some("google@alice@example.com".to_string())
@@ -544,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_telegram_direct_and_group_contacts() {
+    fn extracts_telegram_private_username_contacts_only() {
         assert_eq!(
             contact_ids_from_payload(&json!({
                 "chat_kind": "user",
@@ -554,14 +542,24 @@ mod tests {
             })),
             vec!["telegram@alice"]
         );
-        assert_eq!(
-            contact_ids_from_payload(&json!({
-                "chat_kind": "group",
-                "chat_id": -1,
-                "sender_username": "bob"
-            })),
-            vec!["telegram@bob"]
-        );
+        assert!(contact_ids_from_payload(&json!({
+            "chat_kind": "user",
+            "chat_id": 5229190700_i64,
+            "sender_id": 5229190700_i64
+        }))
+        .is_empty());
+        assert!(contact_ids_from_payload(&json!({
+            "chat_kind": "user",
+            "chat_username": "alertbot",
+            "chat_is_bot": true
+        }))
+        .is_empty());
+        assert!(contact_ids_from_payload(&json!({
+            "chat_kind": "group",
+            "chat_id": -1,
+            "sender_username": "bob"
+        }))
+        .is_empty());
         assert!(contact_ids_from_payload(&json!({
             "chat_kind": "group",
             "chat_id": -1,
@@ -576,9 +574,9 @@ mod tests {
         }))
         .is_empty());
         assert!(contact_ids_from_payload(&json!({
-            "chat_kind": "user",
-            "chat_username": "alertbot",
-            "chat_is_bot": true
+            "chat_kind": "channel",
+            "chat_id": -100,
+            "sender_username": "news"
         }))
         .is_empty());
         assert!(contact_ids_from_payload(&json!({
@@ -691,6 +689,10 @@ mod tests {
             &["google@bob@example.com".to_string()],
             &payload
         ));
+        assert!(!contact_filter_matches(
+            &["telegram@bob".to_string()],
+            &json!({"chat_kind":"group","chat_id":-1,"sender_username":"bob"})
+        ));
     }
 
     #[test]
@@ -701,6 +703,8 @@ mod tests {
                 &[
                     "google@alice@example.com".to_string(),
                     "telegram@ALICE".to_string(),
+                    "telegram-user-id@42".to_string(),
+                    "telegram-chat-id@-1".to_string(),
                     "lark@ou_1".to_string(),
                 ],
             ),
