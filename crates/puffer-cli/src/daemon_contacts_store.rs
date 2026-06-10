@@ -98,6 +98,15 @@ fn sanitize_contacts(contacts: &mut Vec<SavedContact>) {
         contact.description = contact.description.trim().to_string();
         contact.avatar = trimmed_optional(contact.avatar);
         contact.contact_ids = normalize_contact_ids(&contact.contact_ids);
+        if contact.contact_ids.is_empty() {
+            continue;
+        }
+        if contact.id.is_empty() {
+            contact.id = derived_contact_id(&contact.contact_ids);
+        }
+        if contact.name.is_empty() {
+            contact.name = contact.contact_ids[0].clone();
+        }
         if let Some(existing) = sanitized
             .iter_mut()
             .find(|existing| contact_ids_overlap(&existing.contact_ids, &contact.contact_ids))
@@ -151,6 +160,27 @@ fn trimmed_optional(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn derived_contact_id(contact_ids: &[String]) -> String {
+    let slug = contact_ids
+        .first()
+        .map(|id| {
+            id.chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string()
+        })
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or_else(|| "contact".to_string());
+    format!("contact-{slug}")
 }
 
 fn contacts_path(paths: &ConfigPaths) -> PathBuf {
@@ -375,6 +405,51 @@ mod tests {
                 "telegram@alice".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn load_store_drops_unroutable_saved_contacts_and_repairs_blank_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_config_paths(temp.path());
+        let runtime_dir = paths.workspace_config_dir.join("runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(
+            runtime_dir.join("contacts.json"),
+            serde_json::to_vec_pretty(&ContactStoreFile {
+                version: 1,
+                contacts: vec![
+                    SavedContact {
+                        id: " ".to_string(),
+                        name: " ".to_string(),
+                        description: " Legacy row with usable routing. ".to_string(),
+                        avatar: Some(" ".to_string()),
+                        contact_ids: vec![" Slack@U123 ".to_string()],
+                    },
+                    SavedContact {
+                        id: "contact-invalid".to_string(),
+                        name: "Invalid".to_string(),
+                        description: "No usable contact ids.".to_string(),
+                        avatar: None,
+                        contact_ids: vec!["not-a-contact".to_string()],
+                    },
+                ],
+                proposals: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = load_store(&paths).unwrap();
+
+        assert_eq!(store.contacts.len(), 1);
+        assert_eq!(store.contacts[0].id, "contact-slack-u123");
+        assert_eq!(store.contacts[0].name, "slack@U123");
+        assert_eq!(
+            store.contacts[0].description,
+            "Legacy row with usable routing."
+        );
+        assert_eq!(store.contacts[0].avatar, None);
+        assert_eq!(store.contacts[0].contact_ids, vec!["slack@U123"]);
     }
 
     #[test]
