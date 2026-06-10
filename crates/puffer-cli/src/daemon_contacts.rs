@@ -962,5 +962,9 @@ impl Candidate {
 mod delete_tests;
 
 #[cfg(test)]
+#[path = "daemon_contacts_save_tests.rs"]
+mod save_tests;
+
+#[cfg(test)]
 #[path = "daemon_contacts_tests.rs"]
 mod tests;
