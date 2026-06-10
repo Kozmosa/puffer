@@ -263,6 +263,45 @@ test("contacts infer saves contacts immediately", async ({ page }) => {
   expect(daemon.requests.filter((request) => request.method === "contacts_save")).toHaveLength(0);
 });
 
+test("contacts infer deduplicates repeated candidate identities", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setContactsSnapshot({
+    contacts: [],
+    candidates: [
+      {
+        id: "telegram@alice",
+        name: "Alice",
+        avatar: ALICE_AVATAR,
+        score: 42,
+        context: []
+      },
+      {
+        id: "Telegram@@Alice",
+        name: "Alice Duplicate",
+        avatar: null,
+        score: 41,
+        context: []
+      }
+    ]
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  await page.getByRole("button", { name: "Infer", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Infer contacts" });
+  await dialog.getByRole("button", { name: "Rerun" }).click();
+  await daemon.waitForRequest("contacts_infer");
+
+  await expect(dialog).toContainText("Saved 1 inferred contact.");
+  await expect(page.getByRole("heading", { name: "Contacts 1" })).toBeVisible();
+  const rows = page.getByLabel("Contact list").locator(".pf-task-row");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.filter({ hasText: "Alice" })).toHaveCount(1);
+});
+
 test("contacts infer preserves saved contacts for legacy proposal responses", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setLegacyContactInferResponse();

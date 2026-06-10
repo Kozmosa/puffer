@@ -127,6 +127,10 @@ function overlapsContactIds(record: JsonRecord, contactIds: string[]): boolean {
   return normalizeContactIds(record.contact_ids).some((id) => saved.has(id));
 }
 
+function includesKnownContactId(contactIds: string[], knownIds: Set<string>): boolean {
+  return contactIds.some((id) => knownIds.has(id));
+}
+
 function mergedOverlappingContactIds(contacts: JsonRecord[], savedId: string, contactIds: string[]): string[] {
   const merged = [...contactIds];
   for (const contact of contacts) {
@@ -1684,17 +1688,23 @@ export class FakeDaemon {
         candidates: this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({ ...candidate }))
       };
     }
-    const inferredContacts = this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => {
+    const knownContactIds = new Set(savedContactIds);
+    const inferredContacts: JsonRecord[] = [];
+    for (const candidate of this.contactsSnapshot.candidates.slice(0, limit)) {
       const contactIds = normalizeContactIds([String(candidate.id ?? "")]);
       const name = String(candidate.name ?? candidate.id ?? "Contact").trim();
-      return {
+      if (!name || contactIds.length === 0 || includesKnownContactId(contactIds, knownContactIds)) {
+        continue;
+      }
+      inferredContacts.push({
         id: inferredContactId(name, contactIds),
         name,
         description: `Messages from ${String(candidate.id ?? "this contact")} are frequent and have task-like context. They are retained because the candidate has recent conversation content rather than isolated bulk traffic.`,
         avatar: candidate.avatar ?? null,
         contact_ids: contactIds
-      };
-    }).filter((contact) => contact.name && contact.contact_ids.length > 0 && !overlapsContactIds(contact, savedContactIds));
+      });
+      for (const id of contactIds) knownContactIds.add(id);
+    }
     this.contactsSnapshot = {
       ...this.contactsSnapshot,
       contacts: [

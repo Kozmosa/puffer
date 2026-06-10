@@ -118,10 +118,7 @@ impl CandidateContextOptions {
 /// Lists saved contacts plus ranked connector candidates.
 pub(crate) fn handle_contacts_list(paths: &ConfigPaths, params: &Value) -> Result<Value> {
     let params: ContactListParams =
-        serde_json::from_value(params.clone()).unwrap_or(ContactListParams {
-            limit: Some(DEFAULT_LIMIT),
-            query: None,
-        });
+        serde_json::from_value(params.clone()).context("invalid contact list params")?;
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let query = params
         .query
@@ -142,10 +139,7 @@ pub(crate) fn handle_contacts_list(paths: &ConfigPaths, params: &Value) -> Resul
 /// Searches connector contact ids for autocomplete.
 pub(crate) fn handle_contacts_search(paths: &ConfigPaths, params: &Value) -> Result<Value> {
     let params: ContactListParams =
-        serde_json::from_value(params.clone()).unwrap_or(ContactListParams {
-            limit: Some(DEFAULT_LIMIT),
-            query: None,
-        });
+        serde_json::from_value(params.clone()).context("invalid contact search params")?;
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let query = params
         .query
@@ -246,11 +240,7 @@ pub(crate) fn handle_contacts_context(paths: &ConfigPaths, params: &Value) -> Re
 /// Infers and saves contacts from top connector candidates.
 pub(crate) fn handle_contacts_infer(state: &DaemonState, params: &Value) -> Result<Value> {
     let params: ContactInferParams =
-        serde_json::from_value(params.clone()).unwrap_or(ContactInferParams {
-            limit: Some(DEFAULT_LIMIT),
-            model: None,
-            trace_id: None,
-        });
+        serde_json::from_value(params.clone()).context("invalid contact infer params")?;
     let limit = params
         .limit
         .unwrap_or(DEFAULT_LIMIT)
@@ -365,9 +355,6 @@ fn searched_candidates(
     let mut by_id: HashMap<String, Candidate> = HashMap::new();
     let context_options = CandidateContextOptions::none();
     collect_telegram_candidates(paths, &mut by_id, context_options)?;
-    if context_options.uses_connector_commands() {
-        collect_connector_method_search_candidates(&mut by_id, query, Some(limit), context_options);
-    }
     collect_history_candidates(paths, &mut by_id, context_options);
     let query = query.to_ascii_lowercase();
     let mut candidates = by_id
@@ -527,25 +514,6 @@ fn sample_inference_candidates(candidates: Vec<Candidate>, per_connector: usize)
         }
     }
     sampled
-}
-
-fn collect_connector_method_search_candidates(
-    by_id: &mut HashMap<String, Candidate>,
-    query: &str,
-    limit: Option<usize>,
-    context_options: CandidateContextOptions,
-) {
-    let Ok(manager) = puffer_core::subscription_manager() else {
-        return;
-    };
-    for connection in manager.connection_store().list() {
-        let Ok(Some(contacts)) =
-            manager.search_connector_contacts(&connection.slug, query.to_string(), limit)
-        else {
-            continue;
-        };
-        merge_connector_contacts(by_id, &connection.connector_slug, contacts, context_options);
-    }
 }
 
 fn collect_connector_method_candidates(
