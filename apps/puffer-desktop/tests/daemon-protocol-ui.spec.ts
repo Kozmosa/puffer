@@ -72,9 +72,9 @@ test("desktop client accepts remote params as the active browser daemon", async 
 
   const params = new URLSearchParams({
     skipOnboarding: "1",
-    pufferRemoteBackend: daemon.url,
-    pufferRemoteToken: "remote-token",
-    pufferRemoteWorkspaceRoot: "/tmp/puffer-remote"
+    backend: daemon.url,
+    token: "remote-token",
+    workspaceRoot: "/tmp/puffer-remote"
   });
   await page.goto(`/?${params.toString()}`);
 

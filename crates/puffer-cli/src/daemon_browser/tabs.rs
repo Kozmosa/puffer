@@ -382,7 +382,11 @@ impl BrowserCurrentTabContext {
             BrowserCurrentTabStatus::EmptyUrl | BrowserCurrentTabStatus::AboutBlank => {
                 "A browser tab is open but no page is loaded yet.".to_string()
             }
-            _ => match self.title.as_deref().filter(|title| !title.trim().is_empty()) {
+            _ => match self
+                .title
+                .as_deref()
+                .filter(|title| !title.trim().is_empty())
+            {
                 Some(title) => format!("Active browser tab: {url} ({title})"),
                 None => format!("Active browser tab: {url}"),
             },
@@ -455,11 +459,17 @@ mod tests {
 
     #[test]
     fn available_tab_status_line_reports_url_and_title() {
-        let context =
-            BrowserCurrentTabContext::from_tab(&tab("https://example.com/checkout", "Checkout", true));
+        let context = BrowserCurrentTabContext::from_tab(&tab(
+            "https://example.com/checkout",
+            "Checkout",
+            true,
+        ));
         assert!(context.connected);
         let line = context.agent_status_line();
-        assert!(line.contains("https://example.com/checkout"), "line: {line}");
+        assert!(
+            line.contains("https://example.com/checkout"),
+            "line: {line}"
+        );
         assert!(line.contains("Checkout"), "line: {line}");
         assert!(!line.contains("stale"), "line: {line}");
     }

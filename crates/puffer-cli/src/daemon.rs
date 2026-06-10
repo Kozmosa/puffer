@@ -5360,16 +5360,16 @@ fn apply_daemon_yolo_mode(app_state: &mut AppState) {
 mod tests {
     use super::{
         apply_daemon_yolo_mode, apply_turn_model_override, apply_turn_request_options,
-        browser_permission_payload_json, cancel_all_active_turns, connector_setup_connect_args,
-        connector_setup_id, desktop_latency_ms, handle_create_openai_realtime_client_secret,
-        handle_create_session, handle_import_external_credential,
-        handle_list_lambda_skill_libraries, handle_list_permissions, handle_list_provider_models,
-        handle_local_model_status, handle_login_with_api_key, handle_logout_provider,
-        handle_remove_lambda_skill_library, handle_save_lambda_skill_library,
-        handle_save_permissions, handle_save_proxy_settings, handle_set_lambda_skill_approval,
-        handle_set_lambda_skill_enabled, model_descriptor_dto, permission_review_payload_json,
-        realtime_session_config_from_params, report_cancelled_turn, requires_explicit_subscription,
-        browser_status_for_turn, resolve_create_session_model_id, run_off_runtime,
+        browser_permission_payload_json, browser_status_for_turn, cancel_all_active_turns,
+        connector_setup_connect_args, connector_setup_id, desktop_latency_ms,
+        handle_create_openai_realtime_client_secret, handle_create_session,
+        handle_import_external_credential, handle_list_lambda_skill_libraries,
+        handle_list_permissions, handle_list_provider_models, handle_local_model_status,
+        handle_login_with_api_key, handle_logout_provider, handle_remove_lambda_skill_library,
+        handle_save_lambda_skill_library, handle_save_permissions, handle_save_proxy_settings,
+        handle_set_lambda_skill_approval, handle_set_lambda_skill_enabled, model_descriptor_dto,
+        permission_review_payload_json, realtime_session_config_from_params, report_cancelled_turn,
+        requires_explicit_subscription, resolve_create_session_model_id, run_off_runtime,
         session_used_browser_tool, start_connector_setup_turn, turn_browser_tab_context,
         CancelToken, ConnectionGuard, DaemonState, ServerEnvelope, TurnHandle, TurnProgress,
         TurnRequestOptions,
@@ -5680,11 +5680,13 @@ mod tests {
         assert!(!session_used_browser_tool(&[bash_invocation(
             "git branch --list"
         )]));
-        assert!(!session_used_browser_tool(&[TranscriptEvent::UserMessage {
-            text: "please open the browser".to_string(),
-            attachments: Vec::new(),
-            actor: None,
-        }]));
+        assert!(!session_used_browser_tool(&[
+            TranscriptEvent::UserMessage {
+                text: "please open the browser".to_string(),
+                attachments: Vec::new(),
+                actor: None,
+            }
+        ]));
     }
 
     /// The gate must parse per shell segment: compound/env-prefixed commands
@@ -5771,7 +5773,10 @@ mod tests {
         let live = BrowserCurrentTabContext::from_tab(&live_tab);
         let status =
             browser_status_for_turn(&live, false).expect("live tab injects even without history");
-        assert!(status.contains("https://example.com/cart"), "status: {status}");
+        assert!(
+            status.contains("https://example.com/cart"),
+            "status: {status}"
+        );
     }
 
     /// Core of the client-disconnect watchdog (issue #600): orphaned interactive

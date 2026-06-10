@@ -46,6 +46,7 @@
   let showInferDialog = $state(false);
   let contactDialogMode = $state<ContactDialogMode>("create");
   let contactSelectionDismissed = $state(false);
+  let lastInferenceSavedCount = $state<number | null>(null);
   let editingId = $state<string | null>(null);
   let name = $state("");
   let description = $state("");
@@ -130,8 +131,12 @@
     }
   }
 
-  function applyContactsSnapshot(next: ContactsSnapshot) {
-    snapshot = { ...next, proposals: next.proposals ?? [] };
+  function applyContactsSnapshot(next: Partial<ContactsSnapshot>) {
+    snapshot = {
+      contacts: next.contacts ?? snapshot.contacts,
+      candidates: next.candidates ?? snapshot.candidates,
+      proposals: next.proposals ?? []
+    };
     proposals = snapshot.proposals;
   }
 
@@ -237,14 +242,30 @@
     inferError = null;
     inferTraceCollapsed = true;
     inferTraceItems = [];
+    lastInferenceSavedCount = null;
     inferTraceUnsubscribe?.();
     inferTraceUnsubscribe = null;
     try {
       inferTraceUnsubscribe = await subscribeContactInferEvents(traceId, applyInferTraceEvent);
+      const existingContactIds = new Set(snapshot.contacts.map((contact) => contact.id));
       const result = await inferContacts(30, traceId);
-      proposals = result.proposals;
-      snapshot = { ...snapshot, candidates: result.candidates, proposals: result.proposals };
-      notice = proposals.length === 0 ? "No proposals returned." : `Inferred ${proposals.length} contacts.`;
+      applyContactsSnapshot(result);
+      const resultContacts = result.contacts ?? snapshot.contacts;
+      const savedCount = inferredSavedCount(resultContacts, existingContactIds, result.savedCount);
+      const resultSavedContacts = "contacts" in result || typeof result.savedCount === "number";
+      lastInferenceSavedCount = resultSavedContacts ? savedCount : null;
+      const firstNewContact = resultContacts.find((contact) => !existingContactIds.has(contact.id));
+      if (firstNewContact) {
+        contactSelectionDismissed = false;
+        selectedContactId = firstNewContact.id;
+      }
+      notice = resultSavedContacts
+        ? savedCount === 0
+          ? "No new contacts inferred."
+          : `Inferred ${savedCount} contact${savedCount === 1 ? "" : "s"}.`
+        : proposals.length === 0
+          ? "No proposals returned."
+          : `Inferred ${proposals.length} proposal${proposals.length === 1 ? "" : "s"}.`;
     } catch (err) {
       inferError = `Could not infer contacts: ${messageOf(err)}`;
     } finally {
@@ -252,6 +273,17 @@
       inferTraceUnsubscribe = null;
       inferring = false;
     }
+  }
+
+  function inferredSavedCount(
+    contacts: SavedContact[],
+    existingContactIds: Set<string>,
+    reportedCount?: number
+  ): number {
+    if (typeof reportedCount === "number" && Number.isFinite(reportedCount)) {
+      return Math.max(0, Math.floor(reportedCount));
+    }
+    return contacts.filter((contact) => !existingContactIds.has(contact.id)).length;
   }
 
   function applyInferTraceEvent(event: ContactInferTracePayload) {
@@ -802,7 +834,13 @@
         <header class="pf-task-config-head">
           <div>
             <h2 id="pf-contact-infer-title">Infer contacts</h2>
-            <span>{proposals.length} proposal{proposals.length === 1 ? "" : "s"}</span>
+            <span>
+              {#if lastInferenceSavedCount !== null}
+                {lastInferenceSavedCount} saved
+              {:else}
+                {proposals.length} proposal{proposals.length === 1 ? "" : "s"}
+              {/if}
+            </span>
           </div>
           <div class="pf-contact-modal-actions">
             <button
@@ -904,7 +942,13 @@
               {/each}
             </div>
           {:else if inferring}
-            <div class="pf-tasks-empty">Waiting for proposals...</div>
+            <div class="pf-tasks-empty">Waiting for contacts...</div>
+          {:else if lastInferenceSavedCount !== null}
+            <div class="pf-tasks-empty">
+              {lastInferenceSavedCount === 0
+                ? "No new contacts inferred."
+                : `Saved ${lastInferenceSavedCount} inferred contact${lastInferenceSavedCount === 1 ? "" : "s"}.`}
+            </div>
           {:else if proposals.length === 0}
             <div class="pf-tasks-empty">No inferred contacts yet.</div>
           {/if}

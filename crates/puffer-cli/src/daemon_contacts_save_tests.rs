@@ -1,3 +1,4 @@
+use super::daemon_contacts_store::save_proposals;
 use super::*;
 use puffer_config::ConfigPaths;
 use puffer_subscriptions::ContactProposal;

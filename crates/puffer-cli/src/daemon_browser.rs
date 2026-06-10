@@ -429,7 +429,13 @@ impl BrowserRegistry {
     /// Registers a tab record directly in the registry (no live browser),
     /// for tests that exercise registry-key lookups.
     #[cfg(test)]
-    pub(crate) fn test_record_tab(&self, root_session_id: &str, tab_id: &str, url: &str, title: &str) {
+    pub(crate) fn test_record_tab(
+        &self,
+        root_session_id: &str,
+        tab_id: &str,
+        url: &str,
+        title: &str,
+    ) {
         self.tabs.lock().unwrap().record_opened_backend(
             root_session_id,
             tab_id,

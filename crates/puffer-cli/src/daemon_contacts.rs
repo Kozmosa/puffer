@@ -30,7 +30,7 @@ use daemon_contacts_params::{
     ContactSaveParams,
 };
 use daemon_contacts_store::{
-    load_store, prune_proposals_for_contact_ids, save_proposals, save_store,
+    load_store, prune_proposals_for_contact_ids, save_inferred_contacts, save_store,
 };
 use daemon_contacts_telegram::{
     collect_telegram_candidates, read_telegram_peer_avatars, read_telegram_peer_names,
@@ -243,7 +243,7 @@ pub(crate) fn handle_contacts_context(paths: &ConfigPaths, params: &Value) -> Re
     Ok(json!({ "contact_ids": contact_ids, "context": contexts }))
 }
 
-/// Infers contact group proposals from top connector candidates.
+/// Infers and saves contacts from top connector candidates.
 pub(crate) fn handle_contacts_infer(state: &DaemonState, params: &Value) -> Result<Value> {
     let params: ContactInferParams =
         serde_json::from_value(params.clone()).unwrap_or(ContactInferParams {
@@ -260,7 +260,7 @@ pub(crate) fn handle_contacts_infer(state: &DaemonState, params: &Value) -> Resu
     trace.message(
         "assistant",
         "Contact inference",
-        "Collecting ranked connector candidates before asking the model for contact proposals.",
+        "Collecting ranked connector candidates before asking the model to create contacts.",
     );
     trace.message("system", "System prompt", contact_infer_system_prompt());
     let collect_call = trace.tool_id("CollectContacts");
@@ -315,13 +315,18 @@ pub(crate) fn handle_contacts_infer(state: &DaemonState, params: &Value) -> Resu
         }
     };
     let proposals = infer_proposals(state, &candidates, limit, params.model.as_deref(), &trace)?;
-    let proposals = save_proposals(paths, proposals)?;
+    let saved_count = save_inferred_contacts(paths, proposals)?;
     trace.message(
         "assistant",
         "Inference complete",
-        format!("Prepared {} contact proposal(s).", proposals.len()),
+        format!("Saved {} inferred contact(s).", saved_count),
     );
-    Ok(json!({ "proposals": proposals, "candidates": candidates }))
+    let mut snapshot = handle_contacts_list(paths, &json!({ "limit": DEFAULT_LIMIT }))?;
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("candidates".to_string(), json!(candidates));
+        object.insert("savedCount".to_string(), json!(saved_count));
+    }
+    Ok(snapshot)
 }
 
 fn filtered_candidates(

@@ -136,6 +136,12 @@ function mergedOverlappingContactIds(contacts: JsonRecord[], savedId: string, co
   return Array.from(new Set(merged)).sort();
 }
 
+function inferredContactId(name: string, contactIds: string[]): string {
+  const source = [name, ...contactIds].filter(Boolean).join(" ") || "inferred";
+  const slug = source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return `contact-${slug || "inferred"}`;
+}
+
 const session = {
   sessionId: "session-browser",
   displayName: "Browser regression",
@@ -750,6 +756,7 @@ export class FakeDaemon {
   private nextTab = 2;
   private nextPty = 1;
   private rejectConnections = false;
+  private legacyContactInferResponse = false;
 
   constructor(options: {
     sessions?: FakeDaemonSessionInput[];
@@ -931,6 +938,10 @@ export class FakeDaemon {
       candidates: snapshot.candidates.map((candidate) => ({ ...candidate })),
       proposals: snapshot.proposals?.map((proposal) => ({ ...proposal })) ?? []
     };
+  }
+
+  setLegacyContactInferResponse(enabled = true): void {
+    this.legacyContactInferResponse = enabled;
   }
 
   setConnectorSetupQuestions(questions: ConnectorSetupQuestionFixture[]): void {
@@ -1657,19 +1668,46 @@ export class FakeDaemon {
         Array.isArray(contact.contact_ids) ? contact.contact_ids : []
       )
     );
-    const proposals = this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({
-      name: String(candidate.name ?? candidate.id ?? "Contact"),
-      description: `Messages from ${String(candidate.id ?? "this contact")} are frequent and have task-like context. They are retained because the candidate has recent conversation content rather than isolated bulk traffic.`,
-      avatar: candidate.avatar ?? null,
-      contact_ids: [String(candidate.id ?? "")]
-    })).filter((proposal) => proposal.contact_ids[0] && !overlapsContactIds(proposal, savedContactIds));
+    if (this.legacyContactInferResponse) {
+      const proposals = this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({
+        name: String(candidate.name ?? candidate.id ?? "Contact").trim(),
+        description: `Messages from ${String(candidate.id ?? "this contact")} are frequent and have task-like context. They are retained because the candidate has recent conversation content rather than isolated bulk traffic.`,
+        avatar: candidate.avatar ?? null,
+        contact_ids: normalizeContactIds([String(candidate.id ?? "")])
+      })).filter((proposal) => proposal.name && proposal.contact_ids.length > 0 && !overlapsContactIds(proposal, savedContactIds));
+      this.contactsSnapshot = {
+        ...this.contactsSnapshot,
+        proposals
+      };
+      return {
+        proposals: proposals.map((proposal) => ({ ...proposal })),
+        candidates: this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({ ...candidate }))
+      };
+    }
+    const inferredContacts = this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => {
+      const contactIds = normalizeContactIds([String(candidate.id ?? "")]);
+      const name = String(candidate.name ?? candidate.id ?? "Contact").trim();
+      return {
+        id: inferredContactId(name, contactIds),
+        name,
+        description: `Messages from ${String(candidate.id ?? "this contact")} are frequent and have task-like context. They are retained because the candidate has recent conversation content rather than isolated bulk traffic.`,
+        avatar: candidate.avatar ?? null,
+        contact_ids: contactIds
+      };
+    }).filter((contact) => contact.name && contact.contact_ids.length > 0 && !overlapsContactIds(contact, savedContactIds));
     this.contactsSnapshot = {
       ...this.contactsSnapshot,
-      proposals
+      contacts: [
+        ...this.contactsSnapshot.contacts,
+        ...inferredContacts
+      ].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""))),
+      proposals: []
     };
     return {
-      proposals: proposals.map((proposal) => ({ ...proposal })),
-      candidates: this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({ ...candidate }))
+      contacts: this.contactsSnapshot.contacts.map((contact) => ({ ...contact })),
+      candidates: this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({ ...candidate })),
+      proposals: [],
+      savedCount: inferredContacts.length
     };
   }
 

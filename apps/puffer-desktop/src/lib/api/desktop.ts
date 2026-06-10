@@ -981,10 +981,11 @@ export type ContactInferTracePayload =
       createdAtMs?: number | null;
     };
 
-export async function inferContacts(limit = 30, traceId?: string): Promise<{
-  proposals: ContactProposal[];
-  candidates: ContactsSnapshot["candidates"];
-}> {
+export type ContactInferResult = Partial<ContactsSnapshot> & {
+  savedCount?: number;
+};
+
+export async function inferContacts(limit = 30, traceId?: string): Promise<ContactInferResult> {
   const client = await ensureLocalDaemonClient();
   return client.request("contacts_infer", { limit, trace_id: traceId });
 }

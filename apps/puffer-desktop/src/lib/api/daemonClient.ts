@@ -382,6 +382,9 @@ export function configuredBrowserRemoteDaemonHandshake(): DaemonHandshake | null
     params.get("pufferRemoteBackend") ||
     params.get("corbinaRemoteBackend") ||
     params.get("remoteBackendUrl") ||
+    params.get("remoteBackend") ||
+    params.get("backendUrl") ||
+    params.get("backend") ||
     window.localStorage.getItem("puffer.remoteBackendUrl") ||
     window.localStorage.getItem("corbina.remoteBackendUrl") ||
     viteEnv?.VITE_PUFFER_REMOTE_DAEMON_URL ||
@@ -395,6 +398,9 @@ export function configuredBrowserRemoteDaemonHandshake(): DaemonHandshake | null
       params.get("pufferRemoteToken") ||
       params.get("corbinaRemoteToken") ||
       params.get("remoteToken") ||
+      params.get("pufferToken") ||
+      params.get("corbinaToken") ||
+      params.get("token") ||
       window.localStorage.getItem("puffer.remoteBackendToken") ||
       window.localStorage.getItem("corbina.remoteBackendToken") ||
       viteEnv?.VITE_PUFFER_REMOTE_DAEMON_TOKEN ||
@@ -408,6 +414,7 @@ export function configuredBrowserRemoteDaemonHandshake(): DaemonHandshake | null
       params.get("pufferRemoteWorkspaceRoot") ||
       params.get("corbinaRemoteWorkspaceRoot") ||
       params.get("remoteWorkspaceRoot") ||
+      params.get("workspaceRoot") ||
       window.localStorage.getItem("puffer.remoteWorkspaceRoot") ||
       window.localStorage.getItem("corbina.remoteWorkspaceRoot") ||
       ""
