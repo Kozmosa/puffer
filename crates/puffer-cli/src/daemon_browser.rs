@@ -426,6 +426,25 @@ impl BrowserRegistry {
     }
 
     /// Closes an existing browser tab for an agent session.
+    /// Registers a tab record directly in the registry (no live browser),
+    /// for tests that exercise registry-key lookups.
+    #[cfg(test)]
+    pub(crate) fn test_record_tab(&self, root_session_id: &str, tab_id: &str, url: &str, title: &str) {
+        self.tabs.lock().unwrap().record_opened_backend(
+            root_session_id,
+            tab_id,
+            backend_session_id(root_session_id, tab_id),
+            None,
+            BrowserState {
+                url: url.to_string(),
+                title: title.to_string(),
+                loading: false,
+                width: 1280,
+                height: 900,
+            },
+        );
+    }
+
     pub(crate) fn close_tab(
         &self,
         root_session_id: &str,

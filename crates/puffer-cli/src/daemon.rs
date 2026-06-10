@@ -3725,6 +3725,90 @@ async fn recover_stale_turn(state: Arc<DaemonState>, params: Value) -> Result<Va
     }
 }
 
+/// Returns true when a replayed transcript shows this session already used
+/// the browser — either through the Browser/BrowserAction tools or through
+/// Bash running the `browser ...` CLI (the browser skill's documented path).
+fn session_used_browser_tool(events: &[TranscriptEvent]) -> bool {
+    events.iter().any(|event| {
+        let TranscriptEvent::ToolInvocation { tool_id, input, .. } = event else {
+            return false;
+        };
+        if tool_id.eq_ignore_ascii_case("browser") || tool_id.eq_ignore_ascii_case("browseraction")
+        {
+            return true;
+        }
+        if !tool_id.eq_ignore_ascii_case("bash") {
+            return false;
+        }
+        let Ok(parsed) = serde_json::from_str::<Value>(input) else {
+            return false;
+        };
+        parsed
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(bash_command_invokes_browser_cli)
+    })
+}
+
+/// True when one Bash command line actually invokes the browser CLI. Matched
+/// per shell segment on the leading token, so compound or env-prefixed
+/// invocations (`cd x && browser open ...`, `FOO=1 browser snapshot`) count
+/// while commands that merely mention the strings (grep/echo in coding
+/// sessions) do not.
+fn bash_command_invokes_browser_cli(command: &str) -> bool {
+    command.split(['\n', ';', '|', '&']).any(|segment| {
+        let mut tokens = segment
+            .split_whitespace()
+            .skip_while(|token| token.contains('=') && !token.starts_with('-'));
+        let Some(first) = tokens.next() else {
+            return false;
+        };
+        if first == "browser" {
+            return true;
+        }
+        (first == "puffer" || first.ends_with("/puffer"))
+            && tokens.next() == Some("internal-tool")
+            && tokens.next() == Some("browser")
+    })
+}
+
+/// Computes the live browser status line for the per-turn system reminder
+/// (issue #560). Injected only when the transcript already used the browser
+/// or a live tab exists, so pure coding sessions stay free of browser noise.
+/// The no-active-tab line is the core fix: after a daemon restart the tab
+/// registry is empty while the replayed transcript still claims
+/// `connected:true`, and without this the model keeps trusting it.
+fn browser_status_for_turn(
+    context: &crate::daemon_browser::BrowserCurrentTabContext,
+    session_used_browser: bool,
+) -> Option<String> {
+    (session_used_browser || context.has_active_tab()).then(|| context.agent_status_line())
+}
+
+/// Resolves the live tab context for a turn. Tabs live under two registry
+/// keyspaces: the chat root session UUID (typed Browser/BrowserAction tools)
+/// and the workspace-stable cli-browser id (Bash `browser ...` commands, the
+/// browser skill's documented path). Checking only the UUID would report live
+/// CLI tabs as gone — the inverse of the #560 bug.
+fn turn_browser_tab_context(
+    state: &DaemonState,
+    browser_root_session_id: &str,
+) -> crate::daemon_browser::BrowserCurrentTabContext {
+    let primary = state.browsers.current_tab_context(browser_root_session_id);
+    if primary.has_active_tab() {
+        return primary;
+    }
+    let Ok(cli_session_id) = crate::daemon_browser::default_cli_session_id(&state.paths) else {
+        return primary;
+    };
+    let cli = state.browsers.current_tab_context(&cli_session_id);
+    if cli.has_active_tab() {
+        cli
+    } else {
+        primary
+    }
+}
+
 async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
     let session_id = params
         .get("sessionId")
@@ -3875,6 +3959,14 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
             .events
             .iter()
             .any(|event| matches!(event, TranscriptEvent::UserMessage { .. }));
+        let session_used_browser = session_used_browser_tool(&record.events);
+        // Browser panes key off the root session (mirrors
+        // AppState::browser_root_session_id, which is core-private).
+        let browser_root_session_id = record
+            .metadata
+            .parent_session_id
+            .unwrap_or(session_uuid)
+            .to_string();
         let auto_title = if crate::daemon_title::should_generate_title_for_turn(
             &inputs.resources,
             record.metadata.display_name.as_deref(),
@@ -3931,6 +4023,13 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
         }
         let cfg_for_turn = setup_state.config.lock().unwrap().clone();
         let mut app_state = AppState::from_session_record(cfg_for_turn.clone(), record);
+        // Issue #560: reconcile the model's view of the browser with the real
+        // tab registry every turn, instead of letting it trust stale
+        // `connected:true` tool output replayed from the transcript.
+        app_state.browser_status = browser_status_for_turn(
+            &turn_browser_tab_context(&setup_state, &browser_root_session_id),
+            session_used_browser,
+        );
         if let Err(err) =
             apply_turn_request_options(&mut app_state, &inputs.providers, &effective_turn_options)
         {
@@ -4503,7 +4602,19 @@ async fn start_slash_command_turn(state: Arc<DaemonState>, params: Value) -> Res
             }
         };
         let cfg_for_turn = setup_state.config.lock().unwrap().clone();
+        // Issue #560: slash-command turns run the same agent loop, so they
+        // need the same browser-state reconciliation as start_turn.
+        let session_used_browser = session_used_browser_tool(&record.events);
+        let browser_root_session_id = record
+            .metadata
+            .parent_session_id
+            .unwrap_or(session_uuid)
+            .to_string();
         let mut app_state = AppState::from_session_record(cfg_for_turn, record);
+        app_state.browser_status = browser_status_for_turn(
+            &turn_browser_tab_context(&setup_state, &browser_root_session_id),
+            session_used_browser,
+        );
         let stream_actor = app_state.assistant_actor();
 
         let question_state = setup_state.clone();
@@ -5258,8 +5369,10 @@ mod tests {
         handle_save_permissions, handle_save_proxy_settings, handle_set_lambda_skill_approval,
         handle_set_lambda_skill_enabled, model_descriptor_dto, permission_review_payload_json,
         realtime_session_config_from_params, report_cancelled_turn, requires_explicit_subscription,
-        resolve_create_session_model_id, run_off_runtime, start_connector_setup_turn, CancelToken,
-        ConnectionGuard, DaemonState, ServerEnvelope, TurnHandle, TurnProgress, TurnRequestOptions,
+        browser_status_for_turn, resolve_create_session_model_id, run_off_runtime,
+        session_used_browser_tool, start_connector_setup_turn, turn_browser_tab_context,
+        CancelToken, ConnectionGuard, DaemonState, ServerEnvelope, TurnHandle, TurnProgress,
+        TurnRequestOptions,
     };
     use indexmap::IndexMap;
     use puffer_config::{
@@ -5522,6 +5635,143 @@ mod tests {
         ensure_workspace_dirs(&paths).expect("workspace dirs");
         DaemonState::load(workspace_root, paths, "token".into(), true, false, false)
             .expect("daemon state")
+    }
+
+    fn bash_invocation(command: &str) -> TranscriptEvent {
+        TranscriptEvent::ToolInvocation {
+            call_id: "c1".to_string(),
+            tool_id: "Bash".to_string(),
+            input: json!({ "command": command }).to_string(),
+            output: "ok".to_string(),
+            success: true,
+            metadata: None,
+            actor: None,
+            subject: None,
+        }
+    }
+
+    /// Gate signal for issue #560: replayed transcripts reveal browser usage
+    /// either through the Browser/BrowserAction tools or through Bash running
+    /// the `browser ...` CLI (the browser skill's documented path).
+    #[test]
+    fn session_used_browser_tool_detects_browser_usage_in_transcript() {
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "browser open https://example.com --label docs"
+        )]));
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "browser --json snapshot --tab-id t1"
+        )]));
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "puffer internal-tool browser list"
+        )]));
+        let typed_tool = TranscriptEvent::ToolInvocation {
+            call_id: "c2".to_string(),
+            tool_id: "BrowserAction".to_string(),
+            input: "{}".to_string(),
+            output: "ok".to_string(),
+            success: true,
+            metadata: None,
+            actor: None,
+            subject: None,
+        };
+        assert!(session_used_browser_tool(&[typed_tool]));
+
+        assert!(!session_used_browser_tool(&[bash_invocation("ls -la")]));
+        assert!(!session_used_browser_tool(&[bash_invocation(
+            "git branch --list"
+        )]));
+        assert!(!session_used_browser_tool(&[TranscriptEvent::UserMessage {
+            text: "please open the browser".to_string(),
+            attachments: Vec::new(),
+            actor: None,
+        }]));
+    }
+
+    /// The gate must parse per shell segment: compound/env-prefixed commands
+    /// that really invoke the browser CLI count, while commands that merely
+    /// mention the strings (grep/echo in coding sessions) must not.
+    #[test]
+    fn session_used_browser_tool_parses_bash_per_segment() {
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "cd /tmp && browser open https://example.com"
+        )]));
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "FOO=1 browser snapshot --tab-id t1"
+        )]));
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "/usr/local/bin/puffer internal-tool browser list"
+        )]));
+        assert!(session_used_browser_tool(&[bash_invocation(
+            "browser list; git status"
+        )]));
+
+        assert!(!session_used_browser_tool(&[bash_invocation(
+            "grep -rn 'internal-tool browser' crates/"
+        )]));
+        assert!(!session_used_browser_tool(&[bash_invocation(
+            "echo \"use internal-tool browser for tabs\""
+        )]));
+        assert!(!session_used_browser_tool(&[bash_invocation(
+            "cat docs/browser.md"
+        )]));
+    }
+
+    /// Bash `browser ...` CLI tabs register under the workspace-stable
+    /// cli-browser id, not the chat session UUID. The turn lookup must check
+    /// both keyspaces or live CLI tabs get reported as "browser is gone".
+    #[test]
+    fn turn_browser_tab_context_falls_back_to_workspace_cli_keyspace() {
+        let _home_guard = PufferHomeEnvGuard::set();
+        let state = test_daemon_state();
+        let chat_root = Uuid::new_v4().to_string();
+
+        let empty = turn_browser_tab_context(&state, &chat_root);
+        assert!(!empty.has_active_tab(), "fresh registry has no tab");
+
+        let cli_id =
+            crate::daemon_browser::default_cli_session_id(&state.paths).expect("cli session id");
+        state
+            .browsers
+            .test_record_tab(&cli_id, "t1", "https://example.com/cart", "Cart");
+
+        let context = turn_browser_tab_context(&state, &chat_root);
+        assert!(
+            context.has_active_tab(),
+            "live CLI tab must be visible through the chat-session lookup"
+        );
+        assert_eq!(context.url.as_deref(), Some("https://example.com/cart"));
+    }
+
+    /// Issue #560: a restarted daemon has an empty tab registry, so a resumed
+    /// session whose transcript used the browser must get a stale-state
+    /// reminder; sessions that never touched the browser stay clean.
+    #[test]
+    fn browser_status_for_turn_gates_on_history_and_live_tab() {
+        use crate::daemon_browser::{BrowserCurrentTabContext, BrowserTabInfo};
+
+        let no_tab = BrowserCurrentTabContext::no_active_tab();
+        assert_eq!(browser_status_for_turn(&no_tab, false), None);
+
+        let stale = browser_status_for_turn(&no_tab, true).expect("inject for browser session");
+        assert!(stale.contains("No browser tab"), "status: {stale}");
+
+        let live_tab = BrowserTabInfo {
+            tab_id: "t1".to_string(),
+            label: "Tab 1".to_string(),
+            url: "https://example.com/cart".to_string(),
+            title: "Cart".to_string(),
+            loading: false,
+            connected: true,
+            active: true,
+            backend_session_id: "sess:browser:t1".to_string(),
+            native_cef_session_id: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let live = BrowserCurrentTabContext::from_tab(&live_tab);
+        let status =
+            browser_status_for_turn(&live, false).expect("live tab injects even without history");
+        assert!(status.contains("https://example.com/cart"), "status: {status}");
     }
 
     /// Core of the client-disconnect watchdog (issue #600): orphaned interactive
