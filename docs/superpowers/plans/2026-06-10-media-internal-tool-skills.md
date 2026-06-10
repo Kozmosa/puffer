@@ -1,5 +1,10 @@
 # Media Internal Tool Skills Implementation Plan
 
+Status: superseded for the remaining helper-invocation fix by
+`docs/superpowers/plans/2026-06-10-media-internal-helper-skill-plan.md`.
+This plan records the earlier internal-tool migration work; do not use its raw
+`puffer internal-tool ...` skill-command tasks for new implementation.
+
 > For agentic workers: implement task by task and keep checkbox status current.
 > Do not implement a parallel media-specific internal tool mechanism. Reuse the
 > existing internal tool resource, CLI, Bash broker, permission, and execution

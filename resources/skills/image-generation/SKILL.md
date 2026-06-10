@@ -9,7 +9,7 @@ disable-model-invocation: false
 
 Use foreground Bash only. allowed-tools is guidance, not the enforcement boundary; media generation is enforced by the internal tool permission path.
 
-- Run one `puffer internal-tool image-generation --prompt ... --count ...` command for one logical request.
+- Run one `imagegen --prompt ... --count ...` command for one logical request.
 - Set an explicit long Bash timeout within the current Bash cap before running the command.
 - When the user asks for multiple images from one prompt, pass the requested number through `--count` instead of issuing repeated `--count 1` commands.
 - Treat `--prompt` as literal text unless it names a workspace-relative file; prompt file paths should be passed through `--prompt`.

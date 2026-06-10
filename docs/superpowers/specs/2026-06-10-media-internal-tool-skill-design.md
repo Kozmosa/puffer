@@ -1,5 +1,11 @@
 # Media Internal Tool Skill Design
 
+Status: superseded for model invocation details by
+`docs/superpowers/specs/2026-06-10-media-internal-helper-skill-design.md`.
+This document remains useful as historical context for the internal-tool
+migration, but implementation should not use raw `puffer internal-tool ...`
+commands in media skill bodies.
+
 ## Purpose
 
 Move image and video generation away from model-facing `ImageGeneration` and

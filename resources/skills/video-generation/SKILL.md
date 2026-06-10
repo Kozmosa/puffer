@@ -9,7 +9,7 @@ disable-model-invocation: false
 
 Use foreground Bash only. allowed-tools is guidance, not the enforcement boundary; media generation is enforced by the internal tool permission path.
 
-- Run `puffer internal-tool video-generation --prompt ...` for one logical video-generation request.
+- Run `videogen --prompt ...` for one logical video-generation request.
 - Set an explicit long Bash timeout within the current Bash cap before running the command.
 - Treat `--prompt` as literal text unless it names a workspace-relative file; prompt file paths should be passed through `--prompt`.
 - Pass `--parameters-json` only for requested scalar overrides: strings, numbers, or booleans.

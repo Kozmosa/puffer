@@ -35,18 +35,9 @@ pub fn generated_media_internal_command_kind(
         return None;
     }
 
-    match tokens.as_slice() {
-        [command, ..] if command == "imagegen" => Some(GeneratedMediaInternalCommandKind::Image),
-        [command, ..] if command == "videogen" => Some(GeneratedMediaInternalCommandKind::Video),
-        [command, subcommand, internal_tool, ..]
-            if command == "puffer" && subcommand == "internal-tool" =>
-        {
-            match internal_tool.as_str() {
-                "image-generation" => Some(GeneratedMediaInternalCommandKind::Image),
-                "video-generation" => Some(GeneratedMediaInternalCommandKind::Video),
-                _ => None,
-            }
-        }
+    match tokens.first().map(String::as_str) {
+        Some("imagegen") => Some(GeneratedMediaInternalCommandKind::Image),
+        Some("videogen") => Some(GeneratedMediaInternalCommandKind::Video),
         _ => None,
     }
 }

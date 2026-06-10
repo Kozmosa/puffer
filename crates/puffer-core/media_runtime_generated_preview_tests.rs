@@ -648,18 +648,18 @@ fn generated_media_internal_command_kind_detects_supported_helpers() {
 }
 
 #[test]
-fn generated_media_internal_command_kind_detects_puffer_internal_tools() {
+fn generated_media_internal_command_kind_rejects_raw_puffer_internal_tools() {
     assert_eq!(
         generated_media_internal_command_kind(
             "puffer internal-tool image-generation --prompt 'ship at sea' --count 1"
         ),
-        Some(GeneratedMediaInternalCommandKind::Image)
+        None
     );
     assert_eq!(
         generated_media_internal_command_kind(
             "puffer internal-tool video-generation --prompt clip"
         ),
-        Some(GeneratedMediaInternalCommandKind::Video)
+        None
     );
 }
 
@@ -681,12 +681,6 @@ fn generated_media_internal_command_kind_rejects_shell_control_tokens() {
         generated_media_internal_command_kind("imagegen --prompt ship; echo ok"),
         None
     );
-    assert_eq!(
-        generated_media_internal_command_kind(
-            "puffer internal-tool image-generation --prompt ship ; echo ok"
-        ),
-        None
-    );
 }
 
 #[test]
@@ -699,9 +693,7 @@ fn generated_media_internal_command_kind_rejects_arbitrary_commands() {
 
 #[test]
 fn generated_media_internal_bash_output_extracts_stdout_json() {
-    let input =
-        serde_json::json!({ "command": "puffer internal-tool image-generation --prompt ship" })
-            .to_string();
+    let input = serde_json::json!({ "command": "imagegen --prompt ship" }).to_string();
     let stdout = serde_json::json!({
         "jobId": "job-1",
         "artifacts": []
@@ -750,7 +742,7 @@ fn generated_media_timeline_attachments_extracts_image_metadata() {
         })
         .unwrap();
     let input = serde_json::json!({
-        "command": "puffer internal-tool image-generation --prompt ship --count 1"
+        "command": "imagegen --prompt ship --count 1"
     })
     .to_string();
     let output = serde_json::json!({

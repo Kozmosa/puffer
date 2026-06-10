@@ -24,7 +24,7 @@ fn parse_skill(markdown: &str) -> (SkillFrontmatter, &str) {
 }
 
 #[test]
-fn image_generation_skill_guides_foreground_bash_internal_tool_use() {
+fn image_generation_skill_guides_foreground_bash_helper_use() {
     let (frontmatter, body) = parse_skill(include_str!(
         "../../../resources/skills/image-generation/SKILL.md"
     ));
@@ -36,7 +36,8 @@ fn image_generation_skill_guides_foreground_bash_internal_tool_use() {
     assert!(!frontmatter.disable_model_invocation);
     assert!(body.contains("foreground Bash"));
     assert!(body.contains("explicit long Bash timeout"));
-    assert!(body.contains("puffer internal-tool image-generation --prompt"));
+    assert!(body.contains("imagegen --prompt"));
+    assert!(!body.contains("puffer internal-tool"));
     assert!(body.contains("--count"));
     assert!(body.contains("one logical request"));
     assert!(body.contains("prompt file paths"));
@@ -45,7 +46,7 @@ fn image_generation_skill_guides_foreground_bash_internal_tool_use() {
 }
 
 #[test]
-fn video_generation_skill_guides_foreground_bash_internal_tool_use() {
+fn video_generation_skill_guides_foreground_bash_helper_use() {
     let (frontmatter, body) = parse_skill(include_str!(
         "../../../resources/skills/video-generation/SKILL.md"
     ));
@@ -57,7 +58,8 @@ fn video_generation_skill_guides_foreground_bash_internal_tool_use() {
     assert!(!frontmatter.disable_model_invocation);
     assert!(body.contains("foreground Bash"));
     assert!(body.contains("explicit long Bash timeout"));
-    assert!(body.contains("puffer internal-tool video-generation --prompt"));
+    assert!(body.contains("videogen --prompt"));
+    assert!(!body.contains("puffer internal-tool"));
     assert!(body.contains("--parameters-json"));
     assert!(body.contains("--image-reference"));
     assert!(body.contains("https://"));

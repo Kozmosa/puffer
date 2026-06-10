@@ -677,6 +677,41 @@ mod tests {
     }
 
     #[test]
+    fn execute_foreground_exposes_media_helpers() {
+        with_bash_timeout_env(None, None, || {
+            let temp = tempfile::tempdir().unwrap();
+            let result = execute(
+                temp.path(),
+                &test_session_id(),
+                ClaudeBashInput {
+                    command: "declare -f imagegen; declare -f videogen".to_string(),
+                    timeout: Some(5_000),
+                    description: None,
+                    run_in_background: false,
+                    tty: false,
+                },
+                None,
+            )
+            .unwrap();
+
+            let current_exe = std::env::current_exe().unwrap();
+            let current_exe = current_exe.to_string_lossy();
+            assert!(result.success, "command failed: {}", result.output.stderr);
+            assert!(result.output.stdout.contains(current_exe.as_ref()));
+            assert!(result.output.stdout.contains("imagegen"));
+            assert!(result
+                .output
+                .stdout
+                .contains("internal-tool 'image-generation'"));
+            assert!(result.output.stdout.contains("videogen"));
+            assert!(result
+                .output
+                .stdout
+                .contains("internal-tool 'video-generation'"));
+        });
+    }
+
+    #[test]
     fn execute_timeout_marks_interrupted() {
         with_bash_timeout_env(None, None, || {
             let temp = tempfile::tempdir().unwrap();

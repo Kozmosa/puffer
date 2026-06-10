@@ -3884,6 +3884,7 @@ fn exact_media_generation_request_from_stored(
             .context(missing_context.clone())?,
         adapter: non_empty_media_field(&selection.adapter, "adapter").context(missing_context)?,
         prompt,
+        image_references: Vec::new(),
         parameters: selection.parameters,
         count,
     })

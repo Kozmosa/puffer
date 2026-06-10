@@ -2147,7 +2147,7 @@ mod tests {
             vec![
                 bash_media_tool_invocation(
                     "call-img",
-                    "puffer internal-tool image-generation --prompt draw --count 2",
+                    "imagegen --prompt draw --count 2",
                     serde_json::json!({
                         "jobId": "job-1",
                         "requestedCount": 2,
@@ -2303,7 +2303,7 @@ mod tests {
             workspace,
             vec![bash_media_tool_invocation(
                 "call-img",
-                "puffer internal-tool image-generation --prompt draw --count 1",
+                "imagegen --prompt draw --count 1",
                 serde_json::json!({
                     "jobId": "job-1",
                     "requestedCount": 1,
