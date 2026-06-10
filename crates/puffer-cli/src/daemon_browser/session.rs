@@ -1,10 +1,13 @@
 //! Root Chrome ownership and per-page CDP worker sessions.
+
+mod pending;
+
 use super::chrome::{
     close_page_target, create_page_target, ensure_chrome_executable, initial_page_target,
     read_devtools_ws_url, read_remote_devtools_ws_url, wait_for_initial_page_targets,
     ChromePageTarget,
 };
-use super::command::{BrowserCommand, UploadReply};
+use super::command::BrowserCommand;
 use super::console::BrowserConsoleRegistry;
 use super::cursor::{cursor_eval_expression, parse_cursor_response};
 use super::devtools::{devtools_event_payload, emit_devtools_payload};
@@ -15,7 +18,7 @@ use super::network_idle::BrowserNetworkState;
 use super::recording::BrowserRecordingRegistry;
 use super::screenshot::{
     capture_screenshot_command_params, parse_capture_screenshot_response,
-    BrowserCaptureScreenshotOptions, BrowserCapturedScreenshot, BrowserScreenshotFormat,
+    BrowserCaptureScreenshotOptions, BrowserCapturedScreenshot,
 };
 use super::selection::{parse_copy_selection_response, selection_eval_expression};
 use super::session_launch::{
@@ -51,6 +54,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
+
+use pending::PendingKind;
+
 const CEF_REMOTE_START_TIMEOUT: Duration = Duration::from_secs(30);
 const CEF_TARGET_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone)]
@@ -516,40 +522,6 @@ impl BrowserSession {
                 error
             })
     }
-}
-
-enum PendingKind {
-    StateEval,
-    CopySelection {
-        reply: Sender<std::result::Result<BrowserCopySelection, String>>,
-    },
-    Cursor {
-        reply: Sender<std::result::Result<BrowserCursor, String>>,
-    },
-    Evaluate {
-        reply: Sender<std::result::Result<BrowserEvaluation, String>>,
-    },
-    CaptureScreenshot {
-        format: BrowserScreenshotFormat,
-        reply: Sender<std::result::Result<BrowserCapturedScreenshot, String>>,
-    },
-    UploadResolve {
-        files: Vec<String>,
-        reply: UploadReply,
-    },
-    UploadPrepare {
-        object_id: String,
-        files: Vec<String>,
-        reply: UploadReply,
-    },
-    UploadSetFiles {
-        object_id: String,
-        reply: UploadReply,
-    },
-    UploadFinalize {
-        object_id: String,
-        reply: UploadReply,
-    },
 }
 
 fn run_cdp_worker(
