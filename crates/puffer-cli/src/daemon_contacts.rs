@@ -343,7 +343,7 @@ fn filtered_candidates(
     candidates.truncate(limit);
     Ok(candidates
         .into_iter()
-        .map(Candidate::into_contact)
+        .map(Candidate::into_preview_contact)
         .collect())
 }
 
@@ -383,7 +383,7 @@ fn searched_candidates(
     candidates.truncate(limit);
     Ok(candidates
         .into_iter()
-        .map(Candidate::into_contact)
+        .map(Candidate::into_preview_contact)
         .collect())
 }
 
@@ -953,6 +953,16 @@ impl Candidate {
             avatar: self.avatar,
             name: self.name,
             context: self.context,
+            score: self.score,
+        }
+    }
+
+    fn into_preview_contact(self) -> ConnectorContact {
+        ConnectorContact {
+            id: self.id,
+            avatar: None,
+            name: self.name,
+            context: Vec::new(),
             score: self.score,
         }
     }

@@ -515,6 +515,7 @@ fn contacts_list_returns_lightweight_candidate_previews() {
         .unwrap();
 
     assert!(candidate.get("context").is_none(), "{candidate:#}");
+    assert!(candidate.get("avatar").is_none(), "{candidate:#}");
     assert_eq!(candidate["name"], "Alice (@alice_smith)");
     assert!(!candidates
         .iter()
@@ -588,7 +589,19 @@ fn contacts_list_prefers_telegram_peer_cache_names() {
         .unwrap();
 
     assert_eq!(candidate["name"], "Rin Tohsaka");
-    assert_eq!(candidate["avatar"], avatar);
+    assert!(candidate.get("avatar").is_none(), "{candidate:#}");
+
+    let search = handle_contacts_search(&paths, &json!({ "query": "rin", "limit": 10 })).unwrap();
+    let search_candidate = search["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"] == "telegram@tohsakar_in")
+        .unwrap();
+    assert!(
+        search_candidate.get("avatar").is_none(),
+        "{search_candidate:#}"
+    );
 
     let saved = handle_contacts_save(
         &paths,
