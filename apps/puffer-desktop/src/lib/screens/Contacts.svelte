@@ -434,7 +434,7 @@
   }
 
   function avatarLabel(contact: SavedContact): string {
-    return contact.avatar?.trim() || "No avatar";
+    return contact.avatar?.trim() ? "Avatar saved" : "No avatar";
   }
 
   function avatarSource(value?: string | null): string | null {

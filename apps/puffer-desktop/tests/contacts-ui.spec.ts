@@ -60,6 +60,37 @@ test("contacts list lazily renders large snapshots", async ({ page }) => {
   await expect(list).toContainText("Lazy Contact 64");
 });
 
+test("contacts avatars render without exposing raw data URIs", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setContactsSnapshot({
+    contacts: [
+      {
+        id: "contact-alice",
+        name: "Alice",
+        description: "Alice sends actionable deployment and support questions.",
+        avatar: ALICE_AVATAR,
+        contact_ids: ["telegram@alice"]
+      }
+    ],
+    candidates: []
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  const row = page.locator(".pf-task-row").filter({ hasText: "Alice" });
+  await expect(row.locator(".pf-contact-avatar img")).toHaveAttribute("src", ALICE_AVATAR);
+  await expect(row).toContainText("Avatar saved");
+  await expect(row).not.toContainText(ALICE_AVATAR);
+
+  const selectedContact = page.getByRole("complementary", { name: "Selected contact" });
+  await expect(selectedContact.locator(".pf-contact-avatar img")).toHaveAttribute("src", ALICE_AVATAR);
+  await expect(selectedContact).toContainText("Avatar saved");
+  await expect(selectedContact).not.toContainText(ALICE_AVATAR);
+});
+
 test("contacts infer modal reruns only from explicit action", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setContactsSnapshot({
