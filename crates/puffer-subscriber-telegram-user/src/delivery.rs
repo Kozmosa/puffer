@@ -24,6 +24,8 @@ const DELIVERY_SOURCE_LIVE: &str = "live";
 pub(crate) struct DeliveryCursor {
     #[serde(default)]
     initialized: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_user_id: Option<i64>,
     #[serde(default)]
     chats: BTreeMap<String, i32>,
 }
@@ -65,6 +67,17 @@ impl DeliveryCursor {
     /// Marks the cursor as initialized after the startup dialog scan completes.
     pub(crate) fn mark_initialized(&mut self) {
         self.initialized = true;
+    }
+
+    /// Clears stale delivery state when the connection authenticates as a different account.
+    pub(crate) fn reset_for_account(&mut self, account_user_id: i64) -> bool {
+        if self.account_user_id == Some(account_user_id) {
+            return false;
+        }
+        self.account_user_id = Some(account_user_id);
+        self.initialized = false;
+        self.chats.clear();
+        true
     }
 
     /// Returns whether this message's chat has an existing cursor entry.
@@ -325,6 +338,21 @@ mod tests {
     #[test]
     fn delivery_cursor_defaults_to_uninitialized() {
         let cursor = DeliveryCursor::default();
+        assert!(!cursor.initialized);
+        assert_eq!(cursor.account_user_id, None);
+        assert!(cursor.chats.is_empty());
+    }
+
+    #[test]
+    fn delivery_cursor_resets_when_account_changes() {
+        let mut cursor = DeliveryCursor {
+            initialized: true,
+            account_user_id: Some(111),
+            chats: BTreeMap::from([("6156741935".to_string(), 5086)]),
+        };
+
+        assert!(cursor.reset_for_account(222));
+        assert_eq!(cursor.account_user_id, Some(222));
         assert!(!cursor.initialized);
         assert!(cursor.chats.is_empty());
     }
