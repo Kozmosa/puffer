@@ -18,16 +18,29 @@ The design does not preserve the prompt-only input schema for compatibility.
 It optimizes for clear ownership, stable validation, and future staging
 support without turning the media runtime into a generic multimodal framework.
 
+## Recheck Outcome
+
+The initial design over-modeled the problem with generic `kind`, `source`,
+`role`, and `local_path` fields. The confirmed need is narrower: BytePlus video
+generation needs ordered image reference URLs. The updated design keeps only
+`imageReferences: string[]`, where each value is a provider-usable
+`https://...` or `asset://...` reference.
+
+Local image paths are intentionally excluded from the first implementation.
+They require a separate staging subsystem that turns a local file into a public
+HTTPS URL or an approved `asset://...` reference before video generation. An
+input field that always fails would be API surface without working behavior.
+
 ## Goals
 
-- Add typed video references for BytePlus video generation.
-- Support public image URLs and BytePlus `asset://` references in the first
-  implementation.
-- Represent local image references in the input model, but require a staging
-  backend before they can be submitted to BytePlus.
+- Add image references for BytePlus video generation.
+- Support public HTTPS image URLs and BytePlus `asset://` references in the
+  first implementation.
+- Keep local image support out of the generation request until a staging
+  backend can produce a provider-fetchable HTTPS URL or `asset://` URL.
 - Keep Relaydance prompt-only until Relaydance documents or proves support for
   reference assets.
-- Keep reference inputs separate from model parameters.
+- Keep image references separate from model parameters.
 - Avoid downloading public images or inlining base64 data in generation
   requests.
 
@@ -39,45 +52,39 @@ support without turning the media runtime into a generic multimodal framework.
 - No base64 image submission in video generation requests.
 - No first implementation of object storage or asset staging.
 - No video or audio references until a provider capability requires them.
+- No first-frame or last-frame roles until a concrete workflow asks for them.
+- No local file path in the video-generation tool schema for this change.
 
 ## Input Model
 
-Replace the current prompt-only tool input with a typed reference model:
+Replace the current prompt-only tool input with a minimal image-reference
+field:
 
 ```rust
 pub struct VideoGenerationInput {
     pub prompt: String,
-    pub references: Vec<VideoReference>,
+    pub image_references: Vec<String>,
     pub parameters: BTreeMap<String, String>,
     pub purpose: Option<String>,
 }
-
-pub struct VideoReference {
-    pub kind: VideoReferenceKind,
-    pub source: VideoReferenceSource,
-    pub role: VideoReferenceRole,
-}
-
-pub enum VideoReferenceKind {
-    Image,
-}
-
-pub enum VideoReferenceSource {
-    Url(String),
-    Asset(String),
-    LocalPath(String),
-}
-
-pub enum VideoReferenceRole {
-    ReferenceImage,
-    FirstFrame,
-    LastFrame,
-}
 ```
 
-Only `Image` is included initially. Adding `Video` or `Audio` later should be
-a narrow extension to this enum and the provider capability table, not a new
-tool shape.
+The runtime boundary should carry the same field so adapters do not smuggle
+reference data through `parameters`:
+
+```rust
+pub struct ExactMediaGenerationRequest {
+    pub kind: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub operation: String,
+    pub adapter: String,
+    pub prompt: String,
+    pub image_references: Vec<String>,
+    pub parameters: BTreeMap<String, String>,
+    pub count: u8,
+}
+```
 
 The public JSON shape should be explicit and provider-neutral at the tool
 boundary:
@@ -85,13 +92,9 @@ boundary:
 ```json
 {
   "prompt": "Make image 1 wave at the camera.",
-  "references": [
-    {
-      "kind": "image",
-      "source": "url",
-      "url": "https://example.com/person.jpg",
-      "role": "reference_image"
-    }
+  "imageReferences": [
+    "https://example.com/person.jpg",
+    "asset://approved-person-asset-id"
   ],
   "parameters": {
     "duration_seconds": "5",
@@ -101,48 +104,53 @@ boundary:
 }
 ```
 
-Asset-backed VPL uses the same reference item with `source: "asset"` and an
-`asset_url` value such as `asset://approved-person-asset-id`.
+Asset-backed VPL uses the same field with a value such as
+`asset://approved-person-asset-id`.
 
-## Reference Resolution
+Reference order is meaningful. Prompts refer to `image 1`, `image 2`, and
+similar indexes, and those indexes map to `imageReferences[0]`,
+`imageReferences[1]`, and so on.
 
-Add a small `VideoReferenceResolver` before provider request construction. Its
-output is a list of resolved references where each item has:
+This is intentionally smaller than a generic `references` object. It avoids
+unused `kind`, `source`, and `role` enums while preserving a clear future path:
+add a new field or enum only when a supported workflow needs video, audio,
+first-frame, or last-frame inputs.
 
-- `kind`
-- `role`
-- a provider-usable URL string
+## Image Reference Validation
 
-Resolution rules:
+Add a small validation function before provider request construction:
 
-- `Url`
-  - Must use `https`.
+```rust
+pub(crate) fn validate_video_image_references(values: &[String]) -> Result<Vec<String>>
+```
+
+Validation rules:
+
+- HTTPS references
+  - Must use the `https` scheme.
   - Must parse as a URL.
   - Is not fetched, downloaded, or probed.
-- `Asset`
+- Asset references
   - Must use the `asset://` scheme.
   - Is not interpreted beyond scheme validation.
   - Provider-side ownership and review failures remain provider errors.
-- `LocalPath`
-  - Must resolve inside the current workspace.
-  - Must point to a regular file.
-  - Must have an allowed image extension: `jpg`, `jpeg`, `png`, or `webp`.
-  - Requires a configured staging backend before submission.
-  - Without staging, fails with a clear error:
-    `local video references require a configured media staging backend`.
+- Other values
+  - Are rejected with:
+    `VideoGeneration imageReferences[N] must be an https:// or asset:// URL`
 
-The resolver is the only layer that knows about local files. Provider adapters
-only receive HTTPS URLs or `asset://` URLs.
+Local paths are intentionally not accepted here. A later staging feature should
+turn local files into HTTPS or `asset://` references before calling
+VideoGeneration.
 
 ## BytePlus Request Construction
 
-Change `BytePlusVideoRequest` to hold typed content items instead of a plain
-prompt:
+Change `BytePlusVideoRequest` to hold image references alongside the prompt:
 
 ```rust
 pub struct BytePlusVideoRequest {
     pub model: String,
-    pub content: Vec<BytePlusContentItem>,
+    pub prompt: String,
+    pub image_references: Vec<String>,
     pub params: Vec<(String, Value)>,
 }
 ```
@@ -156,15 +164,14 @@ For text-only generation, build the same single text item as today:
 }
 ```
 
-For image references, append one `image_url` item per resolved reference:
+For image references, append one `image_url` item per validated reference:
 
 ```json
 {
   "type": "image_url",
   "image_url": {
     "url": "https://example.com/person.jpg"
-  },
-  "role": "reference_image"
+  }
 }
 ```
 
@@ -175,8 +182,7 @@ VPL uses the same item shape with `asset://...` as the URL:
   "type": "image_url",
   "image_url": {
     "url": "asset://approved-person-asset-id"
-  },
-  "role": "reference_image"
+  }
 }
 ```
 
@@ -189,8 +195,7 @@ The BytePlus request body remains:
     { "type": "text", "text": "..." },
     {
       "type": "image_url",
-      "image_url": { "url": "https://... or asset://..." },
-      "role": "reference_image"
+      "image_url": { "url": "https://... or asset://..." }
     }
   ],
   "duration": 5,
@@ -207,10 +212,10 @@ declares that parameter.
 ## Relaydance Behavior
 
 Relaydance remains prompt-only. If the selected provider is Relaydance and
-`references` is non-empty, request building fails before any HTTP call:
+`image_references` is non-empty, request building fails before any HTTP call:
 
 ```text
-provider relaydance does not support video references
+provider relaydance does not support video image references
 ```
 
 This avoids silently dropping references and avoids assuming Relaydance shares
@@ -221,11 +226,8 @@ BytePlus asset namespaces or content semantics.
 Errors should fail as early as possible:
 
 - Empty prompt: tool input validation.
-- Unknown reference fields: deserialization validation.
-- Invalid `kind`, `source`, or `role`: deserialization validation.
-- Invalid HTTPS URL or `asset://` URL: reference resolution.
-- Unsafe or missing local file: reference resolution.
-- Missing staging backend for local files: reference resolution.
+- Unknown fields: deserialization validation.
+- Invalid HTTPS URL or `asset://` URL: reference validation.
 - Unsupported provider reference capability: provider request building.
 - BytePlus moderation or generation failure: provider response handling with
   provider, model, adapter, and task context.
@@ -237,7 +239,8 @@ Puffer context for debugging.
 
 - Do not download public image URLs for validation.
 - Do not inline local files as base64.
-- Keep local file staging outside the provider adapter.
+- Keep local file staging outside the video-generation tool and provider
+  adapter.
 - Keep request construction deterministic and allocation-light.
 - Cache staged local files in a future staging backend by file identity and
   content digest, not by prompt.
@@ -248,23 +251,18 @@ Puffer context for debugging.
 
 Unit coverage:
 
-- `VideoGenerationInput` accepts typed references.
+- `VideoGenerationInput` accepts `imageReferences`.
 - Unknown input fields are rejected.
 - Empty prompt is rejected.
-- Invalid reference kind, source, and role are rejected.
-- HTTPS URL references resolve without network access.
+- HTTPS URL references validate without network access.
 - HTTP URL references are rejected.
-- `asset://` references resolve.
-- Local paths outside the workspace are rejected.
-- Missing local files are rejected.
-- Local files without staging fail with the configured staging error.
+- `asset://` references validate.
+- Local-looking paths are rejected by the image-reference URL validator.
 - BytePlus text-only requests still produce one text content item.
 - BytePlus public image references serialize to `content[].image_url.url`.
 - BytePlus asset references serialize to `asset://...`.
-- BytePlus roles serialize as `reference_image`, `first_frame`, and
-  `last_frame`.
 - BytePlus numeric parameters such as `duration` remain numeric.
-- Relaydance rejects non-empty references before submission.
+- Relaydance rejects non-empty `imageReferences` before submission.
 - Relaydance prompt-only request bodies remain unchanged.
 
 Integration-style fake HTTP coverage:
@@ -277,13 +275,17 @@ No real BytePlus or Relaydance calls are required for this change.
 
 ## Rollout Order
 
-1. Replace the video generation tool schema with typed `references`.
-2. Add `VideoReferenceResolver` with URL, asset, and local validation.
-3. Change BytePlus request construction from prompt-only to typed content.
-4. Reject references for Relaydance.
-5. Add focused unit and fake HTTP tests.
-6. Add a later staging backend design for true local image upload support.
+1. Add `imageReferences` to the video generation tool schema and CLI boundary.
+2. Add URL validation for HTTPS and `asset://` image references.
+3. Add `image_references` to `ExactMediaGenerationRequest`.
+4. Change BytePlus request construction to append `image_url` content items.
+5. Reject `imageReferences` for Relaydance.
+6. Update the video-generation skill text so agents know BytePlus supports
+   public image URLs and `asset://` references while local paths require
+   staging outside this tool.
+7. Add focused unit and fake HTTP tests.
+8. Add component update specs for the touched crates.
 
-The first implementation should support public URL and asset references end to
-end, validate local images, and return a clear staging error for local images
-until a staging backend exists.
+The first implementation should support public HTTPS and asset references end
+to end. Local image upload should be a separate staging design and should not
+be represented as a half-supported video-generation input.
