@@ -14,6 +14,7 @@
     saveMonitorMemory,
     type ModelDescriptorInfo
   } from "../api/desktop";
+  import { normalizeContactIds } from "../contactIds";
   import Icon from "../design/Icon.svelte";
   import { providerIsAvailableForAgent, providerIdsEquivalent } from "../providerIds";
   import type {
@@ -555,7 +556,7 @@
       const next = await createMonitor(
         selectedMonitorConnection,
         selectedModel || null,
-        normalizedContactIds(selectedMonitorContactIds)
+        normalizeContactIds(selectedMonitorContactIds)
       );
       applySnapshot(next);
       showTaskConfig = false;
@@ -740,7 +741,7 @@
     const usedIds = new Set<string>();
     const choices: ContactChoice[] = [];
     for (const contact of contactSnapshot.contacts) {
-      const ids = normalizedContactIds(contact.contact_ids);
+      const ids = normalizeContactIds(contact.contact_ids);
       if (ids.length === 0) continue;
       ids.forEach((id) => usedIds.add(id));
       choices.push({
@@ -752,7 +753,7 @@
       });
     }
     for (const candidate of contactSnapshot.candidates.slice(0, 40)) {
-      const ids = normalizedContactIds([candidate.id]);
+      const ids = normalizeContactIds([candidate.id]);
       if (ids.length === 0 || usedIds.has(ids[0])) continue;
       choices.push({
         key: `candidate:${candidate.id}`,
@@ -769,20 +770,8 @@
     return candidate.name?.trim() || candidate.id;
   }
 
-  function normalizedContactIds(ids: string[]): string[] {
-    const seen = new Set<string>();
-    const normalized: string[] = [];
-    for (const id of ids) {
-      const trimmed = id.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      normalized.push(trimmed);
-    }
-    return normalized;
-  }
-
   function monitorContactScopeLabel(ids: string[]): string {
-    const count = normalizedContactIds(ids).length;
+    const count = normalizeContactIds(ids).length;
     if (count === 0) return "all contacts";
     return count === 1 ? "1 contact id" : `${count} contact ids`;
   }
@@ -801,7 +790,7 @@
         next.delete(id);
       }
     }
-    selectedMonitorContactIds = normalizedContactIds(Array.from(next)).sort();
+    selectedMonitorContactIds = normalizeContactIds(Array.from(next));
   }
 
   function clearContactScope() {

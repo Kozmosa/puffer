@@ -30,11 +30,11 @@ test("contacts tab saves a user-curated contact", async ({ page }) => {
   await dialog.getByRole("button", { name: /^Create$/ }).click();
 
   const request = await daemon.waitForRequest("contacts_save");
-  expect(request.params.contact_ids).toEqual(["telegram@alice", "google@alice@example.com"]);
+  expect(request.params.contact_ids).toEqual(["google@alice@example.com", "telegram@alice"]);
   await expect(selectedContact).toContainText("Launch Alice");
 });
 
-test("contacts save selects the backend-normalized saved contact", async ({ page }) => {
+test("contacts save selects the sanitized backend-normalized saved contact", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setContactsSnapshot({
     contacts: [
@@ -58,11 +58,11 @@ test("contacts save selects the backend-normalized saved contact", async ({ page
   const dialog = page.getByRole("dialog", { name: "Create contact" });
   await dialog.getByLabel("Name").fill("Casey");
   await dialog.getByLabel("Description").fill("Casey has a normalized Telegram id.");
-  await dialog.getByLabel("Contact IDs").fill("Telegram@@Casey");
+  await dialog.getByLabel("Contact IDs").fill("not-a-contact\nTelegram@@Casey\ntelegram@12345\nTelegram@@Casey");
   await dialog.getByRole("button", { name: /^Create$/ }).click();
 
   const request = await daemon.waitForRequest("contacts_save");
-  expect(request.params.contact_ids).toEqual(["Telegram@@Casey"]);
+  expect(request.params.contact_ids).toEqual(["telegram@casey"]);
   const selectedContact = page.getByRole("complementary", { name: "Selected contact" });
   await expect(selectedContact).toContainText("Casey");
   await expect(selectedContact).toContainText("telegram@casey");
@@ -97,7 +97,7 @@ test("contacts save replaces an existing saved identity", async ({ page }) => {
   await dialog.getByRole("button", { name: /^Create$/ }).click();
 
   const request = await daemon.waitForRequest("contacts_save");
-  expect(request.params.contact_ids).toEqual(["Telegram@@Alice"]);
+  expect(request.params.contact_ids).toEqual(["telegram@alice"]);
   await expect(page.getByRole("heading", { name: "Contacts 1" })).toBeVisible();
   const selectedContact = page.getByRole("complementary", { name: "Selected contact" });
   await expect(selectedContact).toContainText("Alice Work");

@@ -400,7 +400,7 @@ test("task monitor configuration keeps bottom content reachable when it overflow
       name: `Contact ${index + 1}`,
       description: `Fixture contact ${index + 1}`,
       avatar: null,
-      contact_ids: [`telegram@contact-${index}`]
+      contact_ids: [`telegram@contact_${index}`]
     })),
     candidates: []
   });

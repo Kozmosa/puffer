@@ -11,6 +11,7 @@
     type ContactInferTracePayload
   } from "../api/desktop";
   import MessageBody from "../components/MessageBody.svelte";
+  import { contactIdsKey, normalizeContactIds } from "../contactIds";
   import Icon from "../design/Icon.svelte";
   import ToolCard from "./agent/ToolCard.svelte";
   import type {
@@ -26,7 +27,6 @@
   type ContactInferTraceRole = Extract<ContactInferTracePayload, { type: "message" }>["role"];
 
   const CONTACT_PAGE_SIZE = 40;
-  const CONTACT_ID_PREFIXES = new Set(["telegram", "google", "slack", "discord", "matrix", "lark"]);
 
   let loading = $state(false);
   let inferring = $state(false);
@@ -61,7 +61,7 @@
   let remainingContactCount = $derived(Math.max(0, visibleContacts.length - renderedContacts.length));
   let selectedContact = $derived(selectedContactValue());
   let totalContactIds = $derived(
-    snapshot.contacts.reduce((sum, contact) => sum + normalizedContactIds(contact.contact_ids).length, 0)
+    snapshot.contacts.reduce((sum, contact) => sum + normalizeContactIds(contact.contact_ids).length, 0)
   );
   let describedCount = $derived(snapshot.contacts.filter((contact) => contact.description.trim()).length);
   let avatarCount = $derived(snapshot.contacts.filter((contact) => contact.avatar?.trim()).length);
@@ -381,41 +381,12 @@
   }
 
   function parsedContactIds(): string[] {
-    return normalizedContactIds(contactIdsText.split(/[,\n]/));
-  }
-
-  function normalizedContactIds(ids: string[]): string[] {
-    const seen = new Set<string>();
-    const normalized: string[] = [];
-    for (const id of ids) {
-      const trimmed = id.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      normalized.push(trimmed);
-    }
-    return normalized;
+    return normalizeContactIds(contactIdsText.split(/[,\n]/));
   }
 
   function findSavedContact(contacts: SavedContact[], contactName: string, ids: string[]): SavedContact | null {
-    const wanted = canonicalContactIds(ids);
-    return contacts.find((contact) => contact.name === contactName && canonicalContactIds(contact.contact_ids) === wanted) ?? null;
-  }
-
-  function canonicalContactIds(ids: string[]): string {
-    return [...new Set(normalizedContactIds(ids).map(contactIdComparisonKey))].sort().join("\n");
-  }
-
-  function contactIdComparisonKey(value: string): string {
-    const trimmed = value.trim();
-    const atIndex = trimmed.indexOf("@");
-    if (atIndex <= 0) return trimmed;
-    const prefix = trimmed.slice(0, atIndex).trim().toLowerCase();
-    if (!CONTACT_ID_PREFIXES.has(prefix)) return trimmed;
-    let suffix = trimmed.slice(atIndex + 1).trim().replace(/^@+/, "");
-    if (!suffix || /[\s\x00-\x1f\x7f]/.test(suffix)) return trimmed;
-    if (prefix === "telegram") suffix = suffix.toLowerCase();
-    if (prefix === "google") suffix = suffix.toLowerCase();
-    return `${prefix}@${suffix}`;
+    const wanted = contactIdsKey(ids);
+    return contacts.find((contact) => contact.name === contactName && contactIdsKey(contact.contact_ids) === wanted) ?? null;
   }
 
   function selectContact(id: string) {
@@ -429,16 +400,16 @@
   }
 
   function contactIdCountLabel(contact: SavedContact): string {
-    const count = normalizedContactIds(contact.contact_ids).length;
+    const count = normalizeContactIds(contact.contact_ids).length;
     return count === 1 ? "1 id" : `${count} ids`;
   }
 
   function primaryContactId(contact: SavedContact): string {
-    return normalizedContactIds(contact.contact_ids)[0] ?? "no-id";
+    return normalizeContactIds(contact.contact_ids)[0] ?? "no-id";
   }
 
   function remainingContactIdLabel(contact: SavedContact): string {
-    const count = normalizedContactIds(contact.contact_ids).length;
+    const count = normalizeContactIds(contact.contact_ids).length;
     if (count <= 1) return "primary";
     return `+${count - 1} more`;
   }
@@ -688,7 +659,7 @@
             <span>{contactIdCountLabel(detailContact)}</span>
           </div>
           <div class="pf-contact-id-list">
-            {#each normalizedContactIds(detailContact.contact_ids) as id (id)}
+            {#each normalizeContactIds(detailContact.contact_ids) as id (id)}
               <code>{id}</code>
             {/each}
           </div>
@@ -913,7 +884,7 @@
                       <strong>{proposal.name}</strong>
                       <p>{proposal.description || "No description."}</p>
                       <div class="pf-contact-id-list">
-                        {#each normalizedContactIds(proposal.contact_ids) as id (id)}
+                        {#each normalizeContactIds(proposal.contact_ids) as id (id)}
                           <code>{id}</code>
                         {/each}
                       </div>

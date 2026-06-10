@@ -1,4 +1,5 @@
 import type { Page, WebSocketRoute } from "@playwright/test";
+import { normalizeContactIds } from "../../src/lib/contactIds";
 
 export const FAKE_DAEMON_URL = "ws://127.0.0.1:17777/ws";
 
@@ -121,39 +122,16 @@ const ONE_PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==";
 
 const now = Date.now();
-const CONTACT_ID_PREFIXES = new Set(["telegram", "google", "slack", "discord", "matrix", "lark"]);
-
-function normalizedContactId(value: unknown): string | null {
-  const trimmed = String(value).trim();
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex <= 0) return null;
-  const prefix = trimmed.slice(0, atIndex).trim().toLowerCase();
-  if (!CONTACT_ID_PREFIXES.has(prefix)) return null;
-  let suffix = trimmed.slice(atIndex + 1).trim().replace(/^@+/, "");
-  if (!suffix || /[\s\x00-\x1f\x7f]/.test(suffix)) return null;
-  if (prefix === "telegram") {
-    suffix = suffix.toLowerCase();
-    if (/^\d+$/.test(suffix) || !/^[a-z0-9_]+$/.test(suffix)) return null;
-  }
-  if (prefix === "google") suffix = suffix.toLowerCase();
-  return `${prefix}@${suffix}`;
-}
-
-function normalizedContactIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.map(normalizedContactId).filter((id): id is string => id !== null))).sort();
-}
-
 function overlapsContactIds(record: JsonRecord, contactIds: string[]): boolean {
   const saved = new Set(contactIds);
-  return normalizedContactIds(record.contact_ids).some((id) => saved.has(id));
+  return normalizeContactIds(record.contact_ids).some((id) => saved.has(id));
 }
 
 function mergedOverlappingContactIds(contacts: JsonRecord[], savedId: string, contactIds: string[]): string[] {
   const merged = [...contactIds];
   for (const contact of contacts) {
     if (String(contact.id ?? "") === savedId || !overlapsContactIds(contact, contactIds)) continue;
-    merged.push(...normalizedContactIds(contact.contact_ids));
+    merged.push(...normalizeContactIds(contact.contact_ids));
   }
   return Array.from(new Set(merged)).sort();
 }
@@ -1639,7 +1617,7 @@ export class FakeDaemon {
     const contactIds = mergedOverlappingContactIds(
       this.contactsSnapshot.contacts,
       id,
-      normalizedContactIds(params.contact_ids)
+      normalizeContactIds(params.contact_ids)
     );
     if (contactIds.length === 0) throw new Error("missing contact ids");
     const contact = {
@@ -1674,7 +1652,7 @@ export class FakeDaemon {
 
   private inferContacts(params: JsonRecord): JsonRecord {
     const limit = Math.max(1, Number(params.limit ?? 30) || 30);
-    const savedContactIds = normalizedContactIds(
+    const savedContactIds = normalizeContactIds(
       this.contactsSnapshot.contacts.flatMap((contact) =>
         Array.isArray(contact.contact_ids) ? contact.contact_ids : []
       )
