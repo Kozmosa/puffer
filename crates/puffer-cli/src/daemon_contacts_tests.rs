@@ -792,6 +792,22 @@ fn contacts_context_returns_marked_telegram_destination_context() {
 }
 
 #[test]
+fn contacts_context_rejects_empty_or_invalid_contact_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_config_paths(temp.path());
+
+    for params in [
+        json!({ "contact_ids": [] }),
+        json!({ "contact_ids": ["not-a-contact"] }),
+    ] {
+        let error = handle_contacts_context(&paths, &params).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("contact context requires at least one valid contact id"));
+    }
+}
+
+#[test]
 fn contact_infer_prompt_omits_selection_guidance_block() {
     let prompt = contact_infer_system_prompt();
 

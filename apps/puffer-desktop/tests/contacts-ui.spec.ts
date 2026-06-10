@@ -109,7 +109,7 @@ test("contacts save replaces an existing saved identity", async ({ page }) => {
 test("contacts list lazily renders large snapshots", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setContactsSnapshot({
-    contacts: Array.from({ length: 65 }, (_, index) => ({
+    contacts: Array.from({ length: 95 }, (_, index) => ({
       id: `contact-lazy-${index}`,
       name: `Lazy Contact ${index}`,
       description: `Contact ${index} should not render until its batch is loaded.`,
@@ -126,10 +126,12 @@ test("contacts list lazily renders large snapshots", async ({ page }) => {
 
   const list = page.getByLabel("Contact list");
   await expect(list.locator(".pf-task-row")).toHaveCount(40);
-  await expect(list).not.toContainText("Lazy Contact 64");
-  await list.getByRole("button", { name: "Load 25 more contacts" }).scrollIntoViewIfNeeded();
-  await expect(list.locator(".pf-task-row")).toHaveCount(65);
-  await expect(list).toContainText("Lazy Contact 64");
+  await expect(list).not.toContainText("Lazy Contact 94");
+  await list.getByRole("button", { name: "Load 55 more contacts" }).scrollIntoViewIfNeeded();
+  await expect(list.locator(".pf-task-row")).toHaveCount(80);
+  await list.getByRole("button", { name: "Load 15 more contacts" }).scrollIntoViewIfNeeded();
+  await expect(list.locator(".pf-task-row")).toHaveCount(95);
+  await expect(list).toContainText("Lazy Contact 94");
 });
 
 test("contacts avatars render without exposing raw data URIs", async ({ page }) => {
