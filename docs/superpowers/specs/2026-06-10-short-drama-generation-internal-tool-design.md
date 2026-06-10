@@ -4,29 +4,46 @@ Date: 2026-06-10
 
 ## Summary
 
-Puffer should add a product-grade `ShortDramaGeneration` internal tool for one
-click short-drama project package generation.
+Puffer should add a product-grade `ShortDramaGeneration` internal tool for
+one-click short-drama project package generation.
 
-The first version produces a durable project package, not a final composed MP4.
-It plans the story, writes inspectable script and shot artifacts, generates one
-video artifact per shot through the existing media runtime, and returns a
-compact summary with retryable failures.
+The first implementation should be a deterministic package-and-render
+orchestrator. It should not call an LLM from inside the runtime. The companion
+skill turns the user's natural-language brief into a strict short-drama plan,
+then calls the `shortdrama` helper. The internal tool validates that plan,
+persists inspectable project files, generates one video artifact per shot
+through the existing `VideoGeneration` runtime path, updates a manifest after
+each shot, and returns a compact JSON summary.
 
-This is intentionally a thin orchestrator. It should not become a generic media
-workflow engine, background queue, video compositor, or provider adapter layer.
+This keeps the product useful while avoiding a generic media workflow engine,
+background queue, provider abstraction layer, video compositor, or hidden
+agent-loop inside tool execution.
+
+## Recheck Outcome
+
+The design was narrowed before implementation planning:
+
+- Do not perform runtime-internal LLM planning. Agent-side skill guidance owns
+  story and shot planning.
+- Do not generate keyframes in the first version. That would pull in image
+  generation without a supported local-image-to-video handoff.
+- Do not expose provider-neutral duration, aspect, or resolution fields that
+  require cross-provider translation. Forward optional scalar video parameters
+  exactly like `VideoGeneration`.
+- Do not create `artifacts.json`; artifact references live in `manifest.json`
+  and the returned summary.
+- Do not add concurrency, automatic retries, final composition, subtitles,
+  audio, a database, or a job queue.
 
 ## Product Contract
 
-The tool accepts a short natural-language brief and creates:
+From the user's perspective, one natural-language request can create a short
+drama package. Internally, the agent performs two deterministic steps:
 
-- a stable short drama id
-- a readable script and character/style notes
-- a structured shot list
-- one prompt file per generated shot
-- generated media artifact references for successful shots
-- a manifest that records project, shot, artifact, and failure state
+1. The `short-drama-generation` skill writes a strict JSON plan from the brief.
+2. The `shortdrama` helper sends that plan to the internal runtime tool.
 
-The package lives under:
+The project package lives under:
 
 ```text
 .puffer/media/short-dramas/<short_drama_id>/
@@ -35,60 +52,125 @@ The package lives under:
   shots.json
   prompts/
     shot-001-video.md
-    shot-001-keyframe.md  # only when keyframes are enabled
-  artifacts.json
+    shot-002-video.md
 ```
 
-The first version does not promise:
+The package includes:
 
-- final video concatenation
+- a stable generated short-drama id
+- the original brief and normalized plan metadata
+- readable script, character, style, and continuity notes
+- a structured shot list
+- one video prompt file per shot
+- generated video artifact references for successful shots
+- shot-level failure records for unsuccessful shots
+
+The first implementation does not promise:
+
+- final MP4 concatenation
 - subtitles or burned captions
 - voiceover, music, or audio mixing
+- keyframe or image generation
+- local image staging for video references
 - automatic asset upload
-- background job recovery
+- automatic retries or retry commands
+- background recovery
 - arbitrary long-form productions
+
+## Internal Tool And Skill Boundary
+
+The companion skill is agent-facing process guidance. It decides when the
+workflow applies, maps the user's brief into the strict plan shape, writes the
+plan file, calls `shortdrama`, and explains the resulting package.
+
+The internal tool is deterministic product logic. It validates input, writes
+package files, calls the existing video generation runtime, records partial
+success, and returns machine-readable output.
+
+The internal tool must not:
+
+- ask the model to repair or rewrite the plan
+- recursively invoke `shortdrama`, `videogen`, shell, or Bash
+- synthesize placeholder artifacts
+- hide failed shots behind a successful prose message
 
 ## Recommended User-Facing Flow
 
-The agent uses a thin companion skill to call a helper alias:
+The skill writes a workspace-relative JSON plan file, then calls:
 
 ```bash
-shortdrama --brief "60 second vertical suspense short drama about ..."
+shortdrama \
+  --brief "60 second vertical suspense short drama about ..." \
+  --plan-file .puffer/tmp/short-drama-plan.json \
+  --video-parameters-json '{"duration":"5","aspect_ratio":"9:16"}'
 ```
 
-The helper forwards to the internal CLI command, which sends a structured
-execution request to the parent runtime. The runtime performs all validation,
-planning, media generation, manifest persistence, and summary rendering.
+`--video-parameters-json` is optional. Its keys and scalar values are forwarded
+unchanged to `VideoGeneration.parameters`. If a configured provider does not
+support one of those parameters, the existing video runtime returns the error.
 
 ## Input Schema
 
-The internal tool schema should stay small:
+The runtime payload should be explicit:
 
 ```json
 {
   "brief": "string",
-  "targetDurationSeconds": 60,
-  "aspect": "9:16",
-  "style": "realistic vertical short drama",
-  "shotDurationSeconds": 5,
-  "generateKeyframes": false,
-  "maxShots": 12,
+  "plan": {
+    "title": "string",
+    "logline": "string",
+    "targetDurationSeconds": 60,
+    "styleBible": "string",
+    "continuityNotes": "string",
+    "characters": [
+      {
+        "name": "string",
+        "description": "string"
+      }
+    ],
+    "shots": [
+      {
+        "shotId": "shot-001",
+        "durationHintSeconds": 5,
+        "scriptBeat": "string",
+        "scene": "string",
+        "camera": "string",
+        "continuity": "string",
+        "videoPrompt": "string"
+      }
+    ]
+  },
+  "videoParameters": {
+    "duration": "5",
+    "aspect_ratio": "9:16"
+  },
   "purpose": "short-drama-package"
 }
 ```
 
 Rules:
 
-- `brief` is required.
-- All other fields have defaults.
-- `targetDurationSeconds` guides planning but does not guarantee exact final
-  runtime.
-- `shotDurationSeconds` must map to selected video provider capability values.
-- `maxShots` defaults to `12` and has an absolute cap of `20`.
-- `targetDurationSeconds` has an absolute cap of `180`.
-- `generateKeyframes` defaults to `false` because local generated images cannot
-  currently be passed directly to `VideoGeneration`; only public `https://` or
-  approved `asset://` references are supported by the existing video path.
+- `brief`, `plan.title`, `plan.logline`, `plan.styleBible`,
+  `plan.continuityNotes`, and `plan.shots` are required.
+- `plan.shots` must contain 1 to 20 shots.
+- Every shot requires `shotId`, `scriptBeat`, `scene`, `camera`, `continuity`,
+  and `videoPrompt`.
+- `shotId` must be unique and match `shot-001` style lowercase ids.
+- `targetDurationSeconds` is metadata only and has an absolute cap of `180`.
+- `durationHintSeconds` is metadata only and has an absolute cap of `30`.
+- `videoParameters` accepts only string, number, or boolean values, matching
+  `VideoGeneration.parameters`.
+- The tool does not accept `imageReferences` in the first version. Users who
+  need image-referenced video clips should use `videogen` directly.
+- Prompt text limits:
+  - `brief`: 4,000 characters
+  - `styleBible`: 4,000 characters
+  - `continuityNotes`: 4,000 characters
+  - one `videoPrompt`: 8,000 characters
+
+The CLI should accept `--plan-file` instead of requiring a huge shell argument.
+It parses the file as JSON, sends the `plan` object in the internal execution
+request, and preserves `--brief`, `--video-parameters-json`, and `--purpose`.
 
 ## State Model
 
@@ -96,13 +178,12 @@ Use one project-level status and one shot-level status.
 
 Project statuses:
 
-- `planned`: script, shots, and prompt files are persisted; media generation has
-  not started.
-- `running`: at least one media call is in progress or has completed while other
-  shots remain.
-- `succeeded`: every required shot has a video artifact.
+- `planned`: package files are written and media generation has not started.
+- `running`: at least one shot is in progress or complete while other shots
+  remain.
+- `succeeded`: every shot has a video artifact.
 - `partial`: at least one shot succeeded and at least one shot failed.
-- `failed`: planning failed or no usable video artifacts were produced.
+- `failed`: no shot produced a usable video artifact after package creation.
 
 Shot statuses:
 
@@ -111,8 +192,49 @@ Shot statuses:
 - `succeeded`
 - `failed`
 
-`partial` is a first-class successful product outcome: the user can inspect the
-package and retry failed shots later.
+Validation errors before package creation are internal tool execution failures.
+After the package directory exists, the tool should return a JSON summary even
+for `partial` or `failed` project status so the user can inspect persisted
+state.
+
+## Manifest Contract
+
+`manifest.json` is the durable source of truth:
+
+```json
+{
+  "manifestVersion": 1,
+  "shortDramaId": "suspense-door-20260610-abc123",
+  "status": "partial",
+  "createdAtMs": 1781097600000,
+  "updatedAtMs": 1781097700000,
+  "brief": "string",
+  "title": "string",
+  "videoParameters": {
+    "duration": "5"
+  },
+  "shots": [
+    {
+      "shotId": "shot-001",
+      "status": "succeeded",
+      "promptPath": "prompts/shot-001-video.md",
+      "artifact": {
+        "artifactId": "artifact-video-1",
+        "jobId": "job-video-1",
+        "path": ".puffer/media/videos/...",
+        "mimeType": "video/mp4",
+        "size": 12345
+      },
+      "error": null,
+      "retryable": false
+    }
+  ]
+}
+```
+
+Write `manifest.json` with a temp-file-and-rename pattern. Update it after
+every shot so an interrupted run leaves the latest known state. Do not overwrite
+an existing project directory with the same id.
 
 ## Runtime Architecture
 
@@ -122,65 +244,68 @@ Add these focused pieces:
   - Defines `ShortDramaGeneration`, aliases, schema, approval policy, network
     sandbox, and media display grouping.
 - `resources/skills/short-drama-generation/SKILL.md`
-  - Teaches the agent when to call `shortdrama`, how to map user language to the
-    schema, and how to explain the returned project package.
+  - Teaches the agent when to use `shortdrama`, how to produce the strict plan,
+    how to call the helper, and how to explain partial output.
 - `crates/puffer-tools/src/internal_tools.rs`
-  - Adds the stable CLI-only descriptor and helper alias `shortdrama`.
-- `crates/puffer-cli/src/short_drama_internal_tools.rs`
-  - Parses CLI args and builds the JSON payload. It contains no business logic.
+  - Adds the CLI-only descriptor and helper alias `shortdrama`.
+- `crates/puffer-cli/src/media_internal_tools.rs`
+  - Adds `ShortDramaGenerationArgs`, parses `--plan-file` and
+    `--video-parameters-json`, and builds the JSON payload. It contains no
+    business logic.
 - `crates/puffer-cli/src/cli_args.rs`
-  - Adds the hidden internal command.
+  - Adds the hidden internal command and alias.
 - `crates/puffer-core/runtime/internal_tool_permissions.rs`
-  - Dispatches canonical `shortdramageneration` requests to the workflow
-    executor after normal internal permission resolution.
+  - Routes canonical `shortdramageneration` requests through normal internal
+    permission resolution and then to the workflow executor.
 - `crates/puffer-core/runtime/claude_tools/workflow/short_drama_generation.rs`
-  - Owns validation, planning, project package persistence, media runtime calls,
-    manifest updates, and summary output.
+  - Owns validation, package persistence, direct `VideoGeneration` runtime
+    calls, manifest updates, and summary output.
+- `crates/puffer-core/media_runtime_internal_tools.rs`
+  - Treats `shortdrama` as a generated video helper for timeline attachment
+    extraction if the summary contains video artifacts.
 
-Do not add a new crate, database, generic project engine, or media job system in
-the first version.
+Do not add a new crate, database, generic project engine, public provider
+planning API, or background job system.
 
 ## Execution Flow
 
-1. Validate input and current media settings.
-   - Reject empty briefs.
-   - Reject over-limit duration or shot counts.
-   - Reject unsupported video duration, aspect, or resolution values before any
-     media generation starts.
-   - Require configured video media provider, model, operation, and adapter.
+1. CLI boundary.
+   - Read `--plan-file` from a safe workspace-relative path.
+   - Parse `--plan-file` and `--video-parameters-json` as JSON.
+   - Send `brief`, `plan`, `videoParameters`, and `purpose` to the parent
+     runtime.
 
-2. Plan the short drama package.
-   - Produce a strict structured plan with title, logline, characters, style
-     bible, continuity notes, and shots.
-   - Each shot receives a stable `shotId`, intent, scene description, camera
-     direction, continuity notes, and video prompt seed.
-   - Parse the plan strictly. Allow at most one repair attempt. Do not loop
-     indefinitely.
+2. Permission and preflight.
+   - Use the standard internal permission path.
+   - Reject empty briefs, invalid plan shape, over-limit shot counts, duplicate
+     shot ids, non-scalar video parameters, and missing video media config
+     before creating the project directory.
 
-3. Persist planning artifacts.
+3. Package creation.
+   - Generate a short-drama id from a title slug, current date/time, and a short
+     random suffix.
    - Create the project directory.
-   - Write initial `manifest.json`.
+   - Write initial `manifest.json` with `planned` status.
    - Write `script.md`, `shots.json`, and `prompts/*.md`.
-   - Persist before media generation so failures leave inspectable state.
 
-4. Generate media.
-   - Run serially in the first version.
-   - Optionally generate keyframes and record their artifacts, but do not require
-     video generation to consume those keyframes.
-   - Generate one video per shot using the existing exact media runtime, not by
-     recursively invoking shell helpers.
-   - Update `manifest.json` after every shot.
+4. Video generation.
+   - Run shots serially.
+   - For each shot, set the shot status to `running`, update the manifest, and
+     call `execute_video_generation` directly with the prompt file path,
+     forwarded scalar parameters, and purpose metadata.
+   - Parse the returned video JSON and record artifact metadata.
+   - On error, record the error and retryability on that shot.
 
-5. Return a compact JSON summary.
-   - Include `shortDramaId`, `status`, `manifestPath`, `scriptPath`,
-     `shotsTotal`, `shotsSucceeded`, `shotsFailed`, `artifacts`, and
-     `retryableFailures`.
+5. Summary.
+   - Return compact JSON containing `shortDramaId`, `status`, `manifestPath`,
+     `scriptPath`, `shotsTotal`, `shotsSucceeded`, `shotsFailed`, `artifacts`,
+     and `retryableFailures`.
 
 ## Error Handling
 
-Planning failures stop before media generation.
+Validation failures before package creation fail the internal tool call.
 
-Media failures are recorded per shot:
+Once package creation starts, media failures are recorded per shot:
 
 ```json
 {
@@ -192,64 +317,48 @@ Media failures are recorded per shot:
 }
 ```
 
-Retry classification:
+Retry classification is conservative:
 
-- Provider rate limits, timeouts, and transient network failures are retryable.
-- Invalid configuration, unsupported parameters, empty prompts, and schema
-  violations are not retryable.
+- Error messages containing rate limit, timeout, temporarily unavailable, or
+  transient network wording are retryable.
+- Invalid configuration, unsupported parameters, empty prompts, malformed plan
+  data, and schema violations are not retryable.
 
 The first version should not implement automatic retries, exponential backoff,
-or background recovery. It should expose retryable failures in the manifest and
-summary.
+or a retry command.
 
 ## Performance Strategy
 
-Use predictable serial generation in the first version.
+Use predictable serial generation.
 
 Reasons:
 
 - Video providers are the bottleneck.
-- Parallel generation increases rate-limit and partial-failure complexity.
-- Serial execution simplifies manifest updates and user-visible progress.
+- Serial execution avoids rate-limit amplification.
+- Manifest updates stay simple and reliable.
+- The first product value is inspectable project output, not maximum throughput.
 
-Keep the internal implementation structured so later work can add a bounded
-`maxConcurrency = 2` without changing the manifest format. Do not expose
-concurrency in the first version.
-
-Prompt limits:
-
-- `brief`: 4,000 characters
-- one shot video prompt: 8,000 characters
-- style bible: 4,000 characters
-- continuity notes: 4,000 characters
+Do not expose `maxConcurrency` or build an internal concurrency abstraction in
+the first implementation.
 
 ## Companion Skill
 
-Create a thin `short-drama-generation` skill with skill-creator. The skill is
-agent-facing usage guidance, not product logic.
+Create a thin `short-drama-generation` skill with `skill-creator`. The skill is
+usage guidance, not product logic.
 
 It should teach the agent:
 
-- when to use `shortdrama` instead of manual `imagegen` or `videogen` calls
-- how to map user requests into the small input schema
-- how to explain package outputs and partial failures
-- that the first version does not create final MP4 compositions
-- not to hand-author placeholder videos or imply success without artifacts
+- when to use `shortdrama` instead of manual `videogen` calls
+- how to turn the user's brief into the strict JSON plan
+- how to keep shot counts within the v1 caps
+- how to write the plan file and call the helper
+- how to explain `succeeded`, `partial`, and `failed` package statuses
+- that v1 does not create final MP4 compositions, keyframes, subtitles, audio,
+  or image-referenced videos
+- not to imply success without persisted artifacts
 
-The skill should not include scripts or assets. Avoid a `references/` directory
-unless real short-drama prompting guidance proves too large for `SKILL.md`.
-
-## Non-Goals
-
-- No final MP4 composition.
-- No subtitles, voiceover, music, or audio mixing.
-- No generic workflow engine.
-- No new provider adapter.
-- No background queue.
-- No database-backed project model.
-- No model-facing promotion of internal media tools.
-- No automatic natural-language media classification.
-- No hidden local image upload path for video references.
+The skill should not include scripts, assets, or a `references/` directory in
+the first version.
 
 ## Testing
 
@@ -257,38 +366,44 @@ Resource tests:
 
 - `ShortDramaGeneration` loads as an internal tool.
 - It is absent from normal model-facing tool definitions.
-- The `shortdrama` alias resolves through internal descriptor helpers.
-- The companion skill documents the helper alias and does not instruct direct
-  `puffer internal-tool` calls.
+- The schema requires `brief` and `plan`.
+- The skill documents `shortdrama`, `--plan-file`, and partial outputs.
+- The skill does not instruct direct `puffer internal-tool` calls.
 
 CLI tests:
 
-- CLI args serialize into the expected JSON input.
-- Invalid JSON flags fail at the CLI boundary.
+- `shortdrama --brief ... --plan-file ...` serializes into the expected JSON
+  input.
+- `--video-parameters-json` accepts scalar values and rejects objects, arrays,
+  and invalid JSON.
+- Missing or malformed plan files fail at the CLI boundary.
 - Missing parent internal execution endpoint fails clearly.
 
 Core workflow tests:
 
 - valid input creates the project directory and manifest
-- empty brief fails
-- missing video media config fails
-- unsupported parameter values fail before media generation
-- planning artifacts are persisted before first media call
-- successful shots write prompt files and artifact references
+- empty brief fails before package creation
+- invalid plans fail before package creation
+- missing video media config fails before package creation
+- planning artifacts are persisted before the first media call
+- prompt files are generated from shot plan data
+- successful shots write artifact references
 - one failed shot produces project status `partial`
-- all shot failures produce project status `failed`
+- all shot failures produce project status `failed` while returning a summary
 - manifest updates happen after each shot
-- over-limit `maxShots` and `targetDurationSeconds` are rejected
-
-Integration tests:
-
-- internal permission dispatch routes canonical `shortdramageneration` to the
-  workflow executor
-- permission denial does not start media generation
+- over-limit shot counts and durations are rejected
 - existing `ImageGeneration` and `VideoGeneration` behavior remains isolated
 
-Do not run real provider media generation in default CI. Keep live provider
-tests manual or ignored.
+Generated media preview tests:
+
+- `shortdrama ...` is detected as a supported generated video helper when it is
+  a simple helper command.
+- Raw `puffer internal-tool short-drama-generation ...` is not treated as a
+  generated media helper.
+- Shell control operators still cause command detection to reject the command.
+
+Do not run real provider media generation in default CI. Use a private test
+helper that injects a fake video executor into the short-drama workflow.
 
 ## Open Product Decisions
 
@@ -297,8 +412,9 @@ These are deliberately out of scope for the first implementation:
 - final composition command and file contract
 - retry command shape
 - UI project viewer
-- asset upload or staging for local keyframes
+- local image upload or staging
+- image-referenced short-drama shots
 - subtitle and audio generation
 
-The first version should leave these as future additions around the manifest,
-not hooks inside the initial control flow.
+The first version should leave these as future additions around
+`manifest.json`, not hooks inside the initial control flow.
