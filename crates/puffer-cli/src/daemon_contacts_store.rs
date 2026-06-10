@@ -7,14 +7,26 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+const CONTACT_STORE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct ContactStoreFile {
-    #[serde(default)]
+    #[serde(default = "contact_store_version")]
     pub(super) version: u32,
     #[serde(default)]
     pub(super) contacts: Vec<SavedContact>,
     #[serde(default)]
     pub(super) proposals: Vec<ContactProposal>,
+}
+
+impl Default for ContactStoreFile {
+    fn default() -> Self {
+        Self {
+            version: CONTACT_STORE_VERSION,
+            contacts: Vec::new(),
+            proposals: Vec::new(),
+        }
+    }
 }
 
 /// Loads saved contacts from the workspace runtime store.
@@ -39,8 +51,10 @@ pub(super) fn save_store(paths: &ConfigPaths, store: &ContactStoreFile) -> Resul
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
+    let mut persisted = store.clone();
+    normalize_store_version(&mut persisted);
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(store)?)
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&persisted)?)
         .with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
@@ -115,9 +129,16 @@ pub(super) fn prune_proposals_for_saved_contacts(store: &mut ContactStoreFile) {
 }
 
 fn sanitize_store(store: &mut ContactStoreFile) {
+    normalize_store_version(store);
     sanitize_contacts(&mut store.contacts);
     sanitize_proposals(&mut store.proposals);
     prune_proposals_for_saved_contacts(store);
+}
+
+fn normalize_store_version(store: &mut ContactStoreFile) {
+    if store.version == 0 {
+        store.version = CONTACT_STORE_VERSION;
+    }
 }
 
 fn sanitize_contacts(contacts: &mut Vec<SavedContact>) {
@@ -243,6 +264,10 @@ fn contacts_path(paths: &ConfigPaths) -> PathBuf {
         .join("contacts.json")
 }
 
+fn contact_store_version() -> u32 {
+    CONTACT_STORE_VERSION
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,20 +275,30 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn load_store_defaults_missing_proposals() {
+    fn load_store_defaults_missing_version_and_proposals() {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_config_paths(temp.path());
         let runtime_dir = paths.workspace_config_dir.join("runtime");
         std::fs::create_dir_all(&runtime_dir).unwrap();
-        std::fs::write(
-            runtime_dir.join("contacts.json"),
-            r#"{"version":1,"contacts":[]}"#,
-        )
-        .unwrap();
+        std::fs::write(runtime_dir.join("contacts.json"), r#"{"contacts":[]}"#).unwrap();
 
         let store = load_store(&paths).unwrap();
 
+        assert_eq!(store.version, CONTACT_STORE_VERSION);
         assert!(store.proposals.is_empty());
+    }
+
+    #[test]
+    fn save_store_writes_current_version_for_new_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_config_paths(temp.path());
+
+        save_store(&paths, &ContactStoreFile::default()).unwrap();
+
+        let raw = std::fs::read_to_string(paths.workspace_config_dir.join("runtime/contacts.json"))
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["version"], CONTACT_STORE_VERSION);
     }
 
     #[test]
