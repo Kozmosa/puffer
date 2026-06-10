@@ -108,19 +108,19 @@ Files:
 - `crates/puffer-resources/tests/video_tool_schema.rs`
 - `crates/puffer-tools/src/registry_visibility_tests.rs`
 
-- [ ] Move, not copy, the two media YAML manifests into
+- [x] Move, not copy, the two media YAML manifests into
   `resources/internal_tools/`.
-- [ ] Preserve canonical ids `ImageGeneration` and `VideoGeneration`.
-- [ ] Add explicit aliases:
+- [x] Preserve canonical ids `ImageGeneration` and `VideoGeneration`.
+- [x] Add explicit aliases:
   - image: `image-generation`, `imagegen`
   - video: `video-generation`, `videogen`
-- [ ] Keep handlers as `runtime:workflow:image_generation` and
+- [x] Keep handlers as `runtime:workflow:image_generation` and
   `runtime:workflow:video_generation`.
-- [ ] Keep approval and sandbox policy aligned with the current direct tools.
-- [ ] Update loader tests so image/video are asserted in
+- [x] Keep approval and sandbox policy aligned with the current direct tools.
+- [x] Update loader tests so image/video are asserted in
   `loaded.internal_tools`, not `loaded.tools`.
-- [ ] Update `video_tool_schema.rs` to read the internal tool YAML path.
-- [ ] Update registry visibility tests:
+- [x] Update `video_tool_schema.rs` to read the internal tool YAML path.
+- [x] Update registry visibility tests:
   - `registry.internal_definition("ImageGeneration")` exists.
   - alias lookup through `image-generation` and `video-generation` works.
   - `registry.definition("ImageGeneration")` and
@@ -128,9 +128,14 @@ Files:
 
 Verification:
 
-- [ ] `cargo test -p puffer-resources media_generation`
-- [ ] `cargo test -p puffer-resources video_generation_tool_schema`
-- [ ] `cargo test -p puffer-tools registry_visibility`
+- [ ] `cargo test -p puffer-resources media_generation` (blocked by missing
+  `resources/providers/minicpm5.yaml` in
+  `crates/puffer-resources/tests/image_catalog_governance.rs`; focused
+  `--test media_generation_skills` and `--lib image_generation` pass)
+- [ ] `cargo test -p puffer-resources video_generation_tool_schema` (blocked by
+  the same missing `minicpm5.yaml` fixture; focused `--test video_tool_schema`
+  and `--lib video_generation` pass)
+- [x] `cargo test -p puffer-tools registry_visibility`
 
 ## Task 2: Rewrite Existing Media Skills
 
@@ -140,31 +145,31 @@ Files:
 - `resources/skills/video-generation/SKILL.md`
 - `crates/puffer-resources/tests/media_generation_skills.rs`
 
-- [ ] Change both skills to `allowed-tools: Bash`.
-- [ ] Update descriptions so they no longer say "before calling the
+- [x] Change both skills to `allowed-tools: Bash`.
+- [x] Update descriptions so they no longer say "before calling the
   ImageGeneration/VideoGeneration tool".
-- [ ] Instruct the model to use foreground Bash only.
-- [ ] Instruct the model to set an explicit long Bash timeout, within the
+- [x] Instruct the model to use foreground Bash only.
+- [x] Instruct the model to set an explicit long Bash timeout, within the
   current Bash cap.
-- [ ] Use explicit CLI commands:
+- [x] Use explicit CLI commands:
   - `puffer internal-tool image-generation --prompt ... --count ...`
   - `puffer internal-tool video-generation --prompt ...`
-- [ ] Preserve image behavior:
+- [x] Preserve image behavior:
   - one logical request maps to one command
   - `--count` carries multi-image requests
   - prompt file paths are passed through `--prompt`
   - no handcrafted fallback art is presented as generated output
-- [ ] Preserve video behavior:
+- [x] Preserve video behavior:
   - text-to-video only
   - scalar parameters only
   - no success claim without a persisted video artifact
-- [ ] Update tests to assert Bash guidance and internal CLI references.
-- [ ] Add test text that documents `allowed-tools` as guidance, not the
+- [x] Update tests to assert Bash guidance and internal CLI references.
+- [x] Add test text that documents `allowed-tools` as guidance, not the
   enforcement boundary, if a nearby test location is suitable.
 
 Verification:
 
-- [ ] `cargo test -p puffer-resources media_generation_skills`
+- [x] `cargo test -p puffer-resources media_generation_skills`
 
 ## Task 3: Add Existing-Style Internal CLI Commands
 
@@ -175,34 +180,34 @@ Files:
 - `crates/puffer-cli/src/internal_tools.rs`
 - `crates/puffer-cli/src/subscriber_tools.rs` or a small shared helper module
 
-- [ ] Add media descriptors to `INTERNAL_CLI_TOOLS` so shell helpers and
+- [x] Add media descriptors to `INTERNAL_CLI_TOOLS` so shell helpers and
   `puffer internal-tool aliases` include `imagegen` and `videogen`.
-- [ ] Add `InternalToolCommand` variants for `image-generation` and
+- [x] Add `InternalToolCommand` variants for `image-generation` and
   `video-generation`.
-- [ ] Add CLI aliases `imagegen` and `videogen` only if they can be expressed
+- [x] Add CLI aliases `imagegen` and `videogen` only if they can be expressed
   through clap subcommand aliases without adding custom dispatch.
-- [ ] Keep CLI args explicit, not a generic JSON passthrough:
+- [x] Keep CLI args explicit, not a generic JSON passthrough:
   - image: `--prompt`, required `--count`, optional `--aspect`,
     optional `--prompt-reference`, optional `--purpose`, optional
     `--retry-from-error-json`
   - video: `--prompt`, optional `--purpose`, optional `--parameters-json`
-- [ ] Parse `--retry-from-error-json` and `--parameters-json` at the CLI
+- [x] Parse `--retry-from-error-json` and `--parameters-json` at the CLI
   boundary and let the existing backend validate media-specific rules.
-- [ ] Build the same input JSON shape currently accepted by the workflow
+- [x] Build the same input JSON shape currently accepted by the workflow
   handlers.
-- [ ] Send requests through the existing
+- [x] Send requests through the existing
   `require_internal_tool_execution_from_env` path.
-- [ ] Print successful parent output exactly once, with no human wrapper.
-- [ ] Fail outside a parent Bash broker with the existing required-endpoint
+- [x] Print successful parent output exactly once, with no human wrapper.
+- [x] Fail outside a parent Bash broker with the existing required-endpoint
   error.
-- [ ] Share the existing parent-execution helper pattern. If extraction is
+- [x] Share the existing parent-execution helper pattern. If extraction is
   needed, make it a tiny helper; do not add a command registry or plugin system.
 
 Verification:
 
-- [ ] Unit tests for media CLI argument parsing and JSON payload construction.
-- [ ] `cargo test -p puffer-tools internal_tool_shell_helpers`
-- [ ] `cargo test -p puffer-cli internal_tool`
+- [x] Unit tests for media CLI argument parsing and JSON payload construction.
+- [x] `cargo test -p puffer-tools internal_tool_shell_helpers`
+- [x] `cargo test -p puffer-cli internal_tool`
 
 ## Task 4: Thread Media Context Through Parent Internal Execution
 
@@ -211,37 +216,37 @@ Files:
 - `crates/puffer-core/runtime/claude_tools/mod.rs`
 - `crates/puffer-core/runtime/internal_tool_permissions.rs`
 
-- [ ] Extend `execute_internal_tool_request` and its result helper to accept
+- [x] Extend `execute_internal_tool_request` and its result helper to accept
   `ProviderRegistry`, `AuthStore`, and an exact media discovery cache reference
   or value.
-- [ ] At the Bash branch call site, build the discovery cache the same way the
+- [x] At the Bash branch call site, build the discovery cache the same way the
   direct workflow branch currently does:
   - clone `state.exact_media_discovery_cache`
   - fall back to `ExactMediaDiscoveryCache::empty`
-- [ ] Keep the change in `claude_tools/mod.rs` small: pass context into the
+- [x] Keep the change in `claude_tools/mod.rs` small: pass context into the
   existing call and avoid moving workflow dispatch there.
-- [ ] In `internal_tool_permissions.rs`, keep existing email, telegram, and
+- [x] In `internal_tool_permissions.rs`, keep existing email, telegram, and
   request-user-browser-action mappings intact.
-- [ ] Add explicit media branches keyed by `canonical_tool_name`:
+- [x] Add explicit media branches keyed by `canonical_tool_name`:
   - `imagegeneration`
   - `videogeneration`
-- [ ] For media branches, call the existing workflow functions directly:
+- [x] For media branches, call the existing workflow functions directly:
   - `workflow::image_generation::execute_image_generation`
   - `workflow::video_generation::execute_video_generation`
-- [ ] Build `ImageGenerationMediaContext` and `VideoGenerationMediaContext`
+- [x] Build `ImageGenerationMediaContext` and `VideoGenerationMediaContext`
   from the current providers, auth store, and discovery cache.
-- [ ] Do not expose or make public a generic
+- [x] Do not expose or make public a generic
   `execute_workflow_tool_with_media_context`.
-- [ ] Preserve internal permission behavior: every execution request still
+- [x] Preserve internal permission behavior: every execution request still
   resolves permission before running the backend.
 
 Verification:
 
-- [ ] Focused puffer-core tests for internal execution mapping.
-- [ ] A media internal execution request receives media context rather than
+- [x] Focused puffer-core tests for internal execution mapping.
+- [x] A media internal execution request receives media context rather than
   failing with "media runtime is not configured" when test providers/auth are
   supplied.
-- [ ] Existing email, telegram, and request-user-browser-action internal
+- [x] Existing email, telegram, and request-user-browser-action internal
   execution tests still pass.
 
 ## Task 5: Parse Generated Media Attachments From Bash Output
@@ -252,34 +257,34 @@ Files:
 - `apps/puffer-desktop/src-tauri/src/backend.rs`
 - related fake daemon and timeline tests
 
-- [ ] Change generated-media extraction helpers to receive `tool_id`, raw
+- [x] Change generated-media extraction helpers to receive `tool_id`, raw
   `input`, and raw `output`.
-- [ ] For new sessions, only synthesize generated media when:
+- [x] For new sessions, only synthesize generated media when:
   - `tool_id == "Bash"`
   - the Bash input JSON command is a supported media internal command or helper
     alias
   - the Bash output JSON parses
   - the parsed Bash `stdout` parses as media result JSON
-- [ ] Recognize only supported command forms:
+- [x] Recognize only supported command forms:
   - `puffer internal-tool image-generation ...`
   - `puffer internal-tool video-generation ...`
   - generated helper aliases `imagegen ...` and `videogen ...`
-- [ ] Do not parse arbitrary successful Bash JSON as generated media.
-- [ ] Reuse the existing image/video artifact constructors once the nested
+- [x] Do not parse arbitrary successful Bash JSON as generated media.
+- [x] Reuse the existing image/video artifact constructors once the nested
   media JSON is parsed.
-- [ ] Update tests that currently seed direct `ImageGeneration` or
+- [x] Update tests that currently seed direct `ImageGeneration` or
   `VideoGeneration` events to seed the new Bash shape.
-- [ ] Add negative tests for arbitrary Bash output containing media-shaped JSON.
-- [ ] Keep Tauri and CLI daemon timeline behavior aligned. If Tauri only needs
+- [x] Add negative tests for arbitrary Bash output containing media-shaped JSON.
+- [x] Keep Tauri and CLI daemon timeline behavior aligned. If Tauri only needs
   image attachments today, either add the same image+video helper or explicitly
   document why video remains daemon-only in the component spec.
-- [ ] Do not refactor the desktop daemon's deterministic `generate_media` RPC.
+- [x] Do not refactor the desktop daemon's deterministic `generate_media` RPC.
 
 Verification:
 
-- [ ] `cargo test -p puffer-cli timeline_synthesizes`
-- [ ] `cargo test -p puffer-cli generated_media`
-- [ ] `cargo test --manifest-path apps/puffer-desktop/src-tauri/Cargo.toml tauri_timeline_attaches_generated`
+- [x] `cargo test -p puffer-cli timeline_synthesizes`
+- [x] `cargo test -p puffer-cli generated_media`
+- [x] `cargo test --manifest-path apps/puffer-desktop/src-tauri/Cargo.toml tauri_timeline_attaches_generated`
   or the closest focused Tauri backend test target available in this workspace.
 
 ## Task 6: Remove Direct Model-Facing Media Surface
@@ -289,26 +294,30 @@ Files:
 - resource tests and any model-facing tool snapshots
 - any app/e2e fixtures that assumed direct model tool availability
 
-- [ ] Search for remaining assumptions that `ImageGeneration` or
+- [x] Search for remaining assumptions that `ImageGeneration` or
   `VideoGeneration` are model-facing tools.
-- [ ] Remove or update direct provider tool fixture expectations.
-- [ ] Keep backend media workflow implementation tests; they still validate the
+- [x] Remove or update direct provider tool fixture expectations.
+- [x] Keep backend media workflow implementation tests; they still validate the
   real media backend and should not be rewritten around CLI details.
-- [ ] Keep deterministic desktop `generate_media` tests if they do not depend
+- [x] Keep deterministic desktop `generate_media` tests if they do not depend
   on model-facing tool visibility.
-- [ ] Ensure prompt resources still load without relying on
+- [x] Ensure prompt resources still load without relying on
   `system_prompt.rs` changes.
 
 Verification:
 
-- [ ] Run focused searches for `ImageGeneration`, `VideoGeneration`,
+- [x] Run focused searches for `ImageGeneration`, `VideoGeneration`,
   `image_generation.yaml`, and `video_generation.yaml`; remaining hits are
   either internal tool assertions, backend workflow ids, or media runtime
-  tests, not model-facing tool or skill guidance.
-- [ ] `cargo test -p puffer-resources`
-- [ ] `cargo test -p puffer-tools`
-- [ ] `cargo test -p puffer-cli`
-- [ ] `cargo test -p puffer-core`
+  tests, not model-facing tool or skill guidance. Old `resources/tools/...`
+  path hits are limited to historical plan/spec references plus updated
+  internal-tool path assertions.
+- [ ] `cargo test -p puffer-resources` (blocked by missing
+  `resources/providers/minicpm5.yaml` in
+  `crates/puffer-resources/tests/image_catalog_governance.rs`)
+- [x] `cargo test -p puffer-tools`
+- [x] `cargo test -p puffer-cli`
+- [x] `cargo test -p puffer-core`
 
 ## Task 7: Component Specs And Final Verification
 
@@ -320,14 +329,16 @@ Files:
 - next unused `specs/puffer-core/NN.md`
 - next unused `specs/puffer-desktop/NN.md`, if timeline behavior changes
 
-- [ ] Document final resource visibility: media generation is internal only.
-- [ ] Document CLI command shape and broker requirement.
-- [ ] Document parent runtime context threading for media internal execution.
-- [ ] Document timeline attachment parsing from guarded Bash stdout.
-- [ ] Run formatting for touched Rust code.
-- [ ] Run the focused tests from prior tasks.
+- [x] Document final resource visibility: media generation is internal only.
+- [x] Document CLI command shape and broker requirement.
+- [x] Document parent runtime context threading for media internal execution.
+- [x] Document timeline attachment parsing from guarded Bash stdout.
+- [x] Run formatting for touched Rust code.
+- [x] Run the focused tests from prior tasks.
 - [ ] If time allows, run `cargo test --workspace`. If not, report focused
-  coverage and remaining risk.
+  coverage and remaining risk. Not run because
+  `cargo test -p puffer-resources` is blocked by the pre-existing missing
+  `minicpm5.yaml` fixture.
 
 Exit criteria:
 

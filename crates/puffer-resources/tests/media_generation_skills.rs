@@ -24,35 +24,43 @@ fn parse_skill(markdown: &str) -> (SkillFrontmatter, &str) {
 }
 
 #[test]
-fn image_generation_skill_guides_image_generation_tool_use() {
+fn image_generation_skill_guides_foreground_bash_internal_tool_use() {
     let (frontmatter, body) = parse_skill(include_str!(
         "../../../resources/skills/image-generation/SKILL.md"
     ));
 
     assert_eq!(frontmatter.name, "image-generation");
-    assert!(frontmatter.description.contains("ImageGeneration"));
-    assert_eq!(frontmatter.allowed_tools, vec!["ImageGeneration"]);
+    assert!(!frontmatter.description.contains("ImageGeneration"));
+    assert_eq!(frontmatter.allowed_tools, vec!["Bash"]);
     assert!(frontmatter.user_invocable);
     assert!(!frontmatter.disable_model_invocation);
-    assert!(body.contains("Use `ImageGeneration`"));
-    assert!(body.contains("Call `ImageGeneration` once"));
-    assert!(body.contains("set `count`"));
+    assert!(body.contains("foreground Bash"));
+    assert!(body.contains("explicit long Bash timeout"));
+    assert!(body.contains("puffer internal-tool image-generation --prompt"));
+    assert!(body.contains("--count"));
+    assert!(body.contains("one logical request"));
+    assert!(body.contains("prompt file paths"));
+    assert!(body.contains("allowed-tools is guidance"));
     assert!(body.contains("Do not hand-author SVG"));
 }
 
 #[test]
-fn video_generation_skill_guides_text_to_video_tool_use() {
+fn video_generation_skill_guides_foreground_bash_internal_tool_use() {
     let (frontmatter, body) = parse_skill(include_str!(
         "../../../resources/skills/video-generation/SKILL.md"
     ));
 
     assert_eq!(frontmatter.name, "video-generation");
-    assert!(frontmatter.description.contains("VideoGeneration"));
-    assert_eq!(frontmatter.allowed_tools, vec!["VideoGeneration"]);
+    assert!(!frontmatter.description.contains("VideoGeneration"));
+    assert_eq!(frontmatter.allowed_tools, vec!["Bash"]);
     assert!(frontmatter.user_invocable);
     assert!(!frontmatter.disable_model_invocation);
-    assert!(body.contains("Use `VideoGeneration`"));
-    assert!(body.contains("Call `VideoGeneration` once"));
+    assert!(body.contains("foreground Bash"));
+    assert!(body.contains("explicit long Bash timeout"));
+    assert!(body.contains("puffer internal-tool video-generation --prompt"));
+    assert!(body.contains("--parameters-json"));
     assert!(body.contains("text-to-video only"));
+    assert!(body.contains("scalar"));
+    assert!(body.contains("allowed-tools is guidance"));
     assert!(body.contains("persisted video artifact"));
 }

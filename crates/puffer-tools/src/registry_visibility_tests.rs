@@ -209,6 +209,9 @@ fn workspace_builtin_internal_tool_resources_are_registerable() {
     );
     assert!(registry.internal_definition("Browser").is_some());
     assert!(registry.internal_definition("Email").is_some());
+    assert!(registry.internal_definition("ImageGeneration").is_some());
+    assert!(registry.internal_definition("image-generation").is_some());
+    assert!(registry.internal_definition("imagegen").is_some());
     assert!(registry
         .internal_definition("RequestUserBrowserAction")
         .is_some());
@@ -217,10 +220,15 @@ fn workspace_builtin_internal_tool_resources_are_registerable() {
         .is_some());
     assert!(registry.internal_definition("Slack").is_some());
     assert!(registry.internal_definition("Telegram").is_some());
+    assert!(registry.internal_definition("VideoGeneration").is_some());
+    assert!(registry.internal_definition("video-generation").is_some());
+    assert!(registry.internal_definition("videogen").is_some());
     assert!(registry.definition("Browser").is_none());
     assert!(registry.definition("Email").is_none());
+    assert!(registry.definition("ImageGeneration").is_none());
     assert!(registry.definition("RequestUserBrowserAction").is_none());
     assert!(registry.definition("requestuserbrowseraction").is_none());
     assert!(registry.definition("Slack").is_none());
     assert!(registry.definition("Telegram").is_none());
+    assert!(registry.definition("VideoGeneration").is_none());
 }

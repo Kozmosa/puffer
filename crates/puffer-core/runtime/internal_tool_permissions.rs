@@ -12,7 +12,8 @@ use crate::permissions::{
     load_runtime_permission_context_with_inputs, RuntimePermissionInputs, ToolPermissionBehavior,
 };
 use crate::tool_names::canonical_tool_name;
-use crate::AppState;
+use crate::{AppState, ExactMediaDiscoveryCache};
+use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_tools::internal_permissions::{
     InternalToolExecutionRequest, InternalToolExecutionResponse, InternalToolPermissionRequest,
@@ -41,10 +42,22 @@ pub(crate) fn execute_internal_tool_request(
     state: &mut AppState,
     resources: &LoadedResources,
     registry: &ToolRegistry,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+    discovery_cache: &ExactMediaDiscoveryCache,
     cwd: &Path,
     request: InternalToolExecutionRequest,
 ) -> InternalToolExecutionResponse {
-    match execute_internal_tool_request_result(state, resources, registry, cwd, request) {
+    match execute_internal_tool_request_result(
+        state,
+        resources,
+        registry,
+        providers,
+        auth_store,
+        discovery_cache,
+        cwd,
+        request,
+    ) {
         Ok(output) => InternalToolExecutionResponse::success(output),
         Err(error) => InternalToolExecutionResponse::failure(error.to_string()),
     }
@@ -54,6 +67,9 @@ fn execute_internal_tool_request_result(
     state: &mut AppState,
     resources: &LoadedResources,
     registry: &ToolRegistry,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+    discovery_cache: &ExactMediaDiscoveryCache,
     cwd: &Path,
     request: InternalToolExecutionRequest,
 ) -> anyhow::Result<String> {
@@ -80,6 +96,30 @@ fn execute_internal_tool_request_result(
         "email" => "Email",
         "requestuserbrowseraction" => "requestuserbrowseraction",
         "telegram" => "Telegram",
+        "imagegeneration" => {
+            return crate::runtime::claude_tools::workflow::image_generation::execute_image_generation(
+                state,
+                cwd,
+                request.input,
+                Some(crate::runtime::claude_tools::workflow::image_generation::ImageGenerationMediaContext {
+                    providers,
+                    auth_store,
+                    discovery_cache,
+                }),
+            );
+        }
+        "videogeneration" => {
+            return crate::runtime::claude_tools::workflow::video_generation::execute_video_generation(
+                state,
+                cwd,
+                request.input,
+                Some(crate::runtime::claude_tools::workflow::video_generation::VideoGenerationMediaContext {
+                    providers,
+                    auth_store,
+                    discovery_cache,
+                }),
+            );
+        }
         other => anyhow::bail!("unknown internal executable tool `{other}`"),
     };
     crate::runtime::claude_tools::execute_workflow_tool(
@@ -142,7 +182,11 @@ fn resolve_internal_tool_permission_result(
 ) -> anyhow::Result<InternalToolPermissionResponse> {
     match canonical_tool_name(&request.tool_id).as_str() {
         "browser" => resolve_browser_permission(state, resources, registry, cwd, request.input),
-        "email" | "requestuserbrowseraction" | "telegram" => {
+        "email"
+        | "imagegeneration"
+        | "requestuserbrowseraction"
+        | "telegram"
+        | "videogeneration" => {
             resolve_generic_internal_permission(state, resources, registry, cwd, request)
         }
         other => Ok(InternalToolPermissionResponse::deny(format!(
@@ -364,4 +408,170 @@ fn browser_definition(registry: &ToolRegistry) -> Option<&ToolDefinition> {
     registry
         .internal_definition("Browser")
         .or_else(|| registry.internal_definition("browser"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffer_config::MediaGenerationConfig;
+    use puffer_provider_registry::{
+        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
+        MediaModelDescriptor, MediaOperation, MediaParameterSpec, MediaParameterWireType,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+    };
+    use puffer_resources::{LoadedItem, SourceInfo, SourceKind, ToolSpec};
+    use puffer_session_store::SessionMetadata;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    #[test]
+    fn image_internal_execution_receives_media_context() {
+        let dir = tempdir().unwrap();
+        let resources = media_internal_resources();
+        let registry = ToolRegistry::from_resources(&resources);
+        let providers = image_provider_registry();
+        let mut auth_store = AuthStore::default();
+        auth_store.set_api_key("exact-provider", "sk-test");
+        let discovery_cache = crate::ExactMediaDiscoveryCache::empty();
+        let mut state = media_state(dir.path());
+
+        let response = execute_internal_tool_request(
+            &mut state,
+            &resources,
+            &registry,
+            &providers,
+            &auth_store,
+            &discovery_cache,
+            dir.path(),
+            InternalToolExecutionRequest {
+                tool_id: "image-generation".to_string(),
+                input: json!({"prompt": "draw a ship", "count": 1}),
+            },
+        );
+
+        assert!(!response.success);
+        let reason = response.reason.unwrap_or_default();
+        assert_eq!(
+            reason,
+            "selected image model unavailable: exact-provider/stale-image-model via images_json"
+        );
+        assert!(!reason.contains("media runtime is not configured"));
+        assert!(!reason.contains("unknown internal tool"));
+    }
+
+    fn media_state(cwd: &Path) -> AppState {
+        let mut config = puffer_config::PufferConfig::default();
+        config.media.image = Some(MediaGenerationConfig {
+            provider_id: "exact-provider".to_string(),
+            model_id: "stale-image-model".to_string(),
+            operation: "generate".to_string(),
+            adapter: "images_json".to_string(),
+            parameters: BTreeMap::from([
+                ("size".to_string(), "1024x1024".to_string()),
+                ("quality".to_string(), "auto".to_string()),
+                ("output_format".to_string(), "png".to_string()),
+            ]),
+        });
+        AppState::new(
+            config,
+            cwd.to_path_buf(),
+            SessionMetadata {
+                id: Uuid::new_v4(),
+                display_name: None,
+                generated_title: None,
+                cwd: cwd.to_path_buf(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                parent_session_id: None,
+                slug: None,
+                tags: Vec::new(),
+                note: None,
+            },
+        )
+    }
+
+    fn media_internal_resources() -> LoadedResources {
+        LoadedResources {
+            internal_tools: vec![LoadedItem {
+                value: ToolSpec {
+                    id: "ImageGeneration".to_string(),
+                    name: "ImageGeneration".to_string(),
+                    description: "Generate images".to_string(),
+                    handler: "runtime:workflow:image_generation".to_string(),
+                    aliases: vec!["image-generation".to_string(), "imagegen".to_string()],
+                    approval_policy: Some("auto".to_string()),
+                    sandbox_policy: Some("network".to_string()),
+                    ..ToolSpec::default()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("internal_tools/image_generation.yaml"),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        }
+    }
+
+    fn image_provider_registry() -> ProviderRegistry {
+        let mut registry = ProviderRegistry::new();
+        registry.register(ProviderDescriptor {
+            id: "exact-provider".to_string(),
+            display_name: "Exact Provider".to_string(),
+            base_url: "http://127.0.0.1:9".to_string(),
+            default_api: "openai-responses".to_string(),
+            auth_modes: vec![AuthMode::ApiKey],
+            headers: Default::default(),
+            query_params: Default::default(),
+            chat_completions_path: None,
+            discovery: None,
+            media: Some(ProviderMediaDescriptor {
+                image: Some(MediaKindDescriptor {
+                    discovery: None,
+                    execution: Some(MediaExecutionDescriptor {
+                        adapter: MediaExecutionKind::ImagesJson,
+                        base_url: None,
+                        path: "/custom/images".to_string(),
+                        batch: Default::default(),
+                    }),
+                    models: vec![MediaModelDescriptor {
+                        id: "exact-image-model".to_string(),
+                        display_name: Some("Exact Image Model".to_string()),
+                        execution: None,
+                        operations: vec![MediaOperation::Generate],
+                        parameters: vec![
+                            MediaParameterSpec {
+                                name: "size".to_string(),
+                                label: "Size".to_string(),
+                                values: vec!["1024x1024".to_string()],
+                                default: "1024x1024".to_string(),
+                                request_field: Some("size".to_string()),
+                                wire_type: MediaParameterWireType::String,
+                            },
+                            MediaParameterSpec {
+                                name: "quality".to_string(),
+                                label: "Quality".to_string(),
+                                values: vec!["auto".to_string()],
+                                default: "auto".to_string(),
+                                request_field: Some("quality".to_string()),
+                                wire_type: MediaParameterWireType::String,
+                            },
+                            MediaParameterSpec {
+                                name: "output_format".to_string(),
+                                label: "Output format".to_string(),
+                                values: vec!["png".to_string()],
+                                default: "png".to_string(),
+                                request_field: Some("output_format".to_string()),
+                                wire_type: MediaParameterWireType::String,
+                            },
+                        ],
+                    }],
+                }),
+                video: None,
+            }),
+            models: Vec::<ModelDescriptor>::new(),
+        });
+        registry
+    }
 }

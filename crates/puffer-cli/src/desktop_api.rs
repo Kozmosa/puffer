@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use puffer_config::{
     load_config, save_user_config, ConfigPaths, MediaGenerationConfig, PufferConfig,
 };
-use puffer_core::generated_media_attachment_metadata_with_fallback;
+use puffer_core::{generated_media_timeline_attachments, GeneratedMediaTimelineAttachment};
 use puffer_provider_registry::{
     detect_import_candidates, AuthMode, AuthStore, ExternalImportCandidate, ExternalImportFamily,
     ExternalImportSource, ProviderRegistry, StoredCredential,
@@ -1287,6 +1287,7 @@ fn timeline_items(session_store: &SessionStore, record: &SessionRecord) -> Vec<T
                     pending_generated_attachments.extend(generated_media_attachments(
                         &record.metadata.cwd,
                         tool_id,
+                        input,
                         output,
                     ));
                 }
@@ -1311,162 +1312,36 @@ fn timeline_items(session_store: &SessionStore, record: &SessionRecord) -> Vec<T
     items
 }
 
-fn generated_media_attachments(cwd: &Path, tool_id: &str, output: &str) -> Vec<ChatAttachmentDto> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
-        return Vec::new();
-    };
-    let Some(job_id) = generated_media_job_id(&value) else {
-        return Vec::new();
-    };
-    match tool_id {
-        "ImageGeneration" => generated_media_artifacts(&value)
-            .filter_map(|artifact| generated_image_attachment(cwd, job_id, artifact))
-            .collect(),
-        "VideoGeneration" if is_generated_video_output(&value) => generated_media_artifacts(&value)
-            .filter_map(|artifact| generated_video_attachment(job_id, artifact))
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn generated_media_job_id(value: &serde_json::Value) -> Option<&str> {
-    let job_id = value
-        .get("jobId")
-        .and_then(serde_json::Value::as_str)?
-        .trim();
-    (!job_id.is_empty()).then_some(job_id)
-}
-
-fn generated_media_artifacts(
-    value: &serde_json::Value,
-) -> impl Iterator<Item = &serde_json::Value> {
-    value
-        .get("artifacts")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-}
-
-fn is_generated_video_output(value: &serde_json::Value) -> bool {
-    value.get("kind").and_then(serde_json::Value::as_str) == Some("video")
-}
-
-fn generated_image_attachment(
+fn generated_media_attachments(
     cwd: &Path,
-    job_id: &str,
-    artifact: &serde_json::Value,
-) -> Option<ChatAttachmentDto> {
-    let artifact_id = artifact.get("artifactId")?.as_str()?.trim();
-    if artifact_id.is_empty() {
-        return None;
-    }
-    let index = artifact
-        .get("index")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
-    let fallback_mime_type = artifact
-        .get("mimeType")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("image/png");
-    let fallback_size = artifact
-        .get("size")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let metadata = generated_media_attachment_metadata_with_fallback(
-        cwd,
-        artifact_id,
-        fallback_mime_type,
-        fallback_size,
-    )?;
-    let extension = generated_image_extension(&metadata.mime_type).to_string();
-    Some(ChatAttachmentDto {
-        id: format!("generated-image:{artifact_id}"),
-        name: "Generated image".to_string(),
-        mime_type: metadata.mime_type,
-        size: metadata.byte_count,
-        extension,
-        kind: "image".to_string(),
-        state: metadata.state,
+    tool_id: &str,
+    input: &str,
+    output: &str,
+) -> Vec<ChatAttachmentDto> {
+    generated_media_timeline_attachments(cwd, tool_id, input, output)
+        .into_iter()
+        .map(generated_media_attachment_dto)
+        .collect()
+}
+
+fn generated_media_attachment_dto(
+    attachment: GeneratedMediaTimelineAttachment,
+) -> ChatAttachmentDto {
+    ChatAttachmentDto {
+        id: attachment.id,
+        name: attachment.name,
+        mime_type: attachment.mime_type,
+        size: attachment.byte_count,
+        extension: attachment.extension,
+        kind: attachment.kind.as_str().to_string(),
+        state: attachment.state,
         source: ChatAttachmentSourceDto::GeneratedMedia {
-            job_id: job_id.to_string(),
-            artifact_id: artifact_id.to_string(),
-            index,
-            local_path: metadata.local_path,
-            remote_source_url: metadata.remote_source_url,
+            job_id: attachment.job_id,
+            artifact_id: attachment.artifact_id,
+            index: attachment.index,
+            local_path: attachment.local_path,
+            remote_source_url: attachment.remote_source_url,
         },
-    })
-}
-
-fn generated_video_attachment(
-    job_id: &str,
-    artifact: &serde_json::Value,
-) -> Option<ChatAttachmentDto> {
-    let artifact_id = artifact.get("artifactId")?.as_str()?.trim();
-    if artifact_id.is_empty() {
-        return None;
-    }
-    let mime_type = artifact.get("mimeType")?.as_str()?.trim();
-    if !mime_type.starts_with("video/") {
-        return None;
-    }
-    let index = artifact
-        .get("index")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
-    let size = artifact
-        .get("size")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let local_path = artifact
-        .get("path")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let remote_source_url = artifact
-        .get("remoteSourceUrl")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let state = local_path
-        .as_deref()
-        .filter(|path| Path::new(path).is_file())
-        .map(|_| "available")
-        .unwrap_or("missing")
-        .to_string();
-    Some(ChatAttachmentDto {
-        id: format!("generated-video:{artifact_id}"),
-        name: "Generated video".to_string(),
-        mime_type: mime_type.to_string(),
-        size,
-        extension: generated_video_extension(mime_type).to_string(),
-        kind: "video".to_string(),
-        state,
-        source: ChatAttachmentSourceDto::GeneratedMedia {
-            job_id: job_id.to_string(),
-            artifact_id: artifact_id.to_string(),
-            index,
-            local_path,
-            remote_source_url,
-        },
-    })
-}
-
-fn generated_image_extension(mime_type: &str) -> &'static str {
-    match mime_type {
-        "image/png" => "PNG",
-        "image/jpeg" => "JPEG",
-        "image/webp" => "WEBP",
-        _ => "IMAGE",
-    }
-}
-
-fn generated_video_extension(mime_type: &str) -> &'static str {
-    match mime_type {
-        "video/mp4" => "MP4",
-        "video/webm" => "WEBM",
-        _ => "VIDEO",
     }
 }
 
@@ -2150,6 +2025,58 @@ mod tests {
         .unwrap();
     }
 
+    fn write_generated_video_artifact(
+        workspace: &Path,
+        artifact_id: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) -> PathBuf {
+        let video_dir = workspace.join(".puffer/media/videos").join(artifact_id);
+        std::fs::create_dir_all(&video_dir).unwrap();
+        let video_path = video_dir.join(filename);
+        std::fs::write(&video_path, bytes).unwrap();
+        let sidecar_dir = workspace.join(".puffer/media/artifact-sidecars");
+        std::fs::create_dir_all(&sidecar_dir).unwrap();
+        std::fs::write(
+            sidecar_dir.join(format!("{artifact_id}.json")),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": artifact_id,
+                "jobId": "job-video-1",
+                "kind": "video",
+                "path": video_path,
+                "mimeType": "video/mp4",
+                "byteCount": bytes.len(),
+                "metadata": {},
+                "createdAtMs": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        video_path
+    }
+
+    fn bash_media_tool_invocation(
+        call_id: &str,
+        command: &str,
+        media_output: serde_json::Value,
+    ) -> TranscriptEvent {
+        TranscriptEvent::ToolInvocation {
+            call_id: call_id.to_string(),
+            tool_id: "Bash".to_string(),
+            input: json!({"command": command, "timeout": 600000}).to_string(),
+            output: json!({
+                "stdout": media_output.to_string(),
+                "stderr": "",
+                "interrupted": false
+            })
+            .to_string(),
+            success: true,
+            actor: None,
+            subject: None,
+            metadata: None,
+        }
+    }
+
     fn item_kind(item: &TimelineItemDto) -> &'static str {
         match item {
             TimelineItemDto::UserMessage { .. } => "user",
@@ -2218,11 +2145,10 @@ mod tests {
         let session = record_with_cwd(
             workspace,
             vec![
-                TranscriptEvent::ToolInvocation {
-                    call_id: "call-img".to_string(),
-                    tool_id: "ImageGeneration".to_string(),
-                    input: serde_json::json!({"prompt": "draw", "count": 2}).to_string(),
-                    output: serde_json::json!({
+                bash_media_tool_invocation(
+                    "call-img",
+                    "puffer internal-tool image-generation --prompt draw --count 2",
+                    serde_json::json!({
                         "jobId": "job-1",
                         "requestedCount": 2,
                         "status": "succeeded",
@@ -2230,13 +2156,8 @@ mod tests {
                             {"artifactId": "artifact-1", "index": 0, "path": "/ignored-1.png", "mimeType": "image/png", "size": 8},
                             {"artifactId": "artifact-2", "index": 1, "path": "/ignored-2.png", "mimeType": "image/png", "size": 8}
                         ]
-                    })
-                    .to_string(),
-                    success: true,
-                    actor: None,
-                    subject: None,
-                    metadata: None,
-                },
+                    }),
+                ),
                 TranscriptEvent::AssistantMessage {
                     text: "Done".to_string(),
                     actor: None,
@@ -2275,24 +2196,18 @@ mod tests {
         let session = record_with_cwd(
             workspace,
             vec![
-                TranscriptEvent::ToolInvocation {
-                    call_id: "call-img".to_string(),
-                    tool_id: "ImageGeneration".to_string(),
-                    input: serde_json::json!({"prompt": "draw", "count": 1}).to_string(),
-                    output: serde_json::json!({
+                bash_media_tool_invocation(
+                    "call-img",
+                    "imagegen --prompt draw --count 1",
+                    serde_json::json!({
                         "jobId": "job-1",
                         "requestedCount": 1,
                         "status": "succeeded",
                         "artifacts": [
                             {"artifactId": "artifact-1", "index": 0, "path": "/missing.png", "mimeType": "image/webp", "size": 42}
                         ]
-                    })
-                    .to_string(),
-                    success: true,
-                    actor: None,
-                    subject: None,
-                    metadata: None,
-                },
+                    }),
+                ),
                 TranscriptEvent::AssistantMessage {
                     text: "Done".to_string(),
                     actor: None,
@@ -2320,19 +2235,19 @@ mod tests {
     fn timeline_synthesizes_video_generation_attachment_from_tool_output() {
         let (temp, store) = test_store();
         let workspace = temp.path().join("workspace");
-        let video_path = workspace
-            .join(".puffer/media/videos/artifact-video-1")
-            .join("generated.mp4");
-        std::fs::create_dir_all(video_path.parent().unwrap()).unwrap();
-        std::fs::write(&video_path, b"mp4-bytes").unwrap();
+        let video_path = write_generated_video_artifact(
+            &workspace,
+            "artifact-video-1",
+            "generated.mp4",
+            b"mp4-bytes",
+        );
         let session = record_with_cwd(
             workspace,
             vec![
-                TranscriptEvent::ToolInvocation {
-                    call_id: "call-video".to_string(),
-                    tool_id: "VideoGeneration".to_string(),
-                    input: serde_json::json!({"prompt": "make video"}).to_string(),
-                    output: serde_json::json!({
+                bash_media_tool_invocation(
+                    "call-video",
+                    "videogen --prompt make-video",
+                    serde_json::json!({
                         "jobId": "job-video-1",
                         "kind": "video",
                         "requestedCount": 1,
@@ -2346,13 +2261,8 @@ mod tests {
                                 "size": 9
                             }
                         ]
-                    })
-                    .to_string(),
-                    success: true,
-                    actor: None,
-                    subject: None,
-                    metadata: None,
-                },
+                    }),
+                ),
                 TranscriptEvent::AssistantMessage {
                     text: "Done".to_string(),
                     actor: None,
@@ -2391,24 +2301,18 @@ mod tests {
         write_generated_image_artifact(&workspace, "artifact-1", "image.jpeg", b"\xff\xd8\xff\xd9");
         let session = record_with_cwd(
             workspace,
-            vec![TranscriptEvent::ToolInvocation {
-                call_id: "call-img".to_string(),
-                tool_id: "ImageGeneration".to_string(),
-                input: "{}".to_string(),
-                output: serde_json::json!({
+            vec![bash_media_tool_invocation(
+                "call-img",
+                "puffer internal-tool image-generation --prompt draw --count 1",
+                serde_json::json!({
                     "jobId": "job-1",
                     "requestedCount": 1,
                     "status": "succeeded",
                     "artifacts": [
                         {"artifactId": "artifact-1", "index": 0, "path": "/ignored-1.png", "mimeType": "image/png", "size": 8}
                     ]
-                })
-                .to_string(),
-                success: true,
-                actor: None,
-                subject: None,
-                metadata: None,
-            }],
+                }),
+            )],
         );
 
         let items = timeline_items(&store, &session);
@@ -2418,6 +2322,45 @@ mod tests {
             TimelineItemDto::AssistantMessage { text, attachments, .. }
                 if text.is_empty() && attachments.len() == 1
         )));
+    }
+
+    #[test]
+    fn generated_media_ignores_arbitrary_bash_stdout_json() {
+        let (temp, store) = test_store();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_generated_image_artifact(&workspace, "artifact-1", "image.jpeg", b"\xff\xd8\xff\xd9");
+        let session = record_with_cwd(
+            workspace,
+            vec![
+                bash_media_tool_invocation(
+                    "call-img",
+                    "cat generated-media.json",
+                    serde_json::json!({
+                        "jobId": "job-1",
+                        "requestedCount": 1,
+                        "status": "succeeded",
+                        "artifacts": [
+                            {"artifactId": "artifact-1", "index": 0, "path": "/ignored-1.png", "mimeType": "image/png", "size": 8}
+                        ]
+                    }),
+                ),
+                TranscriptEvent::AssistantMessage {
+                    text: "Done".to_string(),
+                    actor: None,
+                },
+            ],
+        );
+
+        let items = timeline_items(&store, &session);
+
+        let Some(TimelineItemDto::AssistantMessage { attachments, .. }) = items
+            .iter()
+            .find(|item| matches!(item, TimelineItemDto::AssistantMessage { .. }))
+        else {
+            panic!("assistant message exists");
+        };
+        assert!(attachments.is_empty());
     }
 
     #[test]

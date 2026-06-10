@@ -1330,7 +1330,7 @@ media:
     }
 
     #[test]
-    fn bundled_image_generation_tool_requires_count_and_describes_multi_image_use() {
+    fn bundled_image_generation_internal_tool_requires_count_and_describes_multi_image_use() {
         let temp = tempdir().unwrap();
         let root = temp.path().join("workspace");
         fs::create_dir_all(&root).unwrap();
@@ -1338,15 +1338,23 @@ media:
 
         let loaded = load_tool_resources(&paths, &FsTestRunner).unwrap();
         let tool = loaded
-            .tools
+            .internal_tools
             .iter()
             .find(|tool| tool.value.id == "ImageGeneration")
-            .expect("ImageGeneration tool");
+            .expect("ImageGeneration internal tool");
+        assert!(!loaded
+            .tools
+            .iter()
+            .any(|tool| tool.value.id == "ImageGeneration"));
 
         assert!(tool
             .value
             .description
             .contains("Generate one or more images"));
+        assert_eq!(
+            tool.value.aliases,
+            vec!["image-generation".to_string(), "imagegen".to_string()]
+        );
         assert!(tool.value.description.contains("count"));
         assert!(!tool.value.description.contains("Generate one image"));
 
@@ -1360,7 +1368,7 @@ media:
     }
 
     #[test]
-    fn bundled_video_generation_tool_is_text_to_video_only() {
+    fn bundled_video_generation_internal_tool_is_text_to_video_only() {
         let temp = tempdir().unwrap();
         let root = temp.path().join("workspace");
         fs::create_dir_all(&root).unwrap();
@@ -1368,12 +1376,20 @@ media:
 
         let loaded = load_tool_resources(&paths, &FsTestRunner).unwrap();
         let tool = loaded
-            .tools
+            .internal_tools
             .iter()
             .find(|tool| tool.value.id == "VideoGeneration")
-            .expect("VideoGeneration tool");
+            .expect("VideoGeneration internal tool");
+        assert!(!loaded
+            .tools
+            .iter()
+            .any(|tool| tool.value.id == "VideoGeneration"));
 
         assert_eq!(tool.value.handler, "runtime:workflow:video_generation");
+        assert_eq!(
+            tool.value.aliases,
+            vec!["video-generation".to_string(), "videogen".to_string()]
+        );
         assert!(tool.value.description.contains("text-to-video"));
         assert!(!tool.value.description.contains("image-to-video"));
 

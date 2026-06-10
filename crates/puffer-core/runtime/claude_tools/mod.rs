@@ -113,6 +113,10 @@ pub(crate) fn execute_tool(
     }
     match definition.id.as_str() {
         "Bash" => {
+            let internal_media_discovery_cache = state
+                .exact_media_discovery_cache
+                .clone()
+                .unwrap_or_else(crate::ExactMediaDiscoveryCache::empty);
             let session_id = state.session.id;
             let process_store = state.process_store.clone();
             let mut internal_permission_handler = |request| match request {
@@ -126,7 +130,14 @@ pub(crate) fn execute_tool(
                 bash_internal_permissions::InternalToolBrokerRequest::Execution(request) => {
                     bash_internal_permissions::InternalToolBrokerResponse::Execution(
                         super::internal_tool_permissions::execute_internal_tool_request(
-                            state, resources, registry, cwd, request,
+                            state,
+                            resources,
+                            registry,
+                            providers,
+                            auth_store,
+                            &internal_media_discovery_cache,
+                            cwd,
+                            request,
                         ),
                     )
                 }

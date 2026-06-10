@@ -13,8 +13,10 @@ pub struct InternalCliToolDescriptor {
 
 const BROWSER_ALIASES: &[&str] = &["browser"];
 const EMAIL_ALIASES: &[&str] = &["email"];
+const IMAGE_GENERATION_ALIASES: &[&str] = &["imagegen"];
 const SLACK_ALIASES: &[&str] = &["slack"];
 const TELEGRAM_ALIASES: &[&str] = &["telegram"];
+const VIDEO_GENERATION_ALIASES: &[&str] = &["videogen"];
 
 const INTERNAL_CLI_TOOLS: &[InternalCliToolDescriptor] = &[
     InternalCliToolDescriptor {
@@ -28,6 +30,11 @@ const INTERNAL_CLI_TOOLS: &[InternalCliToolDescriptor] = &[
         skill_name: "email",
     },
     InternalCliToolDescriptor {
+        id: "image-generation",
+        aliases: IMAGE_GENERATION_ALIASES,
+        skill_name: "image-generation",
+    },
+    InternalCliToolDescriptor {
         id: "slack",
         aliases: SLACK_ALIASES,
         skill_name: "slack",
@@ -36,6 +43,11 @@ const INTERNAL_CLI_TOOLS: &[InternalCliToolDescriptor] = &[
         id: "telegram",
         aliases: TELEGRAM_ALIASES,
         skill_name: "telegram",
+    },
+    InternalCliToolDescriptor {
+        id: "video-generation",
+        aliases: VIDEO_GENERATION_ALIASES,
+        skill_name: "video-generation",
     },
 ];
 
@@ -85,6 +97,10 @@ mod tests {
         assert!(helpers.contains("'/tmp/puffer' internal-tool 'slack' \"$@\""));
         assert!(helpers.contains("telegram()"));
         assert!(helpers.contains("'/tmp/puffer' internal-tool 'telegram' \"$@\""));
+        assert!(helpers.contains("imagegen()"));
+        assert!(helpers.contains("'/tmp/puffer' internal-tool 'image-generation' \"$@\""));
+        assert!(helpers.contains("videogen()"));
+        assert!(helpers.contains("'/tmp/puffer' internal-tool 'video-generation' \"$@\""));
     }
 
     #[test]

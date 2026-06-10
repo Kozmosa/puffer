@@ -3,6 +3,7 @@
 use crate::browser;
 use crate::browser_args::BrowserArgs;
 use crate::cli_args::InternalToolCommand;
+use crate::media_internal_tools;
 use crate::subscriber_tools;
 use anyhow::Result;
 use puffer_config::ConfigPaths;
@@ -19,8 +20,14 @@ pub(crate) fn run_internal_tool_command(
         InternalToolCommand::Aliases => print_alias_setup(),
         InternalToolCommand::Browser(args) => run_browser(cwd, paths, args),
         InternalToolCommand::Email(args) => subscriber_tools::run_email(args),
+        InternalToolCommand::ImageGeneration(args) => {
+            media_internal_tools::run_image_generation(args)
+        }
         InternalToolCommand::Slack(args) => subscriber_tools::run_slack(args),
         InternalToolCommand::Telegram(args) => subscriber_tools::run_telegram(args),
+        InternalToolCommand::VideoGeneration(args) => {
+            media_internal_tools::run_video_generation(args)
+        }
     }
 }
 

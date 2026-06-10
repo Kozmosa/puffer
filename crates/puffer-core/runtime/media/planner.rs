@@ -13,7 +13,7 @@ pub(crate) struct ImageCallPlan {
     pub(crate) requested_count: u8,
 }
 
-/// Validates the supported model-facing image generation count range.
+/// Validates the supported workflow image generation count range.
 pub(crate) fn validate_image_generation_count(requested_count: u8) -> Result<()> {
     if requested_count == 0 || requested_count > 4 {
         bail!("image generation count must be between 1 and 4");

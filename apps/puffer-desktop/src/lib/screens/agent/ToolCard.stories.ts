@@ -659,19 +659,27 @@ export const ConnectorAction: Story = {
   }
 };
 
-export const ImageGeneration: Story = {
+export const MediaGenerationBash: Story = {
   args: {
-    prompt: toolCardPrompt("ImageGeneration"),
+    prompt: toolCardPrompt("Bash"),
     item: toolItem({
-      toolName: "ImageGeneration",
+      toolName: "Bash",
       summary: "Generated a visual preview asset.",
       input: JSON.stringify({
-        prompt: "A compact UI catalog card for agent tool call states."
+        command:
+          "puffer internal-tool image-generation --prompt 'A compact UI catalog card for agent tool call states.' --count 1",
+        timeout: 600000
       }),
       inputJson: {
-        prompt: "A compact UI catalog card for agent tool call states."
+        command:
+          "puffer internal-tool image-generation --prompt 'A compact UI catalog card for agent tool call states.' --count 1",
+        timeout: 600000
       },
-      output: JSON.stringify(imageOutput, null, 2)
+      output: JSON.stringify({
+        stdout: JSON.stringify(imageOutput),
+        stderr: "",
+        interrupted: false
+      }, null, 2)
     })
   }
 };

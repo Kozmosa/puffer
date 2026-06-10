@@ -1502,7 +1502,21 @@ test("explicit image slash trigger routes to media generation", async ({ page })
   expect(daemon.requests.filter((candidate) => candidate.method === "run_agent_turn")).toHaveLength(0);
 });
 
-test("persisted ImageGeneration results render as assistant image attachments", async ({ page }) => {
+test("persisted media Bash results render as assistant image attachments", async ({ page }) => {
+  const mediaOutput = {
+    jobId: "job-generated-1",
+    requestedCount: 1,
+    artifacts: [
+      {
+        artifactId: "artifact-generated-1",
+        index: 0,
+        path: "/tmp/puffer/.puffer/media/images/artifact-generated-1.png",
+        mimeType: "image/png",
+        size: onePixelPngBytes.length
+      }
+    ],
+    status: "succeeded"
+  };
   const daemon = new FakeDaemon({
     sessions: [
       {
@@ -1518,22 +1532,16 @@ test("persisted ImageGeneration results render as assistant image attachments", 
           {
             kind: "tool_call",
             id: "tool-image",
-            toolId: "ImageGeneration",
+            toolId: "Bash",
             status: "ok",
-            inputText: JSON.stringify({ prompt: "draw an icon" }),
+            inputText: JSON.stringify({
+              command: "puffer internal-tool image-generation --prompt 'draw an icon' --count 1",
+              timeout: 600000
+            }),
             outputText: JSON.stringify({
-              jobId: "job-generated-1",
-              requestedCount: 1,
-              artifacts: [
-                {
-                  artifactId: "artifact-generated-1",
-                  index: 0,
-                  path: "/tmp/puffer/.puffer/media/images/artifact-generated-1.png",
-                  mimeType: "image/png",
-                  size: onePixelPngBytes.length
-                }
-              ],
-              status: "succeeded"
+              stdout: JSON.stringify(mediaOutput),
+              stderr: "",
+              interrupted: false
             }),
             createdAtMs: baseTime - 20_000
           },
@@ -4459,7 +4467,7 @@ test("transcript reload replaces pending live tool card when invocation event is
   await expect(page.locator(".pf-tool").filter({ hasText: "running" })).toHaveCount(0);
 });
 
-test("pending image generation activity uses the standard tool surface", async ({ page }) => {
+test("pending media Bash activity uses the standard command surface", async ({ page }) => {
   const daemon = new FakeDaemon({
     sessions: [
       {
@@ -4483,10 +4491,18 @@ test("pending image generation activity uses the standard tool surface", async (
           {
             kind: "tool_call",
             id: "pending-image-tool",
-            toolId: "ImageGeneration",
+            toolId: "Bash",
             status: "running",
-            inputText: JSON.stringify({ prompt: "A compact UI catalog card" }),
-            inputJson: { prompt: "A compact UI catalog card" },
+            inputText: JSON.stringify({
+              command:
+                "puffer internal-tool image-generation --prompt 'A compact UI catalog card' --count 1",
+              timeout: 600000
+            }),
+            inputJson: {
+              command:
+                "puffer internal-tool image-generation --prompt 'A compact UI catalog card' --count 1",
+              timeout: 600000
+            },
             outputText: "",
             createdAtMs: baseTime - 20_000
           },
@@ -4504,23 +4520,16 @@ test("pending image generation activity uses the standard tool surface", async (
   await daemon.open(page);
 
   await openSession(page, /Pending image activity/);
-  const activityGroup = page.locator(".activity-group").filter({ hasText: "Used 1 tool" });
+  const activityGroup = page.locator(".activity-group").filter({ hasText: "Ran 1 command" });
   await expect(activityGroup).toBeVisible();
   await activityGroup.getByRole("button", { name: /Agent activity/ }).click();
-  await activityGroup.getByRole("button", { name: /ImageGeneration/ }).click();
-
-  const pendingBody = activityGroup.locator(".activity-panel .pf-tool-pending-body");
-  await expect(pendingBody).toBeVisible();
-  await expect(pendingBody.getByText("awaiting result")).toBeVisible();
-  const colors = await pendingBody.evaluate((node) => {
-    const pending = node as HTMLElement;
-    const activity = pending.closest(".activity-group") as HTMLElement;
-    return {
-      pending: getComputedStyle(pending).backgroundColor,
-      activity: getComputedStyle(activity).backgroundColor
-    };
-  });
-  expect(colors.pending).toBe(colors.activity);
+  const shellAction = activityGroup.getByRole("button", { name: /Shell/ });
+  await expect(shellAction).toContainText("running");
+  await shellAction.click();
+  await expect(
+    activityGroup.getByText("puffer internal-tool image-generation").first()
+  ).toBeVisible();
+  await expect(activityGroup.getByText("(no output)")).toBeVisible();
 });
 
 test("transcript reload dedupes completed live tools by stable input signature", async ({

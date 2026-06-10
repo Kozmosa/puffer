@@ -1,5 +1,8 @@
 id: ImageGeneration
 name: ImageGeneration
+aliases:
+  - image-generation
+  - imagegen
 description: |-
   Generate one or more images through Puffer's configured image media settings
   and write the resulting image artifacts into the workspace image folder.

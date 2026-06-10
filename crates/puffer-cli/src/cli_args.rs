@@ -1,4 +1,5 @@
 use crate::browser_args::BrowserArgs;
+use crate::media_internal_tools::{ImageGenerationArgs, VideoGenerationArgs};
 use crate::non_interactive::NonInteractiveArgs;
 use crate::subscriber_tool_args::{EmailArgs, SlackArgs, TelegramArgs};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -270,10 +271,16 @@ pub(crate) enum InternalToolCommand {
     Browser(#[command(flatten)] BrowserArgs),
     /// Configure the email subscriber through the parent runtime.
     Email(#[command(flatten)] EmailArgs),
+    /// Generate images through the parent media runtime.
+    #[command(name = "image-generation", alias = "imagegen")]
+    ImageGeneration(#[command(flatten)] ImageGenerationArgs),
     /// Log in to Slack or look up Slack conversations through the parent runtime.
     Slack(#[command(flatten)] SlackArgs),
     /// Log in to Telegram or look up Telegram peers through the parent runtime.
     Telegram(#[command(flatten)] TelegramArgs),
+    /// Generate a text-to-video clip through the parent media runtime.
+    #[command(name = "video-generation", alias = "videogen")]
+    VideoGeneration(#[command(flatten)] VideoGenerationArgs),
 }
 
 #[derive(Debug, Subcommand)]

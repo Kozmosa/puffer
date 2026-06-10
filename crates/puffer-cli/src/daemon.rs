@@ -2720,6 +2720,7 @@ fn handle_create_file_media_access(state: &DaemonState, params: &Value) -> Resul
             path: canonical,
             mime_type: mime_type.to_string(),
             byte_count: metadata.len(),
+            remote_source_url: None,
         },
     ))
 }

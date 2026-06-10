@@ -1,5 +1,8 @@
 id: VideoGeneration
 name: VideoGeneration
+aliases:
+  - video-generation
+  - videogen
 description: |-
   Generate one text-to-video clip through Puffer's configured video media
   settings and write the resulting video artifact into the workspace media

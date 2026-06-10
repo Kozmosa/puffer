@@ -16,8 +16,9 @@ use base64::prelude::*;
 use puffer_config::{builtin_captcha_solvers, ConfigPaths};
 use puffer_core::{
     discover_exact_media_capabilities, generate_exact_media_with_cache,
-    generated_media_attachment_metadata_with_fallback, read_generated_media_preview_by_artifact,
+    generated_media_timeline_attachments, read_generated_media_preview_by_artifact,
     ExactMediaDiscoveryCache, ExactMediaGenerationRequest, GeneratedMediaPreviewResult,
+    GeneratedMediaTimelineAttachment,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::load_resources;
@@ -547,9 +548,11 @@ impl BackendState {
                         actor: None,
                         subject: None,
                     });
-                    if *success && tool_id == "ImageGeneration" {
-                        pending_generated_attachments.extend(Self::generated_image_attachments(
+                    if *success {
+                        pending_generated_attachments.extend(Self::generated_media_attachments(
                             Path::new(&record.cwd),
+                            tool_id,
+                            input,
                             output,
                         ));
                     }
@@ -570,78 +573,36 @@ impl BackendState {
         items
     }
 
-    fn generated_image_attachments(cwd: &Path, output: &str) -> Vec<ChatAttachmentDto> {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
-            return Vec::new();
-        };
-        let job_id = value
-            .get("jobId")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim();
-        if job_id.is_empty() {
-            return Vec::new();
-        }
-        value
-            .get("artifacts")
-            .and_then(serde_json::Value::as_array)
+    fn generated_media_attachments(
+        cwd: &Path,
+        tool_id: &str,
+        input: &str,
+        output: &str,
+    ) -> Vec<ChatAttachmentDto> {
+        generated_media_timeline_attachments(cwd, tool_id, input, output)
             .into_iter()
-            .flatten()
-            .filter_map(|artifact| Self::generated_image_attachment(cwd, job_id, artifact))
+            .map(Self::generated_media_attachment_dto)
             .collect()
     }
 
-    fn generated_image_attachment(
-        cwd: &Path,
-        job_id: &str,
-        artifact: &serde_json::Value,
-    ) -> Option<ChatAttachmentDto> {
-        let artifact_id = artifact.get("artifactId")?.as_str()?.trim();
-        if artifact_id.is_empty() {
-            return None;
-        }
-        let index = artifact
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as usize;
-        let fallback_mime_type = artifact
-            .get("mimeType")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("image/png");
-        let fallback_size = artifact
-            .get("size")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let metadata = generated_media_attachment_metadata_with_fallback(
-            cwd,
-            artifact_id,
-            fallback_mime_type,
-            fallback_size,
-        )?;
-        Some(ChatAttachmentDto {
-            id: format!("generated-image:{artifact_id}"),
-            name: "Generated image".to_string(),
-            mime_type: metadata.mime_type.clone(),
-            size: metadata.byte_count,
-            extension: Self::generated_image_extension(&metadata.mime_type).to_string(),
-            kind: "image".to_string(),
-            state: metadata.state,
+    fn generated_media_attachment_dto(
+        attachment: GeneratedMediaTimelineAttachment,
+    ) -> ChatAttachmentDto {
+        ChatAttachmentDto {
+            id: attachment.id,
+            name: attachment.name,
+            mime_type: attachment.mime_type,
+            size: attachment.byte_count,
+            extension: attachment.extension,
+            kind: attachment.kind.as_str().to_string(),
+            state: attachment.state,
             source: ChatAttachmentSourceDto::GeneratedMedia {
-                job_id: job_id.to_string(),
-                artifact_id: artifact_id.to_string(),
-                index,
-                local_path: metadata.local_path,
-                remote_source_url: metadata.remote_source_url,
+                job_id: attachment.job_id,
+                artifact_id: attachment.artifact_id,
+                index: attachment.index,
+                local_path: attachment.local_path,
+                remote_source_url: attachment.remote_source_url,
             },
-        })
-    }
-
-    fn generated_image_extension(mime_type: &str) -> &'static str {
-        match mime_type {
-            "image/png" => "PNG",
-            "image/jpeg" => "JPEG",
-            "image/webp" => "WEBP",
-            _ => "IMAGE",
         }
     }
 
@@ -2403,6 +2364,55 @@ mod tests {
         .unwrap();
     }
 
+    fn write_generated_video_artifact(
+        workspace: &Path,
+        artifact_id: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) -> PathBuf {
+        let video_dir = workspace
+            .join(".puffer")
+            .join("media")
+            .join("videos")
+            .join(artifact_id);
+        fs::create_dir_all(&video_dir).unwrap();
+        let video_path = video_dir.join(filename);
+        fs::write(&video_path, bytes).unwrap();
+        let sidecar_dir = workspace.join(".puffer/media/artifact-sidecars");
+        fs::create_dir_all(&sidecar_dir).unwrap();
+        fs::write(
+            sidecar_dir.join(format!("{artifact_id}.json")),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": artifact_id,
+                "jobId": "job-video-1",
+                "kind": "video",
+                "path": video_path,
+                "mimeType": "video/mp4",
+                "byteCount": bytes.len(),
+                "metadata": {},
+                "createdAtMs": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        video_path
+    }
+
+    fn bash_media_tool_event(command: &str, media_output: serde_json::Value) -> StoredEvent {
+        StoredEvent::Tool {
+            at_ms: 1,
+            tool_id: "Bash".to_string(),
+            input: json!({"command": command, "timeout": 600000}).to_string(),
+            output: json!({
+                "stdout": media_output.to_string(),
+                "stderr": "",
+                "interrupted": false
+            })
+            .to_string(),
+            success: true,
+        }
+    }
+
     fn test_session_record(
         provider: &str,
         model: Option<&str>,
@@ -2895,11 +2905,9 @@ mod tests {
             "codex",
             Some("gpt-5.4"),
             vec![
-                StoredEvent::Tool {
-                    at_ms: 1,
-                    tool_id: "ImageGeneration".to_string(),
-                    input: "{}".to_string(),
-                    output: serde_json::json!({
+                bash_media_tool_event(
+                    "puffer internal-tool image-generation --prompt draw --count 2",
+                    serde_json::json!({
                         "jobId": "job-1",
                         "requestedCount": 2,
                         "status": "succeeded",
@@ -2907,10 +2915,8 @@ mod tests {
                             {"artifactId": "artifact-1", "index": 0, "path": "/ignored-1.png", "mimeType": "image/png", "size": 8},
                             {"artifactId": "artifact-2", "index": 1, "path": "/ignored-2.png", "mimeType": "image/png", "size": 8}
                         ]
-                    })
-                    .to_string(),
-                    success: true,
-                },
+                    }),
+                ),
                 StoredEvent::Assistant {
                     at_ms: 2,
                     text: "Done".to_string(),
@@ -2963,21 +2969,17 @@ mod tests {
             "codex",
             Some("gpt-5.4"),
             vec![
-                StoredEvent::Tool {
-                    at_ms: 1,
-                    tool_id: "ImageGeneration".to_string(),
-                    input: "{}".to_string(),
-                    output: serde_json::json!({
+                bash_media_tool_event(
+                    "imagegen --prompt draw --count 1",
+                    serde_json::json!({
                         "jobId": "job-1",
                         "requestedCount": 1,
                         "status": "succeeded",
                         "artifacts": [
                             {"artifactId": "artifact-1", "index": 0, "path": "/missing.png", "mimeType": "image/webp", "size": 42}
                         ]
-                    })
-                    .to_string(),
-                    success: true,
-                },
+                    }),
+                ),
                 StoredEvent::Assistant {
                     at_ms: 2,
                     text: "Done".to_string(),
@@ -3000,6 +3002,105 @@ mod tests {
         assert_eq!(attachments[0].mime_type, "image/webp");
         assert_eq!(attachments[0].extension, "WEBP");
         assert_eq!(attachments[0].size, 42);
+    }
+
+    #[test]
+    fn tauri_timeline_attaches_generated_video_to_assistant_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let video_path = write_generated_video_artifact(
+            &workspace,
+            "artifact-video-1",
+            "generated.mp4",
+            b"mp4-bytes",
+        );
+        let backend = BackendState::new();
+        let mut record = test_session_record(
+            "codex",
+            Some("gpt-5.4"),
+            vec![
+                bash_media_tool_event(
+                    "videogen --prompt make-video",
+                    serde_json::json!({
+                        "jobId": "job-video-1",
+                        "kind": "video",
+                        "requestedCount": 1,
+                        "status": "succeeded",
+                        "artifacts": [
+                            {
+                                "artifactId": "artifact-video-1",
+                                "index": 0,
+                                "path": video_path,
+                                "mimeType": "video/mp4",
+                                "size": 9
+                            }
+                        ]
+                    }),
+                ),
+                StoredEvent::Assistant {
+                    at_ms: 2,
+                    text: "Done".to_string(),
+                },
+            ],
+        );
+        record.cwd = workspace.display().to_string();
+
+        let items = backend.timeline_items(&record, None);
+
+        let Some(TimelineItemDto::AssistantMessage { attachments, .. }) = items
+            .iter()
+            .find(|item| matches!(item, TimelineItemDto::AssistantMessage { .. }))
+        else {
+            panic!("assistant message exists");
+        };
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id, "generated-video:artifact-video-1");
+        assert_eq!(attachments[0].kind, "video");
+        assert_eq!(attachments[0].mime_type, "video/mp4");
+        assert_eq!(attachments[0].extension, "MP4");
+        assert_eq!(attachments[0].state, "available");
+        assert_eq!(attachments[0].size, 9);
+    }
+
+    #[test]
+    fn tauri_timeline_ignores_arbitrary_bash_stdout_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        write_generated_image_artifact(&workspace, "artifact-1", "image.jpeg", b"\xff\xd8\xff\xd9");
+        let backend = BackendState::new();
+        let mut record = test_session_record(
+            "codex",
+            Some("gpt-5.4"),
+            vec![
+                bash_media_tool_event(
+                    "cat generated-media.json",
+                    serde_json::json!({
+                        "jobId": "job-1",
+                        "requestedCount": 1,
+                        "status": "succeeded",
+                        "artifacts": [
+                            {"artifactId": "artifact-1", "index": 0, "path": "/ignored-1.png", "mimeType": "image/png", "size": 8}
+                        ]
+                    }),
+                ),
+                StoredEvent::Assistant {
+                    at_ms: 2,
+                    text: "Done".to_string(),
+                },
+            ],
+        );
+        record.cwd = workspace.display().to_string();
+
+        let items = backend.timeline_items(&record, None);
+
+        let Some(TimelineItemDto::AssistantMessage { attachments, .. }) = items
+            .iter()
+            .find(|item| matches!(item, TimelineItemDto::AssistantMessage { .. }))
+        else {
+            panic!("assistant message exists");
+        };
+        assert!(attachments.is_empty());
     }
 
     #[test]

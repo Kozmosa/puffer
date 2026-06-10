@@ -516,7 +516,9 @@ fn generated_video_access_metadata_accepts_video_under_video_root() {
             path: video_path.clone(),
             mime_type: "video/mp4".to_string(),
             byte_count: 9,
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({
+                "remoteSourceUrl": "https://cdn.example.test/generated.mp4"
+            }),
             preview: None,
             created_at_ms: 1,
         })
@@ -530,6 +532,10 @@ fn generated_video_access_metadata_accepts_video_under_video_root() {
     assert_eq!(metadata.mime_type, "video/mp4");
     assert_eq!(metadata.byte_count, 9);
     assert_eq!(metadata.path, video_path.canonicalize().unwrap());
+    assert_eq!(
+        metadata.remote_source_url.as_deref(),
+        Some("https://cdn.example.test/generated.mp4")
+    );
 }
 
 #[test]
@@ -547,7 +553,9 @@ fn generated_video_access_metadata_accepts_legacy_video_under_artifact_root() {
             path: video_path.clone(),
             mime_type: "video/mp4".to_string(),
             byte_count: 9,
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({
+                "remoteSourceUrl": "https://cdn.example.test/generated.mp4"
+            }),
             preview: None,
             created_at_ms: 1,
         })
@@ -625,4 +633,258 @@ fn generated_video_access_metadata_rejects_symlink_escape() {
         generated_video_access_metadata_by_artifact(workspace.path(), "artifact-video-1"),
         GeneratedVideoAccessMetadataResult::Unsupported
     );
+}
+
+#[test]
+fn generated_media_internal_command_kind_detects_supported_helpers() {
+    assert_eq!(
+        generated_media_internal_command_kind("imagegen --prompt 'ship at sea' --count 1"),
+        Some(GeneratedMediaInternalCommandKind::Image)
+    );
+    assert_eq!(
+        generated_media_internal_command_kind("videogen --prompt clip"),
+        Some(GeneratedMediaInternalCommandKind::Video)
+    );
+}
+
+#[test]
+fn generated_media_internal_command_kind_detects_puffer_internal_tools() {
+    assert_eq!(
+        generated_media_internal_command_kind(
+            "puffer internal-tool image-generation --prompt 'ship at sea' --count 1"
+        ),
+        Some(GeneratedMediaInternalCommandKind::Image)
+    );
+    assert_eq!(
+        generated_media_internal_command_kind(
+            "puffer internal-tool video-generation --prompt clip"
+        ),
+        Some(GeneratedMediaInternalCommandKind::Video)
+    );
+}
+
+#[test]
+fn generated_media_internal_command_kind_allows_quoted_control_tokens() {
+    assert_eq!(
+        generated_media_internal_command_kind("imagegen --prompt 'ship && sea | sky' --count 1"),
+        Some(GeneratedMediaInternalCommandKind::Image)
+    );
+}
+
+#[test]
+fn generated_media_internal_command_kind_rejects_shell_control_tokens() {
+    assert_eq!(
+        generated_media_internal_command_kind("imagegen --prompt ship && echo ok"),
+        None
+    );
+    assert_eq!(
+        generated_media_internal_command_kind("imagegen --prompt ship; echo ok"),
+        None
+    );
+    assert_eq!(
+        generated_media_internal_command_kind(
+            "puffer internal-tool image-generation --prompt ship ; echo ok"
+        ),
+        None
+    );
+}
+
+#[test]
+fn generated_media_internal_command_kind_rejects_arbitrary_commands() {
+    assert_eq!(
+        generated_media_internal_command_kind("cat generated-media.json"),
+        None
+    );
+}
+
+#[test]
+fn generated_media_internal_bash_output_extracts_stdout_json() {
+    let input =
+        serde_json::json!({ "command": "puffer internal-tool image-generation --prompt ship" })
+            .to_string();
+    let stdout = serde_json::json!({
+        "jobId": "job-1",
+        "artifacts": []
+    })
+    .to_string();
+    let output = serde_json::json!({ "stdout": stdout }).to_string();
+
+    let (kind, value) = generated_media_internal_bash_output("Bash", &input, &output).unwrap();
+
+    assert_eq!(kind, GeneratedMediaInternalCommandKind::Image);
+    assert_eq!(value["jobId"], "job-1");
+}
+
+#[test]
+fn generated_media_internal_bash_output_rejects_non_bash_tool() {
+    let input = serde_json::json!({ "command": "imagegen --prompt ship" }).to_string();
+    let output = serde_json::json!({
+        "stdout": serde_json::json!({ "jobId": "job-1" }).to_string()
+    })
+    .to_string();
+
+    assert_eq!(
+        generated_media_internal_bash_output("Read", &input, &output),
+        None
+    );
+}
+
+#[test]
+fn generated_media_timeline_attachments_extracts_image_metadata() {
+    let workspace = tempdir().unwrap();
+    let service = crate::runtime::media::MediaGenerationService::new(workspace.path());
+    let image_path = service
+        .write_image_artifact_bytes("artifact-1", "image.webp", b"RIFFxxxxWEBP")
+        .unwrap();
+    service
+        .save_artifact(&crate::runtime::media::MediaArtifact {
+            id: "artifact-1".to_string(),
+            job_id: "job-1".to_string(),
+            kind: crate::runtime::media::MediaKind::Image,
+            path: image_path,
+            mime_type: "image/webp".to_string(),
+            byte_count: 12,
+            metadata: serde_json::json!({"remoteSourceUrl": "https://example.test/image.webp"}),
+            preview: None,
+            created_at_ms: 1,
+        })
+        .unwrap();
+    let input = serde_json::json!({
+        "command": "puffer internal-tool image-generation --prompt ship --count 1"
+    })
+    .to_string();
+    let output = serde_json::json!({
+        "stdout": serde_json::json!({
+            "jobId": "job-1",
+            "artifacts": [
+                {"artifactId": "artifact-1", "index": 2, "mimeType": "image/png", "size": 99}
+            ]
+        }).to_string()
+    })
+    .to_string();
+
+    let attachments =
+        generated_media_timeline_attachments(workspace.path(), "Bash", &input, &output);
+
+    assert_eq!(attachments.len(), 1);
+    let attachment = &attachments[0];
+    assert_eq!(attachment.id, "generated-image:artifact-1");
+    assert_eq!(attachment.name, "Generated image");
+    assert_eq!(attachment.kind, GeneratedMediaTimelineAttachmentKind::Image);
+    assert_eq!(attachment.mime_type, "image/webp");
+    assert_eq!(attachment.extension, "WEBP");
+    assert_eq!(attachment.byte_count, 12);
+    assert_eq!(attachment.state, "available");
+    assert_eq!(attachment.job_id, "job-1");
+    assert_eq!(attachment.artifact_id, "artifact-1");
+    assert_eq!(attachment.index, 2);
+    assert!(attachment
+        .local_path
+        .as_deref()
+        .unwrap()
+        .ends_with("image.webp"));
+    assert_eq!(
+        attachment.remote_source_url.as_deref(),
+        Some("https://example.test/image.webp")
+    );
+}
+
+#[test]
+fn generated_media_timeline_attachments_trusts_video_sidecar_path() {
+    let workspace = tempdir().unwrap();
+    let service = crate::runtime::media::MediaGenerationService::new(workspace.path());
+    let video_path = service
+        .write_video_artifact_bytes("artifact-video-1", "generated.mp4", b"mp4-bytes")
+        .unwrap();
+    service
+        .save_artifact(&crate::runtime::media::MediaArtifact {
+            id: "artifact-video-1".to_string(),
+            job_id: "job-video-1".to_string(),
+            kind: crate::runtime::media::MediaKind::Video,
+            path: video_path.clone(),
+            mime_type: "video/mp4".to_string(),
+            byte_count: 9,
+            metadata: serde_json::json!({
+                "remoteSourceUrl": "https://cdn.example.test/generated.mp4"
+            }),
+            preview: None,
+            created_at_ms: 1,
+        })
+        .unwrap();
+    let outside = tempdir().unwrap();
+    let forged_path = outside.path().join("forged.mp4");
+    let input = serde_json::json!({ "command": "videogen --prompt clip" }).to_string();
+    let output = serde_json::json!({
+        "stdout": serde_json::json!({
+            "jobId": "job-video-1",
+            "kind": "video",
+            "artifacts": [
+                {
+                    "artifactId": "artifact-video-1",
+                    "index": 0,
+                    "path": forged_path,
+                    "mimeType": "video/mp4",
+                    "size": 99
+                }
+            ]
+        }).to_string()
+    })
+    .to_string();
+
+    let attachments =
+        generated_media_timeline_attachments(workspace.path(), "Bash", &input, &output);
+
+    assert_eq!(attachments.len(), 1);
+    let attachment = &attachments[0];
+    assert_eq!(attachment.id, "generated-video:artifact-video-1");
+    assert_eq!(attachment.kind, GeneratedMediaTimelineAttachmentKind::Video);
+    assert_eq!(attachment.mime_type, "video/mp4");
+    assert_eq!(attachment.extension, "MP4");
+    assert_eq!(attachment.byte_count, 9);
+    assert_eq!(attachment.state, "available");
+    let canonical_video_path = std::fs::canonicalize(video_path).unwrap();
+    let expected_local_path = canonical_video_path.display().to_string();
+    assert_eq!(
+        attachment.local_path.as_deref(),
+        Some(expected_local_path.as_str())
+    );
+    assert_eq!(
+        attachment.remote_source_url.as_deref(),
+        Some("https://cdn.example.test/generated.mp4")
+    );
+}
+
+#[test]
+fn generated_media_timeline_attachments_do_not_trust_video_stdout_path() {
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let outside_video = outside.path().join("generated.mp4");
+    std::fs::write(&outside_video, b"mp4-bytes").unwrap();
+    let input = serde_json::json!({ "command": "videogen --prompt clip" }).to_string();
+    let output = serde_json::json!({
+        "stdout": serde_json::json!({
+            "jobId": "job-video-1",
+            "kind": "video",
+            "artifacts": [
+                {
+                    "artifactId": "artifact-video-1",
+                    "index": 0,
+                    "path": outside_video,
+                    "mimeType": "video/mp4",
+                    "size": 9
+                }
+            ]
+        }).to_string()
+    })
+    .to_string();
+
+    let attachments =
+        generated_media_timeline_attachments(workspace.path(), "Bash", &input, &output);
+
+    assert_eq!(attachments.len(), 1);
+    let attachment = &attachments[0];
+    assert_eq!(attachment.kind, GeneratedMediaTimelineAttachmentKind::Video);
+    assert_eq!(attachment.state, "missing");
+    assert_eq!(attachment.local_path, None);
+    assert_eq!(attachment.byte_count, 9);
 }
