@@ -229,6 +229,9 @@ pub(crate) fn handle_contacts_context(paths: &ConfigPaths, params: &Value) -> Re
     let params: ContactContextParams =
         serde_json::from_value(params.clone()).context("invalid contact context params")?;
     let contact_ids = normalize_contact_ids(params.contact_ids);
+    if contact_ids.is_empty() {
+        anyhow::bail!("contact context requires at least one valid contact id");
+    }
     let limit = params
         .limit
         .unwrap_or(TELEGRAM_CONTEXT_LIMIT)

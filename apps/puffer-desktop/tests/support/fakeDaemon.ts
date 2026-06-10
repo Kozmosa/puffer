@@ -146,6 +146,38 @@ function inferredContactId(name: string, contactIds: string[]): string {
   return `contact-${slug || "inferred"}`;
 }
 
+function contactsQuery(params: JsonRecord): string {
+  if (params.query !== undefined && typeof params.query !== "string") {
+    throw new Error("invalid contact query");
+  }
+  return String(params.query ?? "").trim().toLowerCase();
+}
+
+function contactsLimit(params: JsonRecord): number {
+  if (
+    params.limit !== undefined &&
+    (typeof params.limit !== "number" || !Number.isFinite(params.limit))
+  ) {
+    throw new Error("invalid contact limit");
+  }
+  return Math.max(1, Math.min(120, Math.trunc(Number(params.limit ?? 60))));
+}
+
+function savedContactMatches(record: JsonRecord, query: string): boolean {
+  if (!query) return true;
+  return [
+    record.id,
+    record.name,
+    record.description,
+    Array.isArray(record.contact_ids) ? record.contact_ids.join(" ") : ""
+  ].join(" ").toLowerCase().includes(query);
+}
+
+function candidateContactMatches(record: JsonRecord, query: string): boolean {
+  if (!query) return true;
+  return [record.id, record.name].join(" ").toLowerCase().includes(query);
+}
+
 const session = {
   sessionId: "session-browser",
   displayName: "Browser regression",
@@ -1613,12 +1645,16 @@ export class FakeDaemon {
   }
 
   private contactsList(params: JsonRecord): JsonRecord {
-    const query = String(params.query ?? "").trim().toLowerCase();
-    const limit = Math.max(1, Number(params.limit ?? 60) || 60);
-    const matches = (record: JsonRecord) => !query || JSON.stringify(record).toLowerCase().includes(query);
+    const query = contactsQuery(params);
+    const limit = contactsLimit(params);
     return {
-      contacts: this.contactsSnapshot.contacts.filter(matches).slice(0, limit).map((contact) => ({ ...contact })),
-      candidates: this.contactsSnapshot.candidates.filter(matches).slice(0, limit).map((candidate) => ({ ...candidate })),
+      contacts: this.contactsSnapshot.contacts
+        .filter((contact) => savedContactMatches(contact, query))
+        .map((contact) => ({ ...contact })),
+      candidates: this.contactsSnapshot.candidates
+        .filter((candidate) => candidateContactMatches(candidate, query))
+        .slice(0, limit)
+        .map((candidate) => ({ ...candidate })),
       proposals: this.contactsSnapshot.proposals.map((proposal) => ({ ...proposal }))
     };
   }
@@ -1722,9 +1758,10 @@ export class FakeDaemon {
   }
 
   private contactContext(params: JsonRecord): JsonRecord {
-    const ids = Array.isArray(params.contact_ids)
-      ? params.contact_ids.map((item) => String(item).trim()).filter(Boolean)
-      : [];
+    const ids = normalizeContactIds(Array.isArray(params.contact_ids) ? params.contact_ids : []);
+    if (ids.length === 0) {
+      throw new Error("contact context requires at least one valid contact id");
+    }
     const context = this.contactsSnapshot.candidates
       .filter((candidate) => ids.includes(String(candidate.id ?? "")))
       .flatMap((candidate) => Array.isArray(candidate.context) ? candidate.context : [])
