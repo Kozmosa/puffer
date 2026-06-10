@@ -311,12 +311,12 @@ pub(crate) fn handle_contacts_infer(state: &DaemonState, params: &Value) -> Resu
         }
     };
     let proposals = infer_proposals(state, &candidates, limit, params.model.as_deref(), &trace)?;
+    let proposals = save_proposals(paths, proposals)?;
     trace.message(
         "assistant",
         "Inference complete",
         format!("Prepared {} contact proposal(s).", proposals.len()),
     );
-    save_proposals(paths, proposals.clone())?;
     Ok(json!({ "proposals": proposals, "candidates": candidates }))
 }
 
