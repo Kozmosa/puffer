@@ -401,6 +401,22 @@ fn inference_context_avoids_live_connector_commands() {
 }
 
 #[test]
+fn contact_list_and_search_reject_malformed_params() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_config_paths(temp.path());
+
+    let list_error = handle_contacts_list(&paths, &json!({ "limit": "many" })).unwrap_err();
+    let search_error = handle_contacts_search(&paths, &json!({ "query": 42 })).unwrap_err();
+
+    assert!(list_error
+        .to_string()
+        .contains("invalid contact list params"));
+    assert!(search_error
+        .to_string()
+        .contains("invalid contact search params"));
+}
+
+#[test]
 fn telegram_direct_payload_name_prefers_chat_title() {
     assert_eq!(
         name_from_payload(&json!({
