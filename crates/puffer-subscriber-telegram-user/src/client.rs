@@ -5,7 +5,7 @@
 //! infinite `next_update` loop that emits ndjson message events.
 
 use anyhow::Context as _;
-use grammers_client::{session::Session, Client, Config};
+use grammers_client::{Client, Config, session::Session};
 use puffer_subscriber_runtime::SubscriberCommand;
 use serde_json::json;
 use tracing::{error, info, warn};
@@ -14,16 +14,16 @@ use crate::actions::handle_telegram_act;
 use crate::commands::CommandStream;
 use crate::delivery::DeliveryCursor;
 use crate::events::emit_control;
-use crate::import::{import_tdata, TdataImportOptions, TdataImportOutcome};
+use crate::import::{TdataImportOptions, TdataImportOutcome, import_tdata};
 use crate::login;
 use crate::notifications::NotificationMuteCache;
 use crate::outbound::handle_send_message;
 use crate::peers::{handle_list_messages, handle_list_peers, handle_search_messages};
 use crate::qr_login;
 use crate::state::{
-    default_init_params, resolve_api_credentials, LoginState, PersistedCredentials, SkillEnv,
+    LoginState, PersistedCredentials, SkillEnv, default_init_params, resolve_api_credentials,
 };
-use crate::updates::{handle_live_update, spawn_live_update_task, LiveUpdateEvent};
+use crate::updates::{LiveUpdateEvent, handle_live_update, spawn_live_update_task};
 
 enum UpdateLoopExit {
     StdinClosed,
@@ -477,6 +477,13 @@ async fn run_update_loop(
     notification_mutes: &mut NotificationMuteCache,
 ) -> anyhow::Result<UpdateLoopExit> {
     emit_control(&env.topic, "ready", json!({}))?;
+    let user = client.get_me().await?;
+    if delivery_cursor.reset_for_account(user.id()) {
+        info!(
+            user_id = user.id(),
+            "reset Telegram delivery cursor for authenticated account"
+        );
+    }
     crate::startup::hydrate_dialog_state(env, client, delivery_cursor, notification_mutes).await?;
     persist_live_session_state(env, client);
     let (mut live_updates, mut live_task) = spawn_live_update_task(env.clone(), client.clone());
