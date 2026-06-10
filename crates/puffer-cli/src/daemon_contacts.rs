@@ -57,6 +57,7 @@ struct ContactSaveParams {
     #[serde(default)]
     id: Option<String>,
     name: String,
+    #[serde(default)]
     description: String,
     #[serde(default)]
     avatar: Option<String>,

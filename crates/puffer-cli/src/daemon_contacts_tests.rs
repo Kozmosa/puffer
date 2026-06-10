@@ -45,10 +45,11 @@ fn save_contact_prunes_saved_inferred_proposals() {
 
     let result = handle_contacts_save(
         &paths,
-        &json!({ "name": "Alice", "description": "", "contact_ids": ["telegram@alice"] }),
+        &json!({ "name": "Alice", "contact_ids": ["telegram@alice"] }),
     )
     .unwrap();
 
+    assert_eq!(result["contacts"][0]["description"], "");
     assert!(result["proposals"].as_array().unwrap().is_empty());
 }
 
