@@ -149,6 +149,15 @@ function overlapsContactIds(record: JsonRecord, contactIds: string[]): boolean {
   return normalizedContactIds(record.contact_ids).some((id) => saved.has(id));
 }
 
+function mergedOverlappingContactIds(contacts: JsonRecord[], savedId: string, contactIds: string[]): string[] {
+  const merged = [...contactIds];
+  for (const contact of contacts) {
+    if (String(contact.id ?? "") === savedId || !overlapsContactIds(contact, contactIds)) continue;
+    merged.push(...normalizedContactIds(contact.contact_ids));
+  }
+  return Array.from(new Set(merged)).sort();
+}
+
 const session = {
   sessionId: "session-browser",
   displayName: "Browser regression",
@@ -1627,7 +1636,11 @@ export class FakeDaemon {
     const id = String(
       params.id ?? `contact-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom"}`
     ).trim();
-    const contactIds = normalizedContactIds(params.contact_ids);
+    const contactIds = mergedOverlappingContactIds(
+      this.contactsSnapshot.contacts,
+      id,
+      normalizedContactIds(params.contact_ids)
+    );
     if (contactIds.length === 0) throw new Error("missing contact ids");
     const contact = {
       id,
@@ -1639,7 +1652,9 @@ export class FakeDaemon {
     this.contactsSnapshot = {
       ...this.contactsSnapshot,
       contacts: [
-        ...this.contactsSnapshot.contacts.filter((candidate) => candidate.id !== id),
+        ...this.contactsSnapshot.contacts.filter((candidate) =>
+          candidate.id !== id && !overlapsContactIds(candidate, contactIds)
+        ),
         contact
       ].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""))),
       proposals: this.contactsSnapshot.proposals.filter((proposal) => !overlapsContactIds(proposal, contactIds))

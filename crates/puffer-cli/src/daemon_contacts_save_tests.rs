@@ -71,6 +71,75 @@ fn save_contact_prunes_saved_inferred_proposals() {
     assert!(result["proposals"].as_array().unwrap().is_empty());
 }
 
+#[test]
+fn save_contact_replaces_existing_contact_with_same_normalized_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_config_paths(temp.path());
+    handle_contacts_save(
+        &paths,
+        &json!({
+            "name": "Alice",
+            "description": "First record",
+            "contact_ids": ["telegram@alice", "google@alice@example.com"]
+        }),
+    )
+    .unwrap();
+
+    let result = handle_contacts_save(
+        &paths,
+        &json!({
+            "name": "Alice Work",
+            "description": "Replacement record",
+            "contact_ids": ["Telegram@@Alice"]
+        }),
+    )
+    .unwrap();
+    let contacts = result["contacts"].as_array().unwrap();
+
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0]["name"], "Alice Work");
+    assert_eq!(contacts[0]["description"], "Replacement record");
+    assert_eq!(contacts[0]["contact_ids"][0], "google@alice@example.com");
+    assert_eq!(contacts[0]["contact_ids"][1], "telegram@alice");
+}
+
+#[test]
+fn edit_contact_absorbs_overlapping_saved_contact() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_config_paths(temp.path());
+    let alice = handle_contacts_save(
+        &paths,
+        &json!({ "name": "Alice", "contact_ids": ["telegram@alice"] }),
+    )
+    .unwrap();
+    let alice_id = alice["contacts"][0]["id"].as_str().unwrap().to_string();
+    handle_contacts_save(
+        &paths,
+        &json!({
+            "name": "Alice Email",
+            "contact_ids": ["google@alice@example.com", "slack@U123"]
+        }),
+    )
+    .unwrap();
+
+    let result = handle_contacts_save(
+        &paths,
+        &json!({
+            "id": alice_id,
+            "name": "Alice",
+            "contact_ids": ["telegram@alice", "google@alice@example.com"]
+        }),
+    )
+    .unwrap();
+    let contacts = result["contacts"].as_array().unwrap();
+
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0]["name"], "Alice");
+    assert_eq!(contacts[0]["contact_ids"][0], "google@alice@example.com");
+    assert_eq!(contacts[0]["contact_ids"][1], "slack@U123");
+    assert_eq!(contacts[0]["contact_ids"][2], "telegram@alice");
+}
+
 fn test_config_paths(root: &Path) -> ConfigPaths {
     ConfigPaths {
         workspace_root: root.to_path_buf(),

@@ -69,6 +69,43 @@ test("contacts save selects the backend-normalized saved contact", async ({ page
   await expect(selectedContact).not.toContainText("Aaron should remain");
 });
 
+test("contacts save replaces an existing saved identity", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setContactsSnapshot({
+    contacts: [
+      {
+        id: "contact-alice",
+        name: "Alice",
+        description: "Original Alice record.",
+        avatar: null,
+        contact_ids: ["telegram@alice", "google@alice@example.com"]
+      }
+    ],
+    candidates: []
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  await page.getByRole("button", { name: "New" }).click();
+  const dialog = page.getByRole("dialog", { name: "Create contact" });
+  await dialog.getByLabel("Name").fill("Alice Work");
+  await dialog.getByLabel("Description").fill("Replacement Alice record.");
+  await dialog.getByLabel("Contact IDs").fill("Telegram@@Alice");
+  await dialog.getByRole("button", { name: /^Create$/ }).click();
+
+  const request = await daemon.waitForRequest("contacts_save");
+  expect(request.params.contact_ids).toEqual(["Telegram@@Alice"]);
+  await expect(page.getByRole("heading", { name: "Contacts 1" })).toBeVisible();
+  const selectedContact = page.getByRole("complementary", { name: "Selected contact" });
+  await expect(selectedContact).toContainText("Alice Work");
+  await expect(selectedContact).toContainText("telegram@alice");
+  await expect(selectedContact).toContainText("google@alice@example.com");
+  await expect(page.getByLabel("Contact list").locator(".pf-task-row")).toHaveCount(1);
+});
+
 test("contacts list lazily renders large snapshots", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setContactsSnapshot({

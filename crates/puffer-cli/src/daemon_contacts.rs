@@ -175,7 +175,7 @@ pub(crate) fn handle_contacts_save(paths: &ConfigPaths, params: &Value) -> Resul
     if contact_ids.is_empty() {
         anyhow::bail!("contact must contain at least one valid contact id");
     }
-    let saved_contact_ids = contact_ids.clone();
+    let mut contact_ids = contact_ids;
     let mut store = load_store(paths)?;
     let id = params
         .id
@@ -184,6 +184,11 @@ pub(crate) fn handle_contacts_save(paths: &ConfigPaths, params: &Value) -> Resul
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    contact_ids = merged_overlapping_contact_ids(&store.contacts, &id, contact_ids);
+    let saved_contact_ids = contact_ids.clone();
+    store.contacts.retain(|contact| {
+        contact.id != id && !contact_ids_overlap(&contact.contact_ids, &contact_ids)
+    });
     let saved = SavedContact {
         id: id.clone(),
         name: name.to_string(),
@@ -196,7 +201,6 @@ pub(crate) fn handle_contacts_save(paths: &ConfigPaths, params: &Value) -> Resul
             .map(ToOwned::to_owned),
         contact_ids,
     };
-    store.contacts.retain(|contact| contact.id != id);
     store.contacts.push(saved);
     store.contacts.sort_by(|left, right| {
         left.name
@@ -405,6 +409,27 @@ fn filtered_saved_contacts(
                 .any(|id| id.to_ascii_lowercase().contains(&query))
     });
     contacts
+}
+
+fn contact_ids_overlap(left: &[String], right: &[String]) -> bool {
+    let left = normalize_contact_ids(left);
+    let right = normalize_contact_ids(right);
+    left.iter().any(|id| right.contains(id))
+}
+
+fn merged_overlapping_contact_ids(
+    contacts: &[SavedContact],
+    saved_id: &str,
+    contact_ids: Vec<String>,
+) -> Vec<String> {
+    let mut merged = contact_ids.clone();
+    for contact in contacts {
+        if contact.id == saved_id || !contact_ids_overlap(&contact.contact_ids, &contact_ids) {
+            continue;
+        }
+        merged.extend(contact.contact_ids.iter().cloned());
+    }
+    normalize_contact_ids(merged)
 }
 
 fn enrich_saved_contact_avatars(paths: &ConfigPaths, contacts: &mut [SavedContact]) {
