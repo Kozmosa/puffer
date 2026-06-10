@@ -163,3 +163,22 @@ test("contacts infer removes a proposal after it is saved", async ({ page }) => 
   await expect(refreshedDialog.locator(".pf-contact-proposal")).toHaveCount(0);
   await expect(refreshedDialog).toContainText("No inferred contacts yet.");
 });
+
+test("contacts infer skips contacts that are already saved", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  await page.getByRole("button", { name: "Infer" }).click();
+  const dialog = page.getByRole("dialog", { name: "Infer contacts" });
+  await dialog.getByRole("button", { name: "Rerun" }).click();
+  await daemon.waitForRequest("contacts_infer");
+
+  const proposals = dialog.locator(".pf-contact-proposal");
+  await expect(proposals).toHaveCount(1);
+  await expect(proposals).toContainText("bob@example.com");
+  await expect(proposals).not.toContainText("Alice");
+});

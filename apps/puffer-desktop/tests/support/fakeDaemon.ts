@@ -1639,12 +1639,17 @@ export class FakeDaemon {
 
   private inferContacts(params: JsonRecord): JsonRecord {
     const limit = Math.max(1, Number(params.limit ?? 30) || 30);
+    const savedContactIds = normalizedContactIds(
+      this.contactsSnapshot.contacts.flatMap((contact) =>
+        Array.isArray(contact.contact_ids) ? contact.contact_ids : []
+      )
+    );
     const proposals = this.contactsSnapshot.candidates.slice(0, limit).map((candidate) => ({
       name: String(candidate.name ?? candidate.id ?? "Contact"),
       description: `Messages from ${String(candidate.id ?? "this contact")} are frequent and have task-like context. They are retained because the candidate has recent conversation content rather than isolated bulk traffic.`,
       avatar: candidate.avatar ?? null,
       contact_ids: [String(candidate.id ?? "")]
-    })).filter((proposal) => proposal.contact_ids[0]);
+    })).filter((proposal) => proposal.contact_ids[0] && !overlapsContactIds(proposal, savedContactIds));
     this.contactsSnapshot = {
       ...this.contactsSnapshot,
       proposals
