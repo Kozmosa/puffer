@@ -26,6 +26,7 @@
   type ContactInferTraceRole = Extract<ContactInferTracePayload, { type: "message" }>["role"];
 
   const CONTACT_PAGE_SIZE = 40;
+  const CONTACT_ID_PREFIXES = new Set(["telegram", "google", "slack", "discord", "matrix", "lark"]);
 
   let loading = $state(false);
   let inferring = $state(false);
@@ -401,7 +402,20 @@
   }
 
   function canonicalContactIds(ids: string[]): string {
-    return [...normalizedContactIds(ids)].sort().join("\n");
+    return [...new Set(normalizedContactIds(ids).map(contactIdComparisonKey))].sort().join("\n");
+  }
+
+  function contactIdComparisonKey(value: string): string {
+    const trimmed = value.trim();
+    const atIndex = trimmed.indexOf("@");
+    if (atIndex <= 0) return trimmed;
+    const prefix = trimmed.slice(0, atIndex).trim().toLowerCase();
+    if (!CONTACT_ID_PREFIXES.has(prefix)) return trimmed;
+    let suffix = trimmed.slice(atIndex + 1).trim().replace(/^@+/, "");
+    if (!suffix || /[\s\x00-\x1f\x7f]/.test(suffix)) return trimmed;
+    if (prefix === "telegram") suffix = suffix.toLowerCase();
+    if (prefix === "google") suffix = suffix.toLowerCase();
+    return `${prefix}@${suffix}`;
   }
 
   function selectContact(id: string) {

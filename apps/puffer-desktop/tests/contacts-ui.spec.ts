@@ -34,6 +34,41 @@ test("contacts tab saves a user-curated contact", async ({ page }) => {
   await expect(selectedContact).toContainText("Launch Alice");
 });
 
+test("contacts save selects the backend-normalized saved contact", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setContactsSnapshot({
+    contacts: [
+      {
+        id: "contact-aaron",
+        name: "Aaron",
+        description: "Aaron should remain in the list but not steal selection.",
+        avatar: null,
+        contact_ids: ["telegram@aaron"]
+      }
+    ],
+    candidates: []
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  await page.getByRole("button", { name: "New" }).click();
+  const dialog = page.getByRole("dialog", { name: "Create contact" });
+  await dialog.getByLabel("Name").fill("Casey");
+  await dialog.getByLabel("Description").fill("Casey has a normalized Telegram id.");
+  await dialog.getByLabel("Contact IDs").fill("Telegram@@Casey");
+  await dialog.getByRole("button", { name: /^Create$/ }).click();
+
+  const request = await daemon.waitForRequest("contacts_save");
+  expect(request.params.contact_ids).toEqual(["Telegram@@Casey"]);
+  const selectedContact = page.getByRole("complementary", { name: "Selected contact" });
+  await expect(selectedContact).toContainText("Casey");
+  await expect(selectedContact).toContainText("telegram@casey");
+  await expect(selectedContact).not.toContainText("Aaron should remain");
+});
+
 test("contacts list lazily renders large snapshots", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setContactsSnapshot({

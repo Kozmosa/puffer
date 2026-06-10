@@ -121,10 +121,27 @@ const ONE_PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lzTnGQAAAABJRU5ErkJggg==";
 
 const now = Date.now();
+const CONTACT_ID_PREFIXES = new Set(["telegram", "google", "slack", "discord", "matrix", "lark"]);
+
+function normalizedContactId(value: unknown): string | null {
+  const trimmed = String(value).trim();
+  const atIndex = trimmed.indexOf("@");
+  if (atIndex <= 0) return null;
+  const prefix = trimmed.slice(0, atIndex).trim().toLowerCase();
+  if (!CONTACT_ID_PREFIXES.has(prefix)) return null;
+  let suffix = trimmed.slice(atIndex + 1).trim().replace(/^@+/, "");
+  if (!suffix || /[\s\x00-\x1f\x7f]/.test(suffix)) return null;
+  if (prefix === "telegram") {
+    suffix = suffix.toLowerCase();
+    if (/^\d+$/.test(suffix) || !/^[a-z0-9_]+$/.test(suffix)) return null;
+  }
+  if (prefix === "google") suffix = suffix.toLowerCase();
+  return `${prefix}@${suffix}`;
+}
 
 function normalizedContactIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean))).sort();
+  return Array.from(new Set(value.map(normalizedContactId).filter((id): id is string => id !== null))).sort();
 }
 
 function overlapsContactIds(record: JsonRecord, contactIds: string[]): boolean {
