@@ -1,0 +1,27 @@
+id: kling
+display_name: Kling
+base_url: https://api.klingai.com
+default_api: openai-completions
+auth_modes:
+  - api_key
+media:
+  video:
+    discovery:
+      adapter: static
+    execution:
+      adapter: replicate_video
+      path: /v1/videos/generations
+    models:
+      - id: kling-2-1
+        display_name: Kling 2.1
+        operations:
+          - generate
+        axes:
+          - { id: tier, label: Quality, role: selector, control: !enum { values: ["std", "pro"], default: "std" } }
+          - { id: duration, label: Length, role: param, control: !enum { values: ["5", "10"], default: "5" }, request_field: duration, wire_type: number }
+          - { id: ratio, label: Video ratio, role: param, control: !enum { values: ["16:9", "9:16", "1:1"], default: "16:9" }, request_field: aspect_ratio }
+        variants:
+          selector: tier
+          map:
+            "std": { model_id: kling-2-1-std, base_params: { resolution: "720p" } }
+            "pro": { model_id: kling-2-1-pro, base_params: { resolution: "1080p" } }

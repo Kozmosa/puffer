@@ -87,7 +87,31 @@ fn all_providers_parse_after_axis_migration() {
         "openrouter",
         "byteplus",
         "relaydance",
+        "kling",
     ] {
         let _ = provider(file); // panics on parse failure
+    }
+}
+
+#[test]
+fn kling_uses_tier_selector_and_discrete_duration() {
+    let p = provider("kling");
+    let video = p.media.as_ref().unwrap().video.as_ref().unwrap();
+    let m = video
+        .models
+        .iter()
+        .find(|m| m.id == "kling-2-1")
+        .expect("kling-2-1");
+    let tier = m.axes.iter().find(|a| a.id == "tier").expect("tier");
+    assert_eq!(tier.role, AxisRole::Selector);
+    let dur = m.axes.iter().find(|a| a.id == "duration").expect("duration");
+    assert!(
+        matches!(&dur.control, ControlKind::Enum { values, .. } if values == &vec!["5".to_string(), "10".to_string()])
+    );
+    match &m.variants {
+        Variants::BySelector { map, .. } => {
+            assert_eq!(map["pro"].base_params["resolution"], "1080p")
+        }
+        _ => panic!("expected BySelector"),
     }
 }
