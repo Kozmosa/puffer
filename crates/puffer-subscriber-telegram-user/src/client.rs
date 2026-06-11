@@ -36,6 +36,11 @@ enum RuntimeCommandOutcome {
     ClientReplaced,
 }
 
+enum StartupHydrationStep {
+    Hydrated,
+    Command(Option<SubscriberCommand>),
+}
+
 /// Runs the Telegram user subscriber until stdin closes or a fatal error
 /// occurs. The caller is expected to already be inside a Tokio runtime
 /// (the top-level `#[tokio::main]` in the puffer binary).
@@ -477,14 +482,20 @@ async fn run_update_loop(
     notification_mutes: &mut NotificationMuteCache,
 ) -> anyhow::Result<UpdateLoopExit> {
     emit_control(&env.topic, "ready", json!({}))?;
-    let user = client.get_me().await?;
-    if delivery_cursor.reset_for_account(user.id()) {
-        info!(
-            user_id = user.id(),
-            "reset Telegram delivery cursor for authenticated account"
-        );
+    reset_delivery_cursor_for_current_account(client, delivery_cursor).await?;
+    if let Some(exit) = hydrate_startup_state_before_updates(
+        env,
+        commands,
+        client,
+        login_state,
+        qr_state,
+        delivery_cursor,
+        notification_mutes,
+    )
+    .await?
+    {
+        return Ok(exit);
     }
-    crate::startup::hydrate_dialog_state(env, client, delivery_cursor, notification_mutes).await?;
     persist_live_session_state(env, client);
     let (mut live_updates, mut live_task) = spawn_live_update_task(env.clone(), client.clone());
     info!("entering telegram update loop");
@@ -529,17 +540,88 @@ async fn run_update_loop(
                     }
                     RuntimeCommandOutcome::ClientReplaced => {
                         live_task.abort();
-                        crate::startup::hydrate_dialog_state(
+                        reset_delivery_cursor_for_current_account(client, delivery_cursor).await?;
+                        if let Some(exit) = hydrate_startup_state_before_updates(
                             env,
+                            commands,
                             client,
+                            login_state,
+                            qr_state,
                             delivery_cursor,
                             notification_mutes,
-                        ).await?;
+                        )
+                        .await?
+                        {
+                            return Ok(exit);
+                        }
                         persist_live_session_state(env, client);
                         (live_updates, live_task) =
                             spawn_live_update_task(env.clone(), client.clone());
                     }
                 }
+            }
+        }
+    }
+}
+
+async fn reset_delivery_cursor_for_current_account(
+    client: &Client,
+    delivery_cursor: &mut DeliveryCursor,
+) -> anyhow::Result<()> {
+    let user = client.get_me().await?;
+    if delivery_cursor.reset_for_account(user.id()) {
+        info!(
+            user_id = user.id(),
+            "reset Telegram delivery cursor for authenticated account"
+        );
+    }
+    Ok(())
+}
+
+async fn hydrate_startup_state_before_updates(
+    env: &SkillEnv,
+    commands: &mut CommandStream,
+    client: &mut Client,
+    login_state: &mut LoginState,
+    qr_state: &mut Option<qr_login::QrLoginState>,
+    delivery_cursor: &mut DeliveryCursor,
+    notification_mutes: &mut NotificationMuteCache,
+) -> anyhow::Result<Option<UpdateLoopExit>> {
+    loop {
+        let step = {
+            let hydration = crate::startup::hydrate_dialog_state(
+                env,
+                client,
+                delivery_cursor,
+                notification_mutes,
+            );
+            tokio::pin!(hydration);
+            tokio::select! {
+                biased;
+                cmd = commands.next() => StartupHydrationStep::Command(cmd?),
+                result = &mut hydration => {
+                    result?;
+                    StartupHydrationStep::Hydrated
+                }
+            }
+        };
+
+        match step {
+            StartupHydrationStep::Hydrated => return Ok(None),
+            StartupHydrationStep::Command(Some(cmd)) => {
+                match handle_runtime_command(env, client, login_state, qr_state, cmd).await? {
+                    RuntimeCommandOutcome::Continue => {}
+                    RuntimeCommandOutcome::ReauthStarted => {
+                        return Ok(Some(UpdateLoopExit::ReauthStarted));
+                    }
+                    RuntimeCommandOutcome::ClientReplaced => {
+                        reset_delivery_cursor_for_current_account(client, delivery_cursor).await?;
+                    }
+                }
+            }
+            StartupHydrationStep::Command(None) => {
+                info!("stdin closed before telegram startup hydration completed");
+                return Ok(Some(UpdateLoopExit::StdinClosed));
             }
         }
     }
