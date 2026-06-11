@@ -2556,16 +2556,10 @@ fn media_capability_info_dto(capability: MediaCapabilityView) -> MediaCapability
             .map(|axis| MediaCapabilityAxisDto {
                 id: axis.id,
                 label: axis.label,
-                role: serde_json::to_value(axis.role)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_string))
-                    .unwrap_or_default(),
+                role: axis.role.as_str().to_string(),
                 control: serde_json::to_value(axis.control).unwrap_or(Value::Null),
                 request_field: axis.request_field,
-                wire_type: serde_json::to_value(axis.wire_type)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_string))
-                    .unwrap_or_default(),
+                wire_type: axis.wire_type.as_str().to_string(),
             })
             .collect(),
         status: capability.status,
@@ -2633,7 +2627,7 @@ fn media_selection_for_kind(media: MediaConfig, kind: &str) -> Result<MediaGener
         "video" => media.video,
         _ => anyhow::bail!("unsupported media kind `{kind}`"),
     }
-    .ok_or_else(|| anyhow::anyhow!("{kind} media provider/model/adapter is not configured"))
+    .ok_or_else(|| anyhow::anyhow!("{kind} media provider/model is not configured"))
 }
 
 fn exact_media_generation_request(
@@ -2653,7 +2647,6 @@ fn exact_media_generation_request(
         model_id: non_empty_media_field(&selection.logical_model_id, "logical_model_id")
             .context(missing_context)?,
         operation: "generate".to_string(),
-        adapter: String::new(),
         prompt,
         image_references: Vec::new(),
         parameters: selection.selections,
@@ -7029,10 +7022,14 @@ models: []
         let (_home_guard, _temp, state) = daemon_state_with_replicate_video_capability();
         {
             let mut config = state.config.lock().unwrap();
-            config.media.video = Some(MediaGenerationConfig { provider_id: "replicate".to_string(), logical_model_id: "owner/unknown-model".to_string(), selections: BTreeMap::from([
+            config.media.video = Some(MediaGenerationConfig {
+                provider_id: "replicate".to_string(),
+                logical_model_id: "owner/unknown-model".to_string(),
+                selections: BTreeMap::from([
                     ("aspect_ratio".to_string(), "16:9".to_string()),
                     ("duration_seconds".to_string(), "5".to_string()),
-                ]) });
+                ]),
+            });
         }
 
         let error = handle_generate_media(&state, &json!({"kind": "video", "prompt": "animate"}))
@@ -7064,17 +7061,18 @@ models: []
         {
             let mut config = state.config.lock().unwrap();
             config.openai_base_url = Some("http://127.0.0.1:9".to_string());
-            config.media.image = Some(MediaGenerationConfig { provider_id: "openai".to_string(), logical_model_id: "stale-image".to_string(), selections: BTreeMap::new() });
+            config.media.image = Some(MediaGenerationConfig {
+                provider_id: "openai".to_string(),
+                logical_model_id: "stale-image".to_string(),
+                selections: BTreeMap::new(),
+            });
         }
 
         let error =
             handle_generate_media(&state, &json!({"kind": "image", "prompt": "draw an icon"}))
                 .expect_err("stale config should fail");
 
-        assert!(
-            error.to_string().contains("stale-image"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("stale-image"), "{error}");
     }
 
     #[test]
@@ -7107,11 +7105,15 @@ models: []
         {
             let mut config = state.config.lock().unwrap();
             config.openai_base_url = Some(base_url);
-            config.media.image = Some(MediaGenerationConfig { provider_id: "openai".to_string(), logical_model_id: "gpt-image-1".to_string(), selections: BTreeMap::from([
+            config.media.image = Some(MediaGenerationConfig {
+                provider_id: "openai".to_string(),
+                logical_model_id: "gpt-image-1".to_string(),
+                selections: BTreeMap::from([
                     ("size".to_string(), "1024x1024".to_string()),
                     ("quality".to_string(), "auto".to_string()),
                     ("output_format".to_string(), "png".to_string()),
-                ]) });
+                ]),
+            });
         }
 
         let response =
@@ -7627,7 +7629,11 @@ models: []
         .expect("daemon state");
         {
             let mut config = state.config.lock().unwrap();
-            config.media.image = Some(MediaGenerationConfig { provider_id: "openrouter".to_string(), logical_model_id: "openrouter/image-chat".to_string(), selections: BTreeMap::new() });
+            config.media.image = Some(MediaGenerationConfig {
+                provider_id: "openrouter".to_string(),
+                logical_model_id: "openrouter/image-chat".to_string(),
+                selections: BTreeMap::new(),
+            });
         }
         let listed =
             handle_list_media_capabilities(&state, &json!({"kind": "image"})).expect("list");

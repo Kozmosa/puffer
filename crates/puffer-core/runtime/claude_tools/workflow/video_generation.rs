@@ -39,7 +39,6 @@ struct VideoRequest {
     provider: String,
     model: String,
     operation: String,
-    adapter: String,
     prompt: String,
     image_references: Vec<String>,
     parameters: BTreeMap<String, String>,
@@ -60,7 +59,7 @@ pub fn execute_video_generation(
         .media
         .video
         .as_ref()
-        .context("video media provider/model/adapter is not configured")?;
+        .context("video media provider/model is not configured")?;
     let request = build_video_request(cwd, parsed, settings)?;
     let media_context = media_context.context("VideoGeneration media runtime is not configured")?;
     let generated = generate_exact_media_with_cache(
@@ -89,7 +88,6 @@ fn build_video_request(
         provider,
         model,
         operation: "generate".to_string(),
-        adapter: String::new(),
         prompt,
         image_references,
         parameters,
@@ -129,7 +127,6 @@ fn exact_media_request(request: &VideoRequest) -> ExactMediaGenerationRequest {
         provider_id: request.provider.clone(),
         model_id: request.model.clone(),
         operation: request.operation.clone(),
-        adapter: request.adapter.clone(),
         prompt: request.prompt.clone(),
         image_references: request.image_references.clone(),
         parameters: request.parameters.clone(),
@@ -252,9 +249,10 @@ mod tests {
     use indexmap::IndexMap;
     use puffer_config::MediaGenerationConfig;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-        MediaModelDescriptor, MediaOperation, Axis, AxisRole, ControlKind, Variant, Variants, WireType,
-        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        AuthMode, AuthStore, Axis, AxisRole, ControlKind, MediaExecutionDescriptor,
+        MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry, Variant,
+        Variants, WireType,
     };
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionMetadata;
@@ -271,7 +269,8 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    fn video_settings() -> MediaGenerationConfig { MediaGenerationConfig {
+    fn video_settings() -> MediaGenerationConfig {
+        MediaGenerationConfig {
             provider_id: "relaydance".to_string(),
             logical_model_id: "doubao-seedance-2-0-720p".to_string(),
             selections: BTreeMap::from([
@@ -279,7 +278,8 @@ mod tests {
                 ("aspect_ratio".to_string(), "16:9".to_string()),
                 ("resolution".to_string(), "720p".to_string()),
             ]),
-        } }
+        }
+    }
 
     fn test_state(settings: Option<MediaGenerationConfig>, cwd: &Path) -> AppState {
         let mut config = puffer_config::PufferConfig::default();
@@ -330,35 +330,70 @@ mod tests {
                         execution: None,
                         operations: vec![MediaOperation::Generate],
                         axes: vec![
-                            Axis { id: "duration_seconds".to_string(), label: "Duration".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec![
-                                    "4".to_string(),
-                                    "5".to_string(),
-                                    "6".to_string(),
-                                    "7".to_string(),
-                                    "8".to_string(),
-                                    "9".to_string(),
-                                    "10".to_string(),
-                                    "11".to_string(),
-                                    "12".to_string(),
-                                    "13".to_string(),
-                                    "14".to_string(),
-                                    "15".to_string(),
-                                ], default: "5".to_string() }, request_field: Some("seconds".to_string()), wire_type: WireType::String },
-                            Axis { id: "resolution".to_string(), label: "Resolution".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec![
-                                    "480p".to_string(),
-                                    "720p".to_string(),
-                                    "1080p".to_string(),
-                                ], default: "720p".to_string() }, request_field: Some("metadata.resolution".to_string()), wire_type: WireType::String },
-                            Axis { id: "aspect_ratio".to_string(), label: "Aspect ratio".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec![
-                                    "16:9".to_string(),
-                                    "4:3".to_string(),
-                                    "1:1".to_string(),
-                                    "3:4".to_string(),
-                                    "9:16".to_string(),
-                                    "21:9".to_string(),
-                                    "adaptive".to_string(),
-                                ], default: "16:9".to_string() }, request_field: Some("metadata.ratio".to_string()), wire_type: WireType::String },
-                        ], variants: Variants::Single(Variant { model_id: "doubao-seedance-2-0-720p".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                            Axis {
+                                id: "duration_seconds".to_string(),
+                                label: "Duration".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec![
+                                        "4".to_string(),
+                                        "5".to_string(),
+                                        "6".to_string(),
+                                        "7".to_string(),
+                                        "8".to_string(),
+                                        "9".to_string(),
+                                        "10".to_string(),
+                                        "11".to_string(),
+                                        "12".to_string(),
+                                        "13".to_string(),
+                                        "14".to_string(),
+                                        "15".to_string(),
+                                    ],
+                                    default: "5".to_string(),
+                                },
+                                request_field: Some("seconds".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "resolution".to_string(),
+                                label: "Resolution".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec![
+                                        "480p".to_string(),
+                                        "720p".to_string(),
+                                        "1080p".to_string(),
+                                    ],
+                                    default: "720p".to_string(),
+                                },
+                                request_field: Some("metadata.resolution".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "aspect_ratio".to_string(),
+                                label: "Aspect ratio".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec![
+                                        "16:9".to_string(),
+                                        "4:3".to_string(),
+                                        "1:1".to_string(),
+                                        "3:4".to_string(),
+                                        "9:16".to_string(),
+                                        "21:9".to_string(),
+                                        "adaptive".to_string(),
+                                    ],
+                                    default: "16:9".to_string(),
+                                },
+                                request_field: Some("metadata.ratio".to_string()),
+                                wire_type: WireType::String,
+                            },
+                        ],
+                        variants: Variants::Single(Variant {
+                            model_id: "doubao-seedance-2-0-720p".to_string(),
+                            base_params: ::std::collections::BTreeMap::new(),
+                        }),
+                    }],
                 }),
             }),
             models: Vec::<ModelDescriptor>::new(),
@@ -510,7 +545,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "video media provider/model/adapter is not configured"
+            "video media provider/model is not configured"
         );
     }
 
@@ -663,8 +698,6 @@ mod tests {
 
         assert_eq!(request.provider, "relaydance");
         assert_eq!(request.model, "doubao-seedance-2-0-720p");
-        // adapter is derived from the capability at runtime, not set here.
-        assert_eq!(request.adapter, "");
         assert_eq!(request.parameters["duration_seconds"], "5");
         assert_eq!(request.parameters["aspect_ratio"], "9:16");
         assert_eq!(request.parameters["resolution"], "1080p");

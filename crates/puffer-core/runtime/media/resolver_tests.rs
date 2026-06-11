@@ -98,7 +98,10 @@ fn test_video_registry() -> (ProviderRegistry, AuthStore) {
 }
 
 fn test_image_registry() -> (ProviderRegistry, AuthStore) {
-    (registry_from_yaml(&[OPENAI_IMAGE_YAML]), auth_for(&["openai"]))
+    (
+        registry_from_yaml(&[OPENAI_IMAGE_YAML]),
+        auth_for(&["openai"]),
+    )
 }
 
 fn btree(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -155,7 +158,11 @@ fn resolves_audio_selector_to_concrete_model() {
         "relaydance",
         "seedance-1-5-pro",
         MediaKind::Video,
-        &btree(&[("audio", "false"), ("resolution", "720p"), ("duration", "6")]),
+        &btree(&[
+            ("audio", "false"),
+            ("resolution", "720p"),
+            ("duration", "6"),
+        ]),
         &MediaDiscoveryCache::default(),
     )
     .unwrap();

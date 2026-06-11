@@ -863,7 +863,6 @@ fn resolver_rejects_unsupported_image_value() {
     let selection = crate::media_runtime::ExactImageGenerationRequest {
         provider_id: "exact-provider".to_string(),
         model_id: "exact-image-model".to_string(),
-        adapter: "images_json".to_string(),
         prompt: "draw a precise icon".to_string(),
         parameters: BTreeMap::from([("size".to_string(), "2048x2048".to_string())]),
         count: 1,

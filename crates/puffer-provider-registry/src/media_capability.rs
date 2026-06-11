@@ -5,9 +5,19 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlKind {
-    Enum { values: Vec<String>, default: String },
-    Range { min: f64, max: f64, step: f64, default: f64 },
-    Bool { default: bool },
+    Enum {
+        values: Vec<String>,
+        default: String,
+    },
+    Range {
+        min: f64,
+        max: f64,
+        step: f64,
+        default: f64,
+    },
+    Bool {
+        default: bool,
+    },
 }
 
 /// Whether an axis maps to a request parameter or selects an upstream model id.
@@ -18,6 +28,16 @@ pub enum AxisRole {
     Selector,
 }
 
+impl AxisRole {
+    /// Returns the wire string (matches the `snake_case` serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AxisRole::Param => "param",
+            AxisRole::Selector => "selector",
+        }
+    }
+}
+
 /// How a Param axis value is encoded into provider JSON. No Bool: no param axis
 /// is boolean today (audio is a selector, carrying no wire value).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +46,16 @@ pub enum WireType {
     #[default]
     String,
     Number,
+}
+
+impl WireType {
+    /// Returns the wire string (matches the `snake_case` serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WireType::String => "string",
+            WireType::Number => "number",
+        }
+    }
 }
 
 /// One user-facing dimension of a logical model.
@@ -104,6 +134,8 @@ axes: []
 variants: { model_id: dreamina-seedance-2-0-260128 }
 "#;
         let w: Wrap = serde_yaml::from_str(yaml).expect("parse");
-        assert!(matches!(w.variants, Variants::Single(v) if v.model_id == "dreamina-seedance-2-0-260128"));
+        assert!(
+            matches!(w.variants, Variants::Single(v) if v.model_id == "dreamina-seedance-2-0-260128")
+        );
     }
 }

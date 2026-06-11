@@ -11,7 +11,7 @@ use crate::runtime::media::{
     MediaArtifact, MediaGenerationService, MediaJob, MediaJobStatus, MediaKind,
 };
 use anyhow::{bail, Context, Result};
-use puffer_provider_registry::{Axis, AuthStore, MediaOperation, ProviderRegistry};
+use puffer_provider_registry::{AuthStore, Axis, MediaOperation, ProviderRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,9 +67,10 @@ pub struct MediaCapabilityView {
 #[serde(rename_all = "camelCase")]
 pub struct ExactImageGenerationRequest {
     pub provider_id: String,
+    /// Logical model id; resolved to a concrete upstream model at use time.
     pub model_id: String,
-    pub adapter: String,
     pub prompt: String,
+    /// Per-axis selections; resolved to request parameters at use time.
     pub parameters: BTreeMap<String, String>,
     pub count: u8,
 }
@@ -80,11 +81,12 @@ pub struct ExactImageGenerationRequest {
 pub struct ExactMediaGenerationRequest {
     pub kind: String,
     pub provider_id: String,
+    /// Logical model id; resolved to a concrete upstream model at use time.
     pub model_id: String,
     pub operation: String,
-    pub adapter: String,
     pub prompt: String,
     pub image_references: Vec<String>,
+    /// Per-axis selections; resolved to request parameters at use time.
     pub parameters: BTreeMap<String, String>,
     pub count: u8,
 }
@@ -335,7 +337,6 @@ fn generate_exact_image_from_media_request(
         ExactImageGenerationRequest {
             provider_id: request.provider_id,
             model_id: request.model_id,
-            adapter: request.adapter,
             prompt: request.prompt,
             parameters: request.parameters,
             count: request.count,
@@ -378,37 +379,6 @@ pub fn resolved_exact_image_parameters_with_cache(
         &discovery_cache.inner,
     )?;
     Ok(resolved.parameters)
-}
-
-#[allow(dead_code)]
-fn exact_image_capability(
-    registry: &ProviderRegistry,
-    auth_store: &AuthStore,
-    selection: &ExactImageGenerationRequest,
-    discovery_cache: &ExactMediaDiscoveryCache,
-) -> Result<crate::runtime::media::capabilities::MediaCapability> {
-    resolve_media_capabilities(
-        registry,
-        auth_store,
-        MediaKind::Image,
-        MediaOperation::Generate,
-        now_ms(),
-        &discovery_cache.inner,
-    )
-    .into_iter()
-    .find(|capability| {
-        capability.provider_id == selection.provider_id
-            && capability.model_id == selection.model_id
-            && capability.adapter == selection.adapter
-    })
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "selected image model unavailable: {}/{} via {}",
-            selection.provider_id,
-            selection.model_id,
-            selection.adapter
-        )
-    })
 }
 
 fn exact_generation_result(
@@ -484,6 +454,8 @@ impl From<crate::runtime::media::capabilities::MediaCapability> for MediaCapabil
             kind: media_kind_name(capability.kind).to_string(),
             operation: capability.operation,
             adapter: capability.adapter,
+            // `variants` (upstream model ids + base params) stays server-side:
+            // the UI renders from each axis's `control`, not the variant table.
             axes: capability.axes,
             status: capability.status,
             source: capability.source,

@@ -203,7 +203,12 @@ fn generate_relaydance_video(
         &resolved.parameters,
     )?;
     let job = adapter
-        .submit(&service, video_request, resolved.parameters.clone(), now_ms())
+        .submit(
+            &service,
+            video_request,
+            resolved.parameters.clone(),
+            now_ms(),
+        )
         .map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
     let job = adapter
         .poll_until_terminal(
@@ -239,7 +244,12 @@ fn generate_byteplus_video(
         &resolved.parameters,
     )?;
     let job = adapter
-        .submit(&service, video_request, resolved.parameters.clone(), now_ms())
+        .submit(
+            &service,
+            video_request,
+            resolved.parameters.clone(),
+            now_ms(),
+        )
         .map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
     let job = adapter
         .poll_until_terminal(
@@ -389,7 +399,6 @@ mod tests {
             provider_id: "relaydance".to_string(),
             model_id: "doubao-seedance-2-0-720p".to_string(),
             operation: "generate".to_string(),
-            adapter: RELAYDANCE_VIDEO_ADAPTER.to_string(),
             prompt: "animate image 1".to_string(),
             image_references: vec!["https://example.com/person.png".to_string()],
             parameters: BTreeMap::new(),
@@ -424,7 +433,6 @@ mod tests {
             provider_id: "replicate".to_string(),
             model_id: "owner/model-version".to_string(),
             operation: "generate".to_string(),
-            adapter: "replicate_video".to_string(),
             prompt: "animate image 1".to_string(),
             image_references: vec!["https://example.com/person.png".to_string()],
             parameters: BTreeMap::new(),

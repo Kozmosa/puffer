@@ -331,10 +331,10 @@ mod tests {
     use crate::runtime::media::MediaGenerationService;
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, MediaBatchDescriptor, MediaBatchMode, MediaExecutionDescriptor,
-        MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
-        Axis, AxisRole, ControlKind, Variant, Variants, WireType, ModelDescriptor, ProviderDescriptor,
-        ProviderMediaDescriptor, ProviderRegistry,
+        AuthMode, AuthStore, Axis, AxisRole, ControlKind, MediaBatchDescriptor, MediaBatchMode,
+        MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor,
+        MediaOperation, ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor,
+        ProviderRegistry, Variant, Variants, WireType,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -377,9 +377,34 @@ mod tests {
                         execution: None,
                         operations: vec![MediaOperation::Generate],
                         axes: vec![
-                            Axis { id: "aspect_ratio".to_string(), label: "Aspect ratio".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["1:1".to_string(), "16:9".to_string()], default: "1:1".to_string() }, request_field: Some("aspect_ratio".to_string()), wire_type: WireType::String },
-                            Axis { id: "response_format".to_string(), label: "Response format".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["url".to_string(), "base64".to_string()], default: "base64".to_string() }, request_field: Some("response_format".to_string()), wire_type: WireType::String },
-                        ], variants: Variants::Single(Variant { model_id: "image-01".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                            Axis {
+                                id: "aspect_ratio".to_string(),
+                                label: "Aspect ratio".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["1:1".to_string(), "16:9".to_string()],
+                                    default: "1:1".to_string(),
+                                },
+                                request_field: Some("aspect_ratio".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "response_format".to_string(),
+                                label: "Response format".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["url".to_string(), "base64".to_string()],
+                                    default: "base64".to_string(),
+                                },
+                                request_field: Some("response_format".to_string()),
+                                wire_type: WireType::String,
+                            },
+                        ],
+                        variants: Variants::Single(Variant {
+                            model_id: "image-01".to_string(),
+                            base_params: ::std::collections::BTreeMap::new(),
+                        }),
+                    }],
                 }),
                 video: None,
             }),

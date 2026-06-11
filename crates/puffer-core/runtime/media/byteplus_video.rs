@@ -66,17 +66,23 @@ impl BytePlusVideoRequest {
     }
 }
 
-/// Encodes one resolved BytePlus parameter value as JSON. BytePlus requires
-/// `duration` to be a JSON number (the fast model rejects a string duration);
-/// every other BytePlus field (`ratio`, `resolution`) is a non-numeric string,
-/// so an integer-parse check reproduces the previous declared-`wire_type`
-/// behavior for BytePlus's field set.
-fn byteplus_request_value(value: &str) -> Value {
+/// BytePlus request fields that must be encoded as JSON numbers. BytePlus
+/// requires `duration` to be numeric (the fast model rejects a string
+/// duration); every other field (`ratio`, `resolution`) is a non-numeric
+/// string. Encoding by an explicit allowlist — rather than parsing every value
+/// — avoids mis-encoding a future numeric-looking string field.
+const BYTEPLUS_NUMERIC_FIELDS: &[&str] = &["duration"];
+
+/// Encodes one resolved BytePlus parameter value as JSON, as a number only for
+/// fields in [`BYTEPLUS_NUMERIC_FIELDS`].
+fn byteplus_request_value(field: &str, value: &str) -> Value {
     let value = value.trim();
-    match value.parse::<u64>() {
-        Ok(number) => Value::from(number),
-        Err(_) => json!(value),
+    if BYTEPLUS_NUMERIC_FIELDS.contains(&field) {
+        if let Ok(number) = value.parse::<u64>() {
+            return Value::from(number);
+        }
     }
+    json!(value)
 }
 
 /// Maps resolved request parameters (keyed by upstream request field) into a
@@ -89,7 +95,7 @@ pub(crate) fn byteplus_video_request_from_parameters(
 ) -> Result<BytePlusVideoRequest> {
     let params = parameters
         .iter()
-        .map(|(field, value)| (field.clone(), byteplus_request_value(value)))
+        .map(|(field, value)| (field.clone(), byteplus_request_value(field, value)))
         .collect();
     let request = BytePlusVideoRequest {
         model: model_id,

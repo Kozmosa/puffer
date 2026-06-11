@@ -349,7 +349,6 @@ fn default_remote_runner_wait_for_ready() -> bool {
     true
 }
 
-
 fn default_memory_enabled() -> bool {
     true
 }

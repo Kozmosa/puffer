@@ -443,9 +443,7 @@ media:
     );
     let axis = &image.models[0].axes[0];
     assert_eq!(axis.id, "size");
-    assert!(
-        matches!(&axis.control, ControlKind::Enum { default, .. } if default == "1024x1024")
-    );
+    assert!(matches!(&axis.control, ControlKind::Enum { default, .. } if default == "1024x1024"));
     assert_eq!(axis.request_field.as_deref(), Some("size"));
 }
 

@@ -1,9 +1,9 @@
 use super::*;
 use indexmap::IndexMap;
 use puffer_provider_registry::{
-    AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-    MediaModelDescriptor, MediaOperation, Axis, AxisRole, ControlKind, Variant, Variants, WireType,
-    ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+    AuthMode, AuthStore, Axis, AxisRole, ControlKind, MediaExecutionDescriptor, MediaExecutionKind,
+    MediaKindDescriptor, MediaModelDescriptor, MediaOperation, ModelDescriptor, ProviderDescriptor,
+    ProviderMediaDescriptor, ProviderRegistry, Variant, Variants, WireType,
 };
 use puffer_resources::ProviderPack;
 use serde_json::json;
@@ -39,9 +39,34 @@ fn minimax_registry(base_url: String) -> ProviderRegistry {
                     execution: None,
                     operations: vec![MediaOperation::Generate],
                     axes: vec![
-                        Axis { id: "aspect_ratio".to_string(), label: "Aspect ratio".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["1:1".to_string(), "16:9".to_string()], default: "1:1".to_string() }, request_field: Some("aspect_ratio".to_string()), wire_type: WireType::String },
-                        Axis { id: "response_format".to_string(), label: "Response format".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["url".to_string(), "base64".to_string()], default: "base64".to_string() }, request_field: Some("response_format".to_string()), wire_type: WireType::String },
-                    ], variants: Variants::Single(Variant { model_id: "image-01".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                        Axis {
+                            id: "aspect_ratio".to_string(),
+                            label: "Aspect ratio".to_string(),
+                            role: AxisRole::Param,
+                            control: ControlKind::Enum {
+                                values: vec!["1:1".to_string(), "16:9".to_string()],
+                                default: "1:1".to_string(),
+                            },
+                            request_field: Some("aspect_ratio".to_string()),
+                            wire_type: WireType::String,
+                        },
+                        Axis {
+                            id: "response_format".to_string(),
+                            label: "Response format".to_string(),
+                            role: AxisRole::Param,
+                            control: ControlKind::Enum {
+                                values: vec!["url".to_string(), "base64".to_string()],
+                                default: "base64".to_string(),
+                            },
+                            request_field: Some("response_format".to_string()),
+                            wire_type: WireType::String,
+                        },
+                    ],
+                    variants: Variants::Single(Variant {
+                        model_id: "image-01".to_string(),
+                        base_params: ::std::collections::BTreeMap::new(),
+                    }),
+                }],
             }),
             video: None,
         }),
@@ -107,9 +132,34 @@ fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
                     execution: None,
                     operations: vec![MediaOperation::Generate],
                     axes: vec![
-                        Axis { id: "size".to_string(), label: "Size".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["2K".to_string()], default: "2K".to_string() }, request_field: Some("size".to_string()), wire_type: WireType::String },
-                        Axis { id: "response_format".to_string(), label: "Response format".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["b64_json".to_string(), "url".to_string()], default: "b64_json".to_string() }, request_field: Some("response_format".to_string()), wire_type: WireType::String },
-                    ], variants: Variants::Single(Variant { model_id: "seedream-4-5-251128".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                        Axis {
+                            id: "size".to_string(),
+                            label: "Size".to_string(),
+                            role: AxisRole::Param,
+                            control: ControlKind::Enum {
+                                values: vec!["2K".to_string()],
+                                default: "2K".to_string(),
+                            },
+                            request_field: Some("size".to_string()),
+                            wire_type: WireType::String,
+                        },
+                        Axis {
+                            id: "response_format".to_string(),
+                            label: "Response format".to_string(),
+                            role: AxisRole::Param,
+                            control: ControlKind::Enum {
+                                values: vec!["b64_json".to_string(), "url".to_string()],
+                                default: "b64_json".to_string(),
+                            },
+                            request_field: Some("response_format".to_string()),
+                            wire_type: WireType::String,
+                        },
+                    ],
+                    variants: Variants::Single(Variant {
+                        model_id: "seedream-4-5-251128".to_string(),
+                        base_params: ::std::collections::BTreeMap::new(),
+                    }),
+                }],
             }),
             video: None,
         }),
@@ -146,9 +196,34 @@ fn replicate_video_registry() -> ProviderRegistry {
                     execution: None,
                     operations: vec![MediaOperation::Generate],
                     axes: vec![
-                        Axis { id: "aspect_ratio".to_string(), label: "Aspect ratio".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["16:9".to_string(), "9:16".to_string()], default: "16:9".to_string() }, request_field: Some("aspect_ratio".to_string()), wire_type: WireType::String },
-                        Axis { id: "duration_seconds".to_string(), label: "Duration".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["5".to_string(), "8".to_string()], default: "5".to_string() }, request_field: Some("duration".to_string()), wire_type: WireType::String },
-                    ], variants: Variants::Single(Variant { model_id: "owner/model-version".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                        Axis {
+                            id: "aspect_ratio".to_string(),
+                            label: "Aspect ratio".to_string(),
+                            role: AxisRole::Param,
+                            control: ControlKind::Enum {
+                                values: vec!["16:9".to_string(), "9:16".to_string()],
+                                default: "16:9".to_string(),
+                            },
+                            request_field: Some("aspect_ratio".to_string()),
+                            wire_type: WireType::String,
+                        },
+                        Axis {
+                            id: "duration_seconds".to_string(),
+                            label: "Duration".to_string(),
+                            role: AxisRole::Param,
+                            control: ControlKind::Enum {
+                                values: vec!["5".to_string(), "8".to_string()],
+                                default: "5".to_string(),
+                            },
+                            request_field: Some("duration".to_string()),
+                            wire_type: WireType::String,
+                        },
+                    ],
+                    variants: Variants::Single(Variant {
+                        model_id: "owner/model-version".to_string(),
+                        base_params: ::std::collections::BTreeMap::new(),
+                    }),
+                }],
             }),
         }),
         models: Vec::<ModelDescriptor>::new(),
@@ -166,7 +241,12 @@ fn discovered_chat_image_cache() -> ExactMediaDiscoveryCache {
                     display_name: Some("Image Chat".to_string()),
                     execution: None,
                     operations: vec![MediaOperation::Generate],
-                    axes: Vec::new(), variants: Variants::Single(Variant { model_id: "openrouter/image-chat".to_string(), base_params: ::std::collections::BTreeMap::new() }),},
+                    axes: Vec::new(),
+                    variants: Variants::Single(Variant {
+                        model_id: "openrouter/image-chat".to_string(),
+                        base_params: ::std::collections::BTreeMap::new(),
+                    }),
+                },
                 source: "provider_discovery".to_string(),
             }],
         },
@@ -313,7 +393,6 @@ fn generate_exact_image_dispatches_to_minimax_adapter() {
         ExactImageGenerationRequest {
             provider_id: "minimax".to_string(),
             model_id: "image-01".to_string(),
-            adapter: "minimax_image".to_string(),
             prompt: "draw a precise icon".to_string(),
             parameters: BTreeMap::from([
                 ("aspect_ratio".to_string(), "16:9".to_string()),
@@ -370,7 +449,6 @@ fn generate_exact_image_with_cache_executes_discovered_chat_image_model() {
         ExactImageGenerationRequest {
             provider_id: "openrouter".to_string(),
             model_id: "openrouter/image-chat".to_string(),
-            adapter: "chat_image_output".to_string(),
             prompt: "draw a precise icon".to_string(),
             parameters: BTreeMap::new(),
             count: 1,
@@ -419,7 +497,6 @@ fn generate_exact_image_prunes_stale_undeclared_parameters_before_http() {
         ExactImageGenerationRequest {
             provider_id: "byteplus".to_string(),
             model_id: "seedream-4-5-251128".to_string(),
-            adapter: "images_json".to_string(),
             prompt: "draw a precise icon".to_string(),
             parameters: BTreeMap::from([
                 ("size".to_string(), "2K".to_string()),
@@ -449,7 +526,6 @@ fn generate_exact_image_with_cache_rejects_discovered_model_missing_from_cache_b
         ExactImageGenerationRequest {
             provider_id: "openrouter".to_string(),
             model_id: "openrouter/image-chat".to_string(),
-            adapter: "chat_image_output".to_string(),
             prompt: "draw a precise icon".to_string(),
             parameters: BTreeMap::new(),
             count: 1,
@@ -458,10 +534,7 @@ fn generate_exact_image_with_cache_rejects_discovered_model_missing_from_cache_b
     )
     .expect_err("missing discovery cache should fail");
 
-    assert!(
-        error.to_string().contains("unknown media model"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("unknown media model"), "{error}");
 }
 
 #[test]
@@ -556,7 +629,6 @@ fn exact_media_generation_rejects_unsupported_video_parameter() {
         provider_id: "replicate".to_string(),
         model_id: "owner/model-version".to_string(),
         operation: "generate".to_string(),
-        adapter: "replicate_video".to_string(),
         prompt: "animate a logo".to_string(),
         image_references: Vec::new(),
         parameters: BTreeMap::from([
@@ -582,7 +654,6 @@ fn exact_media_generation_rejects_unknown_video_model_before_http() {
         provider_id: "replicate".to_string(),
         model_id: "owner/unknown-model".to_string(),
         operation: "generate".to_string(),
-        adapter: "replicate_video".to_string(),
         prompt: "animate a logo".to_string(),
         image_references: Vec::new(),
         parameters: BTreeMap::from([

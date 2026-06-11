@@ -64,10 +64,7 @@ pub(crate) fn relaydance_video_request_from_parameters(
     prompt: String,
     parameters: &BTreeMap<String, String>,
 ) -> Result<RelaydanceVideoRequest> {
-    let params = parameters
-        .iter()
-        .map(|(field, value)| (field.clone(), value.clone()))
-        .collect();
+    let params = parameters.clone().into_iter().collect();
     let request = RelaydanceVideoRequest {
         model: model_id,
         prompt,

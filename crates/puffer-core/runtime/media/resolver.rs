@@ -1,7 +1,7 @@
 use super::capabilities::{MediaCapability, MediaKind};
 use anyhow::{bail, Context, Result};
 use puffer_provider_registry::{
-    canonical_provider_id, Axis, AxisRole, ControlKind, AuthStore, MediaExecutionDescriptor,
+    canonical_provider_id, AuthStore, Axis, AxisRole, ControlKind, MediaExecutionDescriptor,
     MediaExecutionKind, MediaModelDescriptor, MediaOperation, ProviderDescriptor, ProviderRegistry,
     Variants,
 };
@@ -105,13 +105,14 @@ pub(crate) fn resolve_media_request(
             ControlKind::Enum { values, .. } if !values.contains(value) => {
                 bail!("axis {} value {value} is not allowed", axis.id)
             }
-            ControlKind::Range {
-                min, max, step, ..
-            } => {
+            ControlKind::Range { min, max, step, .. } => {
                 let n: f64 = value
                     .parse()
                     .with_context(|| format!("axis {} must be numeric", axis.id))?;
-                if n < *min || n > *max || ((n - min) / step).fract().abs() > 1e-9 {
+                // Snap to the nearest grid point and compare, so non-unit steps
+                // (e.g. 0.1) aren't rejected by float division error.
+                let nearest = min + ((n - min) / step).round() * step;
+                if n < *min || n > *max || (nearest - n).abs() > 1e-9 {
                     bail!("axis {} value {value} is out of range", axis.id);
                 }
             }
@@ -130,9 +131,9 @@ pub(crate) fn resolve_media_request(
                 .get(selector)
                 .cloned()
                 .unwrap_or_else(|| default_for_axis(&cap.axes, selector));
-            map.get(&chosen)
-                .cloned()
-                .with_context(|| format!("unsupported {selector} value {chosen} for {logical_model_id}"))?
+            map.get(&chosen).cloned().with_context(|| {
+                format!("unsupported {selector} value {chosen} for {logical_model_id}")
+            })?
         }
     };
 

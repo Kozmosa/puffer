@@ -1,8 +1,7 @@
 use crate::runtime::media::planner::validate_image_generation_count;
 use crate::AppState;
 use crate::{
-    generate_exact_image_with_cache,
-    ExactImageGenerationRequest, ExactMediaDiscoveryCache,
+    generate_exact_image_with_cache, ExactImageGenerationRequest, ExactMediaDiscoveryCache,
 };
 use anyhow::{bail, Context, Result};
 use puffer_config::MediaGenerationConfig;
@@ -42,7 +41,6 @@ struct ImageGenerationInput {
 struct ImageRequest {
     provider: String,
     model: String,
-    adapter: String,
     prompt: String,
     parameters: BTreeMap<String, String>,
     count: u8,
@@ -86,7 +84,7 @@ pub fn execute_image_generation(
         .media
         .image
         .as_ref()
-        .context("image media provider/model/adapter is not configured")?;
+        .context("image media provider/model is not configured")?;
     let request = build_image_request(cwd, parsed, settings)?;
     let media_context = media_context.context("ImageGeneration media runtime is not configured")?;
     let generated = generate_exact_image_with_cache(
@@ -96,7 +94,6 @@ pub fn execute_image_generation(
         ExactImageGenerationRequest {
             provider_id: request.provider.clone(),
             model_id: request.model.clone(),
-            adapter: request.adapter.clone(),
             prompt: request.prompt.clone(),
             parameters: request.parameters.clone(),
             count: request.count,
@@ -143,7 +140,6 @@ fn build_image_request(
     Ok(ImageRequest {
         provider,
         model,
-        adapter: String::new(),
         prompt,
         parameters,
         count: input.count,
@@ -290,9 +286,10 @@ mod tests {
     use crate::runtime::claude_tools::{execute_tool, ProviderToolContext};
     use indexmap::IndexMap;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-        MediaModelDescriptor, MediaOperation, Axis, AxisRole, ControlKind, Variant, Variants, WireType,
-        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        AuthMode, AuthStore, Axis, AxisRole, ControlKind, MediaExecutionDescriptor,
+        MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry, Variant,
+        Variants, WireType,
     };
     use puffer_resources::LoadedResources;
     use puffer_session_store::SessionMetadata;
@@ -366,10 +363,45 @@ mod tests {
                         execution: None,
                         operations: vec![MediaOperation::Generate],
                         axes: vec![
-                            Axis { id: "size".to_string(), label: "Size".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["1024x1024".to_string(), "1536x1024".to_string()], default: "1024x1024".to_string() }, request_field: Some("size".to_string()), wire_type: WireType::String },
-                            Axis { id: "quality".to_string(), label: "Quality".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["auto".to_string(), "high".to_string()], default: "auto".to_string() }, request_field: Some("quality".to_string()), wire_type: WireType::String },
-                            Axis { id: "output_format".to_string(), label: "Output format".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["png".to_string(), "webp".to_string()], default: "png".to_string() }, request_field: Some("output_format".to_string()), wire_type: WireType::String },
-                        ], variants: Variants::Single(Variant { model_id: "exact-image-model".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                            Axis {
+                                id: "size".to_string(),
+                                label: "Size".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["1024x1024".to_string(), "1536x1024".to_string()],
+                                    default: "1024x1024".to_string(),
+                                },
+                                request_field: Some("size".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "quality".to_string(),
+                                label: "Quality".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["auto".to_string(), "high".to_string()],
+                                    default: "auto".to_string(),
+                                },
+                                request_field: Some("quality".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "output_format".to_string(),
+                                label: "Output format".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["png".to_string(), "webp".to_string()],
+                                    default: "png".to_string(),
+                                },
+                                request_field: Some("output_format".to_string()),
+                                wire_type: WireType::String,
+                            },
+                        ],
+                        variants: Variants::Single(Variant {
+                            model_id: "exact-image-model".to_string(),
+                            base_params: ::std::collections::BTreeMap::new(),
+                        }),
+                    }],
                 }),
                 video: None,
             }),
@@ -418,7 +450,12 @@ mod tests {
                         display_name: Some("Image Chat".to_string()),
                         execution: None,
                         operations: vec![MediaOperation::Generate],
-                        axes: Vec::new(), variants: Variants::Single(Variant { model_id: "openrouter/image-chat".to_string(), base_params: ::std::collections::BTreeMap::new() }),},
+                        axes: Vec::new(),
+                        variants: Variants::Single(Variant {
+                            model_id: "openrouter/image-chat".to_string(),
+                            base_params: ::std::collections::BTreeMap::new(),
+                        }),
+                    },
                     source: "provider_discovery".to_string(),
                 }],
             },
@@ -651,10 +688,14 @@ mod tests {
     #[test]
     fn builds_request_maps_aspect_to_aspect_ratio_parameter() {
         let dir = tempdir().unwrap();
-        let settings = MediaGenerationConfig { provider_id: "minimax".to_string(), logical_model_id: "image-01".to_string(), selections: BTreeMap::from([
+        let settings = MediaGenerationConfig {
+            provider_id: "minimax".to_string(),
+            logical_model_id: "image-01".to_string(),
+            selections: BTreeMap::from([
                 ("aspect_ratio".to_string(), "1:1".to_string()),
                 ("response_format".to_string(), "base64".to_string()),
-            ]) };
+            ]),
+        };
 
         let request = build_image_request(
             dir.path(),
@@ -677,10 +718,14 @@ mod tests {
     #[test]
     fn builds_request_preserves_model_specific_size_tokens_for_aspect() {
         let dir = tempdir().unwrap();
-        let settings = MediaGenerationConfig { provider_id: "byteplus".to_string(), logical_model_id: "seedream-4-5-251128".to_string(), selections: BTreeMap::from([
+        let settings = MediaGenerationConfig {
+            provider_id: "byteplus".to_string(),
+            logical_model_id: "seedream-4-5-251128".to_string(),
+            selections: BTreeMap::from([
                 ("size".to_string(), "2K".to_string()),
                 ("output_format".to_string(), "png".to_string()),
-            ]) };
+            ]),
+        };
 
         let request = build_image_request(
             dir.path(),
@@ -702,7 +747,11 @@ mod tests {
     #[test]
     fn builds_request_rejects_aspect_when_selected_model_has_no_aspect_parameter() {
         let dir = tempdir().unwrap();
-        let settings = MediaGenerationConfig { provider_id: "openrouter".to_string(), logical_model_id: "image-chat".to_string(), selections: BTreeMap::new() };
+        let settings = MediaGenerationConfig {
+            provider_id: "openrouter".to_string(),
+            logical_model_id: "image-chat".to_string(),
+            selections: BTreeMap::new(),
+        };
 
         let error = build_image_request(
             dir.path(),
@@ -728,11 +777,15 @@ mod tests {
     fn builds_request_from_media_settings_instead_of_env_model() {
         let dir = tempdir().unwrap();
         std::env::set_var("PUFFER_IMAGE_MODEL", "legacy-env-model");
-        let settings = MediaGenerationConfig { provider_id: "openai".to_string(), logical_model_id: "configured-image-model".to_string(), selections: BTreeMap::from([
+        let settings = MediaGenerationConfig {
+            provider_id: "openai".to_string(),
+            logical_model_id: "configured-image-model".to_string(),
+            selections: BTreeMap::from([
                 ("size".to_string(), "1024x1024".to_string()),
                 ("quality".to_string(), "high".to_string()),
                 ("output_format".to_string(), "webp".to_string()),
-            ]) };
+            ]),
+        };
 
         let request = build_image_request(
             dir.path(),
@@ -757,11 +810,15 @@ mod tests {
     #[test]
     fn builds_request_for_non_openai_exact_provider() {
         let dir = tempdir().unwrap();
-        let settings = MediaGenerationConfig { provider_id: "exact-provider".to_string(), logical_model_id: "exact-image-model".to_string(), selections: BTreeMap::from([
+        let settings = MediaGenerationConfig {
+            provider_id: "exact-provider".to_string(),
+            logical_model_id: "exact-image-model".to_string(),
+            selections: BTreeMap::from([
                 ("size".to_string(), "1024x1024".to_string()),
                 ("quality".to_string(), "auto".to_string()),
                 ("output_format".to_string(), "png".to_string()),
-            ]) };
+            ]),
+        };
 
         let request = build_image_request(
             dir.path(),
@@ -820,7 +877,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "image media provider/model/adapter is not configured"
+            "image media provider/model is not configured"
         );
     }
 
@@ -831,11 +888,15 @@ mod tests {
         let auth_store = auth_store();
         let discovery_cache = ExactMediaDiscoveryCache::empty();
         let mut state = test_state(
-            MediaGenerationConfig { provider_id: "exact-provider".to_string(), logical_model_id: "stale-image-model".to_string(), selections: BTreeMap::from([
+            MediaGenerationConfig {
+                provider_id: "exact-provider".to_string(),
+                logical_model_id: "stale-image-model".to_string(),
+                selections: BTreeMap::from([
                     ("size".to_string(), "1024x1024".to_string()),
                     ("quality".to_string(), "auto".to_string()),
                     ("output_format".to_string(), "png".to_string()),
-                ]) },
+                ]),
+            },
             dir.path(),
         );
 
@@ -851,10 +912,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            error.to_string().contains("stale-image-model"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("stale-image-model"), "{error}");
     }
 
     #[test]
@@ -865,11 +923,15 @@ mod tests {
         let auth_store = auth_store();
         let discovery_cache = ExactMediaDiscoveryCache::empty();
         let mut state = test_state(
-            MediaGenerationConfig { provider_id: "exact-provider".to_string(), logical_model_id: "exact-image-model".to_string(), selections: BTreeMap::from([
+            MediaGenerationConfig {
+                provider_id: "exact-provider".to_string(),
+                logical_model_id: "exact-image-model".to_string(),
+                selections: BTreeMap::from([
                     ("size".to_string(), "1024x1024".to_string()),
                     ("quality".to_string(), "auto".to_string()),
                     ("output_format".to_string(), "png".to_string()),
-                ]) },
+                ]),
+            },
             dir.path(),
         );
 

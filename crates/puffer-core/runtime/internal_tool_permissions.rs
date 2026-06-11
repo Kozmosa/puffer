@@ -415,9 +415,10 @@ mod tests {
     use super::*;
     use puffer_config::MediaGenerationConfig;
     use puffer_provider_registry::{
-        AuthMode, AuthStore, MediaExecutionDescriptor, MediaExecutionKind, MediaKindDescriptor,
-        MediaModelDescriptor, MediaOperation, Axis, AxisRole, ControlKind, Variant, Variants, WireType,
-        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry,
+        AuthMode, AuthStore, Axis, AxisRole, ControlKind, MediaExecutionDescriptor,
+        MediaExecutionKind, MediaKindDescriptor, MediaModelDescriptor, MediaOperation,
+        ModelDescriptor, ProviderDescriptor, ProviderMediaDescriptor, ProviderRegistry, Variant,
+        Variants, WireType,
     };
     use puffer_resources::{LoadedItem, SourceInfo, SourceKind, ToolSpec};
     use puffer_session_store::SessionMetadata;
@@ -463,11 +464,15 @@ mod tests {
 
     fn media_state(cwd: &Path) -> AppState {
         let mut config = puffer_config::PufferConfig::default();
-        config.media.image = Some(MediaGenerationConfig { provider_id: "exact-provider".to_string(), logical_model_id: "stale-image-model".to_string(), selections: BTreeMap::from([
+        config.media.image = Some(MediaGenerationConfig {
+            provider_id: "exact-provider".to_string(),
+            logical_model_id: "stale-image-model".to_string(),
+            selections: BTreeMap::from([
                 ("size".to_string(), "1024x1024".to_string()),
                 ("quality".to_string(), "auto".to_string()),
                 ("output_format".to_string(), "png".to_string()),
-            ]) });
+            ]),
+        });
         AppState::new(
             config,
             cwd.to_path_buf(),
@@ -535,10 +540,45 @@ mod tests {
                         execution: None,
                         operations: vec![MediaOperation::Generate],
                         axes: vec![
-                            Axis { id: "size".to_string(), label: "Size".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["1024x1024".to_string()], default: "1024x1024".to_string() }, request_field: Some("size".to_string()), wire_type: WireType::String },
-                            Axis { id: "quality".to_string(), label: "Quality".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["auto".to_string()], default: "auto".to_string() }, request_field: Some("quality".to_string()), wire_type: WireType::String },
-                            Axis { id: "output_format".to_string(), label: "Output format".to_string(), role: AxisRole::Param, control: ControlKind::Enum { values: vec!["png".to_string()], default: "png".to_string() }, request_field: Some("output_format".to_string()), wire_type: WireType::String },
-                        ], variants: Variants::Single(Variant { model_id: "exact-image-model".to_string(), base_params: ::std::collections::BTreeMap::new() }),}],
+                            Axis {
+                                id: "size".to_string(),
+                                label: "Size".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["1024x1024".to_string()],
+                                    default: "1024x1024".to_string(),
+                                },
+                                request_field: Some("size".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "quality".to_string(),
+                                label: "Quality".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["auto".to_string()],
+                                    default: "auto".to_string(),
+                                },
+                                request_field: Some("quality".to_string()),
+                                wire_type: WireType::String,
+                            },
+                            Axis {
+                                id: "output_format".to_string(),
+                                label: "Output format".to_string(),
+                                role: AxisRole::Param,
+                                control: ControlKind::Enum {
+                                    values: vec!["png".to_string()],
+                                    default: "png".to_string(),
+                                },
+                                request_field: Some("output_format".to_string()),
+                                wire_type: WireType::String,
+                            },
+                        ],
+                        variants: Variants::Single(Variant {
+                            model_id: "exact-image-model".to_string(),
+                            base_params: ::std::collections::BTreeMap::new(),
+                        }),
+                    }],
                 }),
                 video: None,
             }),
