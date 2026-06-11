@@ -315,12 +315,29 @@
   //   done    = merged / clean on a branch with closed PR
   //   idle    = otherwise
   // ─────────────────────────────────────────────────────────────
+  function orderedTransientTimeline(
+    submitted: TimelineItem[],
+    live: TimelineItem[]
+  ): TimelineItem[] {
+    return [...submitted, ...live]
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => {
+        const aCreatedAt = timelineItemCreatedAtMs(a.item);
+        const bCreatedAt = timelineItemCreatedAtMs(b.item);
+        if (aCreatedAt !== null && bCreatedAt !== null && aCreatedAt !== bCreatedAt) {
+          return aCreatedAt - bCreatedAt;
+        }
+        return a.index - b.index;
+      })
+      .map(({ item }) => item);
+  }
+
   let persistedTimeline = $derived<TimelineItem[]>(sessionDetail?.timeline ?? []);
+  let transientTimeline = $derived<TimelineItem[]>(
+    orderedTransientTimeline(submittedMessages, liveStreamItems)
+  );
   let combinedTimeline = $derived<TimelineItem[]>(
-    mergeTransientTimeline(
-      mergeTransientTimeline(persistedTimeline, submittedMessages),
-      liveStreamItems
-    )
+    mergeTransientTimeline(persistedTimeline, transientTimeline)
   );
   function isPendingPermission(item: PermissionTimelineItem): boolean {
     const status = item.status?.toLowerCase() ?? "";
@@ -1821,6 +1838,16 @@
     }
   }
 
+  function assignSubmittedMessageTurnId(sessionId: string, itemId: string, turnId: string) {
+    let updated: TimelineItem | null = null;
+    submittedMessages = submittedMessages.map((item) => {
+      if (item.id !== itemId) return item;
+      updated = timelineItemWithTurnId(item, turnId);
+      return updated;
+    });
+    if (updated) persistPendingSubmittedMessage(sessionId, updated);
+  }
+
   function restorePendingSubmittedMessage(sessionId: string, timeline: TimelineItem[]): TimelineItem[] {
     if (typeof window === "undefined") return [];
     try {
@@ -1886,6 +1913,18 @@
       ];
     }
     return [...state.liveStreamItems, item];
+  }
+
+  function timelineItemWithTurnId(item: TimelineItem, turnId: string): TimelineItem {
+    return item.turnId === turnId ? item : { ...item, turnId };
+  }
+
+  function appendCachedLiveItemForTurn(
+    state: TransientConversationState,
+    turnId: string,
+    item: TimelineItem
+  ): TimelineItem[] {
+    return appendCachedLiveItem(state, timelineItemWithTurnId(item, turnId));
   }
 
   function withCachedTurnState(
@@ -1959,8 +1998,9 @@
       if (isAskUserQuestionToolName(req.toolId)) continue;
       const id = liveToolId(ev.turnId, req.callId);
       if (liveItems.some((item) => item.id === id)) continue;
-      liveItems = appendCachedLiveItem(
+      liveItems = appendCachedLiveItemForTurn(
         { ...cached, liveStreamItems: liveItems },
+        ev.turnId,
         {
           id,
           kind: "tool",
@@ -1996,7 +2036,7 @@
     for (const inv of ev.invocations) {
       if (isAskUserQuestionToolName(inv.toolId)) continue;
       const id = liveToolId(ev.turnId, inv.callId);
-      const payload: TimelineItem = {
+      const payload: TimelineItem = timelineItemWithTurnId({
         id,
         kind: "tool",
         title: inv.toolId,
@@ -2009,7 +2049,7 @@
         output: inv.output,
         inputJson: safeParseJson(inv.input),
         metadata: inv.metadata
-      };
+      }, ev.turnId);
       const existingIdx = liveItems.findIndex((item) => item.id === id);
       if (!isProviderStreamInvocationMetadata(inv.metadata)) advancesStreamAttempt = true;
       liveItems = existingIdx >= 0
@@ -2018,7 +2058,7 @@
             payload,
             ...liveItems.slice(existingIdx + 1)
           ]
-        : appendCachedLiveItem({ ...cached, liveStreamItems: liveItems }, payload);
+        : appendCachedLiveItemForTurn({ ...cached, liveStreamItems: liveItems }, ev.turnId, payload);
     }
     const next = withCachedTurnState(cached, ev.turnId, {
       liveStreamItems: liveItems,
@@ -2103,7 +2143,7 @@
   ) {
     const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
     const id = `live-gate-${ev.turnId}-${ev.callId}-${ev.gateEvent}`;
-    const payload: TimelineItem = {
+    const payload: TimelineItem = timelineItemWithTurnId({
       id,
       kind: "system",
       title: "Verified Skill Gate",
@@ -2112,7 +2152,7 @@
       meta: ["verified skill", ev.gateEvent],
       status: ev.gateEvent === "gate_rejected" ? "error" : "success",
       actor: ev.actor ?? null
-    };
+    }, ev.turnId);
     const existingIdx = cached.liveStreamItems.findIndex((item) => item.id === id);
     const liveItems = existingIdx >= 0
       ? [
@@ -2120,7 +2160,7 @@
           payload,
           ...cached.liveStreamItems.slice(existingIdx + 1)
         ]
-      : appendCachedLiveItem(cached, payload);
+      : appendCachedLiveItemForTurn(cached, ev.turnId, payload);
     setTransientConversationState(
       sessionId,
       withCachedTurnState(cached, ev.turnId, {
@@ -2139,7 +2179,7 @@
     const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
     setTransientConversationState(sessionId, {
       ...cached,
-      liveStreamItems: appendCachedLiveItem(cached, {
+      liveStreamItems: appendCachedLiveItemForTurn(cached, ev.turnId, {
         id,
         kind: "permission",
         title: `Permission · ${ev.toolId}`,
@@ -2180,7 +2220,7 @@
     const cached = transientConversationStates[sessionId] ?? emptyTransientConversationState();
     setTransientConversationState(sessionId, {
       ...cached,
-      liveStreamItems: appendCachedLiveItem(cached, {
+      liveStreamItems: appendCachedLiveItemForTurn(cached, ev.turnId, {
         id,
         kind: "question",
         title: "Question",
@@ -2251,8 +2291,9 @@
         );
     setTransientConversationState(sessionId, {
       ...cached,
-      liveStreamItems: appendCachedLiveItem(
+      liveStreamItems: appendCachedLiveItemForTurn(
         { ...cached, liveStreamItems: settledLiveItems },
+        ev.turnId,
         {
           id: `live-error-turn-error-${ev.turnId}`,
           kind: "system",
@@ -3082,6 +3123,7 @@
     setLiveSidebarAgentState(submitSessionId, "thinking", null, sessionAtSubmit);
     try {
       const turnId = await runAgentTurn(submitSessionId, turnMessage, turnOptions);
+      assignSubmittedMessageTurnId(submitSessionId, localUserId, turnId);
       const settledBeforeRpcReturned = isTurnSettled(submitSessionId, turnId);
       if (!settledBeforeRpcReturned) {
         setLiveSidebarAgentState(submitSessionId, "thinking", turnId, sessionAtSubmit);
@@ -3495,18 +3537,32 @@
     }
   }
 
+  function withLiveTimestamp(item: TimelineItem, previous?: TimelineItem): TimelineItem {
+    if (timelineItemCreatedAtMs(item) !== null) return item;
+    const previousCreatedAt = previous ? timelineItemCreatedAtMs(previous) : null;
+    return { ...item, createdAtMs: previousCreatedAt ?? Date.now() };
+  }
+
   function appendLive(item: TimelineItem) {
     const existingIdx = liveStreamItems.findIndex((existing) => existing.id === item.id);
+    const stamped = withLiveTimestamp(
+      item,
+      existingIdx >= 0 ? liveStreamItems[existingIdx] : undefined
+    );
     if (existingIdx >= 0) {
       revokeTimelineAttachmentPreviews([liveStreamItems[existingIdx]]);
       liveStreamItems = [
         ...liveStreamItems.slice(0, existingIdx),
-        item,
+        stamped,
         ...liveStreamItems.slice(existingIdx + 1)
       ];
       return;
     }
-    liveStreamItems = [...liveStreamItems, item];
+    liveStreamItems = [...liveStreamItems, stamped];
+  }
+
+  function appendLiveForTurn(turnId: string, item: TimelineItem) {
+    appendLive(timelineItemWithTurnId(item, turnId));
   }
 
   function errorText(error: unknown): string {
@@ -3875,6 +3931,7 @@
           {
             ...lastStreaming,
             id: `live-complete-assistant-${turnId}`,
+            turnId,
             summary: trimmed,
             body: trimmed
           },
@@ -3889,6 +3946,8 @@
       {
         id: `live-complete-assistant-${turnId}`,
         kind: "assistant",
+        createdAtMs: Date.now(),
+        turnId,
         title: "Assistant",
         summary: trimmed,
         body: trimmed,
@@ -4003,6 +4062,8 @@
       {
         id: nextStreamingAssistantId(items, turnId),
         kind: "assistant",
+        createdAtMs: Date.now(),
+        turnId,
         title: "Assistant",
         summary: delta,
         body: delta,
@@ -4206,7 +4267,7 @@
           if (isAskUserQuestionToolName(req.toolId)) continue;
           const id = liveToolId(ev.turnId, req.callId);
           if (liveStreamItems.some((x) => x.id === id)) continue;
-          appendLive({
+          appendLiveForTurn(ev.turnId, {
             id,
             kind: "tool",
             title: req.toolId,
@@ -4231,7 +4292,7 @@
           const id = liveToolId(ev.turnId, inv.callId);
           const existingIdx = liveStreamItems.findIndex((x) => x.id === id);
           if (!isProviderStreamInvocationMetadata(inv.metadata)) advancesStreamAttempt = true;
-          const payload: TimelineItem = {
+          const payload: TimelineItem = timelineItemWithTurnId({
             id,
             kind: "tool",
             title: inv.toolId,
@@ -4244,17 +4305,18 @@
             output: inv.output,
             inputJson: safeParseJson(inv.input),
             metadata: inv.metadata
-          };
+          }, ev.turnId);
           if (existingIdx >= 0) {
+            const stamped = withLiveTimestamp(payload, liveStreamItems[existingIdx]);
             // Upgrade the pending card in place. Svelte needs a new array
             // reference to observe the change.
             liveStreamItems = [
               ...liveStreamItems.slice(0, existingIdx),
-              payload,
+              stamped,
               ...liveStreamItems.slice(existingIdx + 1)
             ];
           } else {
-            appendLive(payload);
+            appendLiveForTurn(ev.turnId, payload);
           }
         }
         if (advancesStreamAttempt) markLiveStreamAttemptBaseline();
@@ -4266,7 +4328,7 @@
         turnStatusHint = ev.gateEvent === "gate_rejected" ? "Gate rejected" : "Gate checked";
         {
           const id = `live-gate-${ev.turnId}-${ev.callId}-${ev.gateEvent}`;
-          const payload: TimelineItem = {
+          const payload: TimelineItem = timelineItemWithTurnId({
             id,
             kind: "system",
             title: "Verified Skill Gate",
@@ -4275,16 +4337,17 @@
             meta: ["verified skill", ev.gateEvent],
             status: ev.gateEvent === "gate_rejected" ? "error" : "success",
             actor: ev.actor ?? null
-          };
+          }, ev.turnId);
           const existingIdx = liveStreamItems.findIndex((item) => item.id === id);
           if (existingIdx >= 0) {
+            const stamped = withLiveTimestamp(payload, liveStreamItems[existingIdx]);
             liveStreamItems = [
               ...liveStreamItems.slice(0, existingIdx),
-              payload,
+              stamped,
               ...liveStreamItems.slice(existingIdx + 1)
             ];
           } else {
-            appendLive(payload);
+            appendLiveForTurn(ev.turnId, payload);
           }
         }
         break;
@@ -4320,7 +4383,7 @@
         const choices = ev.browser
           ? ["Approve once", "Always allow browser context", "Deny"]
           : ["Approve once", "Always allow", "Deny"];
-        appendLive({
+        appendLiveForTurn(ev.turnId, {
           id,
           kind: "permission",
           title: `Permission · ${ev.toolId}`,
@@ -4354,7 +4417,7 @@
         const questions = normalizeUserQuestions(ev.questions);
         const questionMeta =
           ev.metadata && typeof ev.metadata === "object" ? ev.metadata : undefined;
-        appendLive({
+        appendLiveForTurn(ev.turnId, {
           id,
           kind: "question",
           title: "Question",

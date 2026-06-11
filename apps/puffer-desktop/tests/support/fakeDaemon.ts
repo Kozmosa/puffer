@@ -1624,6 +1624,12 @@ export class FakeDaemon {
         return this.createMonitor(request.params);
       case "task_monitor_memory_save":
         return this.saveMonitorMemory(request.params);
+      case "task_monitor_rule_add":
+      case "monitor_rule_add":
+        return this.addMonitorRule(request.params);
+      case "task_monitor_rule_delete":
+      case "monitor_rule_delete":
+        return this.deleteMonitorRule(request.params);
       case "workflow_toggle":
         return this.toggleWorkflow(request.params);
       case "contacts_list":
@@ -1881,6 +1887,75 @@ export class FakeDaemon {
       ].sort((a, b) => String(a.connection_slug ?? "").localeCompare(String(b.connection_slug ?? "")))
     };
     return this.workflowListResponse();
+  }
+
+  private addMonitorRule(params: JsonRecord): JsonRecord {
+    const connectionSlug = String(params.connection_slug ?? "").trim();
+    const mode = String(params.mode ?? "exclude");
+    const keywords = Array.isArray(params.keywords)
+      ? params.keywords.map((keyword) => String(keyword).trim()).filter(Boolean)
+      : [];
+    if (!connectionSlug) throw new Error("missing monitor rule connection slug");
+    if (keywords.length === 0) throw new Error("missing monitor rule keywords");
+    const rule = this.monitorRuleFromParams(params, keywords);
+    let matched = false;
+    this.workflowSnapshot = {
+      ...this.workflowSnapshot,
+      workflow_bindings: (this.workflowSnapshot.workflow_bindings ?? []).map((binding) => {
+        if (binding.connection_slug !== connectionSlug || binding.monitor !== true) return binding;
+        matched = true;
+        if (mode === "include") {
+          return {
+            ...binding,
+            include_filters: [...((binding.include_filters as JsonRecord[] | undefined) ?? []), rule],
+            include_filter: rule
+          };
+        }
+        return {
+          ...binding,
+          ignore_filters: [...((binding.ignore_filters as JsonRecord[] | undefined) ?? []), rule]
+        };
+      })
+    };
+    if (!matched) throw new Error(`monitor ${connectionSlug} not found`);
+    return this.workflowListResponse();
+  }
+
+  private deleteMonitorRule(params: JsonRecord): JsonRecord {
+    const connectionSlug = String(params.connection_slug ?? "").trim();
+    const mode = String(params.mode ?? "exclude");
+    const rule = params.rule as JsonRecord | undefined;
+    if (!connectionSlug || !rule) throw new Error("missing monitor rule delete params");
+    const target = JSON.stringify(rule);
+    this.workflowSnapshot = {
+      ...this.workflowSnapshot,
+      workflow_bindings: (this.workflowSnapshot.workflow_bindings ?? []).map((binding) => {
+        if (binding.connection_slug !== connectionSlug || binding.monitor !== true) return binding;
+        if (mode === "include") {
+          const includeFilters = ((binding.include_filters as JsonRecord[] | undefined) ?? [])
+            .filter((candidate) => JSON.stringify(candidate) !== target);
+          return {
+            ...binding,
+            include_filters: includeFilters,
+            include_filter: includeFilters[0] ?? null
+          };
+        }
+        return {
+          ...binding,
+          ignore_filters: ((binding.ignore_filters as JsonRecord[] | undefined) ?? [])
+            .filter((candidate) => JSON.stringify(candidate) !== target)
+        };
+      })
+    };
+    return this.workflowListResponse();
+  }
+
+  private monitorRuleFromParams(params: JsonRecord, keywords: string[]): JsonRecord {
+    return {
+      type: "regex",
+      pattern: keywords.join("|"),
+      case_insensitive: params.case_insensitive !== false
+    };
   }
 
   private contactsList(params: JsonRecord): JsonRecord {

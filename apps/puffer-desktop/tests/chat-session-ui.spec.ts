@@ -4824,6 +4824,183 @@ test("turn completion replaces partial streamed text after transcript reload", a
   await expect(page.locator('.pf-msg[data-role="agent"]').filter({ hasText: finalText })).toHaveCount(1);
 });
 
+test("settled live assistant text stays before the next submitted prompt", async ({ page }) => {
+  const firstPrompt = "First prompt creates delayed live text";
+  const firstReply = "Previous turn live reply should stay above the next prompt.";
+  const secondPrompt = "Second prompt must not inherit previous activity";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-live-carryover",
+        displayName: "Live carryover",
+        title: "Live carryover",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 0,
+        providerId: "codex",
+        modelId: "test-model",
+        timeline: []
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Live carryover/);
+  await page.locator(".pf-composer textarea").fill(firstPrompt);
+  await page.getByRole("button", { name: "Send" }).click();
+  await daemon.waitForRequest(
+    "run_agent_turn",
+    (request) =>
+      request.params.sessionId === "session-live-carryover" &&
+      request.params.message === firstPrompt
+  );
+
+  const turnId = "turn-session-live-carryover";
+  daemon.emit("session:session-live-carryover:event", { type: "turn-start", turnId });
+  daemon.emit("session:session-live-carryover:event", {
+    type: "text-delta",
+    turnId,
+    delta: firstReply
+  });
+  await expect(page.getByText(firstReply)).toBeVisible();
+
+  daemon.delayResponse(
+    "load_session_detail",
+    (request) => request.params.sessionId === "session-live-carryover",
+    360
+  );
+  daemon.emit("session:session-live-carryover:event", {
+    type: "turn-complete",
+    turnId,
+    assistantText: firstReply
+  });
+  await page.waitForTimeout(20);
+
+  await page.locator(".pf-composer textarea").fill(secondPrompt);
+  await page.getByRole("button", { name: "Send" }).click();
+  await daemon.waitForRequest(
+    "run_agent_turn",
+    (request) =>
+      request.params.sessionId === "session-live-carryover" &&
+      request.params.message === secondPrompt
+  );
+
+  const rowOrder = await page.locator(".pf-msg").evaluateAll((nodes) =>
+    nodes.map((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim())
+  );
+  const firstPromptIndex = rowOrder.findIndex((text) => text.includes(firstPrompt));
+  const firstReplyIndex = rowOrder.findIndex((text) => text.includes(firstReply));
+  const secondPromptIndex = rowOrder.findIndex((text) => text.includes(secondPrompt));
+
+  expect(firstPromptIndex).toBeGreaterThanOrEqual(0);
+  expect(firstReplyIndex).toBeGreaterThan(firstPromptIndex);
+  expect(secondPromptIndex).toBeGreaterThan(firstReplyIndex);
+});
+
+test("turn-tagged intermediate messages stay with their original prompt", async ({ page }) => {
+  const firstTurnId = "turn-old-intermediates";
+  const secondTurnId = "turn-new-reply";
+  const firstPrompt = "Search for hedy";
+  const firstIntermediateOne = "What do you want me to do with hedy on DoorDash?";
+  const firstIntermediateTwo = "I will treat hedy as a DoorDash search term unless you meant something else.";
+  const firstReply = "DoorDash is showing a Cloudflare security verification.";
+  const secondPrompt = "gm";
+  const secondReply = "Good morning.";
+  const daemon = new FakeDaemon({
+    sessions: [
+      {
+        sessionId: "session-turn-tagged-intermediates",
+        displayName: "Turn tagged intermediates",
+        title: "Turn tagged intermediates",
+        cwd: "/tmp/puffer",
+        folderPath: "/tmp/puffer",
+        updatedAtMs: baseTime,
+        createdAtMs: baseTime - 60_000,
+        eventCount: 6,
+        timeline: [
+          {
+            kind: "user_message",
+            id: "turn-old-user",
+            text: firstPrompt,
+            createdAtMs: baseTime + 1,
+            turnId: firstTurnId
+          },
+          {
+            kind: "assistant_message",
+            id: "turn-old-final",
+            text: firstReply,
+            createdAtMs: baseTime + 40,
+            turnId: firstTurnId
+          },
+          {
+            kind: "user_message",
+            id: "turn-new-user",
+            text: secondPrompt,
+            createdAtMs: baseTime + 50,
+            turnId: secondTurnId
+          },
+          {
+            kind: "assistant_message",
+            id: "turn-old-intermediate-one",
+            text: firstIntermediateOne,
+            createdAtMs: baseTime + 10,
+            turnId: firstTurnId
+          },
+          {
+            kind: "assistant_message",
+            id: "turn-old-intermediate-two",
+            text: firstIntermediateTwo,
+            createdAtMs: baseTime + 20,
+            turnId: firstTurnId
+          },
+          {
+            kind: "assistant_message",
+            id: "turn-new-final",
+            text: secondReply,
+            createdAtMs: baseTime + 60,
+            turnId: secondTurnId
+          }
+        ]
+      }
+    ]
+  });
+
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openSession(page, /Turn tagged intermediates/);
+
+  const firstAgentRow = page.locator('.pf-msg[data-role="agent"]').filter({ hasText: firstReply });
+  const secondAgentRow = page.locator('.pf-msg[data-role="agent"]').filter({ hasText: secondReply });
+  await expect(firstAgentRow).toHaveCount(1);
+  await expect(secondAgentRow).toHaveCount(1);
+  await expect(firstAgentRow.getByRole("button", { name: /Agent activity/ })).toContainText(
+    "2 intermediate messages"
+  );
+  await firstAgentRow.getByRole("button", { name: /Agent activity/ }).click();
+  await expect(firstAgentRow).toContainText(firstIntermediateOne);
+  await expect(firstAgentRow).toContainText(firstIntermediateTwo);
+  await expect(secondAgentRow).not.toContainText(firstIntermediateOne);
+  await expect(secondAgentRow).not.toContainText(firstIntermediateTwo);
+
+  const rowOrder = await page.locator(".pf-msg").evaluateAll((nodes) =>
+    nodes.map((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim())
+  );
+  const firstPromptIndex = rowOrder.findIndex((text) => text.includes(firstPrompt));
+  const firstReplyIndex = rowOrder.findIndex((text) => text.includes(firstReply));
+  const secondPromptIndex = rowOrder.findIndex((text) => text.includes(secondPrompt));
+  const secondReplyIndex = rowOrder.findIndex((text) => text.includes(secondReply));
+
+  expect(firstPromptIndex).toBeGreaterThanOrEqual(0);
+  expect(firstReplyIndex).toBeGreaterThan(firstPromptIndex);
+  expect(secondPromptIndex).toBeGreaterThan(firstReplyIndex);
+  expect(secondReplyIndex).toBeGreaterThan(secondPromptIndex);
+});
+
 test("generated title reload does not duplicate the first submitted prompt", async ({ page }) => {
   const prompt = "First prompt should not flash twice";
   const reply = "First reply stays single.";

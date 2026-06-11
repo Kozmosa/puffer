@@ -110,13 +110,13 @@ pub(crate) fn report_resume_failed(
 /// Records the live update loop terminating on a stream error (the "connected
 /// but receives nothing" failure). Always an anomaly; classifies the error as
 /// `auth` / `network` / `other` so the drop cause is queryable.
-pub(crate) fn report_update_loop_error(env: &SkillEnv, error: &str) {
+pub(crate) fn report_update_loop_error(env: &SkillEnv, error: &str, fatal: bool) {
     let class = classify_error(error);
     let record = json!({
         "at_ms": now_unix_millis(),
         "event": "update_loop_error",
         "class": class,
-        "fatal": true,
+        "fatal": fatal,
         "error": error,
     });
     append_ndjson(&connection_diagnostics_path(env), &record);

@@ -6,6 +6,7 @@ mod monitor_create;
 mod monitor_history;
 mod monitor_ignore_result;
 mod monitor_memory;
+mod monitor_rules;
 mod monitor_task_complete;
 mod monitor_task_ignore;
 mod planned;
@@ -16,6 +17,7 @@ pub(crate) use connection_delete::handle_workflow_connection_delete;
 pub(crate) use monitor_create::handle_monitor_create;
 pub(crate) use monitor_history::handle_monitor_history_list;
 pub(crate) use monitor_memory::handle_monitor_memory_save;
+pub(crate) use monitor_rules::{handle_monitor_rule_add, handle_monitor_rule_delete};
 pub(crate) use monitor_task_complete::handle_monitor_task_complete;
 pub(crate) use monitor_task_ignore::handle_monitor_task_ignore;
 
@@ -296,8 +298,7 @@ fn workflow_binding_json(paths: &ConfigPaths, binding: WorkflowBindingSpec) -> V
     let model = workflow_action_model(&binding.action).map(ToOwned::to_owned);
     let filter_pattern = workflow_filter_pattern(binding.filter.as_ref());
     let ignore_filters =
-        serde_json::to_value(&binding.ignore_filters).unwrap_or_else(|_| Value::Array(Vec::new()));
-    let contact_ids = binding.contact_ids.clone();
+        serde_json::to_value(&binding.ignore_filters).unwrap_or(Value::Array(vec![]));
     let monitor = binding.slug.starts_with("monitor-")
         || (matches!(binding.action, ActionSpec::TriageAgent { .. })
             && binding.description.to_ascii_lowercase().contains("monitor"));
@@ -321,9 +322,11 @@ fn workflow_binding_json(paths: &ConfigPaths, binding: WorkflowBindingSpec) -> V
         "action_path": action_path,
         "action_format": action_format,
         "model": model,
+        "include_filter": serde_json::to_value(&binding.filter).unwrap_or(Value::Null),
+        "include_filters": monitor_rules::include_filters_json(binding.filter.as_ref()),
         "filter_pattern": filter_pattern,
         "ignore_filters": ignore_filters,
-        "contact_ids": contact_ids,
+        "contact_ids": binding.contact_ids.clone(),
         "monitor": monitor,
         "monitor_memory_path": monitor_memory_path,
         "created_at_ms": binding.created_at_ms,

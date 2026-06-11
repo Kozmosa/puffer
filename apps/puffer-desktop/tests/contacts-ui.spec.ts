@@ -69,6 +69,31 @@ test("contacts save selects the sanitized backend-normalized saved contact", asy
   await expect(selectedContact).not.toContainText("Aaron should remain");
 });
 
+test("contacts save accepts telegram user id contacts", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openContacts(page);
+  await daemon.waitForRequest("contacts_list");
+
+  await page.getByRole("button", { name: "New" }).click();
+  const dialog = page.getByRole("dialog", { name: "Create contact" });
+  await dialog.getByLabel("Name").fill("Shawn Mai");
+  await dialog
+    .getByLabel("Description")
+    .fill("Shawn coordinates on puffer bugs, issue triage, and repo work.");
+  await dialog.getByLabel("Contact IDs").fill("telegram–user–id@8063934836");
+  await expect(dialog.getByText("No valid contact ids.")).toBeHidden();
+  await dialog.getByRole("button", { name: /^Create$/ }).click();
+
+  const request = await daemon.waitForRequest("contacts_save");
+  expect(request.params.contact_ids).toEqual(["telegram-user-id@8063934836"]);
+  const selectedContact = page.getByRole("complementary", { name: "Selected contact" });
+  await expect(selectedContact).toContainText("Shawn Mai");
+  await expect(selectedContact).toContainText("telegram-user-id@8063934836");
+});
+
 test("contacts save replaces an existing saved identity", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setContactsSnapshot({

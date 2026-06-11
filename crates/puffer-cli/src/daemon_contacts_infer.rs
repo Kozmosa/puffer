@@ -4,7 +4,7 @@ use super::daemon_contacts_trace::ContactInferTrace;
 use crate::auth_credentials::to_registry_oauth_credential_openai;
 use crate::daemon::DaemonState;
 use anyhow::{anyhow, Context, Result};
-use puffer_config::ProxyConfig;
+use puffer_config::{ProxyConfig, PufferConfig};
 use puffer_provider_openai::{
     build_json_post_request, extract_responses_tool_calls, parse_responses_response,
     refresh_oauth_token, refresh_oauth_token_with_client, BuiltOpenAIRequest, OpenAIAuth,
@@ -42,6 +42,7 @@ const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
 struct ContactOpenAiExecution {
     provider_id: String,
+    default_model: Option<String>,
     auth_store: AuthStore,
     auth_path: PathBuf,
     request_config: OpenAIRequestConfig,
@@ -69,11 +70,8 @@ pub(crate) fn infer_proposals(
 ) -> Result<Vec<ContactProposal>> {
     match openai_execution(state)? {
         Some(mut execution) => {
-            let model = model
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("gpt-5.4-mini");
-            infer_with_openai(&mut execution, model, candidates, limit, trace)
+            let model = contact_inference_model(&execution, model);
+            infer_with_openai(&mut execution, &model, candidates, limit, trace)
         }
         None => {
             trace.message(
@@ -457,14 +455,69 @@ fn openai_execution(state: &DaemonState) -> Result<Option<ContactOpenAiExecution
         return Ok(None);
     };
     let (request_config, refresh_token) = contact_openai_request_config(&provider, &credential);
+    let default_model = configured_contact_openai_model(&state.config_snapshot(), &provider);
     Ok(Some(ContactOpenAiExecution {
         provider_id: provider.id,
+        default_model,
         auth_store: inputs.auth_store,
         auth_path: state.config_paths().user_config_dir.join("auth.json"),
         request_config,
         refresh_token,
         proxy: state.config_snapshot().network.proxy,
     }))
+}
+
+fn contact_inference_model(execution: &ContactOpenAiExecution, requested: Option<&str>) -> String {
+    requested
+        .and_then(|model| normalized_contact_openai_model(&execution.provider_id, model))
+        .or(execution.default_model.as_deref())
+        .unwrap_or("gpt-5.4-mini")
+        .to_string()
+}
+
+fn configured_contact_openai_model(
+    config: &PufferConfig,
+    provider: &ProviderDescriptor,
+) -> Option<String> {
+    let model = config.default_model.as_deref()?;
+    let model_has_provider = model.split_once('/').is_some();
+    if model_has_provider {
+        return normalized_contact_openai_model(&provider.id, model).map(ToOwned::to_owned);
+    }
+    if config
+        .default_provider
+        .as_deref()
+        .is_some_and(|provider_id| contact_openai_provider_ids_match(provider_id, &provider.id))
+    {
+        return normalized_contact_openai_model(&provider.id, model).map(ToOwned::to_owned);
+    }
+    None
+}
+
+fn normalized_contact_openai_model<'a>(provider_id: &str, model: &'a str) -> Option<&'a str> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let Some((prefix, unscoped)) = model.split_once('/') else {
+        return Some(model);
+    };
+    let unscoped = unscoped.trim();
+    if unscoped.is_empty() {
+        return None;
+    }
+    contact_openai_provider_ids_match(prefix, provider_id).then_some(unscoped)
+}
+
+fn contact_openai_provider_ids_match(left: &str, right: &str) -> bool {
+    canonical_contact_openai_provider_id(left) == canonical_contact_openai_provider_id(right)
+}
+
+fn canonical_contact_openai_provider_id(provider_id: &str) -> String {
+    match provider_id.trim().to_ascii_lowercase().as_str() {
+        "codex" => OPENAI_PROVIDER_ID.to_string(),
+        provider_id => provider_id.to_string(),
+    }
 }
 
 fn contact_openai_request_config(
@@ -713,6 +766,45 @@ mod tests {
         let body: Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["instructions"], INFER_SYSTEM_PROMPT);
         assert_eq!(body["tools"][0]["name"], "CreateContact");
+    }
+
+    #[test]
+    fn contact_inference_uses_configured_openai_model() {
+        let provider = test_openai_provider("http://45.77.128.10:8317/v1");
+        let mut config = PufferConfig::default();
+        config.default_provider = Some("codex".to_string());
+        config.default_model = Some("codex/gpt-relay".to_string());
+
+        assert_eq!(
+            configured_contact_openai_model(&config, &provider).as_deref(),
+            Some("gpt-relay")
+        );
+    }
+
+    #[test]
+    fn contact_inference_ignores_other_provider_default_model() {
+        let provider = test_openai_provider("http://45.77.128.10:8317/v1");
+        let mut config = PufferConfig::default();
+        config.default_provider = Some("anthropic".to_string());
+        config.default_model = Some("claude-sonnet-4-5".to_string());
+
+        assert_eq!(configured_contact_openai_model(&config, &provider), None);
+    }
+
+    #[test]
+    fn contact_inference_model_strips_openai_and_codex_prefixes() {
+        assert_eq!(
+            normalized_contact_openai_model("openai", "openai/gpt-relay"),
+            Some("gpt-relay")
+        );
+        assert_eq!(
+            normalized_contact_openai_model("openai", "codex/gpt-relay"),
+            Some("gpt-relay")
+        );
+        assert_eq!(
+            normalized_contact_openai_model("openai", "anthropic/claude-sonnet-4-5"),
+            None
+        );
     }
 
     #[test]

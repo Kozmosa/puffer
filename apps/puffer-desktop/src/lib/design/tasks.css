@@ -1168,12 +1168,124 @@
   gap: 4px;
 }
 
-.pf-task-settings-add-rule,
-.pf-task-settings-rule-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.pf-task-keyword-box {
+  min-width: 0;
+  min-height: 30px;
+  display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+}
+
+.pf-task-keyword-box:focus-within {
+  border-color: color-mix(in oklab, var(--puffer-accent) 60%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--puffer-accent) 16%, transparent);
+}
+
+.pf-task-keyword-box input {
+  width: 80px;
+  min-width: 72px;
+  flex: 1 0 72px;
+  height: 22px;
+  padding: 0 2px;
+  border: 0;
+  box-shadow: none;
+}
+
+.pf-task-keyword-box input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.pf-task-keyword-chip {
+  max-width: 100%;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px 0 7px;
+  border: 1px solid color-mix(in oklab, var(--puffer-accent) 28%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--puffer-accent) 10%, var(--background));
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.pf-task-keyword-chip[data-mode="include"] {
+  border-color: color-mix(in oklab, var(--puffer-accent) 32%, var(--border));
+  background: color-mix(in oklab, var(--puffer-accent) 10%, var(--background));
+}
+
+.pf-task-keyword-chip[data-mode="exclude"] {
+  border-color: color-mix(in oklab, var(--pf-run-failed) 26%, var(--border));
+  background: color-mix(in oklab, var(--pf-run-failed) 6%, var(--background));
+}
+
+.pf-task-keyword-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-task-keyword-chip button {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.pf-task-keyword-chip button:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--puffer-accent) 14%, transparent);
+  color: var(--foreground);
+}
+
+.pf-task-keyword-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pf-task-keyword-rule-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: start;
   gap: 10px;
+}
+
+.pf-task-keyword-rule-label {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pf-task-keyword-rule-box {
+  min-height: 32px;
+}
+
+.pf-task-keyword-rule-box[data-mode="include"]:focus-within {
+  border-color: color-mix(in oklab, var(--puffer-accent) 62%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--puffer-accent) 16%, transparent);
+}
+
+.pf-task-keyword-rule-box[data-mode="exclude"]:focus-within {
+  border-color: color-mix(in oklab, var(--pf-run-failed) 38%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--pf-run-failed) 10%, transparent);
 }
 
 .pf-task-config input,
@@ -1214,32 +1326,27 @@
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--puffer-accent) 16%, transparent);
 }
 
+.pf-task-config .pf-task-keyword-box input {
+  width: 80px;
+  min-width: 72px;
+  flex: 1 0 72px;
+  height: 22px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  line-height: 22px;
+}
+
+.pf-task-keyword-box input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
 .pf-task-config p {
   margin: 0;
   color: var(--muted-foreground);
-  font-size: 12px;
-}
-
-.pf-task-settings-rule-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pf-task-settings-rule-row {
-  min-width: 0;
-  min-height: 30px;
-  padding-left: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.pf-task-settings-rule-row span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--foreground);
   font-size: 12px;
 }
 
@@ -1380,8 +1487,7 @@
 
   .pf-task-settings-monitor-form,
   .pf-task-settings-monitor-row,
-  .pf-task-settings-add-rule,
-  .pf-task-settings-rule-row {
+  .pf-task-keyword-rule-row {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
   }

@@ -914,3 +914,5 @@ pub fn prefilter_passes(filter: Option<&FilterSpec>, text: &str) -> bool {
 
 #[cfg(test)]
 include!("router_tests.rs");
+#[cfg(test)]
+include!("router_monitor_rule_tests.rs");

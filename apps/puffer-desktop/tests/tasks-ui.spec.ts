@@ -5,6 +5,61 @@ async function openTasks(page: Page) {
   await page.locator(".pf-sidebar").getByRole("button", { name: "Tasks" }).click();
 }
 
+function monitorRulesSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    workflows: [],
+    runs: [],
+    connections: [
+      {
+        slug: "telegram-user",
+        connector_slug: "telegram-login",
+        description: "Personal Telegram",
+        state: "active",
+        has_consumer: true,
+        auth_failure_notified: false,
+        can_trigger_workflow: true,
+        connect_command: "/connect telegram-login telegram-user",
+        monitor_command: "/monitor telegram-user"
+      }
+    ],
+    workflow_bindings: [
+      {
+        slug: "monitor-telegram-user",
+        description: "Monitor telegram-user for actionable tasks",
+        connection_slug: "telegram-user",
+        connector_slug: "telegram-login",
+        status: "enabled",
+        enabled: true,
+        action_type: "triage_agent",
+        monitor: true,
+        monitor_memory_path: "/tmp/telegram-user.md",
+        contact_ids: [],
+        ...overrides
+      }
+    ],
+    monitor_memories: [
+      {
+        connection_slug: "telegram-user",
+        path: "/tmp/telegram-user.md",
+        content: "# Monitor Memory: telegram-user\n",
+        truncated: false
+      }
+    ],
+    monitor_tasks: []
+  };
+}
+
+async function openRulesDialog(page: Page, daemon: FakeDaemon) {
+  await daemon.install(page);
+  await daemon.open(page);
+  await openTasks(page);
+  await page.getByRole("button", { name: "Configure" }).click();
+  await daemon.waitForRequest("contacts_list");
+  const dialog = page.getByRole("dialog", { name: "Task settings" });
+  await dialog.getByRole("button", { name: "Rules and memory" }).click();
+  return dialog;
+}
+
 test("tasks history shows received monitor messages and agent outcomes", async ({ page }) => {
   const daemon = new FakeDaemon();
   await daemon.install(page);
@@ -202,7 +257,7 @@ test("task monitor configuration uses the design primary add button", async ({ p
         auth_failure_notified: false,
         can_trigger_workflow: true,
         connect_command: "/connect lark-login lark-user",
-        monitor_command: "/monitor lark-user"
+        monitor_command: null
       }
     ],
     workflow_bindings: [],
@@ -234,9 +289,57 @@ test("task monitor configuration uses the design primary add button", async ({ p
     backgroundColor: "rgb(17, 17, 17)",
     color: "rgb(255, 255, 255)"
   });
+  const addButton = dialog.getByRole("button", { name: "Add" });
+  await expect(addButton).toBeEnabled();
+  await addButton.click();
+  const request = await daemon.waitForRequest("task_monitor_create");
+  expect(request.params).toEqual({
+    connection_slug: "lark-user",
+    model: null,
+    contact_ids: []
+  });
 });
 
-test("task monitor rules uses the design primary buttons", async ({ page }) => {
+test("task monitor configuration reconnects a degraded selected account", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setWorkflowSnapshot({
+    workflows: [],
+    runs: [],
+    connections: [
+      {
+        slug: "telegram-user",
+        connector_slug: "telegram-login",
+        description: "Personal Telegram",
+        state: "degraded",
+        has_consumer: false,
+        auth_failure_notified: true,
+        can_trigger_workflow: true,
+        connect_command: "/connect telegram-login telegram-user",
+        monitor_command: "/monitor telegram-user"
+      }
+    ],
+    workflow_bindings: [],
+    monitor_tasks: []
+  });
+  await daemon.install(page);
+  await daemon.open(page);
+
+  await openTasks(page);
+  await page.getByRole("button", { name: "Configure" }).click();
+  await daemon.waitForRequest("contacts_list");
+
+  const dialog = page.getByRole("dialog", { name: "Task settings" });
+  await expect(dialog).toContainText("telegram-user needs auth repair");
+  const reconnectButton = dialog.getByRole("button", { name: "Reconnect" });
+  await expect(reconnectButton).toBeEnabled();
+  await reconnectButton.click();
+
+  const request = await daemon.waitForRequest("run_agent_turn");
+  expect(request.params.message).toBe("/connect telegram-login telegram-user");
+  expect(daemon.requests.some((item) => item.method === "task_monitor_create")).toBe(false);
+});
+
+test("task monitor rules uses compact keyword rows", async ({ page }) => {
   const daemon = new FakeDaemon();
   daemon.setWorkflowSnapshot({
     workflows: [],
@@ -288,23 +391,34 @@ test("task monitor rules uses the design primary buttons", async ({ page }) => {
   const dialog = page.getByRole("dialog", { name: "Task settings" });
   await dialog.getByRole("button", { name: "Rules and memory" }).click();
 
-  const ignoreAddMetrics = await dialog.getByRole("button", { name: "Add" }).evaluate((element) => {
+  const includeRow = dialog.getByRole("group", { name: "Only includes" });
+  const excludeRow = dialog.getByRole("group", { name: "Exclude" });
+  const includeBoxMetrics = await includeRow.locator(".pf-task-keyword-rule-box").evaluate((element) => {
     const styles = getComputedStyle(element);
     const box = element.getBoundingClientRect();
     return {
-      width: Math.round(box.width),
       height: Math.round(box.height),
       borderRadius: styles.borderRadius,
-      backgroundColor: styles.backgroundColor,
-      color: styles.color
+      borderTopWidth: styles.borderTopWidth
     };
   });
-  expect(ignoreAddMetrics).toEqual({
-    width: 48,
-    height: 30,
+  expect(includeBoxMetrics).toEqual({
+    height: 32,
     borderRadius: "6px",
-    backgroundColor: "rgb(17, 17, 17)",
-    color: "rgb(255, 255, 255)"
+    borderTopWidth: "1px"
+  });
+
+  const excludeInputMetrics = await excludeRow.getByLabel("Exclude keywords").evaluate((element) => {
+    const styles = getComputedStyle(element);
+    const box = element.getBoundingClientRect();
+    return {
+      height: Math.round(box.height),
+      borderTopWidth: styles.borderTopWidth
+    };
+  });
+  expect(excludeInputMetrics).toEqual({
+    height: 22,
+    borderTopWidth: "0px"
   });
 
   const saveMemoryButton = dialog.getByRole("button", { name: "Save memory" });
@@ -335,6 +449,106 @@ test("task monitor rules uses the design primary buttons", async ({ page }) => {
     connection_slug: "telegram-user",
     content: "# Monitor Memory: telegram-user\n"
   });
+});
+
+test("task monitor rules adds exclude keywords from the fixed exclude row", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setWorkflowSnapshot(monitorRulesSnapshot());
+
+  const dialog = await openRulesDialog(page, daemon);
+  const excludeRow = dialog.getByRole("group", { name: "Exclude" });
+  const keywordInput = excludeRow.getByLabel("Exclude keywords");
+
+  await keywordInput.fill("作业");
+  await keywordInput.press("Enter");
+
+  const request = await daemon.waitForRequest("task_monitor_rule_add");
+  expect(request.params).toEqual({
+    connection_slug: "telegram-user",
+    mode: "exclude",
+    keywords: ["作业"],
+    case_insensitive: true
+  });
+  await expect(excludeRow.getByRole("button", { name: "Remove exclude keyword 作业" })).toBeVisible();
+});
+
+test("task monitor rules adds include keywords from the fixed only-includes row", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setWorkflowSnapshot(monitorRulesSnapshot());
+
+  const dialog = await openRulesDialog(page, daemon);
+  const includeRow = dialog.getByRole("group", { name: "Only includes" });
+  const keywordInput = includeRow.getByLabel("Only includes keywords");
+
+  await keywordInput.fill("urgent");
+  await keywordInput.blur();
+
+  const request = await daemon.waitForRequest("task_monitor_rule_add");
+  expect(request.params).toEqual({
+    connection_slug: "telegram-user",
+    mode: "include",
+    keywords: ["urgent"],
+    case_insensitive: true
+  });
+  await expect(includeRow.getByRole("button", { name: "Remove include keyword urgent" })).toBeVisible();
+});
+
+test("task monitor rules exposes only two keyword rows", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setWorkflowSnapshot(monitorRulesSnapshot());
+
+  const dialog = await openRulesDialog(page, daemon);
+  await expect(dialog.locator(".pf-task-keyword-rule-row")).toHaveCount(2);
+  await expect(dialog.getByRole("group", { name: "Only includes" }).getByLabel("Only includes keywords")).toBeVisible();
+  await expect(dialog.getByRole("group", { name: "Exclude" }).getByLabel("Exclude keywords")).toBeVisible();
+});
+
+test("task monitor rules renders installed include and exclude keyword chips", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setWorkflowSnapshot(monitorRulesSnapshot({
+    include_filters: [
+      { type: "regex", pattern: "作业", case_insensitive: true }
+    ],
+    ignore_filters: [
+      { type: "regex", pattern: "广告|通知", case_insensitive: true }
+    ]
+  }));
+
+  const dialog = await openRulesDialog(page, daemon);
+  const includeRow = dialog.getByRole("group", { name: "Only includes" });
+  const excludeRow = dialog.getByRole("group", { name: "Exclude" });
+  await expect(includeRow.getByRole("button", { name: "Remove include keyword 作业" })).toBeVisible();
+  await expect(excludeRow.getByRole("button", { name: "Remove exclude keyword 广告" })).toBeVisible();
+  await expect(excludeRow.getByRole("button", { name: "Remove exclude keyword 通知" })).toBeVisible();
+});
+
+test("task monitor rules removes one saved keyword chip without deleting siblings", async ({ page }) => {
+  const daemon = new FakeDaemon();
+  daemon.setWorkflowSnapshot(monitorRulesSnapshot({
+    ignore_filters: [
+      { type: "regex", pattern: "作业|广告", case_insensitive: true }
+    ]
+  }));
+
+  const dialog = await openRulesDialog(page, daemon);
+  const excludeRow = dialog.getByRole("group", { name: "Exclude" });
+  await excludeRow.getByRole("button", { name: "Remove exclude keyword 广告" }).click();
+
+  const deleteRequest = await daemon.waitForRequest("task_monitor_rule_delete");
+  expect(deleteRequest.params).toEqual({
+    connection_slug: "telegram-user",
+    mode: "exclude",
+    rule: { type: "regex", pattern: "作业|广告", case_insensitive: true }
+  });
+  const addRequest = await daemon.waitForRequest("task_monitor_rule_add");
+  expect(addRequest.params).toEqual({
+    connection_slug: "telegram-user",
+    mode: "exclude",
+    keywords: ["作业"],
+    case_insensitive: true
+  });
+  await expect(excludeRow.getByRole("button", { name: "Remove exclude keyword 作业" })).toBeVisible();
+  await expect(excludeRow.getByRole("button", { name: "Remove exclude keyword 广告" })).toBeHidden();
 });
 
 test("task monitor configuration scopes subscriptions to selected contacts", async ({ page }) => {

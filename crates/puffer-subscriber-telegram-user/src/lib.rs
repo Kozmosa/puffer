@@ -34,6 +34,7 @@ mod peers;
 mod polls;
 mod qr_login;
 mod reply;
+mod session_resume;
 mod startup;
 mod state;
 mod updates;

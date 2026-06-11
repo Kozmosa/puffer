@@ -745,6 +745,11 @@ fn workflow_filter_label(filter: Option<&FilterSpec>) -> String {
     match filter {
         Some(FilterSpec::Tagged(TaggedFilterSpec::Regex { pattern, .. })) => pattern.clone(),
         Some(FilterSpec::Tagged(TaggedFilterSpec::Jq { expression })) => expression.clone(),
+        Some(FilterSpec::Tagged(TaggedFilterSpec::Any { filters })) => filters
+            .iter()
+            .map(|filter| workflow_filter_label(Some(filter)))
+            .collect::<Vec<_>>()
+            .join(" || "),
         Some(FilterSpec::Json(shape)) => shape.to_string(),
         None => ".*".to_string(),
     }

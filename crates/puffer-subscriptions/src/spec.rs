@@ -108,6 +108,11 @@ pub enum TaggedFilterSpec {
         /// Puffer path expression.
         expression: String,
     },
+    /// Matches when any nested filter matches the event.
+    Any {
+        /// Nested filters joined with logical OR.
+        filters: Vec<FilterSpec>,
+    },
 }
 
 fn default_true() -> bool {
@@ -264,6 +269,14 @@ fn validate_filter(filter: &FilterSpec) -> Result<(), String> {
                 return Err("jq filter expression must not be empty".into());
             }
             compile_jq_like(expression)?;
+        }
+        FilterSpec::Tagged(TaggedFilterSpec::Any { filters }) => {
+            if filters.is_empty() {
+                return Err("compound filter must contain at least one filter".into());
+            }
+            for filter in filters {
+                validate_filter(filter)?;
+            }
         }
         FilterSpec::Json(shape) => {
             if !shape.is_object() {
@@ -432,6 +445,9 @@ pub fn filter_matches(filter: Option<&FilterSpec>, text: &str, payload: &Value) 
         Some(FilterSpec::Tagged(TaggedFilterSpec::Jq { expression })) => {
             eval_jq_like(expression, text, payload).unwrap_or(false)
         }
+        Some(FilterSpec::Tagged(TaggedFilterSpec::Any { filters })) => filters
+            .iter()
+            .any(|filter| filter_matches(Some(filter), text, payload)),
     }
 }
 
@@ -766,6 +782,26 @@ mod tests {
             "gm",
             &json!({"channel":{"name":"Other"}})
         ));
+    }
+
+    #[test]
+    fn compound_any_matches_any_keyword() {
+        let filter = FilterSpec::Tagged(TaggedFilterSpec::Any {
+            filters: vec![
+                FilterSpec::Tagged(TaggedFilterSpec::Regex {
+                    pattern: regex::escape("作业"),
+                    case_insensitive: true,
+                }),
+                FilterSpec::Tagged(TaggedFilterSpec::Regex {
+                    pattern: regex::escape("广告"),
+                    case_insensitive: true,
+                }),
+            ],
+        });
+
+        assert!(filter_matches(Some(&filter), "今天有作业", &json!({})));
+        assert!(filter_matches(Some(&filter), "这是广告", &json!({})));
+        assert!(!filter_matches(Some(&filter), "正常消息", &json!({})));
     }
 
     #[test]

@@ -389,6 +389,12 @@
     return normalizeContactIds(contactIdsText.split(/[,\n]/));
   }
 
+  function contactIdValidationMessage(): string | null {
+    if (parsedContactIds().length > 0) return null;
+    if (!contactIdsText.trim()) return "Enter at least one contact id.";
+    return "No valid contact ids. Use telegram@alice, telegram-user-id@123, or google@alice@example.com.";
+  }
+
   function findSavedContact(contacts: SavedContact[], contactName: string, ids: string[]): SavedContact | null {
     const wanted = contactIdsKey(ids);
     return contacts.find((contact) => contact.name === contactName && contactIdsKey(contact.contact_ids) === wanted) ?? null;
@@ -763,7 +769,10 @@
             </label>
             <label class="pf-contact-field">
               <span>Contact IDs</span>
-              <textarea class="pf-contact-ids-input" bind:value={contactIdsText} rows="6" placeholder="telegram@alice&#10;google@alice@example.com" disabled={saving}></textarea>
+              <textarea class="pf-contact-ids-input" bind:value={contactIdsText} rows="6" placeholder="telegram@alice&#10;telegram-user-id@123&#10;google@alice@example.com" disabled={saving}></textarea>
+              {#if contactIdValidationMessage()}
+                <small class="pf-contact-field-hint" data-state="invalid">{contactIdValidationMessage()}</small>
+              {/if}
             </label>
             <div class="pf-task-config-actions">
               <button
@@ -1042,6 +1051,16 @@
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+  }
+
+  .pf-contact-field-hint {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .pf-contact-field-hint[data-state="invalid"] {
+    color: var(--pf-run-failed);
   }
 
   .pf-contact-dialog textarea {

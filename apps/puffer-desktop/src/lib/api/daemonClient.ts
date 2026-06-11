@@ -28,6 +28,10 @@ type PendingRequest = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
+export type DaemonRequestOptions = {
+  timeoutMs?: number;
+};
+
 type WsResponseMessage = {
   type?: string;
   id?: number | string;
@@ -133,7 +137,11 @@ export class DaemonClient {
     return this.connectPromise;
   }
 
-  async request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  async request<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    options: DaemonRequestOptions = {}
+  ): Promise<T> {
     if (!this.useWebSocket) {
       return invoke<T>("backend_request", { method, params });
     }
@@ -153,10 +161,11 @@ export class DaemonClient {
     };
 
     return new Promise<T>((resolve, reject) => {
+      const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Puffer daemon request timed out: ${method}`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
         reject,

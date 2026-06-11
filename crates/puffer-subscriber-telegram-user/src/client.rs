@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use grammers_client::{session::Session, Client, Config};
 use puffer_subscriber_runtime::SubscriberCommand;
 use serde_json::json;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::actions::handle_telegram_act;
@@ -20,10 +21,11 @@ use crate::notifications::NotificationMuteCache;
 use crate::outbound::handle_send_message;
 use crate::peers::{handle_list_messages, handle_list_peers, handle_search_messages};
 use crate::qr_login;
-use crate::state::{
-    default_init_params, resolve_api_credentials, LoginState, PersistedCredentials, SkillEnv,
-};
+use crate::session_resume::{recoverable_live_update_error, try_resume_session};
+use crate::state::{default_init_params, LoginState, SkillEnv};
 use crate::updates::{handle_live_update, spawn_live_update_task, LiveUpdateEvent};
+
+const LIVE_UPDATE_RECOVERY_DELAY: Duration = Duration::from_secs(1);
 
 enum UpdateLoopExit {
     StdinClosed,
@@ -34,6 +36,11 @@ enum RuntimeCommandOutcome {
     Continue,
     ReauthStarted,
     ClientReplaced,
+}
+
+enum StartupHydrationStep {
+    Hydrated,
+    Command(Option<SubscriberCommand>),
 }
 
 /// Runs the Telegram user subscriber until stdin closes or a fatal error
@@ -388,82 +395,6 @@ pub async fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Tries to open and connect an already-authenticated session. Returns
-/// `Ok(None)` when the session file is missing auth material or the client
-/// is not currently authorized (e.g. the key was invalidated server-side).
-async fn try_resume_session(env: &SkillEnv) -> anyhow::Result<Option<Client>> {
-    let session = Session::load_file_or_create(&env.session_path)
-        .with_context(|| format!("load session file {}", env.session_path.display()))?;
-    if !session.signed_in() {
-        // Normal fresh-login path (no session yet, or it was cleared); not a
-        // #570 anomaly, but recorded so the taken path is visible in logs.
-        crate::health::report_resume_failed(env, "not_signed_in", false, "none", json!({}));
-        return Ok(None);
-    }
-
-    // Resume needs the same app credentials used for the original login.
-    // Missing credentials are not fatal here; the login phase can surface an
-    // actionable error if the operator tries to start a fresh login.
-    let persisted = PersistedCredentials::load(&env.credentials_path()).unwrap_or_default();
-    let (api_id, api_hash) = match resolve_api_credentials(None, None, &persisted) {
-        Ok(pair) => pair,
-        Err(error) => {
-            crate::health::report_resume_failed(
-                env,
-                "credentials_unavailable",
-                true,
-                "config",
-                json!({ "error": error.to_string() }),
-            );
-            return Ok(None);
-        }
-    };
-
-    let config = Config {
-        session,
-        api_id,
-        api_hash,
-        params: default_init_params(),
-    };
-    let client = match Client::connect(config).await {
-        Ok(c) => c,
-        Err(err) => {
-            let detail = err.to_string();
-            let class = crate::health::classify_error(&detail);
-            crate::health::report_resume_failed(
-                env,
-                "connect_failed",
-                true,
-                class,
-                json!({ "error": detail }),
-            );
-            return Ok(None);
-        }
-    };
-    match client.is_authorized().await {
-        Ok(true) => Ok(Some(client)),
-        Ok(false) => {
-            // Connected, but the server reports the session is no longer
-            // authorized: the key was invalidated server-side. This is the
-            // core #570 "suddenly unauthenticated" case.
-            crate::health::report_resume_failed(env, "key_invalidated", true, "auth", json!({}));
-            Ok(None)
-        }
-        Err(err) => {
-            let detail = err.to_string();
-            let class = crate::health::classify_error(&detail);
-            crate::health::report_resume_failed(
-                env,
-                "probe_failed",
-                true,
-                class,
-                json!({ "error": detail }),
-            );
-            Ok(None)
-        }
-    }
-}
-
 /// Drives the main event loop: waits for either a Telegram update or an
 /// inbound stdin command, handles it, and repeats. Returns when stdin
 /// closes or a fatal error occurs.
@@ -477,7 +408,20 @@ async fn run_update_loop(
     notification_mutes: &mut NotificationMuteCache,
 ) -> anyhow::Result<UpdateLoopExit> {
     emit_control(&env.topic, "ready", json!({}))?;
-    crate::startup::hydrate_dialog_state(env, client, delivery_cursor, notification_mutes).await?;
+    reset_delivery_cursor_for_current_account(client, delivery_cursor).await?;
+    if let Some(exit) = hydrate_startup_state_before_updates(
+        env,
+        commands,
+        client,
+        login_state,
+        qr_state,
+        delivery_cursor,
+        notification_mutes,
+    )
+    .await?
+    {
+        return Ok(exit);
+    }
     persist_live_session_state(env, client);
     let (mut live_updates, mut live_task) = spawn_live_update_task(env.clone(), client.clone());
     info!("entering telegram update loop");
@@ -495,7 +439,39 @@ async fn run_update_loop(
                     // #570: the live update stream died — "connected but stops
                     // receiving". Record it (classified) before tearing down so
                     // the drop is queryable instead of a bare tracing line.
-                    crate::health::report_update_loop_error(env, &error);
+                    let recoverable = recoverable_live_update_error(&error);
+                    crate::health::report_update_loop_error(env, &error, !recoverable);
+                    if recoverable {
+                        warn!(%error, "recovering telegram live update stream");
+                        tokio::time::sleep(LIVE_UPDATE_RECOVERY_DELAY).await;
+                        if let Some(recovered) = try_resume_session(env).await? {
+                            *client = recovered;
+                            reset_delivery_cursor_for_current_account(client, delivery_cursor)
+                                .await?;
+                            if let Some(exit) = hydrate_startup_state_before_updates(
+                                env,
+                                commands,
+                                client,
+                                login_state,
+                                qr_state,
+                                delivery_cursor,
+                                notification_mutes,
+                            )
+                            .await?
+                            {
+                                return Ok(exit);
+                            }
+                            persist_live_session_state(env, client);
+                            emit_control(
+                                &env.topic,
+                                "ready",
+                                json!({ "resumed": true, "recovered": true }),
+                            )?;
+                            (live_updates, live_task) =
+                                spawn_live_update_task(env.clone(), client.clone());
+                            continue;
+                        }
+                    }
                     error!(%error, "next_update failed");
                     return Err(anyhow::anyhow!("next_update: {error}"));
                 }
@@ -522,17 +498,88 @@ async fn run_update_loop(
                     }
                     RuntimeCommandOutcome::ClientReplaced => {
                         live_task.abort();
-                        crate::startup::hydrate_dialog_state(
+                        reset_delivery_cursor_for_current_account(client, delivery_cursor).await?;
+                        if let Some(exit) = hydrate_startup_state_before_updates(
                             env,
+                            commands,
                             client,
+                            login_state,
+                            qr_state,
                             delivery_cursor,
                             notification_mutes,
-                        ).await?;
+                        )
+                        .await?
+                        {
+                            return Ok(exit);
+                        }
                         persist_live_session_state(env, client);
                         (live_updates, live_task) =
                             spawn_live_update_task(env.clone(), client.clone());
                     }
                 }
+            }
+        }
+    }
+}
+
+async fn reset_delivery_cursor_for_current_account(
+    client: &Client,
+    delivery_cursor: &mut DeliveryCursor,
+) -> anyhow::Result<()> {
+    let user = client.get_me().await?;
+    if delivery_cursor.reset_for_account(user.id()) {
+        info!(
+            user_id = user.id(),
+            "reset Telegram delivery cursor for authenticated account"
+        );
+    }
+    Ok(())
+}
+
+async fn hydrate_startup_state_before_updates(
+    env: &SkillEnv,
+    commands: &mut CommandStream,
+    client: &mut Client,
+    login_state: &mut LoginState,
+    qr_state: &mut Option<qr_login::QrLoginState>,
+    delivery_cursor: &mut DeliveryCursor,
+    notification_mutes: &mut NotificationMuteCache,
+) -> anyhow::Result<Option<UpdateLoopExit>> {
+    loop {
+        let step = {
+            let hydration = crate::startup::hydrate_dialog_state(
+                env,
+                client,
+                delivery_cursor,
+                notification_mutes,
+            );
+            tokio::pin!(hydration);
+            tokio::select! {
+                biased;
+                cmd = commands.next() => StartupHydrationStep::Command(cmd?),
+                result = &mut hydration => {
+                    result?;
+                    StartupHydrationStep::Hydrated
+                }
+            }
+        };
+
+        match step {
+            StartupHydrationStep::Hydrated => return Ok(None),
+            StartupHydrationStep::Command(Some(cmd)) => {
+                match handle_runtime_command(env, client, login_state, qr_state, cmd).await? {
+                    RuntimeCommandOutcome::Continue => {}
+                    RuntimeCommandOutcome::ReauthStarted => {
+                        return Ok(Some(UpdateLoopExit::ReauthStarted));
+                    }
+                    RuntimeCommandOutcome::ClientReplaced => {
+                        reset_delivery_cursor_for_current_account(client, delivery_cursor).await?;
+                    }
+                }
+            }
+            StartupHydrationStep::Command(None) => {
+                info!("stdin closed before telegram startup hydration completed");
+                return Ok(Some(UpdateLoopExit::StdinClosed));
             }
         }
     }

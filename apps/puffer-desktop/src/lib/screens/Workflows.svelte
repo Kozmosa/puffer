@@ -1463,7 +1463,7 @@
   }
 
   function connectionMonitorSupported(connection: WorkflowConnection): boolean {
-    if (connection.monitor_command !== undefined) return Boolean(connection.monitor_command);
+    if (connection.monitor_command?.trim()) return true;
     return connectionTriggerSupported(connection);
   }
 
