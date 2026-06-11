@@ -493,7 +493,7 @@ pub struct IdeSpec {
 }
 
 /// Declares a provider pack loaded from YAML.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderPack {
     pub id: String,
     pub display_name: String,
