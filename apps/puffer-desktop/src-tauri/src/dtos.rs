@@ -461,6 +461,7 @@ pub(crate) struct MediaCapabilityParameterDto {
     pub values: Vec<String>,
     pub default: String,
     pub request_field: Option<String>,
+    pub wire_type: String,
 }
 
 /// Describes aggregate loaded resource counts.

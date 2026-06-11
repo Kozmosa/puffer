@@ -31,6 +31,10 @@
   const VIDEO_OUTPUT_DIR_RELATIVE = ".puffer/media/videos";
   const VIDEO_ASPECT_RATIO_PARAMETER_NAME = "aspect_ratio";
   const VIDEO_DURATION_PARAMETER_NAME = "duration_seconds";
+  const VIDEO_ASPECT_RATIO_AXIS_NAMES = new Set(["aspect_ratio", "ratio"]);
+  const VIDEO_ASPECT_RATIO_REQUEST_FIELDS = new Set(["aspect_ratio", "ratio", "metadata.ratio"]);
+  const VIDEO_DURATION_AXIS_NAMES = new Set(["duration_seconds", "duration", "seconds"]);
+  const VIDEO_DURATION_REQUEST_FIELDS = new Set(["duration", "seconds", "duration_seconds"]);
   const VIDEO_PRIMARY_PARAMETER_NAMES = new Set([
     VIDEO_ASPECT_RATIO_PARAMETER_NAME,
     VIDEO_DURATION_PARAMETER_NAME
@@ -291,11 +295,37 @@
     name: string
   ): MediaCapabilityParameterInfo | null {
     if (!capability || capability.kind !== "video") return null;
-    return capability.parameters.find((parameter) => parameter.name === name) ?? null;
+    const direct = capability.parameters.find((parameter) => parameter.name === name);
+    if (direct) return direct;
+    if (name === VIDEO_ASPECT_RATIO_PARAMETER_NAME) {
+      return capability.parameters.find(isAspectRatioParameter) ?? null;
+    }
+    if (name === VIDEO_DURATION_PARAMETER_NAME) {
+      return capability.parameters.find(isDurationParameter) ?? null;
+    }
+    return null;
   }
 
   function isPrimaryVideoParameter(parameter: MediaCapabilityParameterInfo): boolean {
-    return VIDEO_PRIMARY_PARAMETER_NAMES.has(parameter.name);
+    return (
+      VIDEO_PRIMARY_PARAMETER_NAMES.has(parameter.name) ||
+      isAspectRatioParameter(parameter) ||
+      isDurationParameter(parameter)
+    );
+  }
+
+  function isAspectRatioParameter(parameter: MediaCapabilityParameterInfo): boolean {
+    return (
+      VIDEO_ASPECT_RATIO_AXIS_NAMES.has(parameter.name) ||
+      VIDEO_ASPECT_RATIO_REQUEST_FIELDS.has(parameter.requestField ?? "")
+    );
+  }
+
+  function isDurationParameter(parameter: MediaCapabilityParameterInfo): boolean {
+    return (
+      VIDEO_DURATION_AXIS_NAMES.has(parameter.name) ||
+      VIDEO_DURATION_REQUEST_FIELDS.has(parameter.requestField ?? "")
+    );
   }
 
   function parameterValueFromParameter(

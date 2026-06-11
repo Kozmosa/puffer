@@ -14,7 +14,7 @@ use crate::{browser, files, fs_watch, local_model, lsp, media_capabilities, pty}
 use anyhow::{anyhow, bail, Context, Result};
 use base64::prelude::*;
 use puffer_config::{builtin_captcha_solvers, ConfigPaths};
-use puffer_core::{
+use puffer_media::{
     discover_exact_media_capabilities, generate_exact_media_with_cache,
     generated_media_timeline_attachments, read_generated_media_preview_by_artifact,
     ExactMediaDiscoveryCache, ExactMediaGenerationRequest, GeneratedMediaPreviewResult,
@@ -2429,6 +2429,7 @@ mod tests {
             })
             .to_string(),
             success: true,
+            turn_id: None,
         }
     }
 
@@ -2661,7 +2662,7 @@ mod tests {
     }
 
     #[test]
-    fn media_capabilities_return_empty_for_video_without_adapter() {
+    fn media_capabilities_mark_video_unavailable_without_provider_auth() {
         let _lock = TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set_home(dir.path());
@@ -2679,7 +2680,27 @@ mod tests {
                 json!({"kind": "video"}),
             )
             .unwrap();
-        assert_eq!(response["capabilities"], json!([]));
+        let capabilities = response["capabilities"].as_array().unwrap();
+
+        assert!(!capabilities.is_empty());
+        assert!(capabilities.iter().all(|capability| {
+            capability["kind"] == "video"
+                && capability["status"] == "unavailable"
+                && capability["reason"] == "missing_auth"
+        }));
+        assert!(capabilities.iter().any(|capability| {
+            capability["providerId"] == "kling"
+                && capability["parameters"]
+                    .as_array()
+                    .map(|parameters| {
+                        parameters.iter().any(|parameter| {
+                            parameter["name"] == "ratio"
+                                && parameter["default"] == "16:9"
+                                && parameter["wireType"] == "string"
+                        })
+                    })
+                    .unwrap_or(false)
+        }));
     }
 
     #[test]
@@ -2941,6 +2962,7 @@ mod tests {
                 StoredEvent::Assistant {
                     at_ms: 2,
                     text: "Done".to_string(),
+                    turn_id: None,
                 },
             ],
         );
@@ -3004,6 +3026,7 @@ mod tests {
                 StoredEvent::Assistant {
                     at_ms: 2,
                     text: "Done".to_string(),
+                    turn_id: None,
                 },
             ],
         );
@@ -3061,6 +3084,7 @@ mod tests {
                 StoredEvent::Assistant {
                     at_ms: 2,
                     text: "Done".to_string(),
+                    turn_id: None,
                 },
             ],
         );
@@ -3108,6 +3132,7 @@ mod tests {
                 StoredEvent::Assistant {
                     at_ms: 2,
                     text: "Done".to_string(),
+                    turn_id: None,
                 },
             ],
         );
@@ -3894,7 +3919,7 @@ fn exact_media_generation_request_from_stored(
     count: u8,
     selection: StoredMediaGenerationConfig,
 ) -> Result<ExactMediaGenerationRequest> {
-    let missing_context = format!("{kind} media provider/model/adapter is not configured");
+    let missing_context = format!("{kind} media provider/model is not configured");
     Ok(ExactMediaGenerationRequest {
         kind: kind.to_string(),
         provider_id: non_empty_media_field(&selection.provider_id, "provider_id")
@@ -3903,7 +3928,6 @@ fn exact_media_generation_request_from_stored(
             .context(missing_context.clone())?,
         operation: non_empty_media_field(&selection.operation, "operation")
             .context(missing_context.clone())?,
-        adapter: non_empty_media_field(&selection.adapter, "adapter").context(missing_context)?,
         prompt,
         image_references: Vec::new(),
         parameters: selection.parameters,
