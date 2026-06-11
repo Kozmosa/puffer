@@ -4,10 +4,20 @@ import { defineConfig, type ViteDevServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 const workspaceDaemonHandshakeUrl = new URL("../../.puffer/daemon.handshake", import.meta.url);
+const viteConfigEnv =
+  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+const homeDir = viteConfigEnv.HOME ?? viteConfigEnv.USERPROFILE;
+const homeDaemonHandshakePath = homeDir
+  ? `${homeDir.replace(/\/$/, "")}/.puffer/daemon.handshake`
+  : undefined;
+const daemonHandshakeCandidates = [
+  viteConfigEnv.PUFFER_DAEMON_HANDSHAKE,
+  workspaceDaemonHandshakeUrl,
+  homeDaemonHandshakePath
+].filter((candidate): candidate is string | URL => Boolean(candidate));
 
 const host =
-  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ?.TAURI_DEV_HOST ?? "127.0.0.1";
+  viteConfigEnv.TAURI_DEV_HOST ?? "127.0.0.1";
 
 // Build commit, injected once at config load for the corner build badge.
 // Degrades to "unknown" if git is unavailable (shallow CI checkout) rather than
@@ -21,12 +31,15 @@ function gitShortHash(): string {
 }
 
 function workspaceDaemonHandshake(): string | null {
-  try {
-    const raw = readFileSync(workspaceDaemonHandshakeUrl, { encoding: "utf8" }).trim();
-    return raw ? raw : null;
-  } catch {
-    return null;
+  for (const candidate of daemonHandshakeCandidates) {
+    try {
+      const raw = readFileSync(candidate, { encoding: "utf8" }).trim();
+      if (raw) return raw;
+    } catch {
+      // Continue through repo-local, explicit env, and user-level fallbacks.
+    }
   }
+  return null;
 }
 
 function workspaceDaemonHandshakePlugin() {
