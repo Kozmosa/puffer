@@ -31,3 +31,45 @@ fn byteplus_seedance_declares_param_axes_and_single_variant() {
     );
     assert!(matches!(m.variants, Variants::Single(_)));
 }
+
+#[test]
+fn relaydance_folds_resolution_and_audio_into_logical_models() {
+    let p = provider("relaydance");
+    let video = p.media.as_ref().unwrap().video.as_ref().unwrap();
+
+    let doubao = video
+        .models
+        .iter()
+        .find(|m| m.id == "doubao-seedance-2-0")
+        .expect("doubao");
+    let res = doubao
+        .axes
+        .iter()
+        .find(|a| a.id == "resolution")
+        .expect("resolution");
+    assert_eq!(res.role, AxisRole::Selector);
+    match &doubao.variants {
+        Variants::BySelector { selector, map } => {
+            assert_eq!(selector, "resolution");
+            assert_eq!(map["720p"].model_id, "doubao-seedance-2-0-720p");
+            assert_eq!(map["1080p"].model_id, "doubao-seedance-2-0-1080p");
+        }
+        _ => panic!("expected BySelector"),
+    }
+
+    let pro = video
+        .models
+        .iter()
+        .find(|m| m.id == "seedance-1-5-pro")
+        .expect("pro");
+    let audio = pro.axes.iter().find(|a| a.id == "audio").expect("audio");
+    assert!(matches!(audio.control, ControlKind::Bool { default: true }));
+    match &pro.variants {
+        Variants::BySelector { selector, map } => {
+            assert_eq!(selector, "audio");
+            assert_eq!(map["true"].model_id, "seedance-1-5-pro-with-audio");
+            assert_eq!(map["false"].model_id, "seedance-1-5-pro-no-audio");
+        }
+        _ => panic!("expected BySelector"),
+    }
+}
