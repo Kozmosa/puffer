@@ -141,10 +141,44 @@ pub struct StatusLineConfig {
 /// Configures media generation defaults shared by UI and runtime tools.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct MediaConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_media_selection")]
     pub image: Option<MediaGenerationConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_media_selection")]
     pub video: Option<MediaGenerationConfig>,
+}
+
+/// Deserializes a persisted media selection leniently: a previously persisted
+/// concrete selection (old `model_id`/`adapter`/`parameters` shape, no
+/// `logical_model_id`) is treated as absent and resets to provider defaults on
+/// first run, rather than failing the whole config load. No backward-compat
+/// shim — the old fields are simply ignored.
+fn lenient_media_selection<'de, D>(
+    deserializer: D,
+) -> Result<Option<MediaGenerationConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct Raw {
+        #[serde(default, alias = "providerId")]
+        provider_id: String,
+        #[serde(default, alias = "logicalModelId")]
+        logical_model_id: String,
+        #[serde(default)]
+        selections: BTreeMap<String, String>,
+    }
+    let raw = Option::<Raw>::deserialize(deserializer)?;
+    Ok(raw.and_then(|raw| {
+        if raw.provider_id.trim().is_empty() || raw.logical_model_id.trim().is_empty() {
+            None
+        } else {
+            Some(MediaGenerationConfig {
+                provider_id: raw.provider_id,
+                logical_model_id: raw.logical_model_id,
+                selections: raw.selections,
+            })
+        }
+    }))
 }
 
 /// Configures one default media generation selection as a logical model plus
@@ -682,6 +716,29 @@ duration = "5"
         let video = parsed.media.video.as_ref().unwrap();
         assert_eq!(video.logical_model_id, "seedance-1-5-pro");
         assert_eq!(video.selections["audio"], "true");
+    }
+
+    #[test]
+    fn old_concrete_media_config_resets_to_absent() {
+        // A previously persisted concrete selection (old model_id/adapter/
+        // parameters shape, no logical_model_id) must load as absent rather
+        // than failing the whole config.
+        let toml = r#"
+app_name = "Puffer"
+theme = "system"
+mascot = { id = "none", display_name = "None", enabled = false }
+ui = { no_alt_screen = false, tmux_golden_mode = false }
+
+[media.image]
+provider_id = "openai"
+model_id = "gpt-image-1"
+operation = "generate"
+adapter = "images_json"
+parameters = { size = "1024x1024" }
+"#;
+        let parsed: PufferConfig = toml::from_str(toml).expect("config parses");
+        assert!(parsed.media.image.is_none());
+        assert!(parsed.media.video.is_none());
     }
 
     #[test]
