@@ -49,6 +49,13 @@ description: |-
 
   Make sure to read a task's latest state using `TaskGet` before updating it.
 
+  ## Monitor Tasks
+
+  Do not mark a human-gated monitor task completed with TaskUpdate when its
+  completionPolicy.mode is "draft_then_approve" or it has a Telegram delivery
+  target. For those tasks, save a draft with MonitorReplyDraft and let Bobo ask
+  the user to approve the final send.
+
   ## Examples
 
   Mark task as in progress when starting work:

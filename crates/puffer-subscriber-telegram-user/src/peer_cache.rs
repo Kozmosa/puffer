@@ -15,7 +15,7 @@ use grammers_client::{
 };
 use grammers_tl_types as tl;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::state::SkillEnv;
 
@@ -57,6 +57,8 @@ struct TelegramPeerRecord {
     source: Option<String>,
     #[serde(default)]
     updated_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_message_at_ms: Option<i64>,
 }
 
 impl TelegramPeerCache {
@@ -88,6 +90,19 @@ impl TelegramPeerCache {
         self.observe_chat_with_avatar(chat, None, source);
     }
 
+    /// Records metadata plus the last message timestamp observed from a dialog snapshot.
+    pub(crate) fn observe_chat_with_last_message_at_ms(
+        &mut self,
+        chat: &Chat,
+        source: &str,
+        last_message_at_ms: Option<i64>,
+    ) {
+        if let Some(mut record) = record_from_chat(chat, source) {
+            record.last_message_at_ms = last_message_at_ms;
+            self.merge(record);
+        }
+    }
+
     fn observe_chat_with_avatar(&mut self, chat: &Chat, avatar: Option<String>, source: &str) {
         if let Some(mut record) = record_from_chat(chat, source) {
             record.avatar = avatar;
@@ -112,7 +127,7 @@ impl TelegramPeerCache {
         self.merge(record);
     }
 
-    fn has_avatar(&self, chat: &Chat) -> bool {
+    pub(crate) fn has_avatar(&self, chat: &Chat) -> bool {
         self.peers.iter().any(|record| {
             record.numeric_id == chat.id()
                 && record.kind == peer_kind_label(chat)
@@ -152,6 +167,15 @@ impl TelegramPeerCache {
         existing.is_bot |= candidate.is_bot;
         existing.source = candidate.source.or_else(|| existing.source.clone());
         existing.updated_at_ms = candidate.updated_at_ms;
+        if let Some(last_message_at_ms) = candidate.last_message_at_ms {
+            existing.last_message_at_ms = Some(
+                existing
+                    .last_message_at_ms
+                    .map_or(last_message_at_ms, |current| {
+                        current.max(last_message_at_ms)
+                    }),
+            );
+        }
     }
 
     fn save(&self, env: &SkillEnv) -> anyhow::Result<()> {
@@ -184,6 +208,69 @@ pub(crate) async fn hydrate_chat_avatar(
     };
     cache.observe_chat_with_avatar(chat, Some(avatar), source);
     Ok(true)
+}
+
+/// How many avatar downloads run concurrently in the deferred pass. Avatars
+/// are small thumbnails; a modest fan-out stays well under Telegram's media
+/// flood limits while collapsing hundreds of serial round-trips.
+const DEFERRED_AVATAR_FETCH_CONCURRENCY: usize = 8;
+
+/// Fetches avatars for `chats` concurrently and merges them into the durable
+/// peer cache. Runs OFF the startup-hydration critical path: avatars only
+/// feed contact-picker UI, so they must never delay live message delivery
+/// (a fresh login on a large account used to spend ~2 minutes downloading
+/// them serially before the update loop could start).
+pub(crate) async fn hydrate_chat_avatars_deferred(env: &SkillEnv, client: &Client, chats: Vec<Chat>) {
+    if chats.is_empty() {
+        return;
+    }
+    let total = chats.len();
+    let mut fetched: Vec<(Chat, String)> = Vec::new();
+    let mut chats = chats.into_iter();
+    let mut join_set = tokio::task::JoinSet::new();
+    loop {
+        while join_set.len() < DEFERRED_AVATAR_FETCH_CONCURRENCY {
+            let Some(chat) = chats.next() else { break };
+            let client = client.clone();
+            join_set.spawn(async move {
+                let avatar = fetch_chat_avatar_data_uri(&client, &chat).await;
+                (chat, avatar)
+            });
+        }
+        let Some(result) = join_set.join_next().await else {
+            break;
+        };
+        match result {
+            Ok((chat, Ok(Some(avatar)))) => fetched.push((chat, avatar)),
+            Ok((_, Ok(None))) => {}
+            Ok((chat, Err(error))) => {
+                warn!(
+                    chat = %chat.id(),
+                    %error,
+                    "failed to fetch Telegram avatar in deferred hydration"
+                );
+            }
+            Err(error) => {
+                warn!(%error, "deferred Telegram avatar fetch task failed");
+            }
+        }
+    }
+    // Reload before merging: the daemon's contact-picker hydrations may have
+    // written the cache while the downloads ran.
+    let original = TelegramPeerCache::load(env).unwrap_or_default();
+    let mut cache = original.clone();
+    for (chat, avatar) in &fetched {
+        cache.observe_chat_with_avatar(chat, Some(avatar.clone()), "dialog");
+    }
+    if let Err(error) = cache.save_if_changed(env, &original) {
+        warn!(%error, "failed to save deferred Telegram avatar hydration");
+        return;
+    }
+    info!(
+        total,
+        hydrated = fetched.len(),
+        "hydrated Telegram dialog avatars in background"
+    );
 }
 
 /// Hydrates the peer cache from Telegram's contact book response.
@@ -221,6 +308,59 @@ pub async fn hydrate_contact_book_cache(env: &SkillEnv, client: &Client) -> anyh
     let changed = cache != original;
     cache.save_if_changed(env, &original)?;
     Ok(changed)
+}
+
+/// Hydrates recent direct-user dialog metadata without starting the subscriber.
+///
+/// This is used by onboarding/contact pickers before a monitor exists. It
+/// records dialog names and last-message timestamps only; it does not mutate
+/// the delivery cursor and does not emit connector events.
+pub async fn hydrate_recent_dialog_peer_cache(
+    env: &SkillEnv,
+    client: &Client,
+    target_direct_users: usize,
+    max_dialogs: usize,
+) -> anyhow::Result<usize> {
+    let original = TelegramPeerCache::load(env).unwrap_or_default();
+    let mut cache = original.clone();
+    let target_direct_users = target_direct_users.max(1);
+    let max_dialogs = max_dialogs.max(target_direct_users);
+    let mut dialogs_seen = 0usize;
+    let mut direct_users_seen = 0usize;
+    let mut iter = client.iter_dialogs();
+    while dialogs_seen < max_dialogs && direct_users_seen < target_direct_users {
+        let dialog = match iter.next().await {
+            Ok(Some(dialog)) => dialog,
+            Ok(None) => break,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    dialogs_seen,
+                    "iter_dialogs failed during Telegram recent dialog cache hydration; saving partial state"
+                );
+                break;
+            }
+        };
+        dialogs_seen += 1;
+        let chat = dialog.chat();
+        let last_message_at_ms = dialog
+            .last_message
+            .as_ref()
+            .map(|message| message.date().timestamp_millis());
+        cache.observe_chat_with_last_message_at_ms(chat, "recent_dialog", last_message_at_ms);
+        if matches!(chat, Chat::User(user) if !user.raw.bot) && last_message_at_ms.is_some() {
+            direct_users_seen += 1;
+        }
+    }
+    cache.save_if_changed(env, &original)?;
+    info!(
+        dialogs_seen,
+        direct_users_seen,
+        target_direct_users,
+        max_dialogs,
+        "hydrated Telegram recent dialog peer cache"
+    );
+    Ok(direct_users_seen)
 }
 
 /// Resolves saved `telegram@username` contact ids into cached Telegram peers.
@@ -366,6 +506,7 @@ fn record_from_chat(chat: &Chat, source: &str) -> Option<TelegramPeerRecord> {
             is_bot: username_looks_like_bot(chat.username()),
             source: Some(source.to_string()),
             updated_at_ms: now_unix_millis(),
+            last_message_at_ms: None,
         }),
     }
 }
@@ -398,6 +539,7 @@ fn record_from_user(user: &User, saved_name: Option<String>, source: &str) -> Te
         is_bot: user.raw.bot || username_looks_like_bot(user.username()),
         source: Some(source.to_string()),
         updated_at_ms: now_unix_millis(),
+        last_message_at_ms: None,
     }
 }
 
@@ -577,6 +719,7 @@ mod tests {
             session_path: temp.path().join("state/telegram.session"),
             topic: "telegram-user".to_string(),
             workspace_config_dir: Some(workspace_config_dir),
+            live_session_path: None,
         };
 
         assert_eq!(

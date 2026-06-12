@@ -39,7 +39,7 @@ use puffer_config::{
 };
 use puffer_core::{
     command_surface, default_effort_level, dispatch_command, enter_plan_mode, execute_connect_flow,
-    execute_user_turn_streaming_with_permissions_and_cancel, provider_preference_family,
+    execute_user_turn_streaming_with_prompt_tools_and_cancel, provider_preference_family,
     supported_effort_levels, with_user_question_prompt_handler, AppState,
     BrowserPermissionPromptActionSet, BrowserPermissionPromptSource,
     BrowserPermissionPromptTargetClass, CancelToken, MessageRole, ModelPreferenceFamily,
@@ -454,6 +454,8 @@ pub(crate) struct DaemonState {
     /// window so a runaway browser checkout can't keep running once the user's
     /// app has gone away (issue #600).
     live_connections: Arc<AtomicUsize>,
+    /// Monitor reply action sessions stay source-bound across follow-up turns.
+    monitor_reply_sessions: Arc<Mutex<HashMap<String, String>>>,
 }
 
 const RECENT_EVENT_CAPACITY: usize = 500;
@@ -609,6 +611,7 @@ impl DaemonState {
             generated_video_tickets: Arc::new(Mutex::new(HashMap::new())),
             recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_EVENT_CAPACITY))),
             live_connections: Arc::new(AtomicUsize::new(0)),
+            monitor_reply_sessions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -1327,6 +1330,11 @@ async fn dispatch_request(
                 crate::daemon_contacts::handle_contacts_search(s.config_paths(), &p)
             }))
         }
+        "contacts_refresh" => {
+            respond!(detached!(|s, p| {
+                crate::daemon_contacts::handle_contacts_refresh(s.config_paths(), &p)
+            }))
+        }
         "contacts_context" => {
             respond!(detached!(|s, p| {
                 crate::daemon_contacts::handle_contacts_context(s.config_paths(), &p)
@@ -1458,6 +1466,9 @@ async fn dispatch_request(
         ),
         "monitor_task_complete" | "task_monitor_complete" => respond!(
             crate::daemon_workflows::handle_monitor_task_complete(&state.paths, &params)
+        ),
+        "monitor_reply_send" | "task_monitor_reply_send" => respond!(
+            crate::daemon_workflows::handle_monitor_reply_send(&state.paths, &params)
         ),
         "monitor_memory_save" | "task_monitor_memory_save" => respond!(
             crate::daemon_workflows::handle_monitor_memory_save(&state.paths, &params)
@@ -4397,6 +4408,251 @@ fn turn_browser_tab_context(
     }
 }
 
+const MONITOR_REPLY_ACTION_PROMPT_SCOPE: &str = "monitor-reply-action";
+const MONITOR_ACTION_PROMPT_PREFIX: &str = "Act on monitored task ";
+
+#[derive(Clone, Debug)]
+struct MonitorReplyTurnScope {
+    task_id: String,
+    session_id: String,
+    turn_id: String,
+    prompt_tool_scope: &'static str,
+}
+
+fn resolve_monitor_reply_turn_scope(
+    state: &DaemonState,
+    params: &Value,
+    message: &str,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<Option<MonitorReplyTurnScope>> {
+    let Some(prompt_task_id) = parse_monitor_action_prompt_task_id(message) else {
+        if monitor_action_task_id_param(params).is_some() {
+            anyhow::bail!("monitorActionTaskId requires a monitor action prompt");
+        }
+        return resolve_existing_monitor_reply_session_scope(state, session_id, turn_id);
+    };
+    let Some(explicit_task_id) = monitor_action_task_id_param(params) else {
+        anyhow::bail!("human-gated monitor action prompt requires matching monitorActionTaskId");
+    };
+    if explicit_task_id != prompt_task_id {
+        anyhow::bail!(
+            "monitorActionTaskId `{explicit_task_id}` does not match prompt task `{prompt_task_id}`"
+        );
+    }
+
+    let task = load_monitor_task_for_scope(&state.paths, &prompt_task_id)?;
+    if !monitor_task_is_human_gated(&task) {
+        return Ok(None);
+    }
+    if !monitor_task_has_delivery_target(&task) {
+        anyhow::bail!("monitor task `{prompt_task_id}` is missing a source delivery target");
+    }
+    state
+        .monitor_reply_sessions
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), prompt_task_id.clone());
+
+    Ok(Some(MonitorReplyTurnScope {
+        task_id: prompt_task_id,
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        prompt_tool_scope: MONITOR_REPLY_ACTION_PROMPT_SCOPE,
+    }))
+}
+
+fn resolve_existing_monitor_reply_session_scope(
+    state: &DaemonState,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<Option<MonitorReplyTurnScope>> {
+    let mut scoped_task_id = state
+        .monitor_reply_sessions
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .cloned();
+    if scoped_task_id.is_none() {
+        scoped_task_id = recover_monitor_reply_task_id_from_transcript(state, session_id)?;
+        if let Some(task_id) = &scoped_task_id {
+            state
+                .monitor_reply_sessions
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string(), task_id.clone());
+        }
+    }
+    let Some(task_id) = scoped_task_id else {
+        return Ok(None);
+    };
+
+    let task = match load_monitor_task_for_scope(&state.paths, &task_id) {
+        Ok(task) => task,
+        Err(_) => {
+            state
+                .monitor_reply_sessions
+                .lock()
+                .unwrap()
+                .remove(session_id);
+            return Ok(None);
+        }
+    };
+    if monitor_task_is_terminal(&task) || !monitor_task_is_human_gated(&task) {
+        state
+            .monitor_reply_sessions
+            .lock()
+            .unwrap()
+            .remove(session_id);
+        return Ok(None);
+    }
+    if !monitor_task_has_delivery_target(&task) {
+        anyhow::bail!("monitor task `{task_id}` is missing a source delivery target");
+    }
+
+    Ok(Some(MonitorReplyTurnScope {
+        task_id,
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        prompt_tool_scope: MONITOR_REPLY_ACTION_PROMPT_SCOPE,
+    }))
+}
+
+fn recover_monitor_reply_task_id_from_transcript(
+    state: &DaemonState,
+    session_id: &str,
+) -> Result<Option<String>> {
+    let Ok(session_uuid) = Uuid::parse_str(session_id) else {
+        return Ok(None);
+    };
+    let Ok(session_store) = SessionStore::from_paths(&state.paths) else {
+        return Ok(None);
+    };
+    let Ok(record) = session_store.load_session(session_uuid) else {
+        return Ok(None);
+    };
+
+    Ok(record.events.iter().rev().find_map(|event| {
+        let TranscriptEvent::UserMessage { text, .. } = event else {
+            return None;
+        };
+        parse_monitor_action_prompt_task_id(text)
+    }))
+}
+
+fn parse_monitor_action_prompt_task_id(message: &str) -> Option<String> {
+    let first_line = message.lines().next()?.trim();
+    let rest = first_line.strip_prefix(MONITOR_ACTION_PROMPT_PREFIX)?;
+    let task_id = rest.split_once(':').map(|(id, _)| id).unwrap_or(rest);
+    non_empty_str(task_id).map(ToString::to_string)
+}
+
+fn monitor_action_task_id_param(params: &Value) -> Option<String> {
+    params
+        .get("monitorActionTaskId")
+        .or_else(|| params.get("monitor_action_task_id"))
+        .and_then(Value::as_str)
+        .and_then(non_empty_str)
+        .map(ToString::to_string)
+}
+
+fn load_monitor_task_for_scope(paths: &ConfigPaths, task_id: &str) -> Result<Value> {
+    let path = monitor_tasks_path_for_scope(paths);
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let store: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid monitor task store {}", path.display()))?;
+    store
+        .get("tasks")
+        .and_then(Value::as_array)
+        .and_then(|tasks| {
+            tasks.iter().find(|task| {
+                task_string(task, &["task_id", "taskId", "id"]).as_deref() == Some(task_id)
+            })
+        })
+        .cloned()
+        .with_context(|| format!("monitor task `{task_id}` not found"))
+}
+
+fn monitor_tasks_path_for_scope(paths: &ConfigPaths) -> std::path::PathBuf {
+    paths
+        .workspace_config_dir
+        .join("runtime")
+        .join("claude_workflow")
+        .join("monitor_tasks.json")
+}
+
+fn monitor_task_is_human_gated(task: &Value) -> bool {
+    let Some(metadata) = task.get("metadata").and_then(Value::as_object) else {
+        return false;
+    };
+    let policy = metadata
+        .get("completion_policy")
+        .or_else(|| metadata.get("completionPolicy"));
+    let mode = policy.and_then(|policy| {
+        policy
+            .get("mode")
+            .and_then(Value::as_str)
+            .or_else(|| policy.as_str())
+    });
+    matches!(mode, Some("draft_then_approve" | "send_to_source"))
+        || policy
+            .and_then(|policy| {
+                policy
+                    .get("requires_human_approval")
+                    .or_else(|| policy.get("requiresHumanApproval"))
+                    .and_then(Value::as_bool)
+            })
+            .unwrap_or(false)
+        || monitor_task_has_delivery_target(task)
+}
+
+fn monitor_task_has_delivery_target(task: &Value) -> bool {
+    task.pointer("/metadata/source_context/delivery_target/chat_id")
+        .or_else(|| task.pointer("/metadata/sourceContext/deliveryTarget/chatId"))
+        .or_else(|| task.pointer("/metadata/sourceContext/deliveryTarget/chat_id"))
+        .or_else(|| task.pointer("/metadata/source_context/deliveryTarget/chatId"))
+        .and_then(value_to_non_empty_string)
+        .is_some()
+        || task
+            .pointer("/metadata/monitor_connector")
+            .or_else(|| task.pointer("/metadata/monitorConnector"))
+            .and_then(Value::as_str)
+            .is_some_and(|connector| connector.contains("telegram"))
+            && task
+                .pointer("/metadata/chat_id")
+                .or_else(|| task.pointer("/metadata/chatId"))
+                .and_then(value_to_non_empty_string)
+                .is_some()
+}
+
+fn monitor_task_is_terminal(task: &Value) -> bool {
+    matches!(
+        task.get("status").and_then(Value::as_str),
+        Some("completed") | Some("cancelled")
+    )
+}
+
+fn task_string(task: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| task.get(*key).and_then(Value::as_str))
+        .and_then(non_empty_str)
+        .map(ToString::to_string)
+}
+
+fn non_empty_str(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn value_to_non_empty_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => non_empty_str(value).map(ToString::to_string),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
     let session_id = params
         .get("sessionId")
@@ -4444,6 +4700,8 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
             }
         }
     };
+    let monitor_reply_scope =
+        resolve_monitor_reply_turn_scope(&state, &params, &message, &session_id, &turn_id)?;
 
     let pending: Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<PermissionPromptAction>>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -4502,6 +4760,7 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
     let turn_options_for_thread = turn_options.clone();
     let turn_mode_for_thread = turn_mode;
     let staged_attachments_for_thread = staged_attachments.clone();
+    let monitor_reply_scope_for_thread = monitor_reply_scope.clone();
     std::thread::spawn(move || {
         setup_state.publish_event(ServerEnvelope::Event {
             event: channel_thread.clone(),
@@ -4611,6 +4870,13 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
         }
         let cfg_for_turn = setup_state.config.lock().unwrap().clone();
         let mut app_state = AppState::from_session_record(cfg_for_turn.clone(), record);
+        if let Some(scope) = &monitor_reply_scope_for_thread {
+            app_state.set_monitor_reply_scope_for_turn(
+                scope.task_id.clone(),
+                scope.session_id.clone(),
+                scope.turn_id.clone(),
+            );
+        }
         // Issue #560: reconcile the model's view of the browser with the real
         // tab registry every turn, instead of letting it trust stale
         // `connected:true` tool output replayed from the transcript.
@@ -4990,12 +5256,15 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
 
         let mut auth_store = inputs.auth_store.clone();
         let outcome = with_user_question_prompt_handler(on_user_question, || {
-            execute_user_turn_streaming_with_permissions_and_cancel(
+            execute_user_turn_streaming_with_prompt_tools_and_cancel(
                 &mut app_state,
                 &inputs.resources,
                 &inputs.providers,
                 &mut auth_store,
                 &model_input,
+                monitor_reply_scope_for_thread
+                    .as_ref()
+                    .map(|scope| scope.prompt_tool_scope),
                 None,
                 &cancel,
                 on_event,
@@ -5694,6 +5963,9 @@ fn publish_sessionless_turn_error_event(
 ///     cryptic transport-level message.
 ///   * `cancelled` — agent loop bailed because `CancelToken::cancel`
 ///     fired. Mirrors the bail string `"cancelled"`.
+///   * `model_gateway_unavailable` — the OpenAI-compatible model endpoint
+///     was unreachable or reset the TCP connection before returning a
+///     response. The raw transport chain remains in `errorRaw`.
 ///   * `provider_stream_closed` — provider SSE closed before the OpenAI
 ///     Responses stream emitted `response.completed`.
 ///   * `other` — anything we haven't classified.
@@ -5701,6 +5973,21 @@ fn classify_turn_error(err: &anyhow::Error) -> (String, &'static str) {
     // anyhow walks the chain via Display when you `format!("{:#}", err)`
     let chain = format!("{err:#}");
     let lower = chain.to_ascii_lowercase();
+    if lower.contains("failed to parse sse response")
+        || lower.contains("stream closed before response.completed")
+        || lower.contains("idle timeout waiting for sse")
+    {
+        return (chain, "provider_stream_closed");
+    }
+    if is_model_gateway_transport_error(&lower) {
+        return (
+            "the model gateway is temporarily unavailable or reset the connection before \
+             responding. retry in a few seconds; if it keeps failing, check the model gateway \
+             status or switch models."
+                .to_string(),
+            "model_gateway_unavailable",
+        );
+    }
     if lower.contains("tcp connect error")
         || lower.contains("connection refused")
         || lower.contains("connect: connection refused")
@@ -5716,13 +6003,22 @@ fn classify_turn_error(err: &anyhow::Error) -> (String, &'static str) {
     if lower == "cancelled" || lower.contains(": cancelled") {
         return (chain, "cancelled");
     }
-    if lower.contains("failed to parse sse response")
-        || lower.contains("stream closed before response.completed")
-        || lower.contains("idle timeout waiting for sse")
-    {
-        return (chain, "provider_stream_closed");
-    }
     (chain, "other")
+}
+
+fn is_model_gateway_transport_error(lower: &str) -> bool {
+    let is_model_endpoint = lower.contains("/v1/responses") || lower.contains("/chat/completions");
+    if !is_model_endpoint {
+        return false;
+    }
+    lower.contains("error sending request")
+        || lower.contains("connection reset")
+        || lower.contains("connection refused")
+        || lower.contains("connect")
+        || lower.contains("dns")
+        || lower.contains("tls")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -9375,6 +9671,44 @@ models: []
         let (msg, cat) = classify_turn_error(&err);
         assert_eq!(cat, "other");
         assert!(msg.contains("HTTP 503"));
+    }
+
+    #[test]
+    fn classify_turn_error_distinguishes_model_gateway_transport_reset() {
+        use super::classify_turn_error;
+
+        let err = anyhow::anyhow!(
+            "error sending request for url \
+             (https://infer-api-test-46cc90.worldrouter.ai/v1/responses): \
+             client error (Connect): Connection reset by peer (os error 54)"
+        )
+        .context("request to https://infer-api-test-46cc90.worldrouter.ai/v1/responses failed");
+
+        let (msg, cat) = classify_turn_error(&err);
+
+        assert_eq!(cat, "model_gateway_unavailable", "{msg}");
+        assert!(msg.contains("model gateway"), "{msg}");
+        assert!(msg.contains("retry"), "{msg}");
+        assert!(!msg.contains("infer-api-test-46cc90"), "{msg}");
+        assert!(!msg.contains("os error 54"), "{msg}");
+
+        let err = anyhow::anyhow!("tcp connect error: Connection refused")
+            .context("request to https://infer-api-test-46cc90.worldrouter.ai/v1/responses failed");
+        let (msg, cat) = classify_turn_error(&err);
+        assert_eq!(cat, "model_gateway_unavailable", "{msg}");
+    }
+
+    #[test]
+    fn classify_turn_error_keeps_sse_idle_timeout_as_stream_closed() {
+        use super::classify_turn_error;
+
+        let err = anyhow::anyhow!("idle timeout waiting for sse")
+            .context("failed to parse SSE response from https://example.test/v1/responses");
+
+        let (msg, cat) = classify_turn_error(&err);
+
+        assert_eq!(cat, "provider_stream_closed", "{msg}");
+        assert!(msg.contains("idle timeout waiting for sse"), "{msg}");
     }
 
     #[test]

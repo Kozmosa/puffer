@@ -34,6 +34,7 @@ use daemon_contacts_store::{
 };
 use daemon_contacts_telegram::{
     collect_telegram_candidates, read_telegram_peer_avatars, read_telegram_peer_names,
+    recent_telegram_contacts, refresh_telegram_peer_caches,
 };
 use daemon_contacts_trace::ContactInferTrace;
 
@@ -49,12 +50,23 @@ const INFERENCE_CONTEXT_LIMIT: usize =
 const HISTORY_CANDIDATE_LIMIT: usize = 1_000;
 const DAY_MS: i128 = 86_400_000;
 
+pub(crate) fn cached_telegram_peer_avatars(paths: &ConfigPaths) -> HashMap<String, String> {
+    read_telegram_peer_avatars(paths)
+}
+
+/// Cached Telegram peer display names, keyed like the avatar map (contact-id
+/// aliases). Used to surface sender names on monitor task source contexts.
+pub(crate) fn cached_telegram_peer_names(paths: &ConfigPaths) -> HashMap<String, String> {
+    read_telegram_peer_names(paths)
+}
+
 #[derive(Debug, Clone)]
 struct Candidate {
     id: String,
     name: Option<String>,
     avatar: Option<String>,
     score: f64,
+    last_message_at_ms: Option<i128>,
     context: Vec<ContactContext>,
 }
 
@@ -129,11 +141,25 @@ pub(crate) fn handle_contacts_list(paths: &ConfigPaths, params: &Value) -> Resul
     let proposals = load_proposals(paths)?;
     let mut saved = filtered_saved_contacts(store.contacts, query);
     enrich_saved_contact_avatars(paths, &mut saved);
-    let candidates = filtered_candidates(paths, limit, query)?;
+    let (candidates, ready) = if is_recent_telegram_request(&params) {
+        let mut snapshot = recent_telegram_contacts(paths, limit)?;
+        reject_bot_candidates(&mut snapshot.candidates);
+        (
+            snapshot
+                .candidates
+                .into_iter()
+                .map(Candidate::into_preview_contact)
+                .collect(),
+            snapshot.ready,
+        )
+    } else {
+        (filtered_candidates(paths, limit, query)?, true)
+    };
     Ok(json!({
         "contacts": saved,
         "candidates": candidates,
         "proposals": proposals,
+        "ready": ready,
     }))
 }
 
@@ -157,6 +183,34 @@ pub(crate) fn handle_contacts_search(paths: &ConfigPaths, params: &Value) -> Res
         "candidates": candidates,
         "proposals": proposals,
     }))
+}
+
+/// Refreshes connector-backed contact caches and returns the current contact snapshot.
+pub(crate) fn handle_contacts_refresh(paths: &ConfigPaths, params: &Value) -> Result<Value> {
+    let parsed: ContactListParams =
+        serde_json::from_value(params.clone()).context("invalid contact refresh params")?;
+    refresh_telegram_peer_caches(paths)?;
+    let has_query = parsed
+        .query
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|query| !query.is_empty());
+    if has_query {
+        handle_contacts_search(paths, params)
+    } else {
+        handle_contacts_list(paths, params)
+    }
+}
+
+fn is_recent_telegram_request(params: &ContactListParams) -> bool {
+    params
+        .connector
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("telegram"))
+        && params
+            .sort
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("recent"))
 }
 
 /// Saves a user-curated contact and returns the refreshed contact snapshot.
@@ -556,9 +610,14 @@ fn merge_connector_contacts(
             name: contact.name.clone().or_else(|| Some(id.clone())),
             avatar: contact.avatar.clone(),
             score: 0.0,
+            last_message_at_ms: contact.last_message_at_ms,
             context: Vec::new(),
         });
         entry.score += contact.score.max(0.01);
+        merge_candidate_last_message_at_ms(
+            &mut entry.last_message_at_ms,
+            contact.last_message_at_ms,
+        );
         if entry.name.is_none() {
             entry.name = contact.name;
         }
@@ -635,9 +694,11 @@ fn merge_history_candidate_run(
             name: candidate_name.clone().or_else(|| Some(id.clone())),
             avatar: candidate_avatar.clone(),
             score: 0.0,
+            last_message_at_ms: timestamp_ms,
             context: Vec::new(),
         });
         merge_candidate_name(&mut entry.name, candidate_name.as_deref());
+        merge_candidate_last_message_at_ms(&mut entry.last_message_at_ms, timestamp_ms);
         if entry.avatar.is_none() {
             entry.avatar = candidate_avatar;
         }
@@ -751,10 +812,32 @@ fn candidate_name_is_more_complete(existing: Option<&str>, candidate: &str) -> b
     let Some(existing) = existing.map(str::trim).filter(|value| !value.is_empty()) else {
         return true;
     };
+    let existing_is_contact_id = name_looks_like_contact_id(existing);
+    let candidate_is_contact_id = name_looks_like_contact_id(candidate);
+    if existing_is_contact_id != candidate_is_contact_id {
+        return existing_is_contact_id && !candidate_is_contact_id;
+    }
     let existing_parts = existing.split_whitespace().count();
     let candidate_parts = candidate.split_whitespace().count();
     candidate_parts > existing_parts
         || (candidate_parts == existing_parts && candidate.len() > existing.len())
+}
+
+fn merge_candidate_last_message_at_ms(existing: &mut Option<i128>, candidate: Option<i128>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    *existing = Some(existing.map_or(candidate, |current| current.max(candidate)));
+}
+
+fn name_looks_like_contact_id(name: &str) -> bool {
+    let value = name.trim().to_ascii_lowercase();
+    value.starts_with("telegram@")
+        || value.starts_with("telegram-user-id@")
+        || value.starts_with("google@")
+        || value.starts_with("gmail@")
+        || value.starts_with("lark@")
+        || value.starts_with("slack@")
 }
 
 fn reject_bot_candidates(candidates: &mut Vec<Candidate>) {
@@ -762,11 +845,15 @@ fn reject_bot_candidates(candidates: &mut Vec<Candidate>) {
 }
 
 fn candidate_has_enriched_telegram_context(candidate: &Candidate) -> bool {
-    candidate.id.starts_with("telegram@")
+    is_telegram_contact_id(&candidate.id)
         && candidate
             .context
             .iter()
             .any(|context| context.kind.starts_with("telegram_"))
+}
+
+fn is_telegram_contact_id(id: &str) -> bool {
+    id.starts_with("telegram@") || id.starts_with("telegram-user-id@")
 }
 
 fn candidate_is_bot_like(candidate: &Candidate) -> bool {
@@ -830,7 +917,7 @@ fn contact_contexts(
     let mut enriched_ids = HashSet::new();
     for candidate in ranked_candidates(paths, CandidateContextOptions::full())? {
         if wanted.is_empty() || wanted.contains(&candidate.id) {
-            let cap = if candidate.id.starts_with("telegram@") {
+            let cap = if is_telegram_contact_id(&candidate.id) {
                 TELEGRAM_CONTEXT_LIMIT.min(limit)
             } else {
                 GOOGLE_CONTEXT_LIMIT.min(limit)
@@ -956,6 +1043,7 @@ impl Candidate {
             name: self.name,
             context: self.context,
             score: self.score,
+            last_message_at_ms: self.last_message_at_ms,
         }
     }
 
@@ -966,6 +1054,7 @@ impl Candidate {
             name: self.name,
             context: Vec::new(),
             score: self.score,
+            last_message_at_ms: self.last_message_at_ms,
         }
     }
 }

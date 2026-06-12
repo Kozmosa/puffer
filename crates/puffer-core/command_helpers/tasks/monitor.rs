@@ -81,9 +81,11 @@ pub(super) fn action_prompt(
     subject: &str,
     description: &str,
     action: &MonitorTaskAction,
+    metadata: &Map<String, Value>,
 ) -> String {
     format!(
-        "Act on monitored task {task_id}: {subject}\n\nTask description:\n{description}\n\nSelected action: {}\n\n{}\n\nWhen the action is fully handled, update task {task_id} with TaskUpdate status=completed. If you need more context, inspect the connector or ask the user.",
+        "Act on monitored task {task_id}: {subject}\n\nTask description:\n{description}\n\n{}\n\nSelected action: {}\n\n{}\n\nAction execution guardrails:\n- Use the task description and source context first; do not inspect Telegram history or connector state unless the task payload is missing information required to act.\n- Use the same language as the source message's primary language for any drafted reply or generated reply text.\n- If the source message is mixed-language and you cannot identify a primary language, use the user's preferred language or owner language from available profile/context. If no user language is available, preserve the source's dominant actionable language and do not default to English only because this prompt is English.\n- English source messages follow the same source-primary-language rule: English source messages should receive English reply drafts.\n- Preserve explicit product names, person names, company names, file names, commands, URLs, quoted text, and domain terms exactly; translate only surrounding explanatory prose.\n- Treat source context as the authoritative delivery target. Do not infer the recipient from task text, previous messages, or Telegram search results.\n- If a reply is required, call MonitorReplyDraft with taskId `{task_id}` and the final message for human review. Do not call MonitorReplySend or ConnectorAct directly for monitor-task replies.\n- For Telegram reply drafts, optimize for mobile readability: for longer or multi-part replies, prefer 2-4 short paragraphs or bullet points instead of one dense paragraph.\n- Put a blank line between paragraphs when splitting. Aim for one or two sentences per paragraph.\n- Avoid markdown tables or heavy formatting; use plain Telegram-readable text.\n- If this action requires research, use at most 3 web searches and 8 total research/tool steps. Make one focused search plan, reuse results you already opened, and do not repeat equivalent searches.\n\nWhen the action is ready, save the draft for task {task_id}; Bobo will ask the user to approve before anything is sent. If you need more context, inspect the connector or ask the user.",
+        source_context_section(metadata),
         action.name,
         action.prompt
     )
@@ -117,6 +119,47 @@ pub(super) fn parse_ignore_args(args: &str) -> Option<(String, Option<String>)> 
         .replace('\n', " ")
         .replace('\r', " ");
     Some((task_id.to_string(), (!reason.is_empty()).then_some(reason)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_prompt_instructs_reply_drafts_to_follow_source_language() {
+        let prompt = action_prompt(
+            "monitor-1",
+            "Telegram: 确认上线风险清单",
+            "对方要求今天 16:00 前给出风险清单。",
+            &MonitorTaskAction {
+                name: "Draft reply".to_string(),
+                prompt: "Prepare a concise response.".to_string(),
+            },
+            &Map::new(),
+        );
+
+        assert!(prompt.contains("Use the same language as the source message's primary language"));
+        assert!(prompt.contains("If the source message is mixed-language"));
+        assert!(prompt.contains("English source messages"));
+        assert!(prompt.contains("Preserve explicit product names"));
+        assert!(prompt.contains("prefer 2-4 short paragraphs"));
+        assert!(prompt.contains("Put a blank line between paragraphs"));
+    }
+
+    #[test]
+    fn scoped_monitor_reply_prompt_instructs_source_language() {
+        let prompt = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../resources/prompts/monitor-reply-action.yaml"
+        ));
+
+        assert!(prompt.contains("Use the same language as the source message's primary language"));
+        assert!(prompt.contains("If the source message is mixed-language"));
+        assert!(prompt.contains("English source messages"));
+        assert!(prompt.contains("Preserve explicit product names"));
+        assert!(prompt.contains("prefer 2-4 short paragraphs"));
+        assert!(prompt.contains("Put a blank line between paragraphs"));
+    }
 }
 
 pub(super) fn ignore_task(
@@ -260,10 +303,64 @@ fn action_value(metadata: &Map<String, Value>) -> Option<&Value> {
     })
 }
 
+fn source_context_section(metadata: &Map<String, Value>) -> String {
+    let Some(context) = metadata
+        .get("source_context")
+        .or_else(|| metadata.get("sourceContext"))
+        .and_then(Value::as_object)
+    else {
+        return "Source context:\n- Not provided. If a reply is required, ask the user before choosing a recipient.".to_string();
+    };
+    let mut lines = vec!["Source context:".to_string()];
+    if let Some(summary) = string_field_from_map(context, &["summary"]) {
+        lines.push(format!("- {summary}"));
+    }
+    let connection_slug = string_field_from_map(context, &["connection_slug", "connectionSlug"]);
+    let connector_slug = string_field_from_map(context, &["connector_slug", "connectorSlug"]);
+    if connection_slug.is_some() || connector_slug.is_some() {
+        lines.push(format!(
+            "- Connection: {}{}",
+            connection_slug.unwrap_or_else(|| "unknown".to_string()),
+            connector_slug
+                .map(|slug| format!(" ({slug})"))
+                .unwrap_or_default()
+        ));
+    }
+    let delivery_target = context
+        .get("delivery_target")
+        .or_else(|| context.get("deliveryTarget"))
+        .and_then(Value::as_object);
+    if let Some(delivery_target) = delivery_target {
+        let kind = string_field_from_map(delivery_target, &["type"])
+            .unwrap_or_else(|| "telegram_chat".to_string());
+        let chat_id = string_field_from_map(delivery_target, &["chat_id", "chatId"]);
+        lines.push(format!(
+            "- Delivery target: {kind}{}",
+            chat_id
+                .map(|value| format!(" chat_id={value}"))
+                .unwrap_or_default()
+        ));
+    }
+    lines.push(
+        "- Use this source context as the only authorized reply target for this monitor task."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
 fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+    value
+        .as_object()
+        .and_then(|object| string_field_from_map(object, keys))
+}
+
+fn string_field_from_map(value: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| match value.get(*key) {
+        Some(Value::String(value)) => {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    })
 }
