@@ -370,6 +370,7 @@ mod tests {
                         base_url: Some(base_url),
                         path: "/v1/image_generation".to_string(),
                         batch,
+                        prompt_format: Default::default(),
                     }),
                     models: vec![MediaModelDescriptor {
                         id: "image-01".to_string(),

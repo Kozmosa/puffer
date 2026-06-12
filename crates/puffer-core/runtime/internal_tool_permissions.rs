@@ -534,6 +534,7 @@ mod tests {
                         base_url: None,
                         path: "/custom/images".to_string(),
                         batch: Default::default(),
+                        prompt_format: Default::default(),
                     }),
                     models: vec![MediaModelDescriptor {
                         id: "exact-image-model".to_string(),

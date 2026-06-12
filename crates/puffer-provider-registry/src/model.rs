@@ -354,6 +354,9 @@ pub struct MediaExecutionDescriptor {
     /// Describes how requested image counts are split into provider calls.
     #[serde(default)]
     pub batch: MediaBatchDescriptor,
+    /// Controls how the prompt is serialized in video generation requests.
+    #[serde(default)]
+    pub prompt_format: VideoPromptFormat,
 }
 
 /// Describes how an image execution endpoint handles multi-image requests.
@@ -381,6 +384,17 @@ impl Default for MediaBatchDescriptor {
 pub enum MediaBatchMode {
     PerImage,
     Exact,
+}
+
+/// Controls how the text prompt is serialized in the video generation request body.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoPromptFormat {
+    /// Sends `"prompt": "<text>"` with `"n": 1` — default for Relaydance and most providers.
+    #[default]
+    Prompt,
+    /// Sends `"content": [{"type": "text", "text": "<text>"}]` — required by WorldRouter.
+    ContentArray,
 }
 
 /// Describes one logical media model: its user-facing axes and the concrete

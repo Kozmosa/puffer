@@ -59,6 +59,7 @@ fn registry_with_provider_parameters_and_batch(
                     base_url: None,
                     path: "/custom/images".to_string(),
                     batch,
+                    prompt_format: Default::default(),
                 }),
                 models: vec![MediaModelDescriptor {
                     id: "exact-image-model".to_string(),

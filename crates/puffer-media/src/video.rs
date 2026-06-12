@@ -22,7 +22,7 @@ use crate::runtime::{
     ExactMediaDiscoveryCache, ExactMediaGenerationRequest, ExactMediaGenerationResult,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use puffer_provider_registry::{AuthStore, ProviderRegistry};
+use puffer_provider_registry::{AuthStore, ProviderRegistry, VideoPromptFormat};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -102,16 +102,17 @@ fn build_relaydance_adapter(
     provider_id: &str,
     model_id: &str,
     adapter: &str,
-) -> Result<(RelaydanceVideoAdapter, Vec<String>)> {
+) -> Result<(RelaydanceVideoAdapter, VideoPromptFormat, Vec<String>)> {
     let (provider, execution) =
         resolve_video_execution_descriptor(registry, provider_id, model_id, adapter)?;
     let api_key = bearer_token(provider, auth_store, CredentialAliasMode::Strict)?
         .context("Relaydance API key is required")?;
     let secrets = provider_error_secrets(provider, auth_store, CredentialAliasMode::Strict);
     let submit_url = provider_execution_url(provider, &execution, "video task")?;
+    let prompt_format = execution.prompt_format;
     let built =
         RelaydanceVideoAdapter::new(api_key, submit_url.to_string(), provider_id.to_string())?;
-    Ok((built, secrets))
+    Ok((built, prompt_format, secrets))
 }
 
 /// Resolves provider + execution + token and constructs a BytePlus video
@@ -155,7 +156,7 @@ fn reclaim_orphaned_video_jobs(
         }
         match job.adapter.as_deref() {
             Some(RELAYDANCE_VIDEO_ADAPTER) => {
-                if let Ok((adapter, _secrets)) = build_relaydance_adapter(
+                if let Ok((adapter, _format, _secrets)) = build_relaydance_adapter(
                     registry,
                     auth_store,
                     &job.provider_id,
@@ -190,7 +191,7 @@ fn generate_relaydance_video(
 ) -> Result<ExactMediaGenerationResult> {
     reject_unsupported_video_image_references(&request.provider_id, &request.image_references)?;
     let service = MediaGenerationService::new(workspace_root);
-    let (adapter, secrets) = build_relaydance_adapter(
+    let (adapter, prompt_format, secrets) = build_relaydance_adapter(
         registry,
         auth_store,
         &request.provider_id,
@@ -201,6 +202,7 @@ fn generate_relaydance_video(
         resolved.model_id.clone(),
         request.prompt.clone(),
         &resolved.parameters,
+        prompt_format,
     )?;
     let job = adapter
         .submit(

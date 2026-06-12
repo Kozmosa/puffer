@@ -323,6 +323,7 @@ mod tests {
                         base_url: None,
                         path: "/v1/video/generations".to_string(),
                         batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                        prompt_format: Default::default(),
                     }),
                     models: vec![MediaModelDescriptor {
                         id: "doubao-seedance-2-0-720p".to_string(),

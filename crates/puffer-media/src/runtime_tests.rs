@@ -73,6 +73,7 @@ fn minimax_registry(base_url: String) -> ProviderRegistry {
                     base_url: Some(base_url),
                     path: "/v1/image_generation".to_string(),
                     batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                    prompt_format: Default::default(),
                 }),
                 models: vec![MediaModelDescriptor {
                     id: "image-01".to_string(),
@@ -138,6 +139,7 @@ fn chat_router_registry(base_url: String) -> ProviderRegistry {
                     base_url: None,
                     path: "/chat/completions".to_string(),
                     batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                    prompt_format: Default::default(),
                 }),
                 models: Vec::new(),
             }),
@@ -168,6 +170,7 @@ fn byteplus_seedream_registry(base_url: String) -> ProviderRegistry {
                     base_url: None,
                     path: "/images/generations".to_string(),
                     batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                    prompt_format: Default::default(),
                 }),
                 models: vec![MediaModelDescriptor {
                     id: "seedream-4-5-251128".to_string(),
@@ -246,6 +249,7 @@ fn replicate_video_registry() -> ProviderRegistry {
                     base_url: None,
                     path: "/v1/predictions".to_string(),
                     batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                    prompt_format: Default::default(),
                 }),
                 models: vec![MediaModelDescriptor {
                     id: "owner/model-version".to_string(),

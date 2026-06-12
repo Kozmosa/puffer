@@ -430,6 +430,7 @@ mod tests {
                         base_url: None,
                         path: "/chat/completions".to_string(),
                         batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                        prompt_format: Default::default(),
                     }),
                     models: vec![MediaModelDescriptor {
                         id: "openrouter/image-chat".to_string(),

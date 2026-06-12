@@ -21,6 +21,6 @@ pub use model::{
     MediaModelDescriptor, MediaOperation, Modality, ModelCompat, ModelCost, ModelDescriptor,
     ModelDiscoveryConfig, ModelDiscoveryFormat, OpenAiCompletionsCompat, OpenAiResponsesCompat,
     ProviderDescriptor, ProviderMediaDescriptor, ProviderSource, ProviderSourceKind,
-    RegisteredProvider, ResponsesPath, ThinkingFormat,
+    RegisteredProvider, ResponsesPath, ThinkingFormat, VideoPromptFormat,
 };
 pub use registry::{canonical_provider_id, ProviderRegistry};

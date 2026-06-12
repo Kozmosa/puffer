@@ -348,6 +348,7 @@ mod tests {
                         base_url: None,
                         path: "/custom/images".to_string(),
                         batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                        prompt_format: Default::default(),
                     }),
                     models: vec![MediaModelDescriptor {
                         id: "exact-image-model".to_string(),

@@ -309,6 +309,7 @@ mod tests {
                         base_url: None,
                         path: "/chat/completions".to_string(),
                         batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+                        prompt_format: Default::default(),
                     }),
                     models: Vec::new(),
                 }),
@@ -413,6 +414,7 @@ mod tests {
             base_url: None,
             path: "/images/generations".to_string(),
             batch: puffer_provider_registry::MediaBatchDescriptor::default(),
+            prompt_format: Default::default(),
         });
 
         assert!(!TrustedImageDiscoveryClient::new()

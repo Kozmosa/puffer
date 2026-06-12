@@ -4,6 +4,7 @@ use super::video_jobs::{
 };
 use super::{MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
 use anyhow::{anyhow, bail, Context, Result};
+use puffer_provider_registry::VideoPromptFormat;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -18,6 +19,7 @@ pub(crate) struct RelaydanceVideoRequest {
     /// Ordered (request_field, value) pairs. A `request_field` of `metadata.<k>`
     /// is nested under the body's `metadata` object; otherwise it is top-level.
     pub(crate) params: Vec<(String, String)>,
+    pub(crate) prompt_format: VideoPromptFormat,
 }
 
 const METADATA_PREFIX: &str = "metadata.";
@@ -33,12 +35,22 @@ impl RelaydanceVideoRequest {
         Ok(())
     }
 
-    /// Builds the `POST /v1/video/generations` request body.
+    /// Builds the video generation request body.
     pub(crate) fn request_body(&self) -> Value {
         let mut body = Map::new();
         body.insert("model".to_string(), json!(self.model.trim()));
-        body.insert("prompt".to_string(), json!(self.prompt.trim()));
-        body.insert("n".to_string(), json!(1));
+        match self.prompt_format {
+            VideoPromptFormat::ContentArray => {
+                body.insert(
+                    "content".to_string(),
+                    json!([{"type": "text", "text": self.prompt.trim()}]),
+                );
+            }
+            VideoPromptFormat::Prompt => {
+                body.insert("prompt".to_string(), json!(self.prompt.trim()));
+                body.insert("n".to_string(), json!(1));
+            }
+        }
 
         let mut metadata = Map::new();
         for (field, value) in &self.params {
@@ -63,12 +75,14 @@ pub(crate) fn relaydance_video_request_from_parameters(
     model_id: String,
     prompt: String,
     parameters: &BTreeMap<String, String>,
+    prompt_format: VideoPromptFormat,
 ) -> Result<RelaydanceVideoRequest> {
     let params = parameters.clone().into_iter().collect();
     let request = RelaydanceVideoRequest {
         model: model_id,
         prompt,
         params,
+        prompt_format,
     };
     request.validate()?;
     Ok(request)
@@ -236,6 +250,11 @@ fn relaydance_video_url(value: &Value) -> Option<String> {
         .or_else(|| value.get("url"))
         .or_else(|| value.get("video_url"))
         .or_else(|| value.get("result_url"))
+        .or_else(|| {
+            value
+                .get("content")
+                .and_then(|content| content.get("video_url"))
+        })
         .or_else(|| {
             value
                 .get("data")
@@ -504,6 +523,7 @@ mod tests {
                 ("metadata.resolution", "1080p"),
                 ("metadata.ratio", "16:9"),
             ]),
+            Default::default(),
         )
         .expect("request");
 
@@ -522,6 +542,7 @@ mod tests {
             "m".to_string(),
             "a cat".to_string(),
             &params(&[("seconds", "5")]),
+            Default::default(),
         )
         .expect("request");
         let body = request.request_body();
@@ -534,6 +555,7 @@ mod tests {
             "grok-imagine-video".to_string(),
             "a city skyline".to_string(),
             &BTreeMap::new(),
+            Default::default(),
         )
         .expect("request");
 
@@ -546,11 +568,31 @@ mod tests {
     }
 
     #[test]
+    fn builds_content_array_request_for_worldrouter_format() {
+        let request = relaydance_video_request_from_parameters(
+            "seedance-2.0".to_string(),
+            "a sunset".to_string(),
+            &params(&[("resolution", "720p"), ("duration", "5")]),
+            VideoPromptFormat::ContentArray,
+        )
+        .expect("request");
+
+        let body = request.request_body();
+        assert_eq!(body["model"], json!("seedance-2.0"));
+        assert_eq!(body["content"], json!([{"type": "text", "text": "a sunset"}]));
+        assert!(body.get("prompt").is_none());
+        assert!(body.get("n").is_none());
+        assert_eq!(body["resolution"], json!("720p"));
+        assert_eq!(body["duration"], json!("5"));
+    }
+
+    #[test]
     fn rejects_empty_prompt() {
         let error = relaydance_video_request_from_parameters(
             "m".to_string(),
             "   ".to_string(),
             &BTreeMap::new(),
+            Default::default(),
         )
         .unwrap_err()
         .to_string();
@@ -684,6 +726,7 @@ mod tests {
             model: "m".into(),
             prompt: "a cat".into(),
             params: vec![],
+            prompt_format: Default::default(),
         };
         let job = adapter
             .submit(&service, request, BTreeMap::new(), 1)
@@ -753,6 +796,7 @@ mod tests {
             model: "m".into(),
             prompt: "a cat".into(),
             params: vec![],
+            prompt_format: Default::default(),
         };
         let selected = BTreeMap::from([
             ("duration_seconds".to_string(), "5".to_string()),
@@ -787,6 +831,7 @@ mod tests {
             model: "seedance-nsfw".into(),
             prompt: "a fleet battle".into(),
             params: vec![],
+            prompt_format: Default::default(),
         };
         let job = adapter
             .submit(&service, request, BTreeMap::new(), 1)
@@ -827,6 +872,7 @@ mod tests {
             model: "m".into(),
             prompt: "a cat".into(),
             params: vec![],
+            prompt_format: Default::default(),
         };
         let job = adapter
             .submit(&service, request, BTreeMap::new(), 1)
