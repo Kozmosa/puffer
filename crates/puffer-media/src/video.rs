@@ -13,6 +13,10 @@ use crate::media::relaydance_video::{
 use crate::media::replicate_video::{
     ReplicatePollingConfig, ReplicateVideoAdapter, ReplicateVideoRequest,
 };
+use crate::media::worldrouter_video::{
+    WorldRouterVideoAdapter, WorldRouterVideoPollingConfig, WorldRouterVideoRequest,
+    WORLDROUTER_VIDEO_ADAPTER,
+};
 use crate::media::resolver::{
     resolve_media_request, resolve_video_execution_descriptor, ResolvedMediaRequest,
 };
@@ -60,6 +64,9 @@ pub(super) fn generate_exact_video_from_media_request(
         }
         "byteplus_video" => {
             generate_byteplus_video(registry, auth_store, workspace_root, &request, &resolved)
+        }
+        "worldrouter_video" => {
+            generate_worldrouter_video(registry, auth_store, workspace_root, &request, &resolved)
         }
         adapter => bail!("video media adapter unavailable for {adapter}"),
     }
@@ -136,6 +143,27 @@ fn build_byteplus_adapter(
     Ok((built, secrets))
 }
 
+/// Resolves provider + execution + token and constructs a WorldRouter video
+/// adapter, returning it alongside the secrets to redact from error strings.
+/// Shared by generation and orphan reclaim.
+fn build_worldrouter_adapter(
+    registry: &ProviderRegistry,
+    auth_store: &AuthStore,
+    provider_id: &str,
+    model_id: &str,
+    adapter: &str,
+) -> Result<(WorldRouterVideoAdapter, Vec<String>)> {
+    let (provider, execution) =
+        resolve_video_execution_descriptor(registry, provider_id, model_id, adapter)?;
+    let api_key = bearer_token(provider, auth_store, CredentialAliasMode::Strict)?
+        .context("WorldRouter API key is required")?;
+    let secrets = provider_error_secrets(provider, auth_store, CredentialAliasMode::Strict);
+    let submit_url = provider_execution_url(provider, &execution, "video task")?;
+    let built =
+        WorldRouterVideoAdapter::new(api_key, submit_url.to_string(), provider_id.to_string())?;
+    Ok((built, secrets))
+}
+
 /// Best-effort: poll each non-terminal async video job once so orphaned tasks
 /// (e.g. the app died mid-render) get reclaimed on the next generation. Never
 /// propagates errors — a missing token or offline provider must not block the
@@ -173,6 +201,17 @@ fn reclaim_orphaned_video_jobs(
                     &job.provider_id,
                     &job.model_id,
                     BYTEPLUS_VIDEO_ADAPTER,
+                ) {
+                    let _ = adapter.poll(&service, job, now_ms());
+                }
+            }
+            Some(WORLDROUTER_VIDEO_ADAPTER) => {
+                if let Ok((adapter, _secrets)) = build_worldrouter_adapter(
+                    registry,
+                    auth_store,
+                    &job.provider_id,
+                    &job.model_id,
+                    WORLDROUTER_VIDEO_ADAPTER,
                 ) {
                     let _ = adapter.poll(&service, job, now_ms());
                 }
@@ -259,6 +298,42 @@ fn generate_byteplus_video(
             &service,
             job,
             BytePlusVideoPollingConfig::default(),
+            std::thread::sleep,
+            now_ms,
+        )
+        .map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
+    finish_exact_video_job(&service, job)
+}
+
+fn generate_worldrouter_video(
+    registry: &ProviderRegistry,
+    auth_store: &AuthStore,
+    workspace_root: &Path,
+    request: &ExactMediaGenerationRequest,
+    resolved: &ResolvedMediaRequest,
+) -> Result<ExactMediaGenerationResult> {
+    let service = MediaGenerationService::new(workspace_root);
+    let (adapter, secrets) = build_worldrouter_adapter(
+        registry,
+        auth_store,
+        &request.provider_id,
+        &resolved.model_id,
+        &resolved.adapter,
+    )?;
+    let video_request = WorldRouterVideoRequest {
+        model: resolved.model_id.clone(),
+        prompt: request.prompt.clone(),
+        image_references: request.image_references.clone(),
+        params: resolved.parameters.clone(),
+    };
+    let job = adapter
+        .submit(&service, video_request, resolved.parameters.clone(), now_ms())
+        .map_err(|error| anyhow!("{}", redact_secrets(&error.to_string(), &secrets)))?;
+    let job = adapter
+        .poll_until_terminal(
+            &service,
+            job,
+            WorldRouterVideoPollingConfig::default(),
             std::thread::sleep,
             now_ms,
         )
