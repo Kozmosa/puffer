@@ -39,8 +39,10 @@ to `.puffer/media/images|videos/` — you only reference them, never relocate th
    - If present, use those URLs directly as `--image-reference` in stage 4. Do NOT
      generate images.
    - If absent and the user wants character-consistent shots, generate each character
-     once with `imagegen --prompt "<character sheet>" --count 1`. Read the tool result's
-     `remoteSourceUrl` for that artifact (same key the video tool already uses):
+     once with `imagegen --prompt "<character sheet>" --count 1`. Make the character art
+     stylized / non-photorealistic (cartoon, 3D render, illustration): image-to-video
+     providers (e.g. BytePlus) reject photoreal real-person images on moderation. Read
+     the tool result's `remoteSourceUrl` for that artifact (same key the video tool uses):
        - If `remoteSourceUrl` is present, use it as `--image-reference` in stage 4.
        - If `remoteSourceUrl` is absent, stop and report that the configured image
          provider does not produce a referenceable URL, so image-to-video is unavailable.
