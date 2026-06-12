@@ -56,9 +56,10 @@ pub(super) fn send_input(
             code,
             text,
             modifiers,
+            commands,
         } => (
             "Input.dispatchKeyEvent",
-            key_event_params(event_type, key, code, text, modifiers),
+            key_event_params(event_type, key, code, text, modifiers, commands),
         ),
         BrowserInputEvent::Text { text } => ("Input.insertText", json!({ "text": text })),
     };
@@ -71,6 +72,7 @@ fn key_event_params(
     code: String,
     text: Option<String>,
     modifiers: u32,
+    commands: Vec<String>,
 ) -> Value {
     let key = normalized_key_value(&key);
     let code = normalized_code_value(&key, &code);
@@ -105,6 +107,9 @@ fn key_event_params(
     if let Some(text) = event_text.filter(|value| !value.is_empty()) {
         params.insert("text".to_string(), json!(text));
         params.insert("unmodifiedText".to_string(), json!(text));
+    }
+    if !commands.is_empty() {
+        params.insert("commands".to_string(), json!(commands));
     }
     Value::Object(params)
 }
@@ -299,6 +304,21 @@ mod tests {
     use super::key_event_params;
 
     #[test]
+    fn editing_commands_are_forwarded_to_cdp() {
+        let params = key_event_params(
+            "rawKeyDown".to_string(),
+            "a".to_string(),
+            "KeyA".to_string(),
+            None,
+            4,
+            vec!["selectAll".to_string()],
+        );
+
+        assert_eq!(params["commands"], serde_json::json!(["selectAll"]));
+        assert_eq!(params["modifiers"], 4);
+    }
+
+    #[test]
     fn enter_key_event_includes_virtual_key_and_carriage_return() {
         let params = key_event_params(
             "rawKeyDown".to_string(),
@@ -306,6 +326,7 @@ mod tests {
             "Enter".to_string(),
             None,
             0,
+            Vec::new(),
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 13);
@@ -323,6 +344,7 @@ mod tests {
             "Backspace".to_string(),
             None,
             0,
+            Vec::new(),
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 8);
@@ -340,6 +362,7 @@ mod tests {
             "KeyA".to_string(),
             Some("a".to_string()),
             0,
+            Vec::new(),
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 65);
@@ -357,6 +380,7 @@ mod tests {
             "Enter".to_string(),
             None,
             0,
+            Vec::new(),
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 13);
@@ -373,6 +397,7 @@ mod tests {
             "Space".to_string(),
             None,
             0,
+            Vec::new(),
         );
 
         assert_eq!(params["key"], " ");
@@ -391,6 +416,7 @@ mod tests {
             "Semicolon".to_string(),
             Some(":".to_string()),
             8,
+            Vec::new(),
         );
 
         assert_eq!(params["code"], "Semicolon");
@@ -408,6 +434,7 @@ mod tests {
             "?".to_string(),
             Some("?".to_string()),
             8,
+            Vec::new(),
         );
 
         assert_eq!(params["code"], "Slash");
@@ -424,6 +451,7 @@ mod tests {
             "ShiftRight".to_string(),
             None,
             8,
+            Vec::new(),
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 16);
