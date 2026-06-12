@@ -92,8 +92,12 @@ fn key_event_params(
             .and_then(Value::as_str)
             .unwrap_or_default(),
     ) {
+        // Only emit windowsVirtualKeyCode (drives the web-visible DOM keyCode/which).
+        // Deliberately omit nativeVirtualKeyCode: setting native_key_code makes Chromium
+        // synthesize a real macOS NSEvent (NativeInputEventBuilder), which can wedge CDP via
+        // an OS-level key-autorepeat storm (agentenv#636). Dropping it keeps dispatch on the
+        // renderer-only path while leaving page-side key handling unaffected.
         params.insert("windowsVirtualKeyCode".to_string(), json!(key_code));
-        params.insert("nativeVirtualKeyCode".to_string(), json!(key_code));
     }
     params.insert(
         "location".to_string(),
@@ -330,7 +334,7 @@ mod tests {
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 13);
-        assert_eq!(params["nativeVirtualKeyCode"], 13);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["location"], 0);
         assert_eq!(params["text"], "\r");
         assert_eq!(params["unmodifiedText"], "\r");
@@ -348,7 +352,7 @@ mod tests {
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 8);
-        assert_eq!(params["nativeVirtualKeyCode"], 8);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["location"], 0);
         assert!(params.get("text").is_none());
         assert!(params.get("unmodifiedText").is_none());
@@ -366,7 +370,7 @@ mod tests {
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 65);
-        assert_eq!(params["nativeVirtualKeyCode"], 65);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["location"], 0);
         assert_eq!(params["text"], "a");
         assert_eq!(params["unmodifiedText"], "a");
@@ -384,7 +388,7 @@ mod tests {
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 13);
-        assert_eq!(params["nativeVirtualKeyCode"], 13);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert!(params.get("text").is_none());
         assert!(params.get("unmodifiedText").is_none());
     }
@@ -403,7 +407,7 @@ mod tests {
         assert_eq!(params["key"], " ");
         assert_eq!(params["code"], "Space");
         assert_eq!(params["windowsVirtualKeyCode"], 32);
-        assert_eq!(params["nativeVirtualKeyCode"], 32);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["text"], " ");
         assert_eq!(params["unmodifiedText"], " ");
     }
@@ -421,7 +425,7 @@ mod tests {
 
         assert_eq!(params["code"], "Semicolon");
         assert_eq!(params["windowsVirtualKeyCode"], 186);
-        assert_eq!(params["nativeVirtualKeyCode"], 186);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["location"], 0);
         assert_eq!(params["text"], ":");
     }
@@ -439,7 +443,7 @@ mod tests {
 
         assert_eq!(params["code"], "Slash");
         assert_eq!(params["windowsVirtualKeyCode"], 191);
-        assert_eq!(params["nativeVirtualKeyCode"], 191);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["text"], "?");
     }
 
@@ -455,8 +459,35 @@ mod tests {
         );
 
         assert_eq!(params["windowsVirtualKeyCode"], 16);
-        assert_eq!(params["nativeVirtualKeyCode"], 16);
+        assert!(params.get("nativeVirtualKeyCode").is_none());
         assert_eq!(params["location"], 2);
         assert!(params.get("text").is_none());
+    }
+
+    #[test]
+    fn native_virtual_key_code_is_omitted_to_avoid_macos_autorepeat_storm() {
+        // Regression guard for agentenv#636: emitting nativeVirtualKeyCode sets
+        // native_key_code, making Chromium build a real macOS NSEvent that can trigger
+        // an OS-level key-autorepeat storm wedging CDP. We must keep windowsVirtualKeyCode
+        // (drives the web-visible DOM keyCode) but never emit nativeVirtualKeyCode.
+        for (key, code) in [("Enter", "Enter"), ("a", "KeyA"), ("Shift", "ShiftLeft")] {
+            let params = key_event_params(
+                "rawKeyDown".to_string(),
+                key.to_string(),
+                code.to_string(),
+                None,
+                0,
+                Vec::new(),
+            );
+
+            assert!(
+                params.get("windowsVirtualKeyCode").is_some(),
+                "windowsVirtualKeyCode must be present for {key}"
+            );
+            assert!(
+                params.get("nativeVirtualKeyCode").is_none(),
+                "nativeVirtualKeyCode must be absent for {key} (agentenv#636)"
+            );
+        }
     }
 }
