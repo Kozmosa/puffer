@@ -36,7 +36,9 @@ fn image_generation_skill_guides_foreground_bash_helper_use() {
     assert_eq!(frontmatter.allowed_tools, vec!["Bash"]);
     assert!(frontmatter.user_invocable);
     assert!(!frontmatter.disable_model_invocation);
+    assert_eq!(frontmatter.requires_action, Some(true));
     assert!(body.contains("foreground Bash"));
+    assert!(body.contains("Progress-only or promise-only replies are not completion"));
     assert!(body.contains("explicit long Bash timeout"));
     assert!(body.contains("imagegen --prompt"));
     assert!(!body.contains("puffer internal-tool"));
@@ -58,7 +60,9 @@ fn video_generation_skill_guides_foreground_bash_helper_use() {
     assert_eq!(frontmatter.allowed_tools, vec!["Bash"]);
     assert!(frontmatter.user_invocable);
     assert!(!frontmatter.disable_model_invocation);
+    assert_eq!(frontmatter.requires_action, Some(true));
     assert!(body.contains("foreground Bash"));
+    assert!(body.contains("Progress-only or promise-only replies are not completion"));
     assert!(body.contains("explicit long Bash timeout"));
     assert!(body.contains("videogen --prompt"));
     assert!(!body.contains("puffer internal-tool"));
