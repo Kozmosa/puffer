@@ -431,6 +431,7 @@ pub enum MediaDiscoveryKind {
 #[serde(rename_all = "snake_case")]
 pub enum MediaExecutionKind {
     ImagesJson,
+    GeminiGenerateContent,
     ChatImageOutput,
     MinimaxImage,
     ReplicateVideo,

@@ -202,6 +202,7 @@ fn generate_relaydance_video(
         resolved.model_id.clone(),
         request.prompt.clone(),
         &resolved.parameters,
+        &resolved.parameter_wire_types,
         prompt_format,
     )?;
     let job = adapter
@@ -417,6 +418,7 @@ mod tests {
                 model_id: "doubao-seedance-2-0-720p".to_string(),
                 adapter: RELAYDANCE_VIDEO_ADAPTER.to_string(),
                 parameters: BTreeMap::new(),
+                parameter_wire_types: BTreeMap::new(),
                 count: 1,
             },
         )
@@ -451,6 +453,7 @@ mod tests {
                 model_id: "owner/model-version".to_string(),
                 adapter: "replicate_video".to_string(),
                 parameters: BTreeMap::new(),
+                parameter_wire_types: BTreeMap::new(),
                 count: 1,
             },
         )

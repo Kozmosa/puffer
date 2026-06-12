@@ -2,7 +2,7 @@ use super::*;
 use crate::media::MediaKind;
 use puffer_provider_registry::{
     AuthStore, ControlKind, MediaModelDescriptor, MediaOperation, ProviderDescriptor,
-    ProviderRegistry, Variant, Variants,
+    ProviderRegistry, Variant, Variants, WireType,
 };
 
 const RELAYDANCE_YAML: &str = r#"
@@ -376,6 +376,7 @@ fn resolves_audio_selector_to_concrete_model() {
     assert_eq!(r.adapter, "relaydance_video");
     assert_eq!(r.parameters["metadata.resolution"], "720p");
     assert_eq!(r.parameters["seconds"], "6");
+    assert_eq!(r.parameter_wire_types["seconds"], WireType::Number);
 }
 
 #[test]
@@ -414,6 +415,7 @@ fn resolves_selector_base_params() {
     assert_eq!(r.model_id, "tiered-2-1-pro");
     assert_eq!(r.parameters["resolution"], "1080p");
     assert_eq!(r.parameters["duration"], "10");
+    assert_eq!(r.parameter_wire_types["duration"], WireType::Number);
 }
 
 #[test]

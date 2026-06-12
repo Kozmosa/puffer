@@ -4,9 +4,9 @@ use super::video_jobs::{
 };
 use super::{MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
 use anyhow::{anyhow, bail, Context, Result};
-use puffer_provider_registry::VideoPromptFormat;
+use puffer_provider_registry::{VideoPromptFormat, WireType};
 use reqwest::blocking::Client;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Map, Number, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use uuid::Uuid;
@@ -18,7 +18,7 @@ pub(crate) struct RelaydanceVideoRequest {
     pub(crate) prompt: String,
     /// Ordered (request_field, value) pairs. A `request_field` of `metadata.<k>`
     /// is nested under the body's `metadata` object; otherwise it is top-level.
-    pub(crate) params: Vec<(String, String)>,
+    pub(crate) params: Vec<(String, Value)>,
     pub(crate) prompt_format: VideoPromptFormat,
 }
 
@@ -56,9 +56,9 @@ impl RelaydanceVideoRequest {
         for (field, value) in &self.params {
             let field = field.trim();
             if let Some(key) = field.strip_prefix(METADATA_PREFIX) {
-                metadata.insert(key.to_string(), json!(value.trim()));
+                metadata.insert(key.to_string(), value.clone());
             } else {
-                body.insert(field.to_string(), json!(value.trim()));
+                body.insert(field.to_string(), value.clone());
             }
         }
         if !metadata.is_empty() {
@@ -75,9 +75,19 @@ pub(crate) fn relaydance_video_request_from_parameters(
     model_id: String,
     prompt: String,
     parameters: &BTreeMap<String, String>,
+    parameter_wire_types: &BTreeMap<String, WireType>,
     prompt_format: VideoPromptFormat,
 ) -> Result<RelaydanceVideoRequest> {
-    let params = parameters.clone().into_iter().collect();
+    let params = parameters
+        .iter()
+        .map(|(field, value)| {
+            let wire_type = parameter_wire_types.get(field).copied().unwrap_or_default();
+            Ok((
+                field.clone(),
+                relaydance_request_value(field, value, wire_type)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let request = RelaydanceVideoRequest {
         model: model_id,
         prompt,
@@ -86,6 +96,26 @@ pub(crate) fn relaydance_video_request_from_parameters(
     };
     request.validate()?;
     Ok(request)
+}
+
+fn relaydance_request_value(field: &str, value: &str, wire_type: WireType) -> Result<Value> {
+    let value = value.trim();
+    match wire_type {
+        WireType::String => Ok(json!(value)),
+        WireType::Number => relaydance_number_value(field, value),
+    }
+}
+
+fn relaydance_number_value(field: &str, value: &str) -> Result<Value> {
+    if let Ok(number) = value.parse::<i64>() {
+        return Ok(Value::Number(Number::from(number)));
+    }
+    let number = value
+        .parse::<f64>()
+        .with_context(|| format!("video generation parameter {field} must be numeric"))?;
+    Number::from_f64(number)
+        .map(Value::Number)
+        .with_context(|| format!("video generation parameter {field} must be finite"))
 }
 
 /// Abstracts Relaydance video HTTP operations for production and tests.
@@ -513,6 +543,10 @@ mod tests {
             .collect()
     }
 
+    fn wire_types(pairs: &[(&str, WireType)]) -> BTreeMap<String, WireType> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
     #[test]
     fn splits_top_level_and_metadata_params() {
         let request = relaydance_video_request_from_parameters(
@@ -523,6 +557,7 @@ mod tests {
                 ("metadata.resolution", "1080p"),
                 ("metadata.ratio", "16:9"),
             ]),
+            &wire_types(&[("seconds", WireType::Number)]),
             Default::default(),
         )
         .expect("request");
@@ -531,7 +566,7 @@ mod tests {
         assert_eq!(body["model"], json!("doubao-seedance-2-0-1080p"));
         assert_eq!(body["prompt"], json!("a cat"));
         assert_eq!(body["n"], json!(1));
-        assert_eq!(body["seconds"], json!("5"));
+        assert_eq!(body["seconds"], json!(5));
         assert_eq!(body["metadata"]["resolution"], json!("1080p"));
         assert_eq!(body["metadata"]["ratio"], json!("16:9"));
     }
@@ -542,6 +577,7 @@ mod tests {
             "m".to_string(),
             "a cat".to_string(),
             &params(&[("seconds", "5")]),
+            &BTreeMap::new(),
             Default::default(),
         )
         .expect("request");
@@ -554,6 +590,7 @@ mod tests {
         let request = relaydance_video_request_from_parameters(
             "grok-imagine-video".to_string(),
             "a city skyline".to_string(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             Default::default(),
         )
@@ -573,17 +610,36 @@ mod tests {
             "seedance-2.0".to_string(),
             "a sunset".to_string(),
             &params(&[("resolution", "720p"), ("duration", "5")]),
+            &wire_types(&[("duration", WireType::Number)]),
             VideoPromptFormat::ContentArray,
         )
         .expect("request");
 
         let body = request.request_body();
         assert_eq!(body["model"], json!("seedance-2.0"));
-        assert_eq!(body["content"], json!([{"type": "text", "text": "a sunset"}]));
+        assert_eq!(
+            body["content"],
+            json!([{"type": "text", "text": "a sunset"}])
+        );
         assert!(body.get("prompt").is_none());
         assert!(body.get("n").is_none());
         assert_eq!(body["resolution"], json!("720p"));
-        assert_eq!(body["duration"], json!("5"));
+        assert_eq!(body["duration"], json!(5));
+    }
+
+    #[test]
+    fn rejects_invalid_numeric_parameter_before_http() {
+        let error = relaydance_video_request_from_parameters(
+            "seedance-2.0".to_string(),
+            "a sunset".to_string(),
+            &params(&[("duration", "soon")]),
+            &wire_types(&[("duration", WireType::Number)]),
+            VideoPromptFormat::ContentArray,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("duration"), "{error}");
     }
 
     #[test]
@@ -591,6 +647,7 @@ mod tests {
         let error = relaydance_video_request_from_parameters(
             "m".to_string(),
             "   ".to_string(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             Default::default(),
         )

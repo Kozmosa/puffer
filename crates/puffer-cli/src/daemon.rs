@@ -6932,7 +6932,7 @@ models: []
     }
 
     #[test]
-    fn media_capabilities_handler_does_not_expose_worldrouter_auto_as_image() {
+    fn media_capabilities_handler_exposes_worldrouter_image_models() {
         let _home_guard = PufferHomeEnvGuard::set();
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_root = temp.path().join("workspace");
@@ -6954,8 +6954,28 @@ models: []
         let response =
             handle_list_media_capabilities(&state, &json!({"kind": "image"})).expect("response");
         let capabilities = response["capabilities"].as_array().expect("capabilities");
+        let models_by_id = capabilities
+            .iter()
+            .map(|capability| {
+                (
+                    capability["modelId"].as_str().expect("model id"),
+                    capability["adapter"].as_str().expect("adapter"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
 
-        assert!(capabilities.is_empty());
+        assert_eq!(
+            models_by_id,
+            std::collections::BTreeMap::from([
+                ("gemini-2.5-flash-image", "gemini_generate_content"),
+                ("gemini-3-pro-image-preview", "gemini_generate_content"),
+                ("gemini-3.1-flash-image-preview", "gemini_generate_content"),
+                ("gpt-image-2", "images_json"),
+            ])
+        );
+        assert!(capabilities
+            .iter()
+            .all(|capability| capability["status"] == "available"));
     }
 
     #[test]
@@ -6998,10 +7018,10 @@ models: []
         assert!(provider_ids.contains("zhipu"));
         assert!(provider_ids.contains("xai"));
         assert!(provider_ids.contains("vercel-ai-gateway"));
-        assert!(!provider_ids.contains("worldrouter"));
-        assert!(capabilities.iter().all(|capability| {
-            capability["adapter"] == "images_json" && capability["status"] == "available"
-        }));
+        assert!(provider_ids.contains("worldrouter"));
+        assert!(capabilities
+            .iter()
+            .all(|capability| capability["status"] == "available"));
     }
 
     #[test]

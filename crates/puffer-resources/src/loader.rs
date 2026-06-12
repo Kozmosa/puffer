@@ -582,6 +582,8 @@ fn load_skill_embedded() -> Result<Vec<LoadedItem<SkillSpec>>> {
             &["disable-model-invocation", "disableModelInvocation"],
         )
         .unwrap_or(false);
+        let requires_action =
+            frontmatter_bool(&frontmatter, &["requires-action", "requiresAction"]).unwrap_or(false);
         let allowed_tools =
             frontmatter_string_list(&frontmatter, &["allowed-tools", "allowedTools"]);
         let argument_hint = frontmatter_string(&frontmatter, &["argument-hint", "argumentHint"]);
@@ -606,6 +608,7 @@ fn load_skill_embedded() -> Result<Vec<LoadedItem<SkillSpec>>> {
                 effort,
                 context,
                 disable_model_invocation,
+                requires_action,
                 verification: None,
             },
             source_info: SourceInfo {
@@ -786,6 +789,8 @@ fn load_skill_dir(
             &["disable-model-invocation", "disableModelInvocation"],
         )
         .unwrap_or(false);
+        let requires_action =
+            frontmatter_bool(&frontmatter, &["requires-action", "requiresAction"]).unwrap_or(false);
         let allowed_tools =
             frontmatter_string_list(&frontmatter, &["allowed-tools", "allowedTools"]);
         let argument_hint = frontmatter_string(&frontmatter, &["argument-hint", "argumentHint"]);
@@ -810,6 +815,7 @@ fn load_skill_dir(
                 effort,
                 context,
                 disable_model_invocation,
+                requires_action,
                 verification: None,
             },
             source_info: SourceInfo {
@@ -1551,7 +1557,13 @@ media:
         fs::create_dir_all(resources_dir.join("skills/review-helper")).unwrap();
         fs::write(
             resources_dir.join("skills/review-helper/SKILL.md"),
-            "---\nname: Review Helper ++\ndescription: Review changes\nallowed-tools:\n  - Read\n  - Grep, Glob\nargument-hint: <ticket>\narguments: ticket env\nmodel: openai/gpt-5\neffort: high\nuser-invocable: false\ndisable-model-invocation: true\ncontext: fork\n---\nBody\n",
+            "---\nname: Review Helper ++\ndescription: Review changes\nallowed-tools:\n  - Read\n  - Grep, Glob\nargument-hint: <ticket>\narguments: ticket env\nmodel: openai/gpt-5\neffort: high\nuser-invocable: false\ndisable-model-invocation: true\nrequires-action: true\ncontext: fork\n---\nBody\n",
+        )
+        .unwrap();
+        fs::create_dir_all(resources_dir.join("skills/plain-helper")).unwrap();
+        fs::write(
+            resources_dir.join("skills/plain-helper/SKILL.md"),
+            "---\nname: Plain Helper\ndescription: No action obligation\n---\nBody\n",
         )
         .unwrap();
 
@@ -1575,6 +1587,12 @@ media:
         assert_eq!(skill.context.as_deref(), Some("fork"));
         assert!(!skill.user_invocable);
         assert!(skill.disable_model_invocation);
+        assert!(skill.requires_action);
+
+        let default_skill = &skill_by_name(&loaded, "plain-helper")
+            .expect("workspace skill without action obligation should load")
+            .value;
+        assert!(!default_skill.requires_action);
     }
 
     #[test]
@@ -1591,7 +1609,7 @@ media:
         .unwrap();
         fs::write(
             skill_dir.join("out/GENERATED.SKILL.md"),
-            "---\nname: gh-fix-ci\ndescription: Verified CI repair\n---\n# Runtime body\nUse generated prompt.\n",
+            "---\nname: gh-fix-ci\ndescription: Verified CI repair\nrequiresAction: true\n---\n# Runtime body\nUse generated prompt.\n",
         )
         .unwrap();
         fs::write(
@@ -1625,6 +1643,7 @@ media:
         assert_eq!(skill.value.description, "Verified CI repair");
         assert_eq!(skill.value.allowed_tools, vec!["Bash", "Read"]);
         assert!(!skill.value.disable_model_invocation);
+        assert!(skill.value.requires_action);
         assert_eq!(skill.source_info.path, skill_dir.join("skill.lskill"));
         assert!(skill
             .value

@@ -1,5 +1,8 @@
 use crate::media::chat_image_output::{ChatImageOutputAdapter, ChatImageOutputGenerationRequest};
 use crate::media::discovery::TrustedImageDiscoveryClient;
+use crate::media::gemini_generate_content::{
+    GeminiGenerateContentAdapter, GeminiGenerateContentGenerationRequest,
+};
 use crate::media::images_json::{ImagesJsonAdapter, ImagesJsonGenerationRequest};
 use crate::media::minimax_image::{MinimaxImageAdapter, MinimaxImageGenerationRequest};
 use crate::media::planner::validate_image_generation_count;
@@ -247,6 +250,22 @@ pub fn generate_exact_image_with_cache(
                 auth_store,
                 &service,
                 MinimaxImageGenerationRequest {
+                    provider_id: resolved.provider_id,
+                    model_id: resolved.model_id,
+                    adapter: resolved.adapter,
+                    prompt: request.prompt,
+                    parameters: resolved.parameters,
+                    count: resolved.count,
+                },
+            )?;
+            Ok(exact_generation_result(result.job, result.artifacts))
+        }
+        "gemini_generate_content" => {
+            let result = GeminiGenerateContentAdapter::new()?.execute(
+                registry,
+                auth_store,
+                &service,
+                GeminiGenerateContentGenerationRequest {
                     provider_id: resolved.provider_id,
                     model_id: resolved.model_id,
                     adapter: resolved.adapter,

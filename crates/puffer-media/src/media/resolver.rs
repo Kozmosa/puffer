@@ -32,13 +32,15 @@ pub(crate) struct CachedImageMediaModel {
 
 /// Describes a concrete upstream media request resolved from a logical model and
 /// the user's axis selections: the upstream `model_id` to call, the execution
-/// `adapter`, provider request `parameters`, and the runtime output `count`.
+/// `adapter`, provider request `parameters`, each parameter's JSON wire type,
+/// and the runtime output `count`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedMediaRequest {
     pub(crate) provider_id: String,
     pub(crate) model_id: String,
     pub(crate) adapter: String,
     pub(crate) parameters: BTreeMap<String, String>,
+    pub(crate) parameter_wire_types: BTreeMap<String, WireType>,
     pub(crate) count: u8,
 }
 
@@ -141,6 +143,10 @@ pub(crate) fn resolve_media_request(
 
     // 3. Merge base_params with ordinary Param-axis selections.
     let mut parameters = variant.base_params.clone();
+    let mut parameter_wire_types = parameters
+        .keys()
+        .map(|field| (field.clone(), WireType::String))
+        .collect::<BTreeMap<_, _>>();
     for axis in cap.axes.iter().filter(|a| {
         a.role == AxisRole::Param
             && !runtime_only_axis(&a.id)
@@ -152,16 +158,19 @@ pub(crate) fn resolve_media_request(
                 .cloned()
                 .unwrap_or_else(|| default_for_axis(&cap.axes, &axis.id));
             parameters.insert(field.clone(), v);
+            parameter_wire_types.insert(field.clone(), axis.wire_type);
         }
     }
     apply_ratio_media_map(
         &mut parameters,
+        &mut parameter_wire_types,
         cap.media_map.as_ref(),
         &cap.axes,
         selections,
     )?;
     apply_size_media_map(
         &mut parameters,
+        &mut parameter_wire_types,
         cap.media_map.as_ref(),
         &cap.axes,
         selections,
@@ -173,6 +182,7 @@ pub(crate) fn resolve_media_request(
         model_id: variant.model_id,
         adapter: cap.adapter,
         parameters,
+        parameter_wire_types,
         count,
     })
 }
@@ -194,6 +204,7 @@ fn mapped_reserved_axis(axis_id: &str, media_map: Option<&MediaMap>) -> bool {
 
 fn apply_ratio_media_map(
     parameters: &mut BTreeMap<String, String>,
+    parameter_wire_types: &mut BTreeMap<String, WireType>,
     media_map: Option<&MediaMap>,
     axes: &[Axis],
     selections: &BTreeMap<String, String>,
@@ -209,12 +220,14 @@ fn apply_ratio_media_map(
         .with_context(|| format!("ratio {ratio} is not mapped"))?;
     if let Some(value) = mapped {
         parameters.insert(ratio_map.field.clone(), value.clone());
+        parameter_wire_types.insert(ratio_map.field.clone(), WireType::String);
     }
     Ok(())
 }
 
 fn apply_size_media_map(
     parameters: &mut BTreeMap<String, String>,
+    parameter_wire_types: &mut BTreeMap<String, WireType>,
     media_map: Option<&MediaMap>,
     axes: &[Axis],
     selections: &BTreeMap<String, String>,
@@ -235,6 +248,7 @@ fn apply_size_media_map(
         .with_context(|| format!("mode {mode} ratio {ratio} is not mapped"))?;
     if let Some(value) = mapped {
         parameters.insert(size_map.field.clone(), value.clone());
+        parameter_wire_types.insert(size_map.field.clone(), WireType::String);
     }
     Ok(())
 }
@@ -618,6 +632,7 @@ fn execution_adapter_is_available_for_kind(kind: MediaKind, adapter: MediaExecut
     matches!(
         (kind, adapter),
         (MediaKind::Image, MediaExecutionKind::ImagesJson)
+            | (MediaKind::Image, MediaExecutionKind::GeminiGenerateContent)
             | (MediaKind::Image, MediaExecutionKind::ChatImageOutput)
             | (MediaKind::Image, MediaExecutionKind::MinimaxImage)
             | (MediaKind::Video, MediaExecutionKind::ReplicateVideo)
@@ -650,6 +665,7 @@ fn media_kind_error_name(kind: MediaKind) -> &'static str {
 pub(crate) fn adapter_id(adapter: MediaExecutionKind) -> &'static str {
     match adapter {
         MediaExecutionKind::ImagesJson => "images_json",
+        MediaExecutionKind::GeminiGenerateContent => "gemini_generate_content",
         MediaExecutionKind::ChatImageOutput => "chat_image_output",
         MediaExecutionKind::MinimaxImage => "minimax_image",
         MediaExecutionKind::ReplicateVideo => "replicate_video",

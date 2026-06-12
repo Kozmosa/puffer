@@ -765,6 +765,12 @@ fn media_execution_kind_parses_byteplus_video() {
 }
 
 #[test]
+fn media_execution_kind_parses_gemini_generate_content() {
+    let kind: MediaExecutionKind = serde_yaml::from_str("gemini_generate_content").expect("parse");
+    assert_eq!(kind, MediaExecutionKind::GeminiGenerateContent);
+}
+
+#[test]
 fn media_execution_kind_rejects_openai_video() {
     let error = serde_yaml::from_str::<MediaExecutionKind>("openai_video").unwrap_err();
     assert!(error.to_string().contains("unknown variant"));

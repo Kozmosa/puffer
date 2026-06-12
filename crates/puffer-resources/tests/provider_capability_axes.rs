@@ -1,4 +1,5 @@
-use puffer_provider_registry::{AxisRole, ControlKind, Variants};
+use puffer_provider_registry::{AxisRole, ControlKind, Variants, WireType};
+use std::collections::BTreeSet;
 
 fn provider(file: &str) -> puffer_provider_registry::ProviderDescriptor {
     // `cargo test` sets CWD to the package root; the provider YAMLs live at the
@@ -152,4 +153,86 @@ fn all_providers_parse_after_axis_migration() {
     ] {
         let _ = provider(file); // panics on parse failure
     }
+}
+
+#[test]
+fn worldrouter_declares_current_video_models() {
+    let p = provider("worldrouter");
+    let video = p.media.as_ref().unwrap().video.as_ref().unwrap();
+    assert_eq!(
+        video.execution.as_ref().map(|execution| execution.adapter),
+        Some(puffer_provider_registry::MediaExecutionKind::RelaydanceVideo)
+    );
+    assert_eq!(
+        video
+            .execution
+            .as_ref()
+            .map(|execution| execution.prompt_format),
+        Some(puffer_provider_registry::VideoPromptFormat::ContentArray)
+    );
+
+    let ids = video
+        .models
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids, BTreeSet::from(["seedance-2.0", "seedance-2.0-fast"]));
+
+    let seedance = video
+        .models
+        .iter()
+        .find(|model| model.id == "seedance-2.0")
+        .expect("seedance-2.0");
+    assert!(
+        seedance
+            .axes
+            .iter()
+            .all(|axis| axis.id != "ratio" && axis.request_field.as_deref() != Some("ratio")),
+        "WorldRouter Seedance docs do not expose a ratio request parameter"
+    );
+    let resolution = seedance
+        .axes
+        .iter()
+        .find(|axis| axis.id == "resolution")
+        .expect("resolution");
+    assert_eq!(resolution.role, AxisRole::Selector);
+    assert!(
+        matches!(&resolution.control, ControlKind::Enum { values, default } if default == "1080p" && values == &vec!["720p".to_string(), "1080p".to_string()])
+    );
+    match &seedance.variants {
+        Variants::BySelector { selector, map } => {
+            assert_eq!(selector, "resolution");
+            assert_eq!(map["720p"].base_params["resolution"], "720p");
+            assert_eq!(map["1080p"].base_params["resolution"], "1080p");
+        }
+        _ => panic!("expected BySelector"),
+    }
+
+    let duration = seedance
+        .axes
+        .iter()
+        .find(|axis| axis.id == "duration")
+        .expect("duration");
+    assert_eq!(duration.request_field.as_deref(), Some("duration"));
+    assert_eq!(duration.wire_type, WireType::Number);
+    assert!(
+        matches!(duration.control, ControlKind::Range { min, max, step, default } if min == 5.0 && max == 10.0 && step == 1.0 && default == 5.0)
+    );
+
+    let fast = video
+        .models
+        .iter()
+        .find(|model| model.id == "seedance-2.0-fast")
+        .expect("seedance-2.0-fast");
+    let mode = fast
+        .axes
+        .iter()
+        .find(|axis| axis.id == "resolution")
+        .expect("resolution");
+    assert_eq!(mode.label, "Mode");
+    assert_eq!(mode.role, AxisRole::Param);
+    assert_eq!(mode.request_field.as_deref(), Some("resolution"));
+    assert!(
+        matches!(&mode.control, ControlKind::Enum { values, default } if default == "720p" && values == &vec!["480p".to_string(), "720p".to_string()])
+    );
 }

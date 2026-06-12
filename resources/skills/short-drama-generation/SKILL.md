@@ -1,5 +1,5 @@
 ---
-name: short-drama
+name: short-drama-generation
 description: Use when the user asks to create a short drama from a prompt — e.g. "生成短剧", "制作微短剧", "make a short drama", "turn this script into a short drama", "ショートドラマを生成", "숏드라마를 만들어". Orchestrates script, storyboard, optional character images, per-shot video clips, and ffmpeg composition through the existing media tools.
 allowed-tools:
   - Bash
@@ -7,10 +7,11 @@ allowed-tools:
   - Write
 user-invocable: true
 disable-model-invocation: false
+requires-action: true
 ---
 
 You orchestrate a short drama by driving the existing media tools yourself. There is
-no single short-drama tool. allowed-tools is guidance; media generation is enforced by
+no single short-drama-generation tool. allowed-tools is guidance; media generation is enforced by
 the internal tool permission path.
 
 Trigger only on a request to CREATE/generate a short drama. Requests to analyze,

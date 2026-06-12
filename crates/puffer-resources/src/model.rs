@@ -236,6 +236,8 @@ pub struct SkillSpec {
     pub context: Option<String>,
     #[serde(default)]
     pub disable_model_invocation: bool,
+    #[serde(default, alias = "requires-action", alias = "requiresAction")]
+    pub requires_action: bool,
     #[serde(default)]
     pub verification: Option<SkillVerificationSpec>,
 }
@@ -254,6 +256,7 @@ impl Default for SkillSpec {
             effort: None,
             context: None,
             disable_model_invocation: false,
+            requires_action: false,
             verification: None,
         }
     }
@@ -997,9 +1000,24 @@ mod tests {
             descriptor.models.iter().any(|model| model.id == "auto"),
             "WorldRouter should expose the auto routing fallback model"
         );
-        assert!(
-            descriptor.media.is_none(),
-            "WorldRouter auto chat routing must not become an image capability"
+        let image = descriptor
+            .media
+            .as_ref()
+            .and_then(|media| media.image.as_ref())
+            .expect("WorldRouter should expose exact image generation models");
+        let ids = image
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            ids,
+            std::collections::BTreeSet::from([
+                "gemini-2.5-flash-image",
+                "gemini-3-pro-image-preview",
+                "gemini-3.1-flash-image-preview",
+                "gpt-image-2",
+            ])
         );
     }
 }

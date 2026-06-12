@@ -39,6 +39,10 @@ const IMAGE_PROVIDER_YAMLS: &[(&str, &str)] = &[
         "vercel-ai-gateway",
         include_str!("../../../resources/providers/vercel-ai-gateway.yaml"),
     ),
+    (
+        "worldrouter",
+        include_str!("../../../resources/providers/worldrouter.yaml"),
+    ),
 ];
 
 const ALL_PROVIDER_YAMLS: &[(&str, &str)] = &[
@@ -477,6 +481,10 @@ fn bundled_image_executions_declare_explicit_batch_mode() {
         (
             "vercel-ai-gateway",
             include_str!("../../../resources/providers/vercel-ai-gateway.yaml"),
+        ),
+        (
+            "worldrouter",
+            include_str!("../../../resources/providers/worldrouter.yaml"),
         ),
     ] {
         assert_raw_image_executions_declare_batch_mode(provider_id, yaml);
@@ -1013,6 +1021,130 @@ fn openai_catalog_declares_current_image_api_models() {
             );
         }
     }
+}
+
+#[test]
+fn worldrouter_catalog_declares_all_documented_image_models() {
+    let descriptor = provider_descriptor(
+        "worldrouter",
+        include_str!("../../../resources/providers/worldrouter.yaml"),
+    );
+    let image = descriptor
+        .media
+        .as_ref()
+        .and_then(|media| media.image.as_ref())
+        .expect("worldrouter image media descriptor");
+
+    assert_eq!(
+        image.execution.as_ref().map(|execution| execution.adapter),
+        Some(MediaExecutionKind::ImagesJson)
+    );
+    assert_eq!(
+        image
+            .execution
+            .as_ref()
+            .map(|execution| execution.path.as_str()),
+        Some("/images/generations")
+    );
+
+    let expected = BTreeMap::from([
+        ("gemini-2.5-flash-image", "Gemini 2.5 Flash Image"),
+        ("gemini-3-pro-image-preview", "Gemini 3 Pro Image Preview"),
+        (
+            "gemini-3.1-flash-image-preview",
+            "Gemini 3.1 Flash Image Preview",
+        ),
+        ("gpt-image-2", "GPT Image 2"),
+    ]);
+    let models_by_id = image
+        .models
+        .iter()
+        .map(|model| (model.id.as_str(), model))
+        .collect::<BTreeMap<_, _>>();
+    let expected_model_ids = expected.keys().copied().collect::<BTreeSet<_>>();
+    let actual_model_ids = models_by_id.keys().copied().collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        actual_model_ids, expected_model_ids,
+        "WorldRouter image catalog should mirror documented generation model ids"
+    );
+
+    for (model_id, display_name) in &expected {
+        let model_id = *model_id;
+        let model = models_by_id
+            .get(model_id)
+            .unwrap_or_else(|| panic!("WorldRouter should include {model_id}"));
+        assert_eq!(model.display_name.as_deref(), Some(*display_name));
+        assert!(
+            model.operations.contains(&MediaOperation::Generate),
+            "{model_id} should support image generation"
+        );
+        assert_eq!(
+            model.max_outputs,
+            Some(9),
+            "{model_id} should expose the global image output cap"
+        );
+        if model_id == "gpt-image-2" {
+            assert_eq!(model.execution, None);
+            assert_enum_axis(
+                model,
+                "ratio",
+                "Ratio",
+                &["1:1", "3:2", "2:3"],
+                "1:1",
+                AxisRole::Param,
+                None,
+                WireType::String,
+            );
+        } else {
+            let execution = model
+                .execution
+                .as_ref()
+                .unwrap_or_else(|| panic!("{model_id} should override execution"));
+            assert_eq!(
+                execution.adapter,
+                MediaExecutionKind::GeminiGenerateContent,
+                "{model_id} should use Gemini generateContent"
+            );
+            assert_eq!(
+                execution.base_url.as_deref(),
+                Some("https://inference-api.worldrouter.ai"),
+                "{model_id} should override the OpenAI /v1 base URL"
+            );
+            assert_eq!(
+                execution.path, "/v1beta/models/{model}:generateContent",
+                "{model_id} should use the native Gemini route"
+            );
+        }
+    }
+
+    assert_enum_axis(
+        models_by_id["gemini-2.5-flash-image"],
+        "ratio",
+        "Ratio",
+        &["1:1"],
+        "1:1",
+        AxisRole::Param,
+        Some("aspectRatio"),
+        WireType::String,
+    );
+    assert!(
+        models_by_id["gemini-2.5-flash-image"]
+            .axes
+            .iter()
+            .all(|axis| axis.request_field.as_deref() != Some("imageSize")),
+        "gemini-2.5-flash-image must not send imageSize"
+    );
+    assert_enum_axis(
+        models_by_id["gemini-3.1-flash-image-preview"],
+        "mode",
+        "Mode",
+        &["0.5K", "1K", "2K", "4K"],
+        "2K",
+        AxisRole::Param,
+        Some("imageSize"),
+        WireType::String,
+    );
 }
 
 #[test]

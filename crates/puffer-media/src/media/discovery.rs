@@ -254,6 +254,7 @@ fn execution_adapter_is_available(adapter: MediaExecutionKind) -> bool {
     matches!(
         adapter,
         MediaExecutionKind::ImagesJson
+            | MediaExecutionKind::GeminiGenerateContent
             | MediaExecutionKind::ChatImageOutput
             | MediaExecutionKind::MinimaxImage
     )

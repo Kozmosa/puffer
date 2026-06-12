@@ -718,6 +718,68 @@ fn list_video_capabilities_exposes_multiple_static_seedance_models() {
 }
 
 #[test]
+fn list_video_capabilities_exposes_current_worldrouter_seedance_settings() {
+    let mut registry = ProviderRegistry::new();
+    registry.register(bundled_provider(
+        "worldrouter",
+        include_str!("../../../resources/providers/worldrouter.yaml"),
+    ));
+
+    let capabilities = list_exact_media_capabilities_with_cache(
+        &registry,
+        &auth_store_for("worldrouter"),
+        Some("video"),
+        &ExactMediaDiscoveryCache::empty(),
+    );
+    let ids = capabilities
+        .iter()
+        .map(|capability| capability.model_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        ids,
+        std::collections::BTreeSet::from(["seedance-2.0", "seedance-2.0-fast"])
+    );
+    assert!(capabilities.iter().all(|capability| {
+        capability.provider_id == "worldrouter"
+            && capability.kind == "video"
+            && capability.operation == "generate"
+            && capability.status == "available"
+    }));
+
+    let seedance = capabilities
+        .iter()
+        .find(|capability| capability.model_id == "seedance-2.0")
+        .expect("seedance-2.0 capability");
+    let axis_ids = seedance
+        .axes
+        .iter()
+        .map(|axis| axis.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(axis_ids, vec!["resolution", "duration"]);
+
+    let resolution = seedance
+        .axes
+        .iter()
+        .find(|axis| axis.id == "resolution")
+        .expect("resolution axis");
+    assert_eq!(resolution.label, "Mode");
+    assert_eq!(resolution.role, AxisRole::Selector);
+    assert!(
+        matches!(&resolution.control, ControlKind::Enum { values, default } if default == "1080p" && values == &vec!["720p".to_string(), "1080p".to_string()])
+    );
+
+    let duration = seedance
+        .axes
+        .iter()
+        .find(|axis| axis.id == "duration")
+        .expect("duration axis");
+    assert_eq!(duration.label, "Duration");
+    assert_eq!(duration.request_field.as_deref(), Some("duration"));
+    assert_eq!(duration.wire_type, WireType::Number);
+}
+
+#[test]
 fn exact_media_generation_rejects_unsupported_video_parameter() {
     let (registry, auth, cache, workspace) = replicate_video_runtime_fixture();
     let request = ExactMediaGenerationRequest {

@@ -3,6 +3,7 @@ pub(crate) mod byteplus_video;
 pub(crate) mod capabilities;
 pub(crate) mod chat_image_output;
 pub(crate) mod discovery;
+pub(crate) mod gemini_generate_content;
 pub(crate) mod http_support;
 pub(crate) mod images_json;
 pub(crate) mod jobs;
