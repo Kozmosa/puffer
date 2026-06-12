@@ -2,7 +2,7 @@
 
 Date: 2026-06-13
 
-Status: Approved design, awaiting implementation plan
+Status: Approved design, implementation plan written
 
 Constraints: do not optimize for backward compatibility; optimize for
 long-term clarity, stability, and performance; prevent overdesign.
@@ -36,16 +36,18 @@ The current implementation therefore has two diagnostic gaps:
 - provider-specific details are not normalized into a shape that users, agents,
   tests, and desktop surfaces can read consistently.
 
-BytePlus video generation succeeds through the same `videogen` entrypoint, so
-the issue is not the skill, shell helper, artifact store, or video runtime as a
-whole. The fix should improve failure reporting for all media providers without
+BytePlus video generation succeeds through the same `videogen` entrypoint, and
+Relaydance has its own working submit-poll-download adapter. The issue is not
+the skill, shell helper, artifact store, or video runtime as a whole. The fix
+should improve failure reporting for all current video providers without
 redesigning the generation lifecycle.
 
 ## Goals
 
 - Preserve the full, redacted error chain from provider adapters to `videogen`.
-- Return a stable media failure diagnostic shape for image and video generation
-  failures where the media runtime can identify provider context.
+- Define a stable media failure diagnostic shape that image and video
+  generation can share over time, while implementing this change only for the
+  current video-generation failure boundary.
 - Make `phase`, provider, adapter, model, HTTP status, provider code, provider
   job id, remote status, error, and hint visible when available.
 - Keep `MediaJob` as the persisted source of truth for jobs that were submitted
@@ -55,6 +57,8 @@ redesigning the generation lifecycle.
   provider internal error, timeout, download/storage failure.
 - Keep all diagnostics secret-redacted before crossing process or stdout
   boundaries.
+- Cover the three current video adapters: WorldRouter, BytePlus, and
+  Relaydance.
 
 ## Non-Goals
 
@@ -74,7 +78,8 @@ redesigning the generation lifecycle.
 Add a lightweight, provider-agnostic media failure diagnostic contract in
 `puffer-media`. Provider adapters contribute facts; a shared helper derives a
 small hint from those facts; `puffer-core` serializes the diagnostic into
-`videogen` and `imagegen` outputs.
+`videogen` output and can reuse the same shape for image-generation failures
+without adding image-specific work to this change.
 
 Rejected alternatives:
 
@@ -130,6 +135,30 @@ When a field is unknown, serialize it as `null` rather than omitting it. This
 keeps the contract stable for tools and UI. `error` is required because a
 failure diagnostic without a message is not actionable.
 
+## Provider Coverage
+
+This change must cover the current video adapters uniformly while keeping
+provider-specific parsing local:
+
+| Provider | Adapter | Current gap | Required coverage |
+| --- | --- | --- | --- |
+| WorldRouter | `worldrouter_video` | Submit failures can lose HTTP status/body; remote task failures already persist some job diagnostics. | Preserve submit/poll/download diagnostics, WorldRouter error code/message/request id, and `seedance_*` hints. |
+| BytePlus | `byteplus_video` | Submit/poll helpers return text errors, and `video.rs` rewraps them with `error.to_string()`, dropping cause chains. | Preserve submit/poll/download diagnostics, BytePlus error code/message/request id when present, and generic status hints. |
+| Relaydance | `relaydance_video` | Same cause-chain loss as BytePlus; Relaydance task errors can expose `error.{code,message}`, `fail_reason`, or top-level `message`. | Preserve submit/poll/download diagnostics, Relaydance code/message when present, and generic status hints. |
+
+The shared diagnostic code must not contain provider route knowledge such as
+WorldRouter asset helpers, BytePlus ModelArk body rules, or Relaydance metadata
+URL parsing. Each adapter keeps those responsibilities.
+
+Coverage means each current video adapter has tests for the failure modes it
+owns: submit-stage provider HTTP errors before a job exists, poll-stage
+transport or parse errors, terminal remote failed jobs after a provider job id
+exists, and artifact download/persistence failures after the provider reports
+success. Transient poll errors should keep provider, adapter, job id, and
+`phase=poll` context without changing the existing retry semantics. Do not add
+storage, scheduling, health, retry, or provider selection machinery to satisfy
+this coverage.
+
 ## Phases
 
 Use simple string phases rather than a large enum exposed across crates:
@@ -167,6 +196,11 @@ The provider-specific parser should stay local to the adapter when response
 formats differ. The shared diagnostic type should not know WorldRouter,
 BytePlus, or Relaydance response schemas.
 
+For non-2xx HTTP responses, adapters should parse diagnostics from the response
+body if it is JSON. If the body is not JSON, keep a redacted text summary in
+`error`, set `http_status`, and leave `provider_code` and `request_id` as
+`null`.
+
 ## Hint Rules
 
 Hints are deliberately shallow and stable. They are derived from status, code,
@@ -192,6 +226,14 @@ without creating a taxonomy:
   `seedance-2.0-fast` and the `/api/v3/contents/generations/tasks` endpoint.
 - WorldRouter `upload assets first`: upload image references through the
   WorldRouter asset helper flow.
+- BytePlus messages mentioning content moderation or sensitive output: revise
+  the prompt or references; the provider rejected generated media.
+- Relaydance messages mentioning copyright or sensitive output: revise the
+  prompt or references; the provider rejected generated media.
+
+Do not add provider-specific overlays unless tests cover them and the message is
+already observed in persisted jobs or provider documentation. Generic HTTP
+status hints are preferred.
 
 ## Data Flow
 
@@ -234,8 +276,9 @@ Provider adapters own:
 
 `puffer-core` owns:
 
-- serializing diagnostics into `VideoGeneration` and `ImageGeneration` workflow
-  output;
+- serializing diagnostics into `VideoGeneration` workflow output;
+- keeping the diagnostic type reusable by `ImageGeneration` without requiring
+  image-generation behavior changes in this plan;
 - preserving the diagnostic object when returning an internal tool failure.
 
 `puffer-cli` owns:
@@ -266,7 +309,16 @@ Focused tests should cover:
   provider-internal-error hint.
 - WorldRouter remote failed job still returns `providerJobId`, `remoteStatus`,
   `error`, and a diagnostic.
-- BytePlus non-2xx submit errors use the same diagnostic shape.
+- BytePlus non-2xx submit errors use the same diagnostic shape, including
+  `provider=byteplus`, `adapter=byteplus_video`, `phase=submit`, and
+  `httpStatus`.
+- BytePlus remote failed jobs still expose `providerJobId`, `remoteStatus`,
+  `error`, and a diagnostic.
+- Relaydance non-2xx submit errors use the same diagnostic shape, including
+  `provider=relaydance`, `adapter=relaydance_video`, `phase=submit`, and
+  `httpStatus`.
+- Relaydance remote failed jobs still expose `providerJobId`, `remoteStatus`,
+  `error`, and a diagnostic.
 - Internal tool failure output preserves the structured diagnostic object.
 - Secret-like values in response bodies are redacted.
 - Successful video output still includes diagnostic keys with `null` values.
@@ -276,6 +328,8 @@ Focused tests should cover:
 - A Milhous-style WorldRouter submit failure no longer stops at
   `phase=submit`; the user can see HTTP status, provider code/message, and a
   hint when the provider returns them.
+- BytePlus and Relaydance submit, poll, download, and remote failed-job errors
+  use the same diagnostic contract as WorldRouter.
 - Failed remote jobs remain self-contained in `videogen` JSON.
 - The diagnostic shape is shared across media providers.
 - No background worker, retry policy, provider health state, or provider
