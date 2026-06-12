@@ -747,6 +747,7 @@ mod tests {
             provider_job_id: Some("task-123".to_string()),
             remote_status: Some("failed".to_string()),
             error: Some("The service encountered an unexpected internal error.".to_string()),
+            diagnostic: None,
         };
 
         let output = video_generation_output(
@@ -785,6 +786,7 @@ mod tests {
             provider_job_id: None,
             remote_status: None,
             error: None,
+            diagnostic: None,
         };
 
         let output = video_generation_output(&result, &BTreeMap::new(), None).unwrap();

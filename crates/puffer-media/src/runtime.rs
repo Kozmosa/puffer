@@ -10,6 +10,7 @@ use crate::media::resolver::{
     resolve_media_capabilities, resolve_media_request, MediaDiscoveryCache,
 };
 use crate::media::{MediaArtifact, MediaGenerationService, MediaJob, MediaJobStatus, MediaKind};
+use crate::{MediaFailureContext, MediaFailureDiagnostic};
 use anyhow::{bail, Context, Result};
 use puffer_provider_registry::{AuthStore, Axis, MediaOperation, ProviderRegistry};
 use serde::{Deserialize, Serialize};
@@ -123,6 +124,7 @@ pub struct ExactMediaGenerationResult {
     pub provider_job_id: Option<String>,
     pub remote_status: Option<String>,
     pub error: Option<String>,
+    pub diagnostic: Option<MediaFailureDiagnostic>,
 }
 
 /// Carries trusted media discovery results used by capability resolution.
@@ -359,6 +361,7 @@ fn generate_exact_image_from_media_request(
         provider_job_id: None,
         remote_status: None,
         error: None,
+        diagnostic: None,
     })
 }
 
@@ -422,6 +425,26 @@ pub(crate) fn exact_media_generation_result(
     artifacts: Vec<MediaArtifact>,
 ) -> ExactMediaGenerationResult {
     let artifacts = exact_generated_artifacts(artifacts);
+    let diagnostic = if job.status == MediaJobStatus::Failed {
+        job.error.as_ref().map(|error| {
+            let mut context =
+                MediaFailureContext::new(media_kind_name(job.kind), job.provider_id.clone())
+                    .model(job.model_id.clone())
+                    .phase("poll");
+            if let Some(adapter) = &job.adapter {
+                context = context.adapter(adapter.clone());
+            }
+            if let Some(provider_job_id) = &job.provider_job_id {
+                context = context.provider_job_id(provider_job_id.clone());
+            }
+            if let Some(remote_status) = &job.remote_status {
+                context = context.remote_status(remote_status.clone());
+            }
+            MediaFailureDiagnostic::from_error(context, &anyhow::anyhow!(error.clone()))
+        })
+    } else {
+        None
+    };
     ExactMediaGenerationResult {
         job_id: job.id,
         requested_count: job.requested_count,
@@ -433,6 +456,7 @@ pub(crate) fn exact_media_generation_result(
         provider_job_id: job.provider_job_id,
         remote_status: job.remote_status,
         error: job.error,
+        diagnostic,
     }
 }
 

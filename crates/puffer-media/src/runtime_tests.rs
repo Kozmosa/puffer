@@ -507,6 +507,62 @@ fn exact_media_generation_result_returns_failed_video_diagnostics() {
 }
 
 #[test]
+fn exact_media_generation_result_returns_failed_video_diagnostic_object_for_current_adapters() {
+    let cases = [
+        (
+            "worldrouter",
+            "worldrouter_video",
+            "seedance-2.0-fast",
+            "wr-task-1",
+            "The service encountered an unexpected internal error.",
+        ),
+        (
+            "byteplus",
+            "byteplus_video",
+            "dreamina-seedance-2-0-fast-260128",
+            "bp-task-1",
+            "The request failed because the output video may be related to copyright restrictions.",
+        ),
+        (
+            "relaydance",
+            "relaydance_video",
+            "doubao-seedance-2-0-720p",
+            "rd-task-1",
+            "content blocked upstream",
+        ),
+    ];
+
+    for (provider, adapter, model, task_id, message) in cases {
+        let mut job = MediaJob::new(
+            format!("job-{provider}"),
+            MediaKind::Video,
+            provider,
+            model,
+            "animate a robot",
+            1,
+            1,
+        );
+        job.adapter = Some(adapter.to_string());
+        job.provider_job_id = Some(task_id.to_string());
+        job.remote_status = Some("failed".to_string());
+        job.error = Some(message.to_string());
+        job.transition(MediaJobStatus::Failed, 2).unwrap();
+
+        let result = exact_media_generation_result(job, Vec::new());
+        let diagnostic = result.diagnostic.expect("diagnostic");
+
+        assert_eq!(diagnostic.kind, "video");
+        assert_eq!(diagnostic.provider_id, provider);
+        assert_eq!(diagnostic.adapter.as_deref(), Some(adapter));
+        assert_eq!(diagnostic.model_id.as_deref(), Some(model));
+        assert_eq!(diagnostic.phase.as_deref(), Some("poll"));
+        assert_eq!(diagnostic.provider_job_id.as_deref(), Some(task_id));
+        assert_eq!(diagnostic.remote_status.as_deref(), Some("failed"));
+        assert!(diagnostic.error.contains(message));
+    }
+}
+
+#[test]
 fn generate_exact_image_dispatches_to_minimax_adapter() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
     let address = listener.local_addr().expect("address");
