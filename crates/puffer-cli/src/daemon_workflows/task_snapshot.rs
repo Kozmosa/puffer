@@ -525,7 +525,7 @@ fn metadata_scalar_string(
 /// derived context lacks one. Task subject/description are LLM paraphrases;
 /// this field is the ground truth UIs and reply flows can quote
 /// (agentenv/monorepo#619).
-fn with_verbatim_source_text(
+pub(super) fn with_verbatim_source_text(
     metadata: &Map<String, Value>,
     context: Option<Value>,
 ) -> Option<Value> {
@@ -542,6 +542,11 @@ fn with_verbatim_source_text(
                 .filter(|value| !value.trim().is_empty())
             {
                 object.insert("text".to_string(), Value::String(text.to_string()));
+            }
+        }
+        if object.get("message_id").and_then(Value::as_i64).is_none() {
+            if let Some(message_id) = metadata.get("source_message_id").and_then(Value::as_i64) {
+                object.insert("message_id".to_string(), Value::from(message_id));
             }
         }
     }
