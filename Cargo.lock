@@ -4361,6 +4361,7 @@ dependencies = [
  "puffer-core",
  "puffer-logging",
  "puffer-mcp-oauth",
+ "puffer-media",
  "puffer-observability",
  "puffer-provider-openai",
  "puffer-provider-registry",
@@ -4547,6 +4548,7 @@ dependencies = [
  "psl",
  "puffer-config",
  "puffer-mcp-oauth",
+ "puffer-media",
  "puffer-observability",
  "puffer-provider-openai",
  "puffer-provider-registry",
@@ -4630,6 +4632,23 @@ dependencies = [
  "tracing",
  "url",
  "webbrowser",
+]
+
+[[package]]
+name = "puffer-media"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "indexmap 2.14.0",
+ "puffer-provider-registry",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shell-words",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
