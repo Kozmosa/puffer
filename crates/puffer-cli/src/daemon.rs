@@ -4393,6 +4393,11 @@ fn turn_browser_tab_context(
     state: &DaemonState,
     browser_root_session_id: &str,
 ) -> crate::daemon_browser::BrowserCurrentTabContext {
+    // Reconcile user-opened native tabs into the registry first, so the per-turn
+    // browser status reflects a page the user opened without the agent (#649).
+    state
+        .browsers
+        .sync_native_tabs(&state.event_sender(), browser_root_session_id, 960, 720);
     let primary = state.browsers.current_tab_context(browser_root_session_id);
     if primary.has_active_tab() {
         return primary;
